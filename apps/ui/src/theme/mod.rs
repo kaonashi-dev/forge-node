@@ -8,6 +8,12 @@ use std::sync::OnceLock;
 use serde::Deserialize;
 
 const THEMES_JSON: &str = include_str!("themes.json");
+/// Where the choice lives in the daemon's `app_state`, shared with Tauri.
+pub const THEME_KEY: &str = "ui.theme_base";
+/// The stored value that follows the system's light or dark.
+pub const SYSTEM: &str = "system";
+/// What a person who never chose sees, as in Tauri.
+pub const DEFAULT_BASE: &str = "calm-dark";
 
 #[derive(Deserialize)]
 struct ThemeFile {

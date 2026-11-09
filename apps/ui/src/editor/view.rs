@@ -25,10 +25,7 @@ const HEADER_H: f32 = 30.0;
 const STATUS_H: f32 = 24.0;
 
 pub fn pane(s: &AppState, k: &Kit) -> El {
-    let base = s
-        .theme_base
-        .as_deref()
-        .unwrap_or(crate::theme::default_base(k.dark));
+    let base = s.theme_base(k.dark);
     let palette = theme::for_base(base, k.dark);
     let ui = &s.editor;
     let editor = s.active_editor_state();
@@ -50,13 +47,18 @@ pub fn pane(s: &AppState, k: &Kit) -> El {
                 .color(palette.foreground),
         )
         .child(
-            text(if editor.is_some_and(|state| state.dirty) {
-                "modified"
-            } else {
-                ""
-            })
-            .font(k.ty.text_xsmall)
-            .color(palette.git_modified),
+            text(aria::editor_mark(editor))
+                .font(k.ty.text_xsmall)
+                .color(if editor.is_some_and(|state| state.dirty) {
+                    palette.git_modified
+                } else {
+                    palette.gutter_foreground
+                }),
+        )
+        .child(
+            text(aria::editor_details(editor, path))
+                .font(k.ty.text_xsmall)
+                .color(palette.gutter_foreground),
         );
     let body = match &ui.frame {
         Some(frame) => scroller(ui, frame, palette),
@@ -108,7 +110,7 @@ pub fn pane(s: &AppState, k: &Kit) -> El {
         // Rune gives text-field roles only to its own text inputs, so the
         // surface is a document; the caret is told through the description.
         .role("document")
-        .label(format!("Editor · {path}"))
+        .label(path.to_string())
         .description(format!("{} {}", aria.line, aria.status))
         .a11y_value(ui.a11y_text.to_string())
         .read_only(aria.read_only)

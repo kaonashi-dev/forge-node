@@ -5,7 +5,6 @@ mod connection;
 mod editor;
 mod keymap;
 mod palette;
-mod prefs;
 mod probe;
 mod projects;
 mod sync;

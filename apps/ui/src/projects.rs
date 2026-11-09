@@ -28,10 +28,26 @@ fn pr_note(s: &AppState, workspace: &Workspace) -> String {
         workspace.project_id,
         workspace.branch.as_deref(),
     )
-    .map_or_else(String::new, |pr| {
-        let draft = if pr.is_draft { " (draft)" } else { "" };
-        format!(" · PR #{}{draft}: {}", pr.number, pr.title)
-    })
+    .map_or_else(String::new, |pr| format!(" · {}", pr_label(pr)))
+}
+
+/// `#12 · draft · Title`, as Tauri's `prLabel` words it.
+#[must_use]
+pub fn pr_label(pr: &domain::PullRequest) -> String {
+    let state = if pr.is_draft {
+        Some("draft")
+    } else {
+        match pr.review_decision {
+            Some(domain::ReviewDecision::Approved) => Some("approved"),
+            Some(domain::ReviewDecision::ChangesRequested) => Some("changes requested"),
+            Some(domain::ReviewDecision::ReviewRequired) => Some("review required"),
+            _ => None,
+        }
+    };
+    match state {
+        Some(state) => format!("#{} · {state} · {}", pr.number, pr.title),
+        None => format!("#{} · {}", pr.number, pr.title),
+    }
 }
 
 /// One line of what the daemon measured, or that it has not.
@@ -50,11 +66,16 @@ pub fn status_line(workspace: &Workspace) -> String {
         }
         .to_string(),
     ];
-    match (status.ahead, status.behind) {
-        (Some(ahead), Some(behind)) if ahead > 0 || behind > 0 => {
-            parts.push(format!("↑{ahead} ↓{behind}"));
-        }
-        _ => {}
+    // A side at zero is left out, as Tauri's `syncLabel` does.
+    let sync: Vec<String> = [
+        status.ahead.filter(|n| *n > 0).map(|n| format!("↑{n}")),
+        status.behind.filter(|n| *n > 0).map(|n| format!("↓{n}")),
+    ]
+    .into_iter()
+    .flatten()
+    .collect();
+    if !sync.is_empty() {
+        parts.push(sync.join(" "));
     }
     parts.join(" · ")
 }
@@ -372,7 +393,8 @@ mod tests {
         };
         assert_eq!(
             status_line(&workspace(status)),
-            "uncommitted changes · ↑2 ↓0"
+            "uncommitted changes · ↑2",
+            "a side at zero is left out"
         );
     }
 

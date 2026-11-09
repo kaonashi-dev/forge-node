@@ -97,7 +97,11 @@ pub enum Command {
         workspace_id: WorkspaceId,
         read: crate::workbench::Read,
     },
-    SavePrefs(crate::prefs::Prefs),
+    /// A preference shared with every client, in the daemon's `app_state`.
+    SetAppState {
+        key: String,
+        value: String,
+    },
     AddProject(std::path::PathBuf),
     RebaseStep {
         workspace_id: WorkspaceId,
@@ -168,8 +172,6 @@ pub enum UiEvent {
         generation: u64,
         session_id: SessionId,
     },
-    /// Not tied to a connection: read once when the worker starts.
-    Prefs(crate::prefs::Prefs),
     Diff {
         generation: u64,
         workspace_id: WorkspaceId,
@@ -417,8 +419,11 @@ impl ConnectionHandle {
         self.send(Command::RemoveWorktree { workspace_id })
     }
 
-    pub fn save_prefs(&self, prefs: crate::prefs::Prefs) -> Result<(), String> {
-        self.send(Command::SavePrefs(prefs))
+    pub fn set_app_state(&self, key: &str, value: &str) -> Result<(), String> {
+        self.send(Command::SetAppState {
+            key: key.to_string(),
+            value: value.to_string(),
+        })
     }
 
     pub fn refresh_snapshot(&self) -> Result<(), String> {
@@ -519,12 +524,6 @@ fn worker(
     rx: Receiver<Command>,
     stop: Arc<AtomicBool>,
 ) {
-    // A fixture is a test or a demo, and must not read a person's choices.
-    if matches!(boot.mode, Mode::Live { .. })
-        && let Some(path) = crate::prefs::path()
-    {
-        sink(vec![UiEvent::Prefs(crate::prefs::load_from(&path))]);
-    }
     let mut generation = 0u64;
     loop {
         if stop.load(Ordering::Acquire) {
@@ -873,7 +872,7 @@ fn handle_fixture_command(
         | Command::EditorView { .. }
         | Command::EditorInput { .. }
         | Command::Read { .. }
-        | Command::SavePrefs(_)
+        | Command::SetAppState { .. }
         | Command::AddProject(_)
         | Command::RebaseStep { .. }
         | Command::RunAction { .. }
@@ -1612,11 +1611,10 @@ fn handle_live_command(
                 .map_err(|error| error.to_string());
             live_result(generation, "RemoveWorktree", result, sink, metrics, started);
         }
-        Command::SavePrefs(prefs) => {
-            if let Some(path) = crate::prefs::path()
-                && let Err(error) = crate::prefs::save_to(&path, &prefs)
-            {
-                eprintln!("forge-ui: saving preferences: {error}");
+        Command::SetAppState { key, value } => {
+            metrics.note_socket_op();
+            if let Err(error) = client.set_app_state(&key, &value) {
+                eprintln!("forge-ui: saving {key}: {error}");
             }
         }
         Command::RefreshSnapshot => {
@@ -1761,7 +1759,7 @@ fn command_label(command: &Command) -> &'static str {
         Command::EditorView { .. } => "SetEditorView",
         Command::EditorInput { .. } => "SendEditorInput",
         Command::Read { .. } => "WorkspaceRead",
-        Command::SavePrefs(_) => "SavePrefs",
+        Command::SetAppState { .. } => "SetAppState",
         Command::AddProject(_) => "AddProject",
         Command::RebaseStep { .. } => "RebaseStep",
         Command::RunAction { .. } => "RunAction",

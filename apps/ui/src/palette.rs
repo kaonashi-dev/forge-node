@@ -12,11 +12,9 @@ pub const FILE_LIMIT: u32 = 50;
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Command {
     NewShell,
-    RefreshSnapshot,
-    Reconnect,
     Show(CenterMode),
-    /// `None` follows the system.
-    Theme(Option<String>),
+    /// A base, or `"system"`.
+    Theme(String),
     NewAgent(domain::AgentProviderId),
     RunAction(domain::ProjectActionId),
 }
@@ -41,6 +39,8 @@ pub struct Palette {
     pub open: bool,
     /// Opened with Cmd-P: files only.
     pub files_only: bool,
+    /// Opened with Cmd-Shift-A: a terminal or an agent only.
+    pub launch: bool,
     pub edit: TextEdit,
     pub selected: usize,
     files: Vec<String>,
@@ -58,6 +58,7 @@ impl Default for Palette {
         Self {
             open: false,
             files_only: false,
+            launch: false,
             edit: TextEdit::new(""),
             selected: 0,
             files: Vec::new(),
@@ -71,21 +72,19 @@ impl Default for Palette {
 
 fn commands() -> Vec<Entry> {
     let mut out = vec![
-        ("New shell", Command::NewShell),
-        ("Show session", Command::Show(CenterMode::Session)),
-        ("Show changes", Command::Show(CenterMode::Changes)),
-        ("Show files", Command::Show(CenterMode::Files)),
-        ("Open settings", Command::Show(CenterMode::Settings)),
-        ("Refresh sessions", Command::RefreshSnapshot),
-        ("Reconnect to the daemon", Command::Reconnect),
-        ("Theme: follow the system", Command::Theme(None)),
+        ("New Terminal", Command::NewShell),
+        ("Projects", Command::Show(CenterMode::Projects)),
+        ("Git", Command::Show(CenterMode::Changes)),
+        ("Files", Command::Show(CenterMode::Files)),
+        ("Settings", Command::Show(CenterMode::Settings)),
+        ("Theme: Match System", Command::Theme("system".into())),
     ];
     let mut themes: Vec<(String, Command)> = Vec::new();
     for base in crate::theme::bases() {
         if let Some(theme) = crate::theme::theme(base) {
             themes.push((
                 format!("Theme: {}", theme.label),
-                Command::Theme(Some(base.clone())),
+                Command::Theme(base.clone()),
             ));
         }
     }
@@ -128,12 +127,37 @@ impl Palette {
         self.agents = agents;
         self.open = true;
         self.files_only = files_only;
+        self.launch = false;
         self.edit = TextEdit::new(query);
         self.edit.focused = true;
         self.selected = 0;
         self.files.clear();
         self.files_for.clear();
         self.asked = None;
+    }
+
+    pub fn show_launch(&mut self, agents: Vec<(domain::AgentProviderId, String)>) {
+        self.show_with(false, "", agents);
+        self.launch = true;
+    }
+
+    /// What the field says before anything is typed, as Tauri words it.
+    #[must_use]
+    pub fn placeholder(&self) -> &'static str {
+        if self.files_only {
+            "Open a file in this workspace…"
+        } else if self.launch {
+            "Start a terminal or an agent…"
+        } else {
+            "Type a command…"
+        }
+    }
+
+    /// Whether a file answer for the current query is still on its way.
+    #[must_use]
+    pub fn searching(&self) -> bool {
+        let query = self.query();
+        !query.is_empty() && self.files_for != query && !self.launch
     }
 
     pub fn set_actions(&mut self, actions: Vec<(domain::ProjectActionId, String)>) {
@@ -161,7 +185,7 @@ impl Palette {
             self.agents
                 .iter()
                 .map(|(id, name)| Entry::Command {
-                    label: format!("New agent: {name}"),
+                    label: format!("New {name}"),
                     command: Command::NewAgent(id.clone()),
                 })
                 .chain(self.actions.iter().map(|(id, label)| Entry::Command {
@@ -169,10 +193,20 @@ impl Palette {
                     command: Command::RunAction(*id),
                 }))
                 .chain(commands())
+                .filter(|entry| {
+                    !self.launch
+                        || matches!(
+                            entry,
+                            Entry::Command {
+                                command: Command::NewShell | Command::NewAgent(_),
+                                ..
+                            }
+                        )
+                })
                 .filter(|entry| subsequence(entry.label(), query))
                 .collect()
         };
-        if !query.is_empty() && self.files_for == query {
+        if !query.is_empty() && self.files_for == query && !self.launch {
             out.extend(self.files.iter().cloned().map(Entry::File));
         }
         out
@@ -184,7 +218,7 @@ impl Palette {
             return None;
         }
         let query = self.query().to_string();
-        if query.is_empty() || self.asked.as_deref() == Some(query.as_str()) {
+        if query.is_empty() || self.launch || self.asked.as_deref() == Some(query.as_str()) {
             return None;
         }
         self.asked = Some(query.clone());
@@ -229,13 +263,13 @@ mod tests {
         let mut palette = Palette::default();
         palette.show(false);
         assert!(palette.entries().len() > 5);
-        typed(&mut palette, "shch");
+        typed(&mut palette, "projects");
         let labels: Vec<String> = palette
             .entries()
             .iter()
             .map(|e| e.label().to_string())
             .collect();
-        assert_eq!(labels, vec!["Show changes".to_string()]);
+        assert_eq!(labels, vec!["Projects".to_string()]);
     }
 
     #[test]
@@ -270,13 +304,23 @@ mod tests {
     fn installed_agents_are_offered_first() {
         let mut palette = Palette::default();
         let claude = domain::AgentProviderId::new("claude");
-        palette.show_with(false, "agent", vec![(claude.clone(), "Claude Code".into())]);
+        palette.show_launch(vec![(claude.clone(), "Claude Code".into())]);
         assert_eq!(
             palette.chosen(),
             Some(Entry::Command {
-                label: "New agent: Claude Code".into(),
+                label: "New Claude Code".into(),
                 command: Command::NewAgent(claude),
             })
         );
+        let labels: Vec<String> = palette
+            .entries()
+            .iter()
+            .map(|e| e.label().to_string())
+            .collect();
+        assert_eq!(
+            labels,
+            vec!["New Claude Code".to_string(), "New Terminal".to_string()]
+        );
+        assert_eq!(palette.placeholder(), "Start a terminal or an agent…");
     }
 }

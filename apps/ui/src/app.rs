@@ -96,11 +96,17 @@ pub struct AppState {
     pub sync: crate::sync::Sync,
     /// What a text field edits while its dialog is closing; never shown.
     pub scratch_edit: rune::TextEdit,
+    /// The session being renamed and the name being typed.
+    pub rename: Option<(SessionId, rune::TextEdit)>,
+    /// Shows the client's probes (socket counts, Refresh, Reconnect): on for
+    /// a fixture, or with `FORGE_UI_DEBUG` set.
+    pub debug: bool,
     /// A workspace picked in Projects; Changes and Files show it instead of
     /// the active session's until a session is selected.
     pub chosen_workspace: Option<WorkspaceId>,
-    /// The chosen `tokens.ts` base; `None` follows the system's light or dark.
-    pub theme_base: Option<String>,
+    /// `ui.theme_base` from the daemon, shared with Tauri: a `tokens.ts`
+    /// base, `"system"`, or unset.
+    pub theme_pref: Option<String>,
     /// A scroll offset that brings a moved caret into view, applied once.
     pub editor_reveal: Option<f32>,
     /// A file to open in the first workspace once the replica is loaded.
@@ -114,7 +120,6 @@ pub struct AppState {
     pub out: Outbox,
     pub last_input: Option<(usize, String)>,
     pub last_focus: Option<String>,
-    pub rename_counter: u64,
     pub mirror_at: f64,
     pub switch_started: Cell<Option<Instant>>,
     pub switch_ms: Cell<Option<f64>>,
@@ -153,8 +158,10 @@ impl AppState {
             commit: crate::commit::CommitDialog::default(),
             sync: crate::sync::Sync::default(),
             scratch_edit: rune::TextEdit::new(""),
+            rename: None,
+            debug: fixture || std::env::var_os("FORGE_UI_DEBUG").is_some(),
             chosen_workspace: None,
-            theme_base: None,
+            theme_pref: None,
             editor_reveal: None,
             open_path: None,
             select_when_listed: None,
@@ -163,7 +170,6 @@ impl AppState {
             out: Outbox::default(),
             last_input: None,
             last_focus: None,
-            rename_counter: 0,
             mirror_at: -1.0,
             switch_started: Cell::new(None),
             switch_ms: Cell::new(None),
@@ -268,6 +274,9 @@ impl AppState {
                 .find(|row| row.id == id)
                 .map(|row| row.id_text.clone())
         });
+        self.theme_pref = store
+            .app_state_value(crate::theme::THEME_KEY)
+            .map(str::to_string);
         self.store = Some(store);
         self.terminal.set_fixture_titles(
             self.fixture_titles
@@ -397,11 +406,15 @@ impl AppState {
             }
             Action::FilePalette => self.palette.show(true),
             Action::NewShell => self.request_create(),
-            Action::NewAgent => {
-                let agents = self.installed_agents();
-                self.palette.show_with(false, "New agent", agents);
+            Action::NewAgent => self.open_launch_palette(),
+            Action::Settings => {
+                let next = if self.workbench.mode == CenterMode::Settings {
+                    CenterMode::Session
+                } else {
+                    CenterMode::Settings
+                };
+                self.show_mode(next);
             }
-            Action::Settings => self.show_mode(CenterMode::Settings),
             Action::NextSession => self.step_session(1),
             Action::PreviousSession => self.step_session(-1),
         }
@@ -480,8 +493,6 @@ impl AppState {
         match entry {
             Entry::Command { command, .. } => match command {
                 Command::NewShell => self.request_create(),
-                Command::RefreshSnapshot => self.request_refresh(),
-                Command::Reconnect => self.request_reconnect(),
                 Command::Show(mode) => self.show_mode(mode),
                 Command::Theme(base) => self.choose_theme(base),
                 Command::RunAction(action) => {
@@ -729,13 +740,22 @@ impl AppState {
         }
     }
 
-    /// Picks a theme base, `None` to follow the system, and saves the choice.
-    pub fn choose_theme(&mut self, base: Option<String>) {
-        self.theme_base = base;
+    /// Picks a base, or `"system"`, and saves it where Tauri keeps it.
+    pub fn choose_theme(&mut self, value: String) {
         if let Some(connection) = &self.connection {
-            let _ = connection.save_prefs(crate::prefs::Prefs {
-                theme_base: self.theme_base.clone(),
-            });
+            let _ = connection.set_app_state(crate::theme::THEME_KEY, &value);
+        }
+        self.theme_pref = Some(value);
+    }
+
+    /// The base to paint with: the saved one, the system's pair for
+    /// `"system"`, and calm-dark when nothing is saved, as in Tauri.
+    #[must_use]
+    pub fn theme_base(&self, system_dark: bool) -> &str {
+        match self.theme_pref.as_deref() {
+            Some(crate::theme::SYSTEM) => crate::theme::default_base(system_dark),
+            Some(base) => base,
+            None => crate::theme::DEFAULT_BASE,
         }
     }
 
@@ -1040,10 +1060,6 @@ impl AppState {
                 if finished {
                     self.workbench.refresh();
                 }
-                true
-            }
-            UiEvent::Prefs(prefs) => {
-                self.theme_base = prefs.theme_base;
                 true
             }
             UiEvent::SessionOpened {
@@ -1646,32 +1662,36 @@ impl AppState {
         }
     }
 
+    /// Opens the rename prompt with the session's current name.
     pub fn request_rename(&mut self) {
-        let Some(session_id) = self.active else {
+        let Some(row) = self.active_row() else {
             return;
         };
-        self.rename_counter = self.rename_counter.saturating_add(1);
-        let title = format!("forge-ui rename {}", self.rename_counter);
+        let mut edit = rune::TextEdit::new(row.title.clone());
+        edit.focused = true;
+        self.rename = Some((row.id, edit));
+    }
+
+    pub fn finish_rename(&mut self) {
+        let Some((session_id, edit)) = self.rename.take() else {
+            return;
+        };
+        let title = edit.text.trim().to_string();
+        if title.is_empty() {
+            return;
+        }
         match &self.connection {
             Some(connection) => {
-                if let Err(error) = connection.rename_session(session_id, title.clone()) {
-                    self.last_command = Some(CommandStatus {
-                        label: "RenameSession",
-                        ok: false,
-                        message: error,
-                        took_us: 0,
-                    });
-                } else {
-                    self.last_command = Some(CommandStatus {
-                        label: "RenameSession",
-                        ok: true,
-                        message: format!("queued “{title}”"),
-                        took_us: 0,
-                    });
-                }
+                let _ = connection.rename_session(session_id, title);
             }
             None => self.worker_not_ready("RenameSession"),
         }
+    }
+
+    /// The palette scoped to what can be launched: a terminal or an agent.
+    pub fn open_launch_palette(&mut self) {
+        let agents = self.installed_agents();
+        self.palette.show_launch(agents);
     }
 
     pub fn request_refresh(&mut self) {

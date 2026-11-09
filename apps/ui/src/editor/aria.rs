@@ -85,6 +85,58 @@ pub fn editor_announcement(state: Option<&EditorState>) -> String {
     }
 }
 
+/// The header's mark, as `editorChrome.ts` words it.
+#[must_use]
+pub fn editor_mark(state: Option<&EditorState>) -> String {
+    let Some(state) = state else {
+        return "state unknown".to_string();
+    };
+    let flags: Vec<&str> = [
+        state.dirty.then_some("unsaved"),
+        state.read_only.then_some("read-only"),
+    ]
+    .into_iter()
+    .flatten()
+    .collect();
+    if flags.is_empty() {
+        "clean".to_string()
+    } else {
+        flags.join(" · ")
+    }
+}
+
+/// The file's extension as a label; the editor reports no language, so none
+/// is guessed from contents.
+fn language_label(path: &str) -> Option<String> {
+    let name = path.rsplit('/').next().unwrap_or(path);
+    let dot = name.rfind('.')?;
+    (dot > 0 && dot + 1 < name.len()).then(|| name[dot + 1..].to_uppercase())
+}
+
+/// The header's details line: lines, cursors, selection and language.
+#[must_use]
+pub fn editor_details(state: Option<&EditorState>, path: &str) -> String {
+    let mut facts = Vec::new();
+    if let Some(state) = state {
+        if state.total_lines > 0 {
+            let unit = if state.total_lines == 1 {
+                "line"
+            } else {
+                "lines"
+            };
+            facts.push(format!("{} {unit}", state.total_lines));
+        }
+        if state.cursor_count > 1 {
+            facts.push(format!("{} cursors", state.cursor_count));
+        }
+        if state.selection_length > 0 {
+            facts.push(format!("{} selected", state.selection_length));
+        }
+    }
+    facts.extend(language_label(path));
+    facts.join(" · ")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -167,5 +219,24 @@ mod tests {
             ..found
         };
         assert!(editor_announcement(Some(&moved)).starts_with("This file changed on disk"));
+    }
+
+    #[test]
+    fn the_header_says_what_editor_chrome_says() {
+        assert_eq!(editor_mark(None), "state unknown");
+        assert_eq!(editor_mark(Some(&state())), "clean");
+        let busy = EditorState {
+            dirty: true,
+            read_only: true,
+            cursor_count: 2,
+            selection_length: 5,
+            ..state()
+        };
+        assert_eq!(editor_mark(Some(&busy)), "unsaved · read-only");
+        assert_eq!(
+            editor_details(Some(&busy), "src/main.rs"),
+            "120 lines · 2 cursors · 5 selected · RS"
+        );
+        assert_eq!(editor_details(None, ".gitignore"), "");
     }
 }

@@ -171,7 +171,8 @@ pub fn files(s: &AppState, k: &Kit) -> El {
     .row(|node: &FileNode<()>, r| TreeItem::file(node, r))
     .style(TreeStyle::from_kit(k).chevron_only_folders(true))
     .name("Files")
-    .on_select(|s: &mut AppState, id: &str, _tx| s.workbench.select_file(id))
+    // One click opens the file in an editor, as in Tauri's tree.
+    .on_select(|s: &mut AppState, id: &str, _tx| s.open_in_editor(id))
     .on_open(|s: &mut AppState, id: &str, _tx| s.open_in_editor(id))
     .build(s, k)
     .key("files-tree-view")
@@ -180,7 +181,11 @@ pub fn files(s: &AppState, k: &Kit) -> El {
     let preview = match (&bench.files.preview, &bench.files.error) {
         (_, Some(error)) => notice(k, "files-error", format!("Could not read: {error}")),
         (Some(preview), None) => preview_view(preview, k),
-        (None, None) => notice(k, "files-hint", "Select a file to read it.".into()),
+        (None, None) => notice(
+            k,
+            "files-hint",
+            "Click a file to open it in an editor.".into(),
+        ),
     };
     let title = bench
         .files
@@ -408,9 +413,9 @@ fn stopped(state: &domain::RebaseState, error: Option<&str>, k: &Kit) -> El {
 }
 
 pub fn settings(s: &AppState, k: &Kit) -> El {
-    let chosen = s.theme_base.as_deref();
-    let option = |label: String, base: Option<&'static str>, selected: bool| {
-        let id = base.map(str::to_string);
+    let chosen = s.theme_pref.as_deref();
+    let option = |label: String, value: &str, selected: bool| {
+        let id = value.to_string();
         Button::new(label)
             .variant(if selected {
                 ButtonVariant::Outline
@@ -420,35 +425,32 @@ pub fn settings(s: &AppState, k: &Kit) -> El {
             .control_size(ControlSize::Regular)
             .on_press(move |s: &mut AppState| s.choose_theme(id.clone()))
             .build(k)
-            .key(format!("theme-{}", base.unwrap_or("system")))
+            .key(format!("theme-{value}"))
     };
     let mut list = col()
         .key("theme-options")
         .gap(4.0)
         .role("radiogroup")
         .label("Theme")
-        .child(option("Follow the system".into(), None, chosen.is_none()));
+        .child(option(
+            "Match system".into(),
+            crate::theme::SYSTEM,
+            chosen == Some(crate::theme::SYSTEM),
+        ));
+    let painted = s.theme_base(k.dark).to_string();
     for base in crate::theme::bases() {
         let Some(theme) = crate::theme::theme(base) else {
             continue;
         };
-        let label = if theme.light {
-            format!("{} (light)", theme.label)
-        } else {
-            theme.label.clone()
-        };
-        list = list.child(option(
-            label,
-            Some(base.as_str()),
-            chosen == Some(base.as_str()),
-        ));
+        let selected = chosen != Some(crate::theme::SYSTEM) && painted == *base;
+        list = list.child(option(theme.label.clone(), base, selected));
     }
     col()
         .key("settings")
         .w_full()
         .h_full()
         .min_h(0.0)
-        .child(bar(k, "Settings".into(), "saved for this Mac".into()))
+        .child(bar(k, "Settings".into(), "Appearance".into()))
         .child(
             col()
                 .key("settings-body")

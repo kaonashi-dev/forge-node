@@ -161,18 +161,6 @@ impl Workbench {
         }
     }
 
-    /// Reads `id` when it is a file; a folder or a placeholder row reads nothing.
-    pub fn select_file(&mut self, id: &str) {
-        if self
-            .files
-            .tree
-            .get(id)
-            .is_some_and(|node| node.data.is_some())
-        {
-            self.queue(Read::File(id.to_string()));
-        }
-    }
-
     /// The reads to send now: what was asked for, plus the listing of every
     /// folder the person opened since the last call.
     pub fn take_reads(&mut self) -> Vec<Read> {

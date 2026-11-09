@@ -25,10 +25,7 @@ static PLUS: Icon = Icon {
 pub fn view(s: &AppState, cx: &mut Cx<AppState>) -> El {
     s.metrics.note_ui_thread();
     let started = Instant::now();
-    let dark = s
-        .theme_base
-        .as_deref()
-        .and_then(crate::theme::theme)
+    let dark = crate::theme::theme(s.theme_base(cx.system_dark()))
         .map_or(cx.system_dark(), |theme| !theme.light);
     let k = Kit::neutral(dark);
     let main = col()
@@ -82,6 +79,7 @@ pub fn view(s: &AppState, cx: &mut Cx<AppState>) -> El {
     crate::projects::dialogs(s, &k, &mut overlays);
     crate::commit::dialog(s, &k, &mut overlays);
     crate::sync::dialog(s, &k, &mut overlays);
+    rename_dialog(s, &k, &mut overlays);
     let root = rune_kit::root(root, overlays);
     s.view_ms
         .set(Some(started.elapsed().as_secs_f64() * 1000.0));
@@ -93,7 +91,7 @@ pub fn view(s: &AppState, cx: &mut Cx<AppState>) -> El {
 }
 
 fn toolbar(s: &AppState, k: &Kit) -> Toolbar {
-    let create = Button::new("New shell")
+    let create = Button::new("New terminal")
         .variant(ButtonVariant::Ghost)
         .control_size(ControlSize::Regular)
         .on_press(|s: &mut AppState| s.request_create())
@@ -117,13 +115,14 @@ fn toolbar(s: &AppState, k: &Kit) -> Toolbar {
         .on_press(|s: &mut AppState| s.request_reconnect())
         .build(k)
         .key("force-reconnect");
-    Toolbar::new()
-        .title(format!("Forge Rune · {}", s.status.label()))
-        .trailing(crate::workbench::view::mode_switch(s, k))
-        .trailing(refresh)
-        .trailing(reconnect)
-        .trailing(rename)
-        .trailing(create)
+    let mut bar = Toolbar::new()
+        .title("Forge Node")
+        .trailing(crate::workbench::view::mode_switch(s, k));
+    // Refresh and Reconnect are probes of the client, not things a person does.
+    if s.debug {
+        bar = bar.trailing(refresh).trailing(reconnect);
+    }
+    bar.trailing(rename).trailing(create)
 }
 
 fn tabbar(s: &AppState, cx: &mut Cx<AppState>, k: &Kit) -> El {
@@ -155,11 +154,11 @@ fn tabbar(s: &AppState, cx: &mut Cx<AppState>, k: &Kit) -> El {
 }
 
 fn sidebar(s: &AppState, k: &Kit) -> El {
-    let header = SidebarRow::new("New shell")
+    let header = SidebarRow::new("New terminal")
         .select_only()
         .icon(&PLUS)
         .height(32.0)
-        .detail("⌘N")
+        .detail("⌘T")
         .on_select(|s: &mut AppState, _| s.request_create())
         .build(k)
         .key("sidebar-new-session");
@@ -225,14 +224,31 @@ fn avatar(index: usize, k: &Kit) -> El {
 }
 
 fn empty_row(k: &Kit) -> El {
-    row().key("empty-sessions").w_full().px(10.0).py(8.0).child(
-        text("No sessions in this snapshot")
-            .font(k.ty.small)
-            .color(k.c.text_faint),
-    )
+    row()
+        .key("empty-sessions")
+        .w_full()
+        .px(10.0)
+        .py(8.0)
+        .child(text("No sessions").font(k.ty.small).color(k.c.text_faint))
 }
 
 fn status_row(s: &AppState, k: &Kit) -> El {
+    if !s.debug {
+        // Tauri's footer speaks only when the daemon is not there.
+        let message = match s.status {
+            LinkStatus::Connected => return el().key("connection-status").h(0.0),
+            LinkStatus::Connecting => "Connecting to the daemon…",
+            LinkStatus::Reconnecting => "Daemon disconnected",
+        };
+        return row()
+            .key("connection-status")
+            .role("status")
+            .w_full()
+            .h(30.0)
+            .px(8.0)
+            .center_y()
+            .child(text(message).font(k.ty.small).color(k.c.text_muted));
+    }
     let color = match s.status {
         LinkStatus::Connected => k.c.success.icon,
         LinkStatus::Connecting => k.c.warning.icon,
@@ -418,6 +434,9 @@ fn terminal_pane(s: &AppState, k: &Kit) -> El {
 }
 
 fn placeholder(s: &AppState, k: &Kit) -> El {
+    if !s.debug {
+        return empty_center(s, k);
+    }
     let title = s
         .active_row()
         .map(|row| row.title.clone())
@@ -587,11 +606,7 @@ fn row_status(status: SessionStatus) -> rune_kit::shell::RowStatus {
 fn palette(s: &AppState, k: &Kit, layer: &mut Vec<El>) {
     let entries = s.palette.entries();
     let field = rune_kit::TextInput::new(&s.palette.edit)
-        .placeholder(if s.palette.files_only {
-            "Go to file"
-        } else {
-            "Type a command or a file name"
-        })
+        .placeholder(s.palette.placeholder())
         .label("Command palette")
         .on_edit(|s: &mut AppState| &mut s.palette.edit)
         .on_change(|s: &mut AppState, _| s.palette.selected = 0)
@@ -639,10 +654,10 @@ fn palette(s: &AppState, k: &Kit, layer: &mut Vec<El>) {
     }
     if entries.is_empty() {
         list = list.child(
-            text(if s.palette.query().is_empty() {
-                "Type to search files"
+            text(if s.palette.searching() {
+                "Searching files…"
             } else {
-                "Nothing matches"
+                "Nothing matches."
             })
             .font(k.ty.small)
             .color(k.c.text_faint),
@@ -651,9 +666,11 @@ fn palette(s: &AppState, k: &Kit, layer: &mut Vec<El>) {
     rune_kit::Dialog::new(
         "palette",
         if s.palette.files_only {
-            "Go to file"
+            "Open File…"
+        } else if s.palette.launch {
+            "New Session"
         } else {
-            "Command palette"
+            "Command Palette"
         },
     )
     .open(true)
@@ -663,4 +680,138 @@ fn palette(s: &AppState, k: &Kit, layer: &mut Vec<El>) {
     .child(field)
     .child(list)
     .build(k, layer);
+}
+
+/// Tauri's empty centre (`EmptyCenter.tsx`): what can be started from here.
+fn empty_center(s: &AppState, k: &Kit) -> El {
+    let has_projects = s
+        .store
+        .as_ref()
+        .is_some_and(|store| !store.projects.is_empty());
+    let entry =
+        |key: &'static str, label: &'static str, note: &'static str, run: fn(&mut AppState)| {
+            row()
+                .key(key)
+                .role("button")
+                .label(label)
+                .w(360.0)
+                .px(12.0)
+                .py(8.0)
+                .gap(12.0)
+                .radius(6.0)
+                .items_center()
+                .on_press(run)
+                .child(
+                    text(label)
+                        .font(k.ty.small_medium)
+                        .color(k.c.text_base)
+                        .w(120.0),
+                )
+                .child(
+                    text(note)
+                        .font(k.ty.text_xsmall)
+                        .color(k.c.text_faint)
+                        .grow(1.0),
+                )
+        };
+    let add = entry(
+        "empty-add-project",
+        "Add a project",
+        "Point Forge Node at a repository to work in",
+        |s| {
+            s.show_mode(CenterMode::Projects);
+        },
+    );
+    let mut view = col()
+        .key("center-placeholder")
+        .w_full()
+        .h_full()
+        .grow(1.0)
+        .min_h(0.0)
+        .gap(6.0)
+        .center()
+        .child(
+            text("No sessions open")
+                .font(k.ty.body_medium)
+                .color(k.c.text_base),
+        )
+        .child(
+            text(if has_projects {
+                "Everything here is closed. Start one to get back to work."
+            } else {
+                "Nothing is set up yet."
+            })
+            .font(k.ty.small)
+            .color(k.c.text_faint)
+            .pb(10.0),
+        );
+    if !has_projects {
+        return view.child(add);
+    }
+    view = view
+        .child(entry(
+            "empty-new-terminal",
+            "New terminal",
+            "A shell in the current checkout",
+            |s| s.request_create(),
+        ))
+        .child(entry(
+            "empty-new-agent",
+            "New agent",
+            "Start a coding agent in a session",
+            |s| {
+                s.open_launch_palette();
+            },
+        ))
+        .child(entry(
+            "empty-new-worktree",
+            "New worktree",
+            "Checkout a branch in a new folder",
+            |s| {
+                s.show_mode(CenterMode::Projects);
+            },
+        ))
+        .child(entry(
+            "empty-add-project",
+            "Add a project",
+            "Work in another repository",
+            |s| {
+                s.show_mode(CenterMode::Projects);
+            },
+        ));
+    view
+}
+
+/// The rename prompt, as a dialog layer.
+fn rename_dialog(s: &AppState, k: &Kit, layer: &mut Vec<El>) {
+    let Some((_, edit)) = &s.rename else {
+        return;
+    };
+    let field = rune_kit::TextInput::new(edit)
+        .label("Session name")
+        .on_edit(|s: &mut AppState| match s.rename.as_mut() {
+            Some((_, edit)) => edit,
+            None => &mut s.scratch_edit,
+        })
+        .on_key(|s: &mut AppState, ev, _| match ev.key {
+            rune::Key::Enter => {
+                s.finish_rename();
+                true
+            }
+            rune::Key::Escape => {
+                s.rename = None;
+                true
+            }
+            _ => false,
+        })
+        .build(k)
+        .key("rename-input");
+    rune_kit::Dialog::new("rename", "Rename session")
+        .open(true)
+        .fit()
+        .width(420.0)
+        .click_outside(true)
+        .on_close(|s: &mut AppState| s.rename = None)
+        .child(field)
+        .build(k, layer);
 }
