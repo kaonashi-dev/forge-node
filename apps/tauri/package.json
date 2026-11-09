@@ -18,6 +18,7 @@
     "codegen": "bun scripts/codegen-types.ts && oxfmt --write src/contracts/generated/fixtures.ts",
     "tokens": "bun scripts/generate-tokens.ts && oxfmt --write src/theme/tokens.css",
     "theme:fixture": "bun scripts/emit-theme-fixture.ts",
+    "theme:rune": "bun scripts/emit-rune-theme.ts",
     "tauri": "tauri",
     "lint": "oxlint",
     "lint:fix": "oxlint --fix",

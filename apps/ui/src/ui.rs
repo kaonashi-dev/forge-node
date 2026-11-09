@@ -25,7 +25,12 @@ static PLUS: Icon = Icon {
 pub fn view(s: &AppState, cx: &mut Cx<AppState>) -> El {
     s.metrics.note_ui_thread();
     let started = Instant::now();
-    let k = Kit::neutral(cx.system_dark());
+    let dark = s
+        .theme_base
+        .as_deref()
+        .and_then(crate::theme::theme)
+        .map_or(cx.system_dark(), |theme| !theme.light);
+    let k = Kit::neutral(dark);
     let main = col()
         .key("main-pane")
         .w_full()
@@ -257,6 +262,8 @@ fn center(s: &AppState, k: &Kit) -> El {
         crate::workbench::view::changes(s, k)
     } else if s.workbench.mode == CenterMode::Files {
         crate::workbench::view::files(s, k)
+    } else if s.workbench.mode == CenterMode::Settings {
+        crate::workbench::view::settings(s, k)
     } else if s.active_line_editor().is_some() {
         crate::editor::view::pane(s, k)
     } else if has_terminal {

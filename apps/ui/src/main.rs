@@ -2,8 +2,10 @@ mod app;
 mod bench;
 mod connection;
 mod editor;
+mod prefs;
 mod probe;
 mod terminal;
+mod theme;
 mod ui;
 mod workbench;
 

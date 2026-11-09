@@ -97,6 +97,7 @@ pub enum Command {
         workspace_id: WorkspaceId,
         read: crate::workbench::Read,
     },
+    SavePrefs(crate::prefs::Prefs),
     RefreshSnapshot,
     ForceReconnect,
     Shutdown,
@@ -130,6 +131,8 @@ pub enum UiEvent {
         generation: u64,
         session_id: SessionId,
     },
+    /// Not tied to a connection: read once when the worker starts.
+    Prefs(crate::prefs::Prefs),
     Diff {
         generation: u64,
         workspace_id: WorkspaceId,
@@ -287,6 +290,10 @@ impl ConnectionHandle {
         })
     }
 
+    pub fn save_prefs(&self, prefs: crate::prefs::Prefs) -> Result<(), String> {
+        self.send(Command::SavePrefs(prefs))
+    }
+
     pub fn refresh_snapshot(&self) -> Result<(), String> {
         self.send(Command::RefreshSnapshot)
     }
@@ -385,6 +392,12 @@ fn worker(
     rx: Receiver<Command>,
     stop: Arc<AtomicBool>,
 ) {
+    // A fixture is a test or a demo, and must not read a person's choices.
+    if matches!(boot.mode, Mode::Live { .. })
+        && let Some(path) = crate::prefs::path()
+    {
+        sink(vec![UiEvent::Prefs(crate::prefs::load_from(&path))]);
+    }
     let mut generation = 0u64;
     loop {
         if stop.load(Ordering::Acquire) {
@@ -732,7 +745,8 @@ fn handle_fixture_command(
         Command::OpenEditor { .. }
         | Command::EditorView { .. }
         | Command::EditorInput { .. }
-        | Command::Read { .. } => {}
+        | Command::Read { .. }
+        | Command::SavePrefs(_) => {}
         Command::RefreshSnapshot | Command::ForceReconnect | Command::Shutdown => {}
     }
 }
@@ -1264,6 +1278,13 @@ fn handle_live_command(
             };
             sink(vec![event]);
         }
+        Command::SavePrefs(prefs) => {
+            if let Some(path) = crate::prefs::path()
+                && let Err(error) = crate::prefs::save_to(&path, &prefs)
+            {
+                eprintln!("forge-ui: saving preferences: {error}");
+            }
+        }
         Command::RefreshSnapshot => {
             if let Ok((store, took_us)) = load_snapshot(client, metrics) {
                 emit_snapshot(generation, &store, took_us, sink, metrics);
@@ -1406,6 +1427,7 @@ fn command_label(command: &Command) -> &'static str {
         Command::EditorView { .. } => "SetEditorView",
         Command::EditorInput { .. } => "SendEditorInput",
         Command::Read { .. } => "WorkspaceRead",
+        Command::SavePrefs(_) => "SavePrefs",
         Command::RefreshSnapshot => "GetSnapshot",
         Command::ForceReconnect => "Reconnect",
         Command::Shutdown => "Shutdown",

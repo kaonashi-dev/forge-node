@@ -25,7 +25,11 @@ const HEADER_H: f32 = 30.0;
 const STATUS_H: f32 = 24.0;
 
 pub fn pane(s: &AppState, k: &Kit) -> El {
-    let palette = theme::calm_dark();
+    let base = s
+        .theme_base
+        .as_deref()
+        .unwrap_or(crate::theme::default_base(k.dark));
+    let palette = theme::for_base(base, k.dark);
     let ui = &s.editor;
     let editor = s.active_editor_state();
     let path = editor.map_or("editor", |state| state.path.as_str());

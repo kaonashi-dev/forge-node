@@ -1,12 +1,13 @@
-//! The editor palette: the calm-dark values of the editor roles in
-//! `apps/tauri/src/theme/{tokens,editorTheme,syntax}.ts`, copied by hand until
-//! both apps read one token source.
+//! The editor's colours as Rune values, from the shared theme file.
 
-use std::sync::OnceLock;
+use std::collections::HashMap;
+use std::sync::{Mutex, OnceLock};
 
 use domain::EditorScope;
 use rune::Color;
 use rune::color::hex;
+
+use crate::theme;
 
 #[derive(Clone, Copy, Debug)]
 pub struct EditorPalette {
@@ -33,49 +34,103 @@ pub struct EditorPalette {
     pub property: Color,
     pub constant: Color,
     pub fold: Color,
+    /// Changes with the base, so memoised rows repaint when the theme does.
     pub rev: u64,
 }
 
-static CALM_DARK: OnceLock<EditorPalette> = OnceLock::new();
-
-pub fn calm_dark() -> EditorPalette {
-    *CALM_DARK.get_or_init(build_calm_dark)
-}
-
-fn build_calm_dark() -> EditorPalette {
-    let c = |value: &str| hex(value).unwrap_or(Color::TRANSPARENT);
-    EditorPalette {
-        background: c("#111112"),
-        foreground: c("#ededef"),
-        caret: c("#ededef"),
-        selection: c("#434345"),
-        active_line: c("#1c1c1d"),
-        gutter_foreground: c("#7e7e87"),
-        gutter_active_foreground: c("#ededef"),
-        matching_bracket: c("#515154"),
-        search_match: c("#4c401f"),
-        search_match_selected: c("#6c4929"),
-        git_added: c("#4ade80"),
-        git_modified: c("#e3b341"),
-        git_deleted: c("#f87171"),
-        comment: c("#7e7e87"),
-        keyword: c("#fca5a5"),
-        control_keyword: c("#c4b5fd"),
-        string: c("#86efac"),
-        number: c("#c4b5fd"),
-        ty: c("#8fe0ee"),
-        function: c("#f0c96a"),
-        property: c("#a5c0fa"),
-        constant: c("#c4b5fd"),
-        fold: c("#a0a0a8"),
-        rev: 1,
+/// The palette for `base`, parsed once; an unknown base falls back to the
+/// default for its brightness rather than painting nothing.
+pub fn for_base(base: &str, dark: bool) -> EditorPalette {
+    static CACHE: OnceLock<Mutex<HashMap<String, EditorPalette>>> = OnceLock::new();
+    let cache = CACHE.get_or_init(|| Mutex::new(HashMap::new()));
+    let mut cache = cache
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    if let Some(palette) = cache.get(base) {
+        return *palette;
     }
+    let (id, colors) = match theme::theme(base) {
+        Some(found) => (base, found),
+        None => {
+            let id = theme::default_base(dark);
+            match theme::theme(id) {
+                Some(found) => (id, found),
+                None => return EditorPalette::blank(),
+            }
+        }
+    };
+    let rev = theme::bases()
+        .iter()
+        .position(|b| b == id)
+        .map_or(0, |i| i as u64 + 1);
+    let palette = EditorPalette::from_colors(&colors.editor, rev);
+    cache.insert(base.to_string(), palette);
+    palette
 }
 
 impl EditorPalette {
+    fn from_colors(e: &theme::EditorColors, rev: u64) -> Self {
+        let c = |value: &str| hex(value).unwrap_or(Color::TRANSPARENT);
+        Self {
+            background: c(&e.background),
+            foreground: c(&e.foreground),
+            caret: c(&e.caret),
+            selection: c(&e.selection),
+            active_line: c(&e.active_line),
+            gutter_foreground: c(&e.gutter_foreground),
+            gutter_active_foreground: c(&e.gutter_active_foreground),
+            matching_bracket: c(&e.matching_bracket),
+            search_match: c(&e.search_match),
+            search_match_selected: c(&e.search_match_selected),
+            git_added: c(&e.git_added),
+            git_modified: c(&e.git_modified),
+            git_deleted: c(&e.git_deleted),
+            comment: c(&e.scopes.comment),
+            keyword: c(&e.scopes.keyword),
+            control_keyword: c(&e.scopes.control_keyword),
+            string: c(&e.scopes.string),
+            number: c(&e.scopes.number),
+            ty: c(&e.scopes.ty),
+            function: c(&e.scopes.function),
+            property: c(&e.scopes.property),
+            constant: c(&e.scopes.constant),
+            fold: c(&e.scopes.meta),
+            rev,
+        }
+    }
+
+    fn blank() -> Self {
+        let t = Color::TRANSPARENT;
+        Self {
+            background: t,
+            foreground: t,
+            caret: t,
+            selection: t,
+            active_line: t,
+            gutter_foreground: t,
+            gutter_active_foreground: t,
+            matching_bracket: t,
+            search_match: t,
+            search_match_selected: t,
+            git_added: t,
+            git_modified: t,
+            git_deleted: t,
+            comment: t,
+            keyword: t,
+            control_keyword: t,
+            string: t,
+            number: t,
+            ty: t,
+            function: t,
+            property: t,
+            constant: t,
+            fold: t,
+            rev: 0,
+        }
+    }
+
     pub fn scope(self, scope: EditorScope) -> Color {
         match scope {
-            EditorScope::Plain => self.foreground,
             EditorScope::Comment => self.comment,
             EditorScope::Keyword => self.keyword,
             EditorScope::ControlKeyword => self.control_keyword,
@@ -87,5 +142,20 @@ impl EditorPalette {
             EditorScope::Constant => self.constant,
             _ => self.foreground,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_light_and_dark_editors_differ_and_an_unknown_base_falls_back() {
+        let dark = for_base(theme::default_base(true), true);
+        let light = for_base(theme::default_base(false), false);
+        assert_ne!(dark.background, light.background);
+        assert_ne!(dark.rev, light.rev);
+        let fallback = for_base("no-such-base", true);
+        assert_eq!(fallback.background, dark.background);
     }
 }

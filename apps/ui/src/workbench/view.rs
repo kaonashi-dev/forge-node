@@ -11,10 +11,11 @@ use rune_kit::{
 use super::{CenterMode, Preview};
 use crate::app::AppState;
 
-const MODES: [(&str, CenterMode); 3] = [
+const MODES: [(&str, CenterMode); 4] = [
     ("Session", CenterMode::Session),
     ("Changes", CenterMode::Changes),
     ("Files", CenterMode::Files),
+    ("Settings", CenterMode::Settings),
 ];
 const TREE_W: f32 = 280.0;
 const CODE_ROW_H: f32 = 18.0;
@@ -231,6 +232,64 @@ fn preview_view(preview: &Preview, k: &Kit) -> El {
                 },
             ),
     )
+}
+
+pub fn settings(s: &AppState, k: &Kit) -> El {
+    let chosen = s.theme_base.as_deref();
+    let option = |label: String, base: Option<&'static str>, selected: bool| {
+        let id = base.map(str::to_string);
+        Button::new(label)
+            .variant(if selected {
+                ButtonVariant::Outline
+            } else {
+                ButtonVariant::Ghost
+            })
+            .control_size(ControlSize::Regular)
+            .on_press(move |s: &mut AppState| s.choose_theme(id.clone()))
+            .build(k)
+            .key(format!("theme-{}", base.unwrap_or("system")))
+    };
+    let mut list = col()
+        .key("theme-options")
+        .gap(4.0)
+        .role("radiogroup")
+        .label("Theme")
+        .child(option("Follow the system".into(), None, chosen.is_none()));
+    for base in crate::theme::bases() {
+        let Some(theme) = crate::theme::theme(base) else {
+            continue;
+        };
+        let label = if theme.light {
+            format!("{} (light)", theme.label)
+        } else {
+            theme.label.clone()
+        };
+        list = list.child(option(
+            label,
+            Some(base.as_str()),
+            chosen == Some(base.as_str()),
+        ));
+    }
+    col()
+        .key("settings")
+        .w_full()
+        .h_full()
+        .min_h(0.0)
+        .child(bar(k, "Settings".into(), "saved for this Mac".into()))
+        .child(
+            col()
+                .key("settings-body")
+                .w_full()
+                .grow(1.0)
+                .min_h(0.0)
+                .padding(20.0)
+                .gap(12.0)
+                .scroll(ScrollSpec {
+                    stick_bottom: false,
+                })
+                .child(text("Theme").font(k.ty.body_medium).color(k.c.text_base))
+                .child(list),
+        )
 }
 
 #[cfg(test)]

@@ -21,6 +21,7 @@ pub enum CenterMode {
     Session,
     Changes,
     Files,
+    Settings,
 }
 
 /// A read the worker should make for the current workspace.
@@ -129,7 +130,7 @@ impl Workbench {
                     self.queue(Read::File(path));
                 }
             }
-            CenterMode::Session => {}
+            CenterMode::Session | CenterMode::Settings => {}
         }
     }
 

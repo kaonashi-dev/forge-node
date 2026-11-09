@@ -90,6 +90,8 @@ pub struct AppState {
     pub editor_surface: protocol::EditorSurface,
     pub editor: EditorUi,
     pub workbench: Workbench,
+    /// The chosen `tokens.ts` base; `None` follows the system's light or dark.
+    pub theme_base: Option<String>,
     /// A scroll offset that brings a moved caret into view, applied once.
     pub editor_reveal: Option<f32>,
     /// A file to open in the first workspace once the replica is loaded.
@@ -137,6 +139,7 @@ impl AppState {
             editor_surface: protocol::EditorSurface::Cells,
             editor: EditorUi::default(),
             workbench: Workbench::default(),
+            theme_base: None,
             editor_reveal: None,
             open_path: None,
             select_when_listed: None,
@@ -357,6 +360,16 @@ impl AppState {
         };
         if connection.open_editor(workspace, path.to_string()).is_ok() {
             self.workbench.show(CenterMode::Session);
+        }
+    }
+
+    /// Picks a theme base, `None` to follow the system, and saves the choice.
+    pub fn choose_theme(&mut self, base: Option<String>) {
+        self.theme_base = base;
+        if let Some(connection) = &self.connection {
+            let _ = connection.save_prefs(crate::prefs::Prefs {
+                theme_base: self.theme_base.clone(),
+            });
         }
     }
 
@@ -583,6 +596,10 @@ impl AppState {
                 }
                 self.workbench
                     .apply_file(workspace_id, result.map(|file| *file));
+                true
+            }
+            UiEvent::Prefs(prefs) => {
+                self.theme_base = prefs.theme_base;
                 true
             }
             UiEvent::EditorOpened {
