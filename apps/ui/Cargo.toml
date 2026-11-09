@@ -9,7 +9,7 @@ publish = false
 
 [dependencies]
 rune = { git = "https://github.com/anomalyco/rune", rev = "938ba14f09bb3381946b3486ef8aa36363a3e8b2", default-features = false, features = ["metal-backend", "embedded-fonts", "accessibility"] }
-rune-kit = { git = "https://github.com/anomalyco/rune", rev = "938ba14f09bb3381946b3486ef8aa36363a3e8b2" }
+rune-kit = { git = "https://github.com/anomalyco/rune", rev = "938ba14f09bb3381946b3486ef8aa36363a3e8b2", features = ["markdown"] }
 client = { path = "../../crates/client" }
 domain = { path = "../../crates/domain" }
 terminal-input = { path = "../../crates/terminal-input" }

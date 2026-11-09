@@ -1,0 +1,317 @@
+//! The Changes and Files views, and the switch between them and the session.
+
+use rune::{El, GrowthSpec, ScrollSpec, col, el, rich, row, text};
+use rune_kit::diff::DiffView;
+use rune_kit::syntax::SyntaxTheme;
+use rune_kit::{
+    Button, ButtonVariant, ControlSize, FileNode, Kit, Markdown, SegmentedControl, Tree, TreeItem,
+    TreeStyle,
+};
+
+use super::{CenterMode, Preview};
+use crate::app::AppState;
+
+const MODES: [(&str, CenterMode); 3] = [
+    ("Session", CenterMode::Session),
+    ("Changes", CenterMode::Changes),
+    ("Files", CenterMode::Files),
+];
+const TREE_W: f32 = 280.0;
+const CODE_ROW_H: f32 = 18.0;
+
+pub fn mode_switch(s: &AppState, k: &Kit) -> El {
+    let labels: Vec<&str> = MODES.iter().map(|(label, _)| *label).collect();
+    let selected = MODES.iter().position(|(_, mode)| *mode == s.workbench.mode);
+    SegmentedControl::new(&labels, selected)
+        .label("Centre view")
+        .fit()
+        .on_pick(|s: &mut AppState, index: usize, _tx| {
+            if let Some((_, mode)) = MODES.get(index) {
+                s.show_mode(*mode);
+            }
+        })
+        .build(k)
+        .key("centre-mode")
+}
+
+fn bar(k: &Kit, title: String, detail: String) -> El {
+    let refresh = Button::new("Refresh")
+        .variant(ButtonVariant::GhostMuted)
+        .control_size(ControlSize::Small)
+        .on_press(|s: &mut AppState| s.workbench.refresh())
+        .build(k)
+        .key("workbench-refresh");
+    row()
+        .key("workbench-bar")
+        .w_full()
+        .h(36.0)
+        .px(12.0)
+        .gap(10.0)
+        .items_center()
+        .child(text(title).font(k.ty.small_medium).color(k.c.text_base))
+        .child(
+            text(detail)
+                .font(k.ty.text_xsmall)
+                .color(k.c.text_faint)
+                .grow(1.0),
+        )
+        .child(refresh)
+}
+
+fn notice(k: &Kit, key: &'static str, message: String) -> El {
+    col()
+        .key(key)
+        .w_full()
+        .grow(1.0)
+        .padding(24.0)
+        .child(text(message).font(k.ty.small).color(k.c.text_muted))
+}
+
+pub fn changes(s: &AppState, k: &Kit) -> El {
+    let changes = &s.workbench.changes;
+    let mut detail = match &changes.branch {
+        Some(branch) => format!("{branch} · {} files", changes.file_count),
+        None => format!("{} files", changes.file_count),
+    };
+    if changes.truncated {
+        detail.push_str(" · list cut at the daemon's budget");
+    }
+    if !changes.without_patch.is_empty() {
+        detail.push_str(&format!(
+            " · no patch for {}",
+            changes.without_patch.join(", ")
+        ));
+    }
+    let body = if s.workbench.workspace.is_none() {
+        notice(k, "changes-empty", "No workspace for this session.".into())
+    } else if let Some(error) = &changes.error {
+        notice(
+            k,
+            "changes-error",
+            format!("Could not read the diff: {error}"),
+        )
+    } else if !changes.loaded {
+        notice(k, "changes-loading", "Reading the working tree…".into())
+    } else if changes.file_count == 0 {
+        notice(k, "changes-clean", "No uncommitted changes.".into())
+    } else {
+        DiffView::new(
+            |s: &AppState| &s.workbench.changes.state,
+            |s: &mut AppState| &mut s.workbench.changes.state,
+        )
+        .build(s, k)
+        .key("changes-diff")
+        .grow(1.0)
+        .min_h(0.0)
+    };
+    col()
+        .key("changes")
+        .w_full()
+        .h_full()
+        .min_h(0.0)
+        .child(bar(k, "Changes".into(), detail))
+        .child(body)
+}
+
+pub fn files(s: &AppState, k: &Kit) -> El {
+    let bench = &s.workbench;
+    let tree = Tree::new(
+        |s: &AppState| &s.workbench.files.tree,
+        |s: &mut AppState| &mut s.workbench.files.tree,
+        FileNode::label,
+    )
+    .row(|node: &FileNode<()>, r| TreeItem::file(node, r))
+    .style(TreeStyle::from_kit(k).chevron_only_folders(true))
+    .name("Files")
+    .on_select(|s: &mut AppState, id: &str, _tx| s.workbench.select_file(id))
+    .on_open(|s: &mut AppState, id: &str, _tx| s.open_in_editor(id))
+    .build(s, k)
+    .key("files-tree-view")
+    .w(TREE_W)
+    .h_full();
+    let preview = match (&bench.files.preview, &bench.files.error) {
+        (_, Some(error)) => notice(k, "files-error", format!("Could not read: {error}")),
+        (Some(preview), None) => preview_view(preview, k),
+        (None, None) => notice(k, "files-hint", "Select a file to read it.".into()),
+    };
+    let title = bench
+        .files
+        .preview
+        .as_ref()
+        .map_or_else(|| "Files".to_string(), |preview| preview.path.clone());
+    col()
+        .key("files")
+        .w_full()
+        .h_full()
+        .min_h(0.0)
+        .child(bar(k, title, "read only".into()))
+        .child(
+            row()
+                .key("files-body")
+                .w_full()
+                .grow(1.0)
+                .min_h(0.0)
+                .child(tree)
+                .child(el().w(1.0).h_full().fill(k.c.border_weak))
+                .child(preview),
+        )
+}
+
+fn preview_view(preview: &Preview, k: &Kit) -> El {
+    if preview.too_large {
+        return notice(
+            k,
+            "preview-large",
+            "This file is larger than the daemon reads for a preview.".into(),
+        );
+    }
+    if preview.binary {
+        return notice(
+            k,
+            "preview-binary",
+            "Binary file; nothing to show as text.".into(),
+        );
+    }
+    let scroller = col()
+        .key("preview-scroll")
+        .grow(1.0)
+        .h_full()
+        .min_w(0.0)
+        .scroll(ScrollSpec {
+            stick_bottom: false,
+        });
+    if preview.is_markdown() {
+        return scroller.child(
+            col()
+                .padding(20.0)
+                .child(Markdown::new(preview.text.to_string()).build(k)),
+        );
+    }
+    let count = preview.lines.len() + usize::from(preview.cut);
+    let theme = SyntaxTheme::from_kit(k);
+    let mono = k.ty.mono;
+    let faint = k.c.text_faint;
+    let base = k.c.text_base;
+    scroller.child(
+        col()
+            .key("preview-lines")
+            .w_full()
+            .growth(GrowthSpec::default())
+            .virtual_rows(
+                count,
+                CODE_ROW_H,
+                |_s: &AppState, index| format!("l{index}").into(),
+                move |s: &AppState, index| {
+                    let Some(preview) = &s.workbench.files.preview else {
+                        return el();
+                    };
+                    let Some(range) = preview.lines.get(index) else {
+                        return text(format!("… cut after {} lines", preview.lines.len()))
+                            .font(mono)
+                            .color(faint)
+                            .h(CODE_ROW_H);
+                    };
+                    let spans = theme.spans(&preview.line_highlights(range), 0);
+                    row()
+                        .h(CODE_ROW_H)
+                        .items_center()
+                        .child(
+                            text(format!("{}", index + 1))
+                                .font(mono)
+                                .color(faint)
+                                .w(56.0)
+                                .pr(12.0)
+                                .align(rune::Align::End),
+                        )
+                        .child(
+                            rich(preview.text[range.clone()].to_string(), spans)
+                                .font(mono)
+                                .color(base),
+                        )
+                },
+            ),
+    )
+}
+
+#[cfg(test)]
+mod tests {
+    use std::path::Path;
+    use std::sync::Arc;
+
+    use domain::FileContents;
+    use rune::{Env, Runtime};
+
+    use crate::app::AppState;
+    use crate::connection::{Metrics, fixture_store};
+    use crate::terminal::SharedTerminal;
+    use crate::workbench::CenterMode;
+
+    fn file(
+        path: &str,
+        text: &str,
+        language: &str,
+        workspace: domain::WorkspaceId,
+    ) -> FileContents {
+        FileContents {
+            workspace_id: workspace,
+            path: path.into(),
+            text: text.into(),
+            revision: String::new(),
+            language: language.into(),
+            binary: false,
+            too_large: false,
+        }
+    }
+
+    /// Code and markdown previews both mount; a virtual list without its
+    /// growth spec panics at the first commit, so this is the guard.
+    #[test]
+    fn a_code_and_a_markdown_preview_render() {
+        let store =
+            fixture_store(&Path::new(env!("CARGO_MANIFEST_DIR")).join("fixtures/snapshot.json"))
+                .expect("fixture snapshot decodes");
+        let state = AppState::for_bench(store, Arc::new(Metrics::default()), SharedTerminal::new());
+        let mut rt = Runtime::new(
+            state,
+            crate::ui::view,
+            (1180.0, 760.0),
+            Env {
+                system_dark: true,
+                scale: 1.0,
+            },
+        );
+        rt.update(|s, _| {
+            s.show_mode(CenterMode::Files);
+            let workspace = s.workbench.workspace.expect("a workspace");
+            let code: String = (0..200).map(|i| format!("let x{i} = {i};\n")).collect();
+            s.workbench
+                .apply_file(workspace, Ok(file("a.rs", &code, "rust", workspace)));
+        });
+        rt.frame(0.1);
+        rt.frame(0.2);
+        let keys: Vec<String> = rt.elements().into_iter().filter_map(|e| e.key).collect();
+        assert!(keys.iter().any(|key| key == "preview-lines"));
+        assert!(
+            keys.iter().any(|key| key == "l0"),
+            "the first line is mounted"
+        );
+        rt.update(|s, _| {
+            let workspace = s.workbench.workspace.expect("a workspace");
+            s.workbench.apply_file(
+                workspace,
+                Ok(file(
+                    "README.md",
+                    "# Title\n\nBody.\n",
+                    "markdown",
+                    workspace,
+                )),
+            );
+        });
+        rt.frame(0.3);
+        assert!(
+            !rt.elements()
+                .into_iter()
+                .any(|e| e.key.as_deref() == Some("preview-lines"))
+        );
+    }
+}

@@ -92,6 +92,11 @@ pub enum Command {
         session_id: SessionId,
         events: Vec<domain::EditorInputEvent>,
     },
+    Read {
+        generation: u64,
+        workspace_id: WorkspaceId,
+        read: crate::workbench::Read,
+    },
     RefreshSnapshot,
     ForceReconnect,
     Shutdown,
@@ -124,6 +129,22 @@ pub enum UiEvent {
     EditorOpened {
         generation: u64,
         session_id: SessionId,
+    },
+    Diff {
+        generation: u64,
+        workspace_id: WorkspaceId,
+        result: Result<Box<domain::WorkspaceDiff>, String>,
+    },
+    Directory {
+        generation: u64,
+        workspace_id: WorkspaceId,
+        path: String,
+        result: Result<domain::DirectoryListing, String>,
+    },
+    File {
+        generation: u64,
+        workspace_id: WorkspaceId,
+        result: Result<Box<domain::FileContents>, String>,
     },
     CommandResult {
         generation: u64,
@@ -250,6 +271,19 @@ impl ConnectionHandle {
             generation,
             session_id,
             events,
+        })
+    }
+
+    pub fn read(
+        &self,
+        generation: u64,
+        workspace_id: WorkspaceId,
+        read: crate::workbench::Read,
+    ) -> Result<(), String> {
+        self.send(Command::Read {
+            generation,
+            workspace_id,
+            read,
         })
     }
 
@@ -695,7 +729,10 @@ fn handle_fixture_command(
             );
             fixture_result(generation, label, result, sink, metrics, started);
         }
-        Command::OpenEditor { .. } | Command::EditorView { .. } | Command::EditorInput { .. } => {}
+        Command::OpenEditor { .. }
+        | Command::EditorView { .. }
+        | Command::EditorInput { .. }
+        | Command::Read { .. } => {}
         Command::RefreshSnapshot | Command::ForceReconnect | Command::Shutdown => {}
     }
 }
@@ -1190,6 +1227,43 @@ fn handle_live_command(
                 eprintln!("forge-ui: SendEditorInput: {error}");
             }
         }
+        Command::Read {
+            generation: command_generation,
+            workspace_id,
+            read,
+        } => {
+            if command_generation != generation {
+                return;
+            }
+            metrics.note_socket_op();
+            let event = match read {
+                crate::workbench::Read::Diff => UiEvent::Diff {
+                    generation,
+                    workspace_id,
+                    result: client
+                        .workspace_diff(workspace_id, None)
+                        .map(Box::new)
+                        .map_err(|error| error.to_string()),
+                },
+                crate::workbench::Read::Directory(path) => UiEvent::Directory {
+                    generation,
+                    workspace_id,
+                    result: client
+                        .list_directory(workspace_id, path.clone())
+                        .map_err(|error| error.to_string()),
+                    path,
+                },
+                crate::workbench::Read::File(path) => UiEvent::File {
+                    generation,
+                    workspace_id,
+                    result: client
+                        .read_file(workspace_id, path)
+                        .map(Box::new)
+                        .map_err(|error| error.to_string()),
+                },
+            };
+            sink(vec![event]);
+        }
         Command::RefreshSnapshot => {
             if let Ok((store, took_us)) = load_snapshot(client, metrics) {
                 emit_snapshot(generation, &store, took_us, sink, metrics);
@@ -1331,6 +1405,7 @@ fn command_label(command: &Command) -> &'static str {
         Command::OpenEditor { .. } => "CreateEditorSession",
         Command::EditorView { .. } => "SetEditorView",
         Command::EditorInput { .. } => "SendEditorInput",
+        Command::Read { .. } => "WorkspaceRead",
         Command::RefreshSnapshot => "GetSnapshot",
         Command::ForceReconnect => "Reconnect",
         Command::Shutdown => "Shutdown",

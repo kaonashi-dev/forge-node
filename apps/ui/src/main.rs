@@ -5,6 +5,7 @@ mod editor;
 mod probe;
 mod terminal;
 mod ui;
+mod workbench;
 
 use std::path::PathBuf;
 use std::sync::{Arc, OnceLock};

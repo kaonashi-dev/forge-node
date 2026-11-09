@@ -14,6 +14,7 @@ use rune_kit::{Button, ButtonVariant, ControlSize, Kit};
 use crate::app::{AppState, CommandStatus, LinkStatus, SessionRow, SessionStatus};
 use crate::terminal::input::{Pointer, Press};
 use crate::terminal::renderer::{CELL_PT, MARK_BASE};
+use crate::workbench::CenterMode;
 
 static PLUS: Icon = Icon {
     name: "shell-plus",
@@ -105,6 +106,7 @@ fn toolbar(s: &AppState, k: &Kit) -> Toolbar {
         .key("force-reconnect");
     Toolbar::new()
         .title(format!("Forge Rune · {}", s.status.label()))
+        .trailing(crate::workbench::view::mode_switch(s, k))
         .trailing(refresh)
         .trailing(reconnect)
         .trailing(rename)
@@ -251,7 +253,11 @@ fn status_row(s: &AppState, k: &Kit) -> El {
 
 fn center(s: &AppState, k: &Kit) -> El {
     let has_terminal = s.active_row().and_then(|row| row.terminal_id).is_some();
-    let body = if s.active_line_editor().is_some() {
+    let body = if s.workbench.mode == CenterMode::Changes {
+        crate::workbench::view::changes(s, k)
+    } else if s.workbench.mode == CenterMode::Files {
+        crate::workbench::view::files(s, k)
+    } else if s.active_line_editor().is_some() {
         crate::editor::view::pane(s, k)
     } else if has_terminal {
         terminal_surface(s, k)

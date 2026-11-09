@@ -18,6 +18,7 @@ use crate::terminal::SharedTerminal;
 use crate::terminal::input::{self, Effects, Outbox, Pointer, Press};
 use crate::terminal::pane::TerminalUi;
 use crate::terminal::renderer::CELL_PT;
+use crate::workbench::{CenterMode, Workbench};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum LinkStatus {
@@ -88,6 +89,7 @@ pub struct AppState {
     pub terminal: TerminalUi,
     pub editor_surface: protocol::EditorSurface,
     pub editor: EditorUi,
+    pub workbench: Workbench,
     /// A scroll offset that brings a moved caret into view, applied once.
     pub editor_reveal: Option<f32>,
     /// A file to open in the first workspace once the replica is loaded.
@@ -134,6 +136,7 @@ impl AppState {
             terminal: TerminalUi::new(shared, fixture),
             editor_surface: protocol::EditorSurface::Cells,
             editor: EditorUi::default(),
+            workbench: Workbench::default(),
             editor_reveal: None,
             open_path: None,
             select_when_listed: None,
@@ -300,7 +303,7 @@ impl AppState {
     }
 
     pub fn editor_ime(&mut self, ev: &Ime) -> bool {
-        if self.active_line_editor().is_none() {
+        if self.active_line_editor().is_none() || !self.session_shown() {
             return false;
         }
         self.editor.ime(ev);
@@ -321,12 +324,74 @@ impl AppState {
     }
 
     pub fn editor_key(&mut self, ev: &KeyEvent, _tx: &mut Tx) -> bool {
-        if self.active_line_editor().is_none() || !self.editor.key(ev) {
+        if self.active_line_editor().is_none() || !self.session_shown() || !self.editor.key(ev) {
             return false;
         }
         // Sent now rather than on the next poll: a key waits for no frame.
         self.flush_editor();
         true
+    }
+
+    /// Keys, pastes and compositions go to the session only while it is what
+    /// the centre shows; under Changes or Files they belong to those views.
+    #[must_use]
+    pub fn session_shown(&self) -> bool {
+        self.workbench.mode == CenterMode::Session
+    }
+
+    /// Opens a file from the Files view in an editor in its workspace, and
+    /// shows that session; the daemon answers with the session that holds it.
+    pub fn open_in_editor(&mut self, path: &str) {
+        if self
+            .workbench
+            .files
+            .tree
+            .get(path)
+            .is_none_or(|node| node.data.is_none())
+        {
+            return;
+        }
+        let (Some(connection), Some(workspace)) = (&self.connection, self.workbench.workspace)
+        else {
+            return;
+        };
+        if connection.open_editor(workspace, path.to_string()).is_ok() {
+            self.workbench.show(CenterMode::Session);
+        }
+    }
+
+    pub fn show_mode(&mut self, mode: CenterMode) {
+        self.sync_workbench_workspace();
+        self.workbench.show(mode);
+    }
+
+    /// The workspace the active session runs in, or the first one.
+    fn sync_workbench_workspace(&mut self) {
+        let store = self.store.as_ref();
+        let from_session = self.active.and_then(|active| {
+            store?
+                .sessions
+                .iter()
+                .find(|session| session.id == active)
+                .map(|session| session.workspace_id)
+        });
+        let workspace = from_session.or_else(|| self.workspaces.first().map(|choice| choice.id));
+        self.workbench.set_workspace(workspace);
+    }
+
+    fn sync_workbench(&mut self) {
+        if self.workbench.mode == CenterMode::Session {
+            return;
+        }
+        self.sync_workbench_workspace();
+        let reads = self.workbench.take_reads();
+        let (Some(connection), Some(workspace)) = (&self.connection, self.workbench.workspace)
+        else {
+            return;
+        };
+        for read in reads {
+            let _ = connection.read(self.generation, workspace, read);
+        }
     }
 
     fn sync_editor(&mut self) {
@@ -483,6 +548,42 @@ impl AppState {
                     self.select(id);
                 }
                 rebuild
+            }
+            UiEvent::Diff {
+                generation,
+                workspace_id,
+                result,
+            } => {
+                if !self.accept_generation(generation) {
+                    return false;
+                }
+                self.workbench
+                    .apply_diff(workspace_id, result.map(|diff| *diff));
+                true
+            }
+            UiEvent::Directory {
+                generation,
+                workspace_id,
+                path,
+                result,
+            } => {
+                if !self.accept_generation(generation) {
+                    return false;
+                }
+                self.workbench.apply_directory(workspace_id, &path, result);
+                true
+            }
+            UiEvent::File {
+                generation,
+                workspace_id,
+                result,
+            } => {
+                if !self.accept_generation(generation) {
+                    return false;
+                }
+                self.workbench
+                    .apply_file(workspace_id, result.map(|file| *file));
+                true
             }
             UiEvent::EditorOpened {
                 generation,
@@ -684,6 +785,7 @@ impl AppState {
         self.metrics.note_ui_thread();
         self.sync_terminal();
         self.sync_editor();
+        self.sync_workbench();
         let mut changed = false;
         if clock - self.mirror_at >= 0.125 {
             let version = self.terminal.shared.grid_epoch();
@@ -779,6 +881,9 @@ impl AppState {
     }
 
     pub fn terminal_key(&mut self, ev: &KeyEvent, tx: &mut Tx) -> bool {
+        if !self.session_shown() {
+            return false;
+        }
         self.observe_terminal_resync();
         self.last_focus = tx.focused().map(str::to_owned);
         self.terminal.interacted = true;
@@ -901,6 +1006,9 @@ impl AppState {
 
     /// A paste goes to whichever surface the active session shows.
     pub fn paste(&mut self, text: &str, tx: &mut Tx) {
+        if !self.session_shown() {
+            return;
+        }
         if self.active_line_editor().is_some() {
             self.editor
                 .queue(domain::EditorInputEvent::Text(text.to_string()));
@@ -946,6 +1054,9 @@ impl AppState {
     }
 
     pub fn terminal_ime(&mut self, ev: &Ime, tx: &mut Tx) -> bool {
+        if !self.session_shown() {
+            return false;
+        }
         self.observe_terminal_resync();
         if !self.terminal.is_live() {
             match ev {
