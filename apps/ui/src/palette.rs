@@ -4,7 +4,7 @@
 
 use rune::TextEdit;
 
-use crate::workbench::CenterMode;
+use crate::workbench::{CenterMode, Panel};
 
 /// Files asked for per query; a palette shows a screenful, not a listing.
 pub const FILE_LIMIT: u32 = 50;
@@ -13,6 +13,9 @@ pub const FILE_LIMIT: u32 = 50;
 pub enum Command {
     NewShell,
     Show(CenterMode),
+    Panel(crate::workbench::Panel),
+    ToggleSidebar,
+    NewWorktree,
     /// A base, or `"system"`.
     Theme(String),
     NewAgent(domain::AgentProviderId),
@@ -23,6 +26,23 @@ pub enum Command {
 pub enum Entry {
     Command { label: String, command: Command },
     File(String),
+}
+
+/// The chord that runs a command, shown beside it as Tauri's palette does.
+#[must_use]
+pub fn chord(command: &Command) -> Option<&'static str> {
+    Some(match command {
+        Command::NewShell => "⌘T",
+        Command::NewWorktree => "⇧⌘N",
+        Command::Panel(Panel::Projects) => "⌘1",
+        Command::Panel(Panel::Files) => "⌘2",
+        Command::Panel(Panel::History) => "⇧⌘E",
+        Command::Panel(Panel::PullRequests) => "⇧⌘R",
+        Command::Panel(Panel::Git) => "⇧⌘G",
+        Command::ToggleSidebar => "⌘B",
+        Command::Show(CenterMode::Settings) => "⌘,",
+        _ => return None,
+    })
 }
 
 impl Entry {
@@ -77,10 +97,14 @@ impl Default for Palette {
 fn commands() -> Vec<Entry> {
     let mut out = vec![
         ("New Terminal", Command::NewShell),
-        ("Projects", Command::Show(CenterMode::Projects)),
-        ("Git", Command::Show(CenterMode::Changes)),
-        ("Files", Command::Show(CenterMode::Files)),
-        ("Pull Requests", Command::Show(CenterMode::PullRequests)),
+        ("New Worktree", Command::NewWorktree),
+        ("Projects", Command::Panel(Panel::Projects)),
+        ("Files", Command::Panel(Panel::Files)),
+        ("History", Command::Panel(Panel::History)),
+        ("Pull Requests", Command::Panel(Panel::PullRequests)),
+        ("Git", Command::Panel(Panel::Git)),
+        ("Processes", Command::Panel(Panel::Processes)),
+        ("Toggle Sidebar", Command::ToggleSidebar),
         ("Settings", Command::Show(CenterMode::Settings)),
         ("Theme: Match System", Command::Theme("system".into())),
     ];

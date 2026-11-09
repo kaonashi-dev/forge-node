@@ -177,11 +177,20 @@ pub fn key(
             }
             bytes
         }
-        Key::PageUp | Key::PageDown | Key::Home | Key::End if mods.shift => {
+        // ⌘← and ⌘→ have no meaning here; sent bare they would move the
+        // cursor as an unmodified arrow does.
+        Key::Left | Key::Right if ev.mods.cmd => return false,
+        // ⌘↑ and ⌘↓ scroll a page, as Tauri's `scroll_up`/`scroll_down`;
+        // sent bare they would be ↑ and recall the shell's last command.
+        Key::PageUp | Key::PageDown | Key::Home | Key::End | Key::Up | Key::Down
+            if mods.shift
+                && matches!(ev.key, Key::PageUp | Key::PageDown | Key::Home | Key::End)
+                || ev.mods.cmd && matches!(ev.key, Key::Up | Key::Down) =>
+        {
             let page = grid.visible.len().saturating_sub(1) as i64;
             let lines = match &ev.key {
-                Key::PageUp => page,
-                Key::PageDown => -page,
+                Key::PageUp | Key::Up => page,
+                Key::PageDown | Key::Down => -page,
                 Key::Home => i64::MAX / 2,
                 _ => i64::MIN / 2,
             };
@@ -1136,5 +1145,27 @@ mod tests {
         assert_eq!(edge_lines(&at(1.0), rows, CELL.1, 0, 100, &alternate), 0);
         let mouse = ModeSet::Mouse.modes();
         assert_eq!(edge_lines(&at(1.0), rows, CELL.1, 0, 100, &mouse), 0);
+    }
+
+    #[test]
+    fn cmd_arrows_scroll_a_page_and_never_reach_the_shell() {
+        let (mut ui, grid) = surface(ModeSet::Plain);
+        let cmd = Mods {
+            cmd: true,
+            ..Mods::default()
+        };
+        assert!(
+            press(Key::Up, cmd, &mut ui, &grid).is_empty(),
+            "not a bare ↑"
+        );
+        assert_eq!(ui.scroll, grid.visible.len() - 1, "a page into history");
+        assert!(press(Key::Down, cmd, &mut ui, &grid).is_empty());
+        assert_eq!(ui.scroll, 0);
+        assert!(press(Key::Left, cmd, &mut ui, &grid).is_empty());
+        assert!(press(Key::Right, cmd, &mut ui, &grid).is_empty());
+        assert!(
+            !press(Key::Up, Mods::default(), &mut ui, &grid).is_empty(),
+            "a plain ↑ still goes to the shell"
+        );
     }
 }

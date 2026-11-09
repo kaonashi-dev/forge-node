@@ -470,15 +470,11 @@ impl AppState {
                 }
             }
             Action::NewAgent => self.launch_default(),
-            Action::PullRequests => {
-                let next = if self.workbench.panel == Panel::PullRequests && self.sidebar.is_open()
-                {
-                    Panel::Projects
-                } else {
-                    Panel::PullRequests
-                };
-                self.show_panel(next);
-            }
+            Action::NewWorktree => self.new_worktree_here(),
+            Action::ToggleSidebar => self.sidebar.toggle(),
+            Action::TogglePanel(panel) => self.toggle_panel(panel),
+            Action::CycleViews => self.cycle_views(),
+            Action::FocusTab(n) => self.focus_tab(n),
             Action::Settings => {
                 let next = if self.workbench.mode == CenterMode::Settings {
                     CenterMode::Session
@@ -491,6 +487,58 @@ impl AppState {
             Action::PreviousSession => self.step_session(-1),
         }
         true
+    }
+
+    /// A view's chord, as Tauri's `toggle_*` actions: it shows the view, or
+    /// hides the sidebar when that view is already what it shows.
+    pub fn toggle_panel(&mut self, panel: Panel) {
+        if self.sidebar.is_open() && self.workbench.panel == panel {
+            self.sidebar.set_open(false);
+        } else {
+            self.show_panel(panel);
+        }
+    }
+
+    /// The next sidebar view, in the switcher's order.
+    pub fn cycle_views(&mut self) {
+        let views = crate::chrome::VIEWS;
+        let at = views
+            .iter()
+            .position(|(panel, ..)| *panel == self.workbench.panel)
+            .unwrap_or(0);
+        let next = if self.sidebar.is_open() {
+            views[(at + 1) % views.len()].0
+        } else {
+            self.workbench.panel
+        };
+        self.show_panel(next);
+    }
+
+    /// The strip's Nth tab (1-based), as Option-N in Tauri.
+    pub fn focus_tab(&mut self, n: usize) {
+        let Some(id) = self.tab_rows().get(n.wrapping_sub(1)).map(|row| row.id) else {
+            return;
+        };
+        self.select(id);
+        self.show_mode(CenterMode::Session);
+    }
+
+    /// Asks for a branch to check out beside the window's project.
+    pub fn new_worktree_here(&mut self) {
+        self.sync_workbench_workspace();
+        let project = self.store.as_ref().and_then(|store| {
+            let workspace = self.workbench.workspace?;
+            store
+                .workspaces
+                .iter()
+                .find(|candidate| candidate.id == workspace)
+                .map(|found| found.project_id)
+        });
+        if let Some(project) = project {
+            self.projects.new_worktree = Some(project);
+            self.projects.branch = rune::TextEdit::new("");
+            self.projects.branch.focused = true;
+        }
     }
 
     /// The active workspace's approved actions, for the palette: (id, label).
@@ -582,6 +630,9 @@ impl AppState {
             Entry::Command { command, .. } => match command {
                 Command::NewShell => self.request_create(),
                 Command::Show(mode) => self.show_mode(mode),
+                Command::Panel(panel) => self.show_panel(panel),
+                Command::ToggleSidebar => self.sidebar.toggle(),
+                Command::NewWorktree => self.new_worktree_here(),
                 Command::Theme(base) => self.choose_theme(base),
                 Command::RunAction(action) => {
                     self.sync_workbench_workspace();
@@ -2812,7 +2863,6 @@ mod tests {
             CenterMode::Settings,
             CenterMode::Changes,
             CenterMode::Files,
-            CenterMode::PullRequests,
             CenterMode::Projects,
         ] {
             assert!(!super::closes_session(mode), "{mode:?}");

@@ -22,7 +22,6 @@ pub enum CenterMode {
     Projects,
     Changes,
     Files,
-    PullRequests,
     Settings,
 }
 
@@ -216,7 +215,6 @@ impl Workbench {
         match mode {
             CenterMode::Projects => self.show_panel(Panel::Projects),
             CenterMode::Files => self.show_panel(Panel::Files),
-            CenterMode::PullRequests => self.show_panel(Panel::PullRequests),
             CenterMode::Changes => {
                 self.show_panel(Panel::Git);
                 self.mode = CenterMode::Changes;

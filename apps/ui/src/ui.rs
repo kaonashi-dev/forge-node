@@ -666,7 +666,9 @@ fn palette(s: &AppState, k: &Kit, layer: &mut Vec<El>) {
         let selected = index == s.palette.selected;
         let chosen = entry.clone();
         let kind = match entry {
-            crate::palette::Entry::Command { .. } => "",
+            crate::palette::Entry::Command { command, .. } => {
+                crate::palette::chord(command).unwrap_or_default()
+            }
             crate::palette::Entry::File(_) => "file",
         };
         list = list.child(
