@@ -134,6 +134,7 @@ pub enum Command {
     CreateAgent {
         workspace_id: WorkspaceId,
         provider_id: domain::AgentProviderId,
+        profile_id: Option<domain::AgentProfileId>,
         initial_prompt: Option<String>,
     },
     CreateWorktree {
@@ -347,11 +348,13 @@ impl ConnectionHandle {
         &self,
         workspace_id: WorkspaceId,
         provider_id: domain::AgentProviderId,
+        profile_id: Option<domain::AgentProfileId>,
         initial_prompt: Option<String>,
     ) -> Result<(), String> {
         self.send(Command::CreateAgent {
             workspace_id,
             provider_id,
+            profile_id,
             initial_prompt,
         })
     }
@@ -1455,6 +1458,7 @@ fn handle_live_command(
         Command::CreateAgent {
             workspace_id,
             provider_id,
+            profile_id,
             initial_prompt,
         } => {
             metrics.note_socket_op();
@@ -1462,7 +1466,7 @@ fn handle_live_command(
                 .create_agent_session(
                     workspace_id,
                     provider_id.clone(),
-                    None,
+                    profile_id,
                     None,
                     initial_prompt,
                 )

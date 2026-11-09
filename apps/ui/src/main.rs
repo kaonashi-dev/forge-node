@@ -4,6 +4,7 @@ mod commit;
 mod connection;
 mod editor;
 mod keymap;
+mod launch;
 mod palette;
 mod probe;
 mod projects;

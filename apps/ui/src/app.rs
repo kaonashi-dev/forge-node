@@ -420,7 +420,7 @@ impl AppState {
                     self.request_close(active);
                 }
             }
-            Action::NewAgent => self.open_launch_palette(),
+            Action::NewAgent => self.launch_default(),
             Action::Settings => {
                 let next = if self.workbench.mode == CenterMode::Settings {
                     CenterMode::Session
@@ -534,7 +534,7 @@ impl AppState {
                     if let (Some(connection), Some(workspace)) =
                         (&self.connection, self.workbench.workspace)
                     {
-                        let _ = connection.create_agent(workspace, provider, None);
+                        let _ = connection.create_agent(workspace, provider, None, None);
                         self.workbench.show(CenterMode::Session);
                     }
                 }
@@ -701,7 +701,7 @@ impl AppState {
             return;
         };
         if connection
-            .create_agent(workspace, provider, Some(prompt))
+            .create_agent(workspace, provider, None, Some(prompt))
             .is_ok()
         {
             self.workbench.show(CenterMode::Session);
@@ -1786,6 +1786,42 @@ impl AppState {
                 let _ = connection.rename_session(session_id, title);
             }
             None => self.worker_not_ready("RenameSession"),
+        }
+    }
+
+    /// Cmd-Shift-A: the default agent from `ui.default_agent`, a terminal,
+    /// or the launch palette when the preference asks or is stale.
+    pub fn launch_default(&mut self) {
+        use crate::launch::{Launch, parse, resolve, visibility_key};
+        let Some(store) = &self.store else {
+            return self.open_launch_palette();
+        };
+        let installed: Vec<domain::AgentProviderId> = self
+            .installed_agents()
+            .into_iter()
+            .map(|(id, _)| id)
+            .collect();
+        let profiles: Vec<(domain::AgentProfileId, domain::AgentProviderId)> = store
+            .agent_profiles
+            .iter()
+            .map(|profile| (profile.id, profile.provider_id.clone()))
+            .collect();
+        let agent = parse(store.app_state_value(crate::launch::DEFAULT_AGENT_KEY));
+        let visible = |key: &str| store.app_state_value(&visibility_key(key)) != Some("false");
+        match resolve(&agent, visible, &installed, &profiles) {
+            Launch::Ask => self.open_launch_palette(),
+            Launch::Shell => self.request_create(),
+            Launch::Agent { provider, profile } => {
+                self.sync_workbench_workspace();
+                if let (Some(connection), Some(workspace)) =
+                    (&self.connection, self.workbench.workspace)
+                    && connection
+                        .create_agent(workspace, provider, profile, None)
+                        .is_ok()
+                {
+                    self.workbench.show(CenterMode::Session);
+                }
+            }
         }
     }
 
