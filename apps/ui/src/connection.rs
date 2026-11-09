@@ -1794,6 +1794,13 @@ fn handle_live_command(
                 .add_project(&path)
                 .map(|()| format!("added {}", path.display()))
                 .map_err(|error| error.to_string());
+            // The new project's recorded runs reach the client only on a
+            // snapshot, so History would miss them until a reconnect.
+            if result.is_ok()
+                && let Ok((store, took_us)) = load_snapshot(client, metrics)
+            {
+                emit_snapshot(generation, &store, took_us, sink, metrics);
+            }
             live_result(generation, "AddProject", result, sink, metrics, started);
         }
         Command::CreateWorktree { project_id, branch } => {
