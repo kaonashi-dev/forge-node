@@ -2625,11 +2625,11 @@ fn spawn_daemon(
     bin: &std::path::Path,
     socket: &std::path::Path,
     metrics: &Metrics,
-) -> Result<(), String> {
+) -> Result<u32, String> {
     use std::os::unix::process::CommandExt;
     use std::process::{Command as Process, Stdio};
     metrics.note_subprocess_op();
-    Process::new(bin)
+    let mut child = Process::new(bin)
         .arg("run")
         .env("FORGE_SOCKET", socket)
         .process_group(0)
@@ -2637,8 +2637,16 @@ fn spawn_daemon(
         .stdout(Stdio::null())
         .stderr(Stdio::null())
         .spawn()
-        .map(|_| ())
-        .map_err(|error| format!("failed to start {}: {error}", bin.display()))
+        .map_err(|error| format!("failed to start {}: {error}", bin.display()))?;
+    let pid = child.id();
+    // The daemon outlives most GUI sessions, so its exit is awaited on a thread of its own.
+    thread::Builder::new()
+        .name("forge-daemon-reaper".into())
+        .spawn(move || {
+            let _ = child.wait();
+        })
+        .map_err(|error| format!("failed to watch {}: {error}", bin.display()))?;
+    Ok(pid)
 }
 
 fn handle_live_command(
@@ -4152,6 +4160,25 @@ mod tests {
         let socket = Path::new("/tmp/forge-ui-chosen.sock");
         spawn_daemon(&bin, socket, &Metrics::default()).expect("fake daemon starts");
         assert_eq!(read_when_written(&out), socket.display().to_string());
+        let _ = std::fs::remove_dir_all(bin.parent().expect("temp dir"));
+    }
+
+    #[test]
+    fn a_daemon_that_exits_is_reaped_not_left_a_zombie() {
+        let (bin, out) = fake_daemon("reap");
+        let pid = spawn_daemon(
+            &bin,
+            Path::new("/tmp/forge-ui-reap.sock"),
+            &Metrics::default(),
+        )
+        .expect("fake daemon starts") as libc::pid_t;
+        read_when_written(&out);
+        let deadline = Instant::now() + Duration::from_secs(5);
+        // A zombie still answers signal 0; only a reaped pid is gone.
+        while unsafe { libc::kill(pid, 0) } == 0 {
+            assert!(Instant::now() < deadline, "pid {pid} was never reaped");
+            thread::sleep(Duration::from_millis(10));
+        }
         let _ = std::fs::remove_dir_all(bin.parent().expect("temp dir"));
     }
 
