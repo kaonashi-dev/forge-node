@@ -104,6 +104,10 @@ executable = "/path/to/forge-node/target/debug/forge-editor"
   `local`). It is a manual helper; release CI invokes `scripts/package-macos`
   directly.
 - `scripts/release-manifest` writes `latest-rune.json`, the updater feed.
+- Release secrets: `FORGE_UPDATER_KEY` (the minisign secret key),
+  `FORGE_CODESIGN_IDENTITY` and `FORGE_NOTARY_PROFILE`. The updater key is read
+  from `FORGE_UPDATER_KEY_PATH` (default
+  `$XDG_CONFIG_HOME/forge-node/updater.key`) when packaging locally.
 
 ## Where to change what
 
