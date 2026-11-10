@@ -165,8 +165,6 @@ async fn handle_connection(daemon: Arc<Daemon>, stream: UnixStream) -> std::io::
     }
 
     let client_id = ClientId::new();
-    let rx = daemon.registry().register_kind(client_id, client_kind);
-
     let ack = DaemonMessage::HelloAck(HelloAck {
         protocol_version: PROTOCOL_VERSION,
         daemon_version: daemon.version.clone(),
@@ -177,12 +175,11 @@ async fn handle_connection(daemon: Arc<Daemon>, stream: UnixStream) -> std::io::
             crate::config::EditorSurface::Dom => protocol::EditorSurface::Dom,
         },
     });
-    // Deliver the ack through the per-client channel so a single writer owns the
-    // socket write half.
-    if !daemon.registry().send_to(client_id, ack) {
-        daemon.registry().unregister(client_id);
-        return Ok(());
-    }
+    // The ack goes through the per-client channel so a single writer owns the
+    // socket, and is queued before the client is visible to broadcasts.
+    let rx = daemon
+        .registry()
+        .register_greeted(client_id, client_kind, Some(ack));
 
     // ---- Writer task: drain the client channel to the socket ----
     let writer_daemon = Arc::clone(&daemon);

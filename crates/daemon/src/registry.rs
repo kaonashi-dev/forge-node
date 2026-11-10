@@ -64,7 +64,24 @@ impl ClientRegistry {
     }
 
     pub fn register_kind(&self, id: ClientId, kind: ClientKind) -> flume::Receiver<DaemonMessage> {
+        self.register_greeted(id, kind, None)
+    }
+
+    /// Registers a client whose queue already holds `greeting`, so it is the
+    /// first message the client reads: once the client is in the map, any
+    /// broadcast can reach its queue, and a handshake ack enqueued after that
+    /// could arrive behind an event.
+    pub fn register_greeted(
+        &self,
+        id: ClientId,
+        kind: ClientKind,
+        greeting: Option<DaemonMessage>,
+    ) -> flume::Receiver<DaemonMessage> {
         let (tx, rx) = flume::bounded(CLIENT_QUEUE_CAPACITY);
+        if let Some(greeting) = greeting {
+            // An empty bounded queue always has room for one message.
+            let _ = tx.try_send(greeting);
+        }
         self.lock_clients().insert(
             id,
             ClientHandle {
@@ -493,5 +510,23 @@ mod tests {
         });
         assert_eq!(rx_a.len(), 1);
         assert_eq!(rx_b.len(), 1);
+    }
+    #[test]
+    fn a_greeting_is_read_before_any_broadcast() {
+        let reg = ClientRegistry::new();
+        let id = ClientId::new();
+        let greeting = DaemonMessage::Event(DaemonEvent::DaemonShuttingDown {
+            reason: "greeting".into(),
+        });
+        let rx = reg.register_greeted(id, ClientKind::Gui, Some(greeting));
+        reg.broadcast_domain(DaemonEvent::DaemonShuttingDown {
+            reason: "broadcast".into(),
+        });
+        match rx.try_recv() {
+            Ok(DaemonMessage::Event(DaemonEvent::DaemonShuttingDown { reason })) => {
+                assert_eq!(reason, "greeting");
+            }
+            other => panic!("expected the greeting first, got {other:?}"),
+        }
     }
 }
