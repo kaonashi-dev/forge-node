@@ -330,10 +330,12 @@ impl Client {
 
         let request_id = self.shared.next_id.fetch_add(1, Ordering::SeqCst);
         let (tx, rx) = flume::bounded::<Result<Response, ProtocolError>>(1);
+        // The map holds only reply senders, which a panicked insert or remove
+        // leaves consistent, so a poisoned lock is still usable.
         self.shared
             .pending
             .lock()
-            .expect("pending mutex poisoned")
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
             .insert(request_id, tx);
 
         // Close the race with a reader that disconnected between our check and
@@ -1901,7 +1903,12 @@ impl Client {
     }
 
     fn send_message(&self, message: &ClientMessage) -> Result<(), ClientError> {
-        let mut write = self.shared.write.lock().expect("write mutex poisoned");
+        // A writer that panicked may have left half a frame on the socket,
+        // so the stream is no longer framed: disconnect rather than write on.
+        let Ok(mut write) = self.shared.write.lock() else {
+            self.shared.disconnect();
+            return Err(ClientError::Disconnected);
+        };
         write_frame(&mut write, message)
     }
 
@@ -1909,7 +1916,7 @@ impl Client {
         self.shared
             .pending
             .lock()
-            .expect("pending mutex poisoned")
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
             .remove(&request_id);
     }
 }
@@ -1989,7 +1996,7 @@ fn route_message(
             let waiter = shared
                 .pending
                 .lock()
-                .expect("pending mutex poisoned")
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
                 .remove(&request_id);
             match waiter {
                 Some(waiter) => {
