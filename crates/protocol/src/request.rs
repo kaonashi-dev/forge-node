@@ -115,8 +115,12 @@ pub enum Request {
     /// [`crate::event::DaemonEvent::PullRequestsUpdated`] when it finishes.
     ///
     /// The `Ack` means the refresh started (or coalesced with one already in
-    /// flight), not that the remote operation completed.
-    RefreshPullRequests,
+    /// flight), not that the remote operation completed. Without `force` a
+    /// read younger than the cache's TTL is re-broadcast instead of re-read.
+    RefreshPullRequests {
+        #[serde(default)]
+        force: bool,
+    },
     /// Runtime statistics from a live daemon →
     /// [`crate::response::Response::DaemonStats`].
     ///
@@ -128,6 +132,11 @@ pub enum Request {
     ///
     /// Synchronous and local: a clone of an immutable `DaemonPaths`, no I/O.
     GetPaths,
+    /// The configuration this daemon loaded at startup →
+    /// [`crate::response::Response::Config`].
+    ///
+    /// Synchronous and local; free-form language-server values are redacted.
+    GetConfig,
 
     // ----- Projects -----
     /// Add a project directory → `Ack`; `ProjectAdded` broadcast.
@@ -477,7 +486,7 @@ pub enum Request {
         /// Cap on hits. `None` takes the service default.
         limit: Option<u32>,
     },
-    /// Ask Juva to draft a commit message or PR description from the current
+    /// Ask Juva to draft a commit message from the current
     /// changes → `Ack` when the draft starts; the text arrives as
     /// `DaemonEvent::JuvaDraftReady`.
     DraftWithJuva {
@@ -570,6 +579,24 @@ pub enum Request {
     SubmitPullRequestDraft {
         session_id: SessionId,
         draft: PullRequestDraft,
+    },
+    /// Have an agent draft the pull request in the background, then commit,
+    /// push and open it → `Ack` immediately;
+    /// [`crate::event::DaemonEvent::PullRequestOpened`] when it is open or has
+    /// failed.
+    ///
+    /// The agent runs as a `background` session with the `[pull_requests]`
+    /// prompt and is closed once it hands its draft over. Coalesced per
+    /// workspace with the other pull-request requests. `InvalidRequest` when
+    /// there is nothing to propose or the provider takes no prompt.
+    OpenPullRequestWithAgent {
+        workspace_id: WorkspaceId,
+        provider_id: AgentProviderId,
+        #[serde(default)]
+        profile_id: Option<AgentProfileId>,
+        /// Open it as a draft pull request.
+        #[serde(default)]
+        draft: bool,
     },
 
     // ----- Forge Review -----

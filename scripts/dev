@@ -46,6 +46,8 @@ case "$cmd" in
     cargo fmt --all -- --check
     cargo clippy --workspace --all-targets -- -D warnings
     cargo test --workspace
+    # The OpenCode plugin is TypeScript that OpenCode's Bun loads as it is.
+    (cd crates/agents && bun install --frozen-lockfile && bun run check && bun test src)
     if [ "${2:-}" != "--root-only" ]; then
       RUSTUP_TOOLCHAIN="$(sed -n 's/^channel = "\(.*\)"/\1/p' apps/ui/rust-toolchain.toml)"
       export RUSTUP_TOOLCHAIN

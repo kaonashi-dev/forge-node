@@ -1,0 +1,13 @@
+{
+  "name": "forge-agents-plugins",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "check": "tsc --noEmit -p .",
+    "test": "bun test src"
+  },
+  "devDependencies": {
+    "bun-types": "1.4.4",
+    "typescript": "5.9.3"
+  }
+}

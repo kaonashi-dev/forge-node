@@ -389,6 +389,7 @@ fn task_session(
         base_commit: None,
         activity: AgentActivity::unknown(),
         action: Some(Box::new(run)),
+        background: false,
     }
 }
 

@@ -53,6 +53,10 @@ jobs:
           }
           echo "version=$version" >>"$GITHUB_ENV"
 
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.4.4
+
       - name: Gate
         run: scripts/dev check
 

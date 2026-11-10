@@ -408,6 +408,7 @@ impl Daemon {
                 session_id: transcript.clone(),
                 add_dir: pack_dir.to_path_buf(),
             }),
+            false,
         ) {
             Ok(Response::SessionCreated { session_id, .. }) => session_id,
             Ok(_) => return Err(End::Failed("the reviewer did not start".into())),

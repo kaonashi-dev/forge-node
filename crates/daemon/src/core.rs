@@ -102,9 +102,13 @@ pub(crate) struct Inner {
     /// Coalesces `FetchRemote` per project. The worker clears this on exit.
     fetching: HashSet<ProjectId>,
     /// Coalesces `CreatePullRequest` per workspace (push + `gh`).
-    pr_opening: HashSet<WorkspaceId>,
+    pub(crate) pr_opening: HashSet<WorkspaceId>,
     /// Workspaces with a Juva draft in flight, coalesced like `pr_opening`.
     drafting: HashSet<WorkspaceId>,
+    /// Background "Open PR" agents and the draft each has handed over, once
+    /// it has; `submit_pull_request_draft` fills the slot instead of
+    /// broadcasting. Runtime-only.
+    pub(crate) pr_agents: HashMap<SessionId, Option<domain::PullRequestDraft>>,
     /// Queued or running reviews by workspace; the worker's guard releases its entry.
     pub(crate) reviews_running: HashMap<WorkspaceId, crate::review::RunningReview>,
     /// Reviews asked to stop, including ones a newer head superseded.
@@ -408,6 +412,7 @@ impl Daemon {
             prompt_gates: HashMap::new(),
             fetching: HashSet::new(),
             pr_opening: HashSet::new(),
+            pr_agents: HashMap::new(),
             drafting: HashSet::new(),
             reviews_running: HashMap::new(),
             review_cancel: HashSet::new(),
@@ -853,12 +858,13 @@ impl Daemon {
             Request::FactoryReset => self.factory_reset(),
             Request::GetAppState { key } => self.get_app_state(&key),
             Request::SetAppState { key, value } => self.set_app_state(&key, &value),
-            Request::RefreshPullRequests => self.refresh_pull_requests(),
+            Request::RefreshPullRequests { force } => self.refresh_pull_requests(force),
             Request::GetStats => Ok(Response::DaemonStats(self.collect_stats())),
             Request::GetPaths => Ok(Response::Paths {
                 paths: self.current_forge_paths(),
                 worktrees_root: self.paths.worktrees_root.clone(),
             }),
+            Request::GetConfig => Ok(self.config_response()),
 
             Request::AddProject { path } => self.add_project(&path),
             Request::AddProjectToGroup {
@@ -1030,6 +1036,12 @@ impl Daemon {
             Request::SubmitPullRequestDraft { session_id, draft } => {
                 self.submit_pull_request_draft(session_id, draft)
             }
+            Request::OpenPullRequestWithAgent {
+                workspace_id,
+                provider_id,
+                profile_id,
+                draft,
+            } => self.open_pull_request_with_agent(workspace_id, provider_id, profile_id, draft),
 
             Request::CreateShellSession {
                 workspace_id,
@@ -1049,6 +1061,7 @@ impl Daemon {
                 Default::default(),
                 title,
                 None,
+                false,
             ),
             Request::CreateAgentSession {
                 workspace_id,
@@ -1075,6 +1088,7 @@ impl Daemon {
                 domain::AgentLaunchOptions { model, effort },
                 title,
                 None,
+                false,
             ),
             Request::SendShellCommand {
                 caller_session_id,
@@ -1348,6 +1362,20 @@ impl Daemon {
     /// The startup paths, except that a home layout drops `legacy` once
     /// `migrate-home --remove-legacy` has deleted the old `app.db`: that runs
     /// beside a live daemon, and a stale value keeps offering the removal.
+    fn config_response(&self) -> Response {
+        Response::Config {
+            path: self.paths.forge.config_file.clone(),
+            toml: self
+                .config
+                .to_display_toml()
+                .unwrap_or_else(|error| format!("# could not show the configuration: {error}\n")),
+            pull_request_prompt: domain::effective_system_prompt(
+                &self.config.pull_requests.system_prompt,
+            )
+            .to_owned(),
+        }
+    }
+
     fn current_forge_paths(&self) -> client::ForgePaths {
         let mut paths = self.paths.forge.clone();
         if paths.layout == client::Layout::Home
@@ -1543,6 +1571,7 @@ impl Daemon {
             inner.prompt_gates.clear();
             inner.fetching.clear();
             inner.pr_opening.clear();
+            inner.pr_agents.clear();
             inner.drafting.clear();
             inner.reviews_running.clear();
             inner.review_cancel.clear();
@@ -2263,7 +2292,7 @@ impl Daemon {
     }
 
     /// Ack when the refresh *starts*. Coalesces globally: one refresh covers every host.
-    fn refresh_pull_requests(self: &Arc<Self>) -> Result<Response, ProtocolError> {
+    fn refresh_pull_requests(self: &Arc<Self>, force: bool) -> Result<Response, ProtocolError> {
         {
             let mut inner = self.lock();
             if inner.pr_refreshing {
@@ -2296,11 +2325,15 @@ impl Daemon {
                 };
                 let query = crate::pull_requests::resolve(projects, &daemon.config.github);
                 let fingerprint = crate::pull_requests::fingerprint(&query, &daemon.config.github);
-                let cached = daemon
-                    .pull_requests
-                    .lock()
-                    .unwrap_or_else(std::sync::PoisonError::into_inner)
-                    .fresh(fingerprint);
+                let cached = if force {
+                    None
+                } else {
+                    daemon
+                        .pull_requests
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner)
+                        .fresh(fingerprint)
+                };
                 let state = cached.unwrap_or_else(|| {
                     let state = crate::pull_requests::refresh(
                         query,
@@ -3010,7 +3043,8 @@ impl Daemon {
         Ok(Response::Ack)
     }
 
-    /// Broadcast an agent's pull-request text to the clients; Forge stores none of it.
+    /// Hand an agent's pull-request text to the background worker that launched
+    /// it, or broadcast it to the clients; Forge stores none of it.
     fn submit_pull_request_draft(
         &self,
         session_id: SessionId,
@@ -3040,14 +3074,22 @@ impl Daemon {
                 "a draft needs a title and a commit message",
             ));
         }
-        let workspace_id = self
-            .lock()
-            .sessions
-            .get(&session_id)
-            .map(|session| session.workspace_id)
-            .ok_or_else(|| {
-                ProtocolError::new(ErrorCode::NotFound, format!("no session {session_id}"))
-            })?;
+        let workspace_id = {
+            let mut inner = self.lock();
+            let workspace_id = inner
+                .sessions
+                .get(&session_id)
+                .map(|session| session.workspace_id)
+                .ok_or_else(|| {
+                    ProtocolError::new(ErrorCode::NotFound, format!("no session {session_id}"))
+                })?;
+            if let Some(slot) = inner.pr_agents.get_mut(&session_id) {
+                *slot = Some(draft);
+                crate::actions::run::wake_waiters(&mut inner);
+                return Ok(Response::Ack);
+            }
+            workspace_id
+        };
         self.registry
             .broadcast_domain(DaemonEvent::PullRequestDraftReady {
                 workspace_id,
@@ -3068,18 +3110,10 @@ impl Daemon {
         commit: Option<domain::CommitPlan>,
     ) -> Result<Response, ProtocolError> {
         let path = self.workspace_path(workspace_id)?;
-        self.ensure_env();
-        let path_entries = {
-            let mut inner = self.lock();
-            if !inner.pr_opening.insert(workspace_id) {
-                return Ok(Response::Ack);
-            }
-            self.resolved_env(&mut inner).path_entries
-        };
-
+        if !self.lock().pr_opening.insert(workspace_id) {
+            return Ok(Response::Ack);
+        }
         let daemon = Arc::clone(self);
-        let timeout = self.config.git.fetch_timeout();
-        let github_cli = self.config.github.cli(path_entries);
         std::thread::Builder::new()
             .name("forge-pr".into())
             .spawn(move || {
@@ -3087,68 +3121,16 @@ impl Daemon {
                     daemon: Arc::clone(&daemon),
                     workspace_id,
                 };
-                let result = (|| -> Result<String, git_service::GitError> {
-                    if let Some(plan) = &commit {
-                        commit_for_pull_request(&path, plan)?;
-                    }
-                    let remote = git_service::default_remote(&path)?.ok_or_else(|| {
-                        git_service::GitError::CommandFailed {
-                            args: vec!["push".into()],
-                            status: -1,
-                            stderr: "the repository has no remote".into(),
-                        }
-                    })?;
-                    git_service::push(&path, &remote, Some(timeout))?;
-                    let pr = git_service::create_pull_request_with_cli(
-                        &github_cli,
-                        &path,
-                        &title,
-                        &body,
-                        base.as_deref(),
-                        draft,
-                    )?;
-                    Ok(pr.url)
-                })();
-
-                match result {
-                    Ok(url) => {
-                        if let Ok(status) = git_service::status(&path) {
-                            daemon.apply_workspace_status(workspace_id, &status);
-                        }
-                        daemon
-                            .registry
-                            .broadcast_domain(DaemonEvent::PullRequestOpened {
-                                workspace_id,
-                                url: Some(url),
-                                error: None,
-                            });
-                        daemon
-                            .pull_requests
-                            .lock()
-                            .unwrap_or_else(std::sync::PoisonError::into_inner)
-                            .invalidate();
-                        if let Err(error) = daemon.refresh_pull_requests() {
-                            tracing::warn!(
-                                error = %error.message,
-                                "could not refresh pull requests after creation"
-                            );
-                        }
-                    }
-                    Err(error) => {
-                        // A commit or a new branch may have landed before the
-                        // push failed; the GUI must not keep showing them as dirty.
-                        if let Ok(status) = git_service::status(&path) {
-                            daemon.apply_workspace_status(workspace_id, &status);
-                        }
-                        daemon
-                            .registry
-                            .broadcast_domain(DaemonEvent::PullRequestOpened {
-                                workspace_id,
-                                url: None,
-                                error: Some(error.to_string()),
-                            });
-                    }
-                }
+                daemon.finish_pull_request(
+                    &path,
+                    workspace_id,
+                    &title,
+                    &body,
+                    base.as_deref(),
+                    draft,
+                    commit.as_ref(),
+                    None,
+                );
             })
             .map_err(|e| {
                 let mut inner = self.lock();
@@ -3160,6 +3142,90 @@ impl Daemon {
             })?;
 
         Ok(Response::Ack)
+    }
+
+    /// Commit (when asked), push and `gh pr create`, then broadcast
+    /// `PullRequestOpened` either way. Blocks on git and the network, so it
+    /// runs on a worker that already holds the workspace's `pr_opening`.
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "the wire request's fields plus the drafting session, passed through"
+    )]
+    pub(crate) fn finish_pull_request(
+        self: &Arc<Self>,
+        path: &Path,
+        workspace_id: WorkspaceId,
+        title: &str,
+        body: &str,
+        base: Option<&str>,
+        draft: bool,
+        commit: Option<&domain::CommitPlan>,
+        session_id: Option<SessionId>,
+    ) {
+        self.ensure_env();
+        let path_entries = {
+            let mut inner = self.lock();
+            self.resolved_env(&mut inner).path_entries
+        };
+        let timeout = self.config.git.fetch_timeout();
+        let github_cli = self.config.github.cli(path_entries);
+        let result = (|| -> Result<String, git_service::GitError> {
+            if let Some(plan) = commit {
+                commit_for_pull_request(path, plan)?;
+            }
+            let remote = git_service::default_remote(path)?.ok_or_else(|| {
+                git_service::GitError::CommandFailed {
+                    args: vec!["push".into()],
+                    status: -1,
+                    stderr: "the repository has no remote".into(),
+                }
+            })?;
+            git_service::push(path, &remote, Some(timeout))?;
+            let pr = git_service::create_pull_request_with_cli(
+                &github_cli,
+                path,
+                title,
+                body,
+                base,
+                draft,
+            )?;
+            Ok(pr.url)
+        })();
+        // A commit or a new branch may have landed before a failure; the GUI
+        // must not keep showing them as dirty.
+        if let Ok(status) = git_service::status(path) {
+            self.apply_workspace_status(workspace_id, &status);
+        }
+        match result {
+            Ok(url) => {
+                self.registry
+                    .broadcast_domain(DaemonEvent::PullRequestOpened {
+                        workspace_id,
+                        url: Some(url),
+                        error: None,
+                        session_id,
+                    });
+                self.pull_requests
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .invalidate();
+                if let Err(error) = self.refresh_pull_requests(false) {
+                    tracing::warn!(
+                        error = %error.message,
+                        "could not refresh pull requests after creation"
+                    );
+                }
+            }
+            Err(error) => {
+                self.registry
+                    .broadcast_domain(DaemonEvent::PullRequestOpened {
+                        workspace_id,
+                        url: None,
+                        error: Some(error.to_string()),
+                        session_id,
+                    });
+            }
+        }
     }
 
     pub(crate) fn workspace_path(
@@ -4198,6 +4264,7 @@ impl Daemon {
             Default::default(),
             None,
             None,
+            false,
         )
     }
 
@@ -4219,6 +4286,7 @@ impl Daemon {
         options: domain::AgentLaunchOptions,
         title: Option<String>,
         structured_review: Option<domain::StructuredReview>,
+        background: bool,
     ) -> Result<Response, ProtocolError> {
         let title = title
             .map(|title| title.trim().to_owned())
@@ -4323,6 +4391,7 @@ impl Daemon {
                     AgentActivity::unknown()
                 },
                 action: None,
+                background,
             };
             inner.db.sessions().upsert(&session).map_err(db_err)?;
             inner.sessions.insert(id, session.clone());
@@ -4455,6 +4524,7 @@ impl Daemon {
                 base_commit: None,
                 activity: AgentActivity::unknown(),
                 action: None,
+                background: false,
             };
             let spec = self.build_spawn_spec(
                 &mut inner,
@@ -5349,6 +5419,7 @@ impl Daemon {
         inner.launch_options.remove(&session_id);
         inner.pending_prompts.remove(&session_id);
         inner.prompt_gates.remove(&session_id);
+        inner.pr_agents.remove(&session_id);
         // Runtime is reaped on PTY EOF. Dropping it here races that and leaks a zombie (P1).
     }
 
@@ -7116,7 +7187,7 @@ impl Daemon {
             if self.shutdown.sleep(period) {
                 return;
             }
-            if let Err(error) = self.refresh_pull_requests() {
+            if let Err(error) = self.refresh_pull_requests(false) {
                 tracing::warn!(
                     error = %error.message,
                     "could not start automatic pull-request refresh"
@@ -7686,9 +7757,18 @@ struct FetchingGuard {
 }
 
 /// Releases a workspace's PR-open flag however the worker ends.
-struct PrOpeningGuard {
+pub(crate) struct PrOpeningGuard {
     daemon: Arc<Daemon>,
     workspace_id: WorkspaceId,
+}
+
+impl PrOpeningGuard {
+    pub(crate) fn new(daemon: Arc<Daemon>, workspace_id: WorkspaceId) -> Self {
+        Self {
+            daemon,
+            workspace_id,
+        }
+    }
 }
 
 /// Releases the global PR-refresh flag however the worker ends.
@@ -8727,6 +8807,7 @@ mod tests {
             base_commit: None,
             activity: AgentActivity::unknown(),
             action: None,
+            background: false,
         };
         inner
             .db

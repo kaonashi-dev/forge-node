@@ -104,6 +104,15 @@ pub fn set(find: &EditorFind, pattern: &str, flip: Option<Flag>) -> EditorFindCo
     }
 }
 
+/// ⌘F while the field already has the keyboard. Answered by selecting the
+/// field rather than sent on: the editor would echo its own pattern, which
+/// can trail what was just typed.
+#[must_use]
+pub fn is_reopen(ev: &KeyEvent) -> bool {
+    let m = ev.mods;
+    matches!(ev.key, Key::Command('f')) && !m.shift && !m.alt && !m.ctrl
+}
+
 /// The keys the field answers itself; anything else types into it. An
 /// input method holds Enter and Escape while it composes, so neither
 /// reaches this.

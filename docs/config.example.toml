@@ -190,6 +190,16 @@ timeout_secs = 900              # a run with no answer by then fails
 # replace the fixed prompt; over 4096 bytes is ignored with a note.
 instructions = ""
 
+[pull_requests]
+# "Open PR" runs your default agent in the background: it drafts the title,
+# body, branch and commit message, then Forge commits, pushes and runs
+# `gh pr create`. system_prompt replaces the built-in wording (shown in
+# Settings > Configuration); the hand-over to Forge is always appended.
+system_prompt = ""
+timeout_secs = 0                # 0 = 600; the agent is stopped after that
+# model = "sonnet"
+# effort = "medium"
+
 [daemon]
 log_level = "info"             # trace | debug | info | warn | error (RUST_LOG overrides)
 

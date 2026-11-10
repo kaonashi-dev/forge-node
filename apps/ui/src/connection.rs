@@ -11,9 +11,9 @@ use std::time::{Duration, Instant};
 
 use client::{Client, DaemonEvent, Request, Store};
 use domain::{
-    AgentActivity, BranchCompare, BranchRef, CommitLine, DiffFile, DiffStatus, PullRequestDraft,
-    RefScope, Remote, Session, SessionId, SessionKind, SessionRole, SessionState, SessionTitle,
-    TerminalId, Timestamp, WorkspaceDiff, WorkspaceId,
+    AgentActivity, BranchCompare, BranchRef, CommitLine, DiffFile, DiffStatus, RefScope, Remote,
+    Session, SessionId, SessionKind, SessionRole, SessionState, SessionTitle, TerminalId,
+    Timestamp, WorkspaceDiff, WorkspaceId,
 };
 use flume::{Receiver, Selector, Sender};
 
@@ -110,6 +110,9 @@ pub enum Command {
     Paths {
         generation: u64,
     },
+    Config {
+        generation: u64,
+    },
     KillSession(SessionId),
     CloseSession(SessionId),
     RebaseStep {
@@ -123,23 +126,17 @@ pub enum Command {
     Fetch {
         project_id: domain::ProjectId,
     },
-    OpenPullRequest {
+    /// A background agent drafts the pull request; the daemon opens it.
+    OpenPullRequestWithAgent {
         workspace_id: WorkspaceId,
-        title: String,
-        body: String,
-        /// Commit everything uncommitted with this message first.
-        commit: Option<String>,
+        provider_id: domain::AgentProviderId,
+        profile_id: Option<domain::AgentProfileId>,
+        draft: bool,
     },
-    /// Commit everything once, on `branch` when the checkout is on its default,
-    /// then push and open. The compose view's submit.
-    CommitAndOpenPullRequest {
-        workspace_id: WorkspaceId,
-        title: String,
-        body: String,
-        message: String,
-        branch: Option<String>,
+    /// `force` re-reads past the daemon's cache TTL.
+    RefreshPullRequests {
+        force: bool,
     },
-    RefreshPullRequests,
     DraftCommit {
         workspace_id: WorkspaceId,
     },
@@ -339,6 +336,14 @@ pub enum Command {
 /// checked on the base64 text before decoding allocates.
 const MAX_IMAGE_BYTES: usize = 8 * 1024 * 1024;
 
+/// The daemon's configuration as Settings shows it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ConfigView {
+    pub path: std::path::PathBuf,
+    pub toml: String,
+    pub pull_request_prompt: String,
+}
+
 #[derive(Debug)]
 pub enum UiEvent {
     Connecting {
@@ -409,6 +414,10 @@ pub enum UiEvent {
     Paths {
         generation: u64,
         result: Result<Box<(client::ForgePaths, std::path::PathBuf)>, String>,
+    },
+    Config {
+        generation: u64,
+        result: Result<Box<ConfigView>, String>,
     },
     PreferenceFailed {
         generation: u64,
@@ -882,40 +891,23 @@ impl ConnectionHandle {
         self.send(Command::Fetch { project_id })
     }
 
-    pub fn open_pull_request(
+    pub fn open_pull_request_with_agent(
         &self,
         workspace_id: WorkspaceId,
-        title: String,
-        body: String,
-        commit: Option<String>,
+        provider_id: domain::AgentProviderId,
+        profile_id: Option<domain::AgentProfileId>,
+        draft: bool,
     ) -> Result<(), String> {
-        self.send(Command::OpenPullRequest {
+        self.send(Command::OpenPullRequestWithAgent {
             workspace_id,
-            title,
-            body,
-            commit,
+            provider_id,
+            profile_id,
+            draft,
         })
     }
 
-    pub fn commit_and_open_pull_request(
-        &self,
-        workspace_id: WorkspaceId,
-        title: String,
-        body: String,
-        message: String,
-        branch: Option<String>,
-    ) -> Result<(), String> {
-        self.send(Command::CommitAndOpenPullRequest {
-            workspace_id,
-            title,
-            body,
-            message,
-            branch,
-        })
-    }
-
-    pub fn refresh_pull_requests(&self) -> Result<(), String> {
-        self.send(Command::RefreshPullRequests)
+    pub fn refresh_pull_requests(&self, force: bool) -> Result<(), String> {
+        self.send(Command::RefreshPullRequests { force })
     }
 
     pub fn run_action(
@@ -954,6 +946,10 @@ impl ConnectionHandle {
 
     pub fn paths(&self, generation: u64) -> Result<(), String> {
         self.send(Command::Paths { generation })
+    }
+
+    pub fn config(&self, generation: u64) -> Result<(), String> {
+        self.send(Command::Config { generation })
     }
 
     pub fn migrate_storage(
@@ -1661,49 +1657,14 @@ fn handle_fixture_command(
                 sink(vec![event]);
             }
         }
-        Command::CreateAgent {
-            workspace_id,
-            initial_prompt: Some(prompt),
-            ..
-        } if prompt.contains("`pr_draft`") => {
-            let session = link
-                .store
-                .sessions
-                .first()
-                .map(|session| session.id)
-                .unwrap_or_default();
+        Command::OpenPullRequestWithAgent { workspace_id, .. } => {
             metrics.commands_completed.fetch_add(1, Ordering::Relaxed);
             sink(vec![
                 UiEvent::CommandResult {
                     generation,
-                    label: "CreateAgentSession",
+                    label: "OpenPullRequestWithAgent",
                     ok: true,
-                    message: "started fixture agent".to_string(),
-                    took_us: started.elapsed().as_micros() as u64,
-                },
-                UiEvent::Daemon {
-                    generation,
-                    event: Box::new(DaemonEvent::PullRequestDraftReady {
-                        workspace_id,
-                        session_id: session,
-                        draft: PullRequestDraft {
-                            title: "Compare branches before opening a pull request".into(),
-                            body: "Drafts the compare view, a split patch layout and the pull-request panel.\n\n## Test plan\n\n- Compare two branches\n- Open the draft on another view".into(),
-                            branch: "fixture/compare-view".into(),
-                            commit_message: "Add branch compare and pull-request depth".into(),
-                        },
-                    }),
-                },
-            ]);
-        }
-        Command::CommitAndOpenPullRequest { workspace_id, .. } => {
-            metrics.commands_completed.fetch_add(1, Ordering::Relaxed);
-            sink(vec![
-                UiEvent::CommandResult {
-                    generation,
-                    label: "CommitAndOpenPullRequest",
-                    ok: true,
-                    message: "pushing".to_string(),
+                    message: "drafting".to_string(),
                     took_us: started.elapsed().as_micros() as u64,
                 },
                 UiEvent::Daemon {
@@ -1712,6 +1673,7 @@ fn handle_fixture_command(
                         workspace_id,
                         url: Some("https://github.com/forge/forge/pull/42".into()),
                         error: None,
+                        session_id: None,
                     }),
                 },
             ]);
@@ -1935,6 +1897,20 @@ fn handle_fixture_command(
                 started,
             );
         }
+        Command::Config {
+            generation: command_generation,
+        } => {
+            if command_generation == generation {
+                sink(vec![UiEvent::Config {
+                    generation,
+                    result: Ok(Box::new(ConfigView {
+                        path: "~/.forge-node/config.toml".into(),
+                        toml: "[github]\ninclude_all_repos = false\n\n[pull_requests]\nsystem_prompt = \"\"\ntimeout_secs = 0\n".into(),
+                        pull_request_prompt: domain::DEFAULT_SYSTEM_PROMPT.into(),
+                    })),
+                }]);
+            }
+        }
         Command::OpenEditor { .. }
         | Command::EditorView { .. }
         | Command::EditorInput { .. }
@@ -1949,8 +1925,7 @@ fn handle_fixture_command(
         | Command::RebaseStep { .. }
         | Command::RunAction { .. }
         | Command::Fetch { .. }
-        | Command::OpenPullRequest { .. }
-        | Command::RefreshPullRequests
+        | Command::RefreshPullRequests { .. }
         | Command::DraftCommit { .. }
         | Command::Commit { .. }
         | Command::StopDaemon { .. }
@@ -2109,6 +2084,7 @@ fn fixture_create(
         base_commit: None,
         activity: AgentActivity::unknown(),
         action: None,
+        background: false,
     };
     store.sessions.push(session.clone());
     Ok((
@@ -2197,6 +2173,7 @@ fn fixture_create_agent(
         base_commit: None,
         activity: AgentActivity::unknown(),
         action: None,
+        background: false,
     };
     store.sessions.push(session.clone());
     Ok((
@@ -3267,66 +3244,30 @@ fn handle_live_command(
                 .map_err(|error| error.to_string());
             live_result(generation, "FetchRemote", result, sink, metrics, started);
         }
-        Command::OpenPullRequest {
+        Command::OpenPullRequestWithAgent {
             workspace_id,
-            title,
-            body,
-            commit,
-        } => {
-            metrics.note_socket_op();
-            let result = match commit {
-                Some(message) => client.commit_and_open_pull_request(
-                    workspace_id,
-                    domain::CommitPlan {
-                        branch: None,
-                        message,
-                    },
-                    &title,
-                    &body,
-                ),
-                None => client.create_pull_request(workspace_id, &title, &body, None),
-            }
-            .map(|()| "pushing".to_string())
-            .map_err(|error| error.to_string());
-            live_result(
-                generation,
-                "CreatePullRequest",
-                result,
-                sink,
-                metrics,
-                started,
-            );
-        }
-        Command::CommitAndOpenPullRequest {
-            workspace_id,
-            title,
-            body,
-            message,
-            branch,
+            provider_id,
+            profile_id,
+            draft,
         } => {
             metrics.note_socket_op();
             let result = client
-                .commit_and_open_pull_request(
-                    workspace_id,
-                    domain::CommitPlan { branch, message },
-                    &title,
-                    &body,
-                )
-                .map(|()| "pushing".to_string())
+                .open_pull_request_with_agent(workspace_id, provider_id, profile_id, draft)
+                .map(|()| "drafting".to_string())
                 .map_err(|error| error.to_string());
             live_result(
                 generation,
-                "CommitAndOpenPullRequest",
+                "OpenPullRequestWithAgent",
                 result,
                 sink,
                 metrics,
                 started,
             );
         }
-        Command::RefreshPullRequests => {
+        Command::RefreshPullRequests { force } => {
             metrics.note_socket_op();
             let result = client
-                .refresh_pull_requests()
+                .refresh_pull_requests(force)
                 .map(|()| "refreshing".to_string())
                 .map_err(|error| error.to_string());
             live_result(
@@ -3472,6 +3413,25 @@ fn handle_live_command(
                 .map(Box::new)
                 .map_err(|error| error.to_string());
             sink(vec![UiEvent::Paths { generation, result }]);
+        }
+        Command::Config {
+            generation: command_generation,
+        } => {
+            if command_generation != generation {
+                return;
+            }
+            metrics.note_socket_op();
+            let result = client
+                .config()
+                .map(|(path, toml, pull_request_prompt)| {
+                    Box::new(ConfigView {
+                        path,
+                        toml,
+                        pull_request_prompt,
+                    })
+                })
+                .map_err(|error| error.to_string());
+            sink(vec![UiEvent::Config { generation, result }]);
         }
         Command::RefreshProject(project_id) => {
             metrics.note_socket_op();
@@ -4063,6 +4023,7 @@ fn command_label(command: &Command) -> &'static str {
         Command::AddProject(_) => "AddProject",
         Command::Usage { .. } => "GetUsageAnalytics",
         Command::Paths { .. } => "GetPaths",
+        Command::Config { .. } => "GetConfig",
         Command::KillSession(_) => "KillSession",
         Command::RestartSession(_) => "RestartSession",
         Command::DeleteTranscript { .. } => "DeleteExternalSession",
@@ -4070,9 +4031,8 @@ fn command_label(command: &Command) -> &'static str {
         Command::RebaseStep { .. } => "RebaseStep",
         Command::RunAction { .. } => "RunAction",
         Command::Fetch { .. } => "FetchRemote",
-        Command::OpenPullRequest { .. } => "CreatePullRequest",
-        Command::CommitAndOpenPullRequest { .. } => "CommitAndOpenPullRequest",
-        Command::RefreshPullRequests => "RefreshPullRequests",
+        Command::OpenPullRequestWithAgent { .. } => "OpenPullRequestWithAgent",
+        Command::RefreshPullRequests { .. } => "RefreshPullRequests",
         Command::DraftCommit { .. } => "DraftWithJuva",
         Command::Commit { .. } => "CreateCommit",
         Command::CreateAgent { .. } => "CreateAgentSession",

@@ -4,8 +4,14 @@ use std::path::{Path, PathBuf};
 
 use domain::{AgentDescriptor, SpawnSpec};
 
-/// OpenCode plugin filename under the agent-plugins directory.
-pub const OPENCODE_PLUGIN_FILENAME: &str = "forge-attention.js";
+/// OpenCode plugin package under the agent-plugins directory. OpenCode loads a
+/// local CLI plugin only from a directory, through its `tui` entry; a path to
+/// a file is skipped without a word.
+pub const OPENCODE_PLUGIN_DIR: &str = "forge-opencode";
+/// TypeScript: OpenCode runs on Bun, which loads it as it is.
+const OPENCODE_PLUGIN_ENTRY: &str = "tui.ts";
+/// The entry earlier builds wrote; left beside `tui.ts` it would be a second entry.
+const LEGACY_OPENCODE_PLUGIN_ENTRY: &str = "tui.js";
 /// Shared BEL script used by Claude / Cursor hooks.
 pub const RING_BELL_FILENAME: &str = "forge-ring-bell.sh";
 /// Claude `--settings` fragment naming the activity script.
@@ -27,7 +33,7 @@ pub struct AttentionAssets {
 /// Embedded OpenCode plugin source.
 #[must_use]
 pub fn opencode_plugin_source() -> &'static str {
-    include_str!("forge-attention.js")
+    include_str!("forge-attention.ts")
 }
 
 /// Embedded BEL script source.
@@ -50,10 +56,16 @@ pub fn install_assets_with_ctl(
 ) -> std::io::Result<AttentionAssets> {
     ensure_private_dir(dir)?;
 
-    let opencode_plugin = write_if_changed(
-        dir.join(OPENCODE_PLUGIN_FILENAME),
+    let opencode_plugin = dir.join(OPENCODE_PLUGIN_DIR);
+    ensure_private_dir(&opencode_plugin)?;
+    write_if_changed(
+        opencode_plugin.join(OPENCODE_PLUGIN_ENTRY),
         opencode_plugin_source().as_bytes(),
     )?;
+    match std::fs::remove_file(opencode_plugin.join(LEGACY_OPENCODE_PLUGIN_ENTRY)) {
+        Err(error) if error.kind() != std::io::ErrorKind::NotFound => return Err(error),
+        _ => {}
+    }
     let ring_bell = write_if_changed(dir.join(RING_BELL_FILENAME), ring_bell_source().as_bytes())?;
     let activity_body = include_str!("forge-activity.sh").replace(
         "__FORGECTL__",
@@ -335,9 +347,7 @@ fn write_if_changed(path: PathBuf, source: &[u8]) -> std::io::Result<PathBuf> {
     Ok(path)
 }
 
-pub const PLUGIN_FILENAME: &str = OPENCODE_PLUGIN_FILENAME;
-
-/// Install assets and return the OpenCode plugin path (legacy helper).
+/// Install assets and return the OpenCode plugin package directory (legacy helper).
 pub fn install_plugin(dir: &Path) -> std::io::Result<PathBuf> {
     Ok(install_assets(dir)?.opencode_plugin)
 }
@@ -388,30 +398,35 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let plugins = dir.path().join("agent-plugins");
 
+        let legacy = plugins
+            .join(OPENCODE_PLUGIN_DIR)
+            .join(LEGACY_OPENCODE_PLUGIN_ENTRY);
+        std::fs::create_dir_all(legacy.parent().unwrap()).unwrap();
+        std::fs::write(&legacy, "export default {}").unwrap();
+
         let first = install_assets(&plugins).unwrap();
-        assert!(first.opencode_plugin.exists());
+        let entry = first.opencode_plugin.join(OPENCODE_PLUGIN_ENTRY);
+        assert!(!legacy.exists(), "an upgrade leaves one entry, not two");
+        assert!(
+            first.opencode_plugin.is_dir(),
+            "OpenCode skips a plugin that is a file"
+        );
         assert!(first.ring_bell.exists());
         assert!(first.claude_settings.exists());
         assert!(std::fs::read_to_string(&first.claude_settings)
             .unwrap()
             .contains("PermissionRequest"));
 
-        let mtime_before = std::fs::metadata(&first.opencode_plugin)
-            .unwrap()
-            .modified()
-            .unwrap();
+        let mtime_before = std::fs::metadata(&entry).unwrap().modified().unwrap();
         let second = install_assets(&plugins).unwrap();
         assert_eq!(first.opencode_plugin, second.opencode_plugin);
-        let mtime_after = std::fs::metadata(&second.opencode_plugin)
-            .unwrap()
-            .modified()
-            .unwrap();
+        let mtime_after = std::fs::metadata(&entry).unwrap().modified().unwrap();
         assert_eq!(mtime_before, mtime_after);
 
-        std::fs::write(&first.opencode_plugin, b"// stale\n").unwrap();
-        let third = install_assets(&plugins).unwrap();
+        std::fs::write(&entry, b"// stale\n").unwrap();
+        install_assets(&plugins).unwrap();
         assert_eq!(
-            std::fs::read_to_string(&third.opencode_plugin).unwrap(),
+            std::fs::read_to_string(&entry).unwrap(),
             opencode_plugin_source()
         );
     }
@@ -429,7 +444,12 @@ mod tests {
             .find(|(k, _)| k == OPENCODE_CLI_CONFIG_CONTENT)
             .map(|(_, v)| v.as_str())
             .expect("OPENCODE_CLI_CONFIG_CONTENT");
-        assert!(value.contains("forge-attention.js"));
+        let config: serde_json::Value = serde_json::from_str(value).unwrap();
+        assert_eq!(
+            config["plugins"][0]["package"].as_str(),
+            Some(assets.opencode_plugin.to_string_lossy().as_ref()),
+            "the package names the directory, not a file inside it"
+        );
     }
 
     #[test]

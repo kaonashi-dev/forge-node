@@ -716,6 +716,7 @@ mod tests {
             base_commit: None,
             activity: domain::AgentActivity::unknown(),
             action: None,
+            background: false,
         }
     }
 

@@ -87,7 +87,7 @@ pub fn strip(s: &AppState, k: &Kit) -> Option<El> {
     let name = match s.workbench.mode {
         CenterMode::Compare => "Preview PR",
         CenterMode::PrDetail => "Pull request",
-        CenterMode::PrCompose => "Open a pull request",
+        CenterMode::OpenPr => "Open a pull request",
         _ => return None,
     };
     Some(
@@ -109,6 +109,39 @@ pub fn strip(s: &AppState, k: &Kit) -> Option<El> {
     )
 }
 
+/// The command palette's door at the top of the sidebar: drawn as a search
+/// field, pressed as a button, because the typing happens in the palette.
+pub fn jump_to(s: &AppState, k: &Kit) -> El {
+    let hint = s.keymap.chord_label(crate::keymap::Action::CommandPalette);
+    let mut field = row()
+        .key("sidebar-jump-to")
+        .role("button")
+        .label("Jump to…")
+        .w_full()
+        .h(ds::CONTROL_FIELD)
+        .px(ds::SPACE_5)
+        .gap(ds::SPACE_4)
+        .center_y()
+        .radius(k.radius.lg)
+        .fill(k.c.bg_deep)
+        .border(1.0, k.c.border_weak)
+        .hover(k.c.hover)
+        .on_press(|s: &mut AppState| s.open_palette(crate::palette::Scope::Everything))
+        .child(rune::icon(&glyphs::SEARCH, ds::ICON_ROW).color(k.c.icon_muted))
+        .child(
+            text("Jump to…")
+                .font(k.ty.small)
+                .color(k.c.text_faint)
+                .grow(1.0)
+                .min_w(0.0)
+                .truncate(),
+        );
+    if let Some(hint) = hint {
+        field = field.child(text(hint).font(k.ty.small).color(k.c.text_faint));
+    }
+    field
+}
+
 /// The sidebar's view switcher: the chosen view by glyph and name, the others
 /// by glyph alone so six fit across the sidebar.
 pub fn views(s: &AppState, k: &Kit) -> El {
@@ -122,11 +155,18 @@ pub fn views(s: &AppState, k: &Kit) -> El {
         .padding(ds::SPACE_1)
         .radius(k.radius.lg)
         .fill(roles.surface);
+    let title = VIEWS
+        .iter()
+        .find(|(panel, ..)| *panel == s.workbench.panel)
+        .map_or(0.0, |(_, label, ..)| {
+            rune::text::measure(label, &[], k.ty.ui_medium, None).0
+        });
+    let shape = view_tab_shape(s.sidebar.width(), s.chrome_metrics().sidebar_pad[0], title);
     for (panel, label, key, glyph) in VIEWS {
         let shown = s.workbench.panel == panel;
         bar = bar.child(
             Tab::new(key, label, glyph)
-                .shape(TabShape::IconUntilChosen { width: VIEW_TAB_W })
+                .shape(shape)
                 .height(s.chrome_metrics().tab)
                 .chosen(shown)
                 .build(k, &roles)
@@ -136,30 +176,44 @@ pub fn views(s: &AppState, k: &Kit) -> El {
     bar
 }
 
-/// What the foot says about the daemon, and in which tone.
+/// The chosen view keeps its name only while the name fits whole beside the
+/// other glyphs; under that every view is a glyph, never an ellipsis.
 #[must_use]
-pub fn link_line(status: LinkStatus) -> (&'static str, Tone) {
-    match status {
-        LinkStatus::Connected => ("Daemon connected", Tone::Success),
-        LinkStatus::Connecting => ("Connecting to the daemon…", Tone::Neutral),
-        LinkStatus::Reconnecting => ("Daemon disconnected", Tone::Danger),
+pub fn view_tab_shape(sidebar: f32, pad_x: f32, title: f32) -> TabShape {
+    let others = (VIEWS.len() - 1) as f32;
+    let room = sidebar - 2.0 * pad_x - 2.0 * ds::SPACE_1 - others * (VIEW_TAB_W + ds::SPACE_1);
+    let needed = ds::ICON_ROW + ds::SPACE_3 + 2.0 * ds::SPACE_4 + title;
+    if room >= needed {
+        TabShape::IconUntilChosen { width: VIEW_TAB_W }
+    } else {
+        TabShape::Icon
     }
 }
 
-/// The sidebar's foot: the daemon's state, and Settings.
+/// What the foot says about the daemon, and in which tone; nothing while
+/// the link is healthy.
+#[must_use]
+pub fn link_line(status: LinkStatus) -> Option<(&'static str, Tone)> {
+    match status {
+        LinkStatus::Connected => None,
+        LinkStatus::Connecting => Some(("Connecting to the daemon…", Tone::Neutral)),
+        LinkStatus::Reconnecting => Some(("Daemon disconnected", Tone::Danger)),
+    }
+}
+
+/// The sidebar's foot: the daemon's state when it needs saying, and Settings.
 pub fn footer(s: &AppState, k: &Kit) -> El {
     let roles = crate::theme::roles(k);
-    let (label, tone) = link_line(s.status);
     let settings_shown = s.workbench.mode == CenterMode::Settings;
-    row()
+    let mut foot = row()
         .key("connection-status")
         .w_full()
         .h(ds::CONTROL_FIELD)
         .pl(ds::SPACE_2)
         .gap(ds::SPACE_4)
-        .center_y()
-        .child(ds::dot(k, &roles, tone))
-        .child(
+        .center_y();
+    if let Some((label, tone)) = link_line(s.status) {
+        foot = foot.child(ds::dot(k, &roles, tone)).child(
             text(label)
                 .role("status")
                 .label(label)
@@ -167,30 +221,30 @@ pub fn footer(s: &AppState, k: &Kit) -> El {
                 .color(k.c.text_faint)
                 .truncate()
                 .min_w(0.0),
-        )
-        .child(el().grow(1.0))
-        .child(icon_button(
-            k,
-            "open-settings",
-            if settings_shown {
-                "Back to work"
+        );
+    }
+    foot.child(el().grow(1.0)).child(icon_button(
+        k,
+        "open-settings",
+        if settings_shown {
+            "Back to work"
+        } else {
+            "Settings"
+        },
+        Some("⌘,"),
+        if settings_shown {
+            &glyphs::ARROW_LEFT
+        } else {
+            &glyphs::SETTINGS
+        },
+        |s: &mut AppState| {
+            if s.workbench.mode == CenterMode::Settings {
+                s.close_settings();
             } else {
-                "Settings"
-            },
-            Some("⌘,"),
-            if settings_shown {
-                &glyphs::ARROW_LEFT
-            } else {
-                &glyphs::SETTINGS
-            },
-            |s: &mut AppState| {
-                if s.workbench.mode == CenterMode::Settings {
-                    s.close_settings();
-                } else {
-                    s.open_settings(None);
-                }
-            },
-        ))
+                s.open_settings(None);
+            }
+        },
+    ))
 }
 
 #[cfg(test)]
@@ -266,7 +320,7 @@ mod tests {
     }
 
     #[test]
-    fn the_foot_names_the_daemon_and_the_switcher_names_only_the_chosen_view() {
+    fn the_foot_names_only_a_troubled_daemon_and_the_switcher_only_the_chosen_view() {
         let mut rt = runtime();
         rt.state.debug = false;
         rt.invalidate();
@@ -278,10 +332,13 @@ mod tests {
             .filter_map(|e| e.label)
             .collect();
         assert!(
-            labels.iter().any(|label| label == "Daemon connected"),
-            "a healthy link is said too: {labels:?}"
+            !labels.iter().any(|label| label.contains("aemon")),
+            "a healthy link says nothing: {labels:?}"
         );
-        assert_eq!(link_line(LinkStatus::Reconnecting).1, Tone::Danger);
+        assert_eq!(
+            link_line(LinkStatus::Reconnecting),
+            Some(("Daemon disconnected", Tone::Danger))
+        );
         let shown = rt.find("view-projects").expect("the chosen view");
         let other = rt.find("view-files").expect("another view");
         assert!(shown.0 < other.0, "views keep their order");
@@ -351,5 +408,62 @@ mod tests {
             "fingers left bring the next view"
         );
         assert_eq!(rt.state.page_swipe, None);
+    }
+
+    /// What in the sidebar spills past its right edge, or that the PR scopes
+    /// wrapped, with the sidebar `width` wide and `panel` shown.
+    fn misfits(width: f32, panel: Panel) -> Vec<String> {
+        let mut rt = runtime();
+        rt.update(move |s, _| {
+            s.sidebar = rune_kit::shell::PaneState::new(width).range(1.0, 600.0);
+            s.show_panel(panel);
+        });
+        for step in 0..30 {
+            rt.frame(0.2 + f64::from(step) * 0.1);
+        }
+        let elements = rt.elements();
+        let sidebar = elements
+            .iter()
+            .find(|e| e.key.as_deref() == Some("sidebar"))
+            .expect("sidebar");
+        let right = sidebar.rect[0] + sidebar.rect[2];
+        let mut out: Vec<String> = elements
+            .iter()
+            .filter(|e| e.path.starts_with(&sidebar.path) && !e.exiting && e.opacity > 0.0)
+            .filter(|e| e.rect[2] > 0.0 && e.rect[0] + e.rect[2] > right + 0.5)
+            .map(|e| format!("{:?} {}", e.key, e.role))
+            .collect();
+        let top = |key: &str| {
+            elements
+                .iter()
+                .find(|e| e.key.as_deref() == Some(key))
+                .map(|e| e.rect[1])
+        };
+        if let (Some(first), Some(last)) = (top("pr-scope-all"), top("pr-scope-authored"))
+            && (first - last).abs() > 1.0
+        {
+            out.push("scopes wrapped".into());
+        }
+        out
+    }
+
+    #[test]
+    fn every_view_fits_the_narrowest_and_the_default_sidebar() {
+        for width in [crate::app::SIDEBAR_MIN_W, 300.0] {
+            for (panel, name, ..) in VIEWS {
+                let misfits = misfits(width, panel);
+                assert!(misfits.is_empty(), "{name} at {width}: {misfits:?}");
+            }
+        }
+    }
+
+    #[test]
+    fn the_chosen_view_drops_its_name_rather_than_cut_it() {
+        let title = 90.0;
+        assert_eq!(view_tab_shape(260.0, 18.0, title), TabShape::Icon);
+        assert_eq!(
+            view_tab_shape(400.0, 18.0, title),
+            TabShape::IconUntilChosen { width: VIEW_TAB_W }
+        );
     }
 }

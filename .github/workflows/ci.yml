@@ -93,8 +93,33 @@ jobs:
           save-if: ${{ github.ref == 'refs/heads/main' }}
           cache-on-failure: ${{ github.ref == 'refs/heads/main' }}
 
+      # The editor scenarios' fake `forge-editor` is a Bun script.
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.4.4
+
       - name: Test
         run: cargo test --workspace
+
+  agents-plugin:
+    name: OpenCode plugin
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    defaults:
+      run:
+        working-directory: crates/agents
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.4.4
+
+      - run: bun install --frozen-lockfile
+      - name: Type-check
+        run: bun run check
+      - name: Test
+        run: bun test src
 
   # rustup reads rust-toolchain.toml from the working directory, not from the
   # manifest, so the Rune cargo steps run inside apps/ui.

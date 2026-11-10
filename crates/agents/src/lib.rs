@@ -21,7 +21,7 @@ pub(crate) mod test_support;
 
 pub use attention::{
     inject_attention, inject_attention_plugin, install_assets, install_plugin, AttentionAssets,
-    PLUGIN_FILENAME,
+    OPENCODE_PLUGIN_DIR,
 };
 pub use builtins::{builtin, builtins};
 pub use descriptor::{

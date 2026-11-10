@@ -1,10 +1,9 @@
 //! Read-only prompts for reviewing another author's pull request.
 //!
-//! The sibling of [`crate::pr_task`], and deliberately not the same thing. A
-//! `PrTask` is about *your own* uncommitted work on the way to opening a pull
-//! request; a [`ReviewRecipe`] is about a pull request that already exists and
-//! belongs to someone else. The difference is what the agent is allowed to do:
-//! a task may write, a review may not.
+//! The sibling of [`crate::pr_task`], and deliberately not the same thing:
+//! that prompt is about *your own* work on the way to opening a pull request;
+//! a [`ReviewRecipe`] is about a pull request that already exists and belongs
+//! to someone else.
 //!
 //! Two independent guards carry that. The launch applies the provider's own
 //! [`crate::ReviewStyle`] flags, and the wording below repeats the rule in
@@ -134,9 +133,8 @@ pub fn builtin_recipes() -> Vec<ReviewRecipe> {
 
 /// The recipe with `id`, or the first built-in when there is no such recipe.
 ///
-/// Never `None`, for the same reason [`crate::task_or_default`] never is: a
-/// remembered id that no longer exists is a stale preference, not an error
-/// worth putting on screen.
+/// Never `None`: a remembered id that no longer exists is a stale
+/// preference, not an error worth putting on screen.
 #[must_use]
 pub fn recipe_or_default(id: Option<&str>) -> ReviewRecipe {
     let recipes = builtin_recipes();

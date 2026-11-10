@@ -13,6 +13,9 @@ pub enum TabShape {
     /// Glyph alone at `width` until chosen, then glyph and title: a view
     /// switcher whose names would not fit side by side.
     IconUntilChosen { width: f32 },
+    /// Glyph alone, chosen or not, sharing the bar's width equally: a
+    /// switcher too narrow for even the chosen name.
+    Icon,
 }
 
 /// A tab: kind glyph, title, and a close button on the chosen one. The same
@@ -90,7 +93,11 @@ impl Tab {
 
     #[must_use]
     pub fn build(self, k: &Kit, roles: &Roles) -> El {
-        let titled = self.chosen || self.shape == TabShape::Titled;
+        let titled = match self.shape {
+            TabShape::Titled => true,
+            TabShape::IconUntilChosen { .. } => self.chosen,
+            TabShape::Icon => false,
+        };
         let glyph = if self.chosen {
             crate::glyphs::chosen(self.glyph)
         } else {
@@ -114,7 +121,10 @@ impl Tab {
             .child(icon(glyph, glyph_size).color(ink));
         tab = match self.shape {
             TabShape::IconUntilChosen { width } if !self.chosen => tab.w(width).justify_center(),
-            TabShape::IconUntilChosen { .. } => tab.grow(1.0).justify_center().px(SPACE_4),
+            TabShape::IconUntilChosen { .. } => {
+                tab.grow(1.0).min_w(0.0).justify_center().px(SPACE_4)
+            }
+            TabShape::Icon => tab.grow(1.0).min_w(0.0).justify_center(),
             TabShape::Titled => {
                 tab.pl(SPACE_4 + SPACE_1)
                     .pr(if self.close.is_some() && self.chosen {

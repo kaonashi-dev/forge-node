@@ -120,13 +120,13 @@ fn refresh_coalesces_reuses_cache_and_snapshot_never_invokes_gh() {
 
     assert_eq!(
         client
-            .request(Request::RefreshPullRequests)
+            .request(Request::RefreshPullRequests { force: false })
             .expect("first refresh"),
         Response::Ack
     );
     assert_eq!(
         client
-            .request(Request::RefreshPullRequests)
+            .request(Request::RefreshPullRequests { force: false })
             .expect("coalesced refresh"),
         Response::Ack
     );
@@ -153,7 +153,7 @@ fn refresh_coalesces_reuses_cache_and_snapshot_never_invokes_gh() {
     assert!(pull_request.relations.authored);
 
     client
-        .request(Request::RefreshPullRequests)
+        .request(Request::RefreshPullRequests { force: false })
         .expect("fresh cached refresh");
     let cached = pull_request_event(&events, common::DEADLINE);
     assert_eq!(cached, state, "fresh refresh rebroadcasts the cached state");
@@ -186,7 +186,7 @@ fn missing_gh_is_readable_and_does_not_kill_the_daemon() {
     common::add_main_workspace(&client, &repo);
 
     client
-        .request(Request::RefreshPullRequests)
+        .request(Request::RefreshPullRequests { force: false })
         .expect("refresh ack");
     let state = pull_request_event(&events, common::DEADLINE);
     let error = state.error.expect("global error when every host fails");
@@ -241,7 +241,7 @@ fn exit_one_with_partial_graphql_data_keeps_successful_repositories() {
     write_gh(&gh, &counter, &response, 1, false);
 
     client
-        .request(Request::RefreshPullRequests)
+        .request(Request::RefreshPullRequests { force: false })
         .expect("partial refresh ack");
     let state = pull_request_event(&events, common::DEADLINE);
     assert_eq!(state.error, None, "parseable host data is a host success");
@@ -501,4 +501,160 @@ fn a_draft_is_never_committed_to_the_default_branch() {
     assert_eq!(git_stdout(repo.path(), &["rev-parse", "HEAD"]), before);
     assert_eq!(common::checked_out_branch(repo.path()), "main");
     assert_eq!(invocation_count(&counter), 0, "gh never ran");
+}
+
+/// The background session `OpenPullRequestWithAgent` launched.
+fn background_agent(events: &flume::Receiver<DaemonEvent>) -> domain::SessionId {
+    match common::wait_for(
+        events,
+        common::DEADLINE,
+        |event| matches!(event, DaemonEvent::SessionCreated(session) if session.background),
+    ) {
+        Some(DaemonEvent::SessionCreated(session)) => session.id,
+        other => panic!("no background agent session: {other:?}"),
+    }
+}
+
+#[test]
+fn a_background_agent_drafts_the_pull_request_and_the_daemon_opens_it() {
+    let harness = common::Harness::new();
+    common::write_fake_agent_cli(harness.bin(), "claude", "forge_claude", "Claude Code 1.0.0");
+    let gh = harness.root().join("agent-gh");
+    let counter = harness.root().join("agent-count");
+    write_gh(
+        &gh,
+        &counter,
+        "https://github.com/Acme/Agent/pull/12",
+        0,
+        false,
+    );
+    let repo = dirty_main_with_remote(&harness);
+    let daemon = harness.boot_with(|config| {
+        config.github.executable = gh.to_string_lossy().into_owned();
+    });
+    let client = daemon.connect("scenario-pr-agent");
+    let events = client.events();
+    let workspace = common::add_main_workspace(&client, repo.path());
+    let open = Request::OpenPullRequestWithAgent {
+        workspace_id: workspace,
+        provider_id: domain::AgentProviderId::new("claude"),
+        profile_id: None,
+        draft: false,
+    };
+    assert_eq!(
+        client.request(open.clone()).expect("open ack"),
+        Response::Ack
+    );
+    assert_eq!(
+        client.request(open).expect("coalesced ack"),
+        Response::Ack,
+        "a second press rides the first run"
+    );
+    let agent = background_agent(&events);
+
+    client
+        .request(Request::SubmitPullRequestDraft {
+            session_id: agent,
+            draft: draft("agent/background"),
+        })
+        .expect("draft ack");
+    let mut broadcast_draft = false;
+    let mut second_agent = false;
+    common::wait_for(&events, common::DEADLINE, |event| match event {
+        DaemonEvent::PullRequestDraftReady { .. } => {
+            broadcast_draft = true;
+            false
+        }
+        DaemonEvent::SessionCreated(session) if session.background => {
+            second_agent = true;
+            false
+        }
+        DaemonEvent::PullRequestOpened {
+            url: Some(url),
+            session_id: Some(from),
+            ..
+        } => url.ends_with("/pull/12") && *from == agent,
+        _ => false,
+    })
+    .expect("PullRequestOpened");
+    assert!(!broadcast_draft, "the worker consumes its agent's draft");
+    assert!(!second_agent, "the coalesced press launched nothing");
+
+    assert_eq!(common::checked_out_branch(repo.path()), "agent/background");
+    assert_eq!(git_stdout(repo.path(), &["status", "--porcelain"]), "");
+    assert_eq!(invocation_count(&counter), 1, "gh created the pull request");
+    let Response::Snapshot { sessions, .. } =
+        client.request(Request::GetSnapshot).expect("snapshot")
+    else {
+        panic!("expected snapshot");
+    };
+    assert!(
+        sessions.iter().all(|session| session.id != agent),
+        "the agent's session is closed once it hands over"
+    );
+}
+
+#[test]
+fn a_background_agent_that_hands_nothing_over_fails_the_request() {
+    let harness = common::Harness::new();
+    common::write_fake_agent_cli(harness.bin(), "claude", "forge_claude", "Claude Code 1.0.0");
+    let gh = harness.root().join("silent-gh");
+    let counter = harness.root().join("silent-count");
+    write_gh(
+        &gh,
+        &counter,
+        "https://github.com/Acme/Silent/pull/1",
+        0,
+        false,
+    );
+    let repo = dirty_main_with_remote(&harness);
+    let daemon = harness.boot_with(|config| {
+        config.github.executable = gh.to_string_lossy().into_owned();
+        config.pull_requests.timeout_secs = 1;
+    });
+    let client = daemon.connect("scenario-pr-agent-silent");
+    let events = client.events();
+    let workspace = common::add_main_workspace(&client, repo.path());
+    client
+        .request(Request::OpenPullRequestWithAgent {
+            workspace_id: workspace,
+            provider_id: domain::AgentProviderId::new("claude"),
+            profile_id: None,
+            draft: false,
+        })
+        .expect("open ack");
+    let agent = background_agent(&events);
+    common::wait_for(&events, common::DEADLINE, |event| {
+        matches!(
+            event,
+            DaemonEvent::PullRequestOpened { url: None, error: Some(error), session_id: Some(from), .. }
+                if error.contains("no draft") && *from == agent
+        )
+    })
+    .expect("PullRequestOpened with the timeout");
+    assert_eq!(invocation_count(&counter), 0, "nothing was opened");
+    assert_ne!(
+        git_stdout(repo.path(), &["status", "--porcelain"]),
+        "",
+        "nothing was committed"
+    );
+}
+
+#[test]
+fn a_clean_default_branch_has_nothing_to_propose() {
+    let harness = common::Harness::new();
+    let repo = test_support::init_repo().expect("git repo");
+    let daemon = harness.boot();
+    let client = daemon.connect("scenario-pr-agent-clean");
+    let workspace = common::add_main_workspace(&client, repo.path());
+    let refused = client.request(Request::OpenPullRequestWithAgent {
+        workspace_id: workspace,
+        provider_id: domain::AgentProviderId::new("claude"),
+        profile_id: None,
+        draft: false,
+    });
+    assert!(
+        matches!(&refused, Err(client::ClientError::Protocol(error)) if error.code == protocol::ErrorCode::InvalidRequest),
+        "{refused:?}"
+    );
 }

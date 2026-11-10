@@ -108,18 +108,21 @@ fn tone_ink(k: &Kit, tone: crate::pr_filters::Tone) -> rune::Color {
 
 pub fn view(s: &AppState, k: &Kit) -> El {
     use crate::pr_filters::{self, Scope};
-    let refresh = Button::new("Refresh")
-        .variant(ButtonVariant::GhostMuted)
-        .control_size(ControlSize::Small)
-        .on_press(|s: &mut AppState| s.refresh_pull_requests())
-        .build(k)
-        .key("prs-refresh");
-    let compose = Button::new("New pull request…")
+    let refresh = crate::ds::icon_button(
+        &crate::glyphs::REFRESH,
+        "Refresh pull requests",
+        crate::ds::IconButtonSize::Mini,
+    )
+    .on_press(|s: &mut AppState| s.refresh_pull_requests())
+    .build(k)
+    .key("prs-refresh");
+    let compose = Button::new("New PR")
         .variant(ButtonVariant::Outline)
         .control_size(ControlSize::Small)
+        .help("New pull request…")
         .on_press(|s: &mut AppState| {
             if let Some(workspace) = s.workbench.workspace {
-                s.open_pr_compose(workspace);
+                s.open_pr_view(workspace);
             }
         })
         .build(k)
@@ -206,20 +209,45 @@ pub fn view(s: &AppState, k: &Kit) -> El {
             .child(meta)
     };
     let mut list = col().key("pr-list").w_full().gap(crate::ds::SPACE_2);
-    if state.is_some_and(|state| state.refreshed_at.is_none()) {
+    let unread = state.is_none_or(|state| state.refreshed_at.is_none());
+    if unread {
         list = list.child(
-            text("Not read yet. Refresh to ask the forge.".to_string())
-                .font(k.ty.small)
-                .color(k.c.text_faint),
+            text(if s.pr_refreshing {
+                "Reading pull requests…"
+            } else {
+                "Not read yet. Refresh to ask the forge."
+            })
+            .key("prs-unread")
+            .font(k.ty.small)
+            .color(k.c.text_faint),
         );
-    }
-    if mine.is_empty() && others.is_empty() {
+    } else if mine.is_empty() && others.is_empty() {
         list = list.child(
             text(scope.empty_copy().to_string())
                 .key("prs-empty")
                 .font(k.ty.small)
                 .color(k.c.text_faint),
         );
+        let projects = s.store.as_ref().map(|store| &store.projects);
+        for (index, source) in state
+            .map(|state| state.sources.as_slice())
+            .unwrap_or_default()
+            .iter()
+            .enumerate()
+        {
+            let Some(why) = pr_filters::source_note(&source.status) else {
+                continue;
+            };
+            let name = projects
+                .and_then(|projects| projects.iter().find(|p| p.id == source.project_id))
+                .map_or_else(|| "A project".to_string(), |project| project.name.clone());
+            list = list.child(
+                text(format!("{name}: {why}"))
+                    .key(format!("prs-source-{index}"))
+                    .font(k.ty.text_xsmall)
+                    .color(k.c.text_faint),
+            );
+        }
     }
     for pr in &mine {
         list = list.child(card(pr));
@@ -265,6 +293,7 @@ pub fn view(s: &AppState, k: &Kit) -> El {
         .label("Filter pull requests")
         .leading_icon(k.glyph.search)
         .clear_button()
+        .width(None)
         .on_edit(|s: &mut AppState| &mut s.pr_query)
         .build(k)
         .key("pr-filter");
@@ -285,8 +314,16 @@ pub fn view(s: &AppState, k: &Kit) -> El {
                     text("Pull Requests")
                         .font(k.ty.small_medium)
                         .color(k.c.text_base)
-                        .grow(1.0),
+                        .grow(1.0)
+                        .truncate(),
                 )
+                .children(s.pr_refreshing.then(|| {
+                    text("Refreshing…")
+                        .key("prs-refreshing")
+                        .role("status")
+                        .font(k.ty.text_xsmall)
+                        .color(k.c.text_faint)
+                }))
                 .child(compose)
                 .child(refresh),
         )
@@ -400,10 +437,10 @@ pub fn dialog(s: &AppState, k: &Kit, layer: &mut Vec<El>) {
                 .h(90.0),
         );
     }
-    let note = if agents.is_empty() {
-        "No installed agent has a read-only review mode.".to_string()
-    } else if let Some(error) = &review.error {
+    let note = if let Some(error) = &review.error {
         error.clone()
+    } else if agents.is_empty() {
+        "No installed agent has a read-only review mode.".to_string()
     } else {
         "The agent runs read-only and is told not to edit, commit or post.".to_string()
     };
@@ -422,6 +459,7 @@ pub fn dialog(s: &AppState, k: &Kit, layer: &mut Vec<El>) {
             .child(
                 Button::new("Start review")
                     .variant(ButtonVariant::Contrast)
+                    .disabled(agents.is_empty())
                     .on_press(|s: &mut AppState| s.start_review())
                     .build(k)
                     .key("review-start"),

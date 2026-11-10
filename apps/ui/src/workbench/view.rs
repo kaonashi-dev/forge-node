@@ -195,6 +195,10 @@ pub fn git_panel(s: &AppState, k: &Kit) -> El {
             .map(|found| found.project_id)
     });
     let fetching = project.is_some_and(|id| s.sync.fetching.contains(&id));
+    let drafting = s
+        .workbench
+        .workspace
+        .is_some_and(|id| s.open_pr.pending.contains_key(&id));
     let mut actions = row().gap(crate::ds::SPACE_2).flex_wrap().child(
         Button::new(if fetching { "Fetching…" } else { "Fetch" })
             .variant(ButtonVariant::GhostMuted)
@@ -217,6 +221,7 @@ pub fn git_panel(s: &AppState, k: &Kit) -> El {
                 Button::new("Open PR…")
                     .variant(ButtonVariant::GhostMuted)
                     .control_size(ControlSize::Small)
+                    .disabled(drafting)
                     .on_press(|s: &mut AppState| s.open_pr_dialog())
                     .build(k)
                     .key("changes-open-pr"),
@@ -247,6 +252,13 @@ pub fn git_panel(s: &AppState, k: &Kit) -> El {
         );
     }
     head = head.child(actions);
+    if let Some(progress) = s
+        .workbench
+        .workspace
+        .and_then(|id| crate::open_pr::progress(s, k, id))
+    {
+        head = head.child(progress);
+    }
     if let Some(state) = &changes.rebase {
         head = head.child(
             row()
@@ -413,6 +425,7 @@ pub fn files_panel(s: &AppState, k: &Kit) -> El {
         .label("Filter files")
         .leading_icon(k.glyph.search)
         .clear_button()
+        .width(None)
         .on_edit(|s: &mut AppState| &mut s.workbench.files.filter)
         .on_change(|s: &mut AppState, _| s.workbench.filter_changed())
         .build(k)

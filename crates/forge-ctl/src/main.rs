@@ -700,6 +700,7 @@ impl App {
                                     workspace_id,
                                     url,
                                     error,
+                                    ..
                                 } if integration.is_none_or(|id| id == *workspace_id) => {
                                     opened = Some((url.clone(), error.clone()));
                                     true

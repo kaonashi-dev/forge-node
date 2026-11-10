@@ -621,7 +621,7 @@ mod tests {
 
     const SAMPLE: &str = r#"{
         "version": "9.8.7",
-        "notes": "protocol: 37\nA softer landing.",
+        "notes": "protocol: PROTOCOL\nA softer landing.",
         "pub_date": "2026-11-10T00:00:00Z",
         "platforms": {
             "darwin-aarch64": {
@@ -634,6 +634,12 @@ mod tests {
             }
         }
     }"#;
+
+    /// The sample as a release built against this daemon protocol: a pinned
+    /// number would turn every protocol bump into a Hard release here.
+    fn sample() -> String {
+        SAMPLE.replace("PROTOCOL", &client::PROTOCOL_VERSION.to_string())
+    }
 
     #[test]
     fn a_matching_protocol_is_soft_and_the_header_is_not_notes() {
@@ -671,7 +677,7 @@ mod tests {
 
     #[test]
     fn the_manifest_is_parsed_for_this_platform() {
-        let release = parse_release(SAMPLE)
+        let release = parse_release(&sample())
             .expect("the sample parses")
             .expect("newer than this build");
         assert_eq!(release.version, "9.8.7");
@@ -684,7 +690,7 @@ mod tests {
 
     #[test]
     fn an_http_url_is_refused_before_anything_is_downloaded() {
-        let body = SAMPLE.replace("https://github.com", "http://github.com");
+        let body = sample().replace("https://github.com", "http://github.com");
         assert!(
             parse_release(&body)
                 .expect_err("http is refused")
@@ -694,7 +700,7 @@ mod tests {
 
     #[test]
     fn a_release_without_this_platform_is_an_error() {
-        let body = SAMPLE
+        let body = sample()
             .replace("darwin-aarch64", "linux-aarch64")
             .replace("darwin-x86_64", "linux-x86_64");
         assert!(parse_release(&body).is_err());

@@ -78,6 +78,7 @@ fn mk_session(workspace_id: WorkspaceId, state: SessionState) -> Session {
         base_commit: None,
         activity: AgentActivity::unknown(),
         action: None,
+        background: false,
     }
 }
 
@@ -760,6 +761,7 @@ fn session_roundtrip_custom_role_states_and_graph() {
         base_commit: None,
         activity: AgentActivity::unknown(),
         action: None,
+        background: false,
     };
     db.sessions().upsert(&root).unwrap();
 
@@ -816,6 +818,7 @@ fn session_roundtrip_custom_role_states_and_graph() {
         base_commit: Some("9f1c0de4c0ffee0000000000000000000000cafe".to_owned()),
         activity: AgentActivity::unknown(),
         action: None,
+        background: false,
     };
     db.sessions().upsert(&child).unwrap();
     assert_eq!(db.sessions().get(child_id).unwrap().unwrap(), child);

@@ -20,9 +20,9 @@ mod launch;
 mod menus;
 mod modal;
 mod native_menus;
+mod open_pr;
 mod pages;
 mod palette;
-mod pr_compose;
 mod pr_detail;
 mod pr_filters;
 mod pr_review;
@@ -760,6 +760,21 @@ mod tests {
             summary.contains('x') && summary.contains("paste"),
             "terminal got {summary}"
         );
+    }
+
+    #[test]
+    fn a_pasted_image_reaches_the_terminal_as_a_path() {
+        let mut rt = runtime();
+        let png = [
+            &b"\x89PNG\r\n\x1a\n\0\0\0\rIHDR"[..],
+            &[0, 0, 0, 2, 0, 0, 0, 3],
+        ]
+        .concat();
+        let image = rune::ClipboardImage::from_png(png).expect("a PNG header");
+        rt.paste_content(rune::ClipboardContent::new("").with_image(image));
+        rt.frame(1.0 / 60.0);
+        let (_, summary) = rt.state.last_input.as_ref().expect("bytes were sent");
+        assert!(summary.contains("paste"), "terminal got {summary}");
     }
 
     #[test]

@@ -47,8 +47,8 @@ pub enum CenterMode {
     Compare,
     /// One pull request from the last refresh.
     PrDetail,
-    /// Preparing a pull request with an agent.
-    PrCompose,
+    /// The Open PR overview, before a background agent drafts it.
+    OpenPr,
 }
 
 /// The rendered surface a file opens on instead of the editor.
@@ -533,8 +533,8 @@ impl Workbench {
                 }
             }
             CenterMode::PrDetail => self.mode = CenterMode::PrDetail,
-            CenterMode::PrCompose => {
-                self.mode = CenterMode::PrCompose;
+            CenterMode::OpenPr => {
+                self.mode = CenterMode::OpenPr;
                 if !self.changes.loaded {
                     self.read_diff();
                 }
@@ -581,7 +581,7 @@ impl Workbench {
     /// the Files tree's decorations, or the compose view's change summary.
     fn shows_diff(&self) -> bool {
         matches!(self.panel, Panel::Git | Panel::Files)
-            || matches!(self.mode, CenterMode::Changes | CenterMode::PrCompose)
+            || matches!(self.mode, CenterMode::Changes | CenterMode::OpenPr)
     }
 
     fn read_diff(&mut self) {
