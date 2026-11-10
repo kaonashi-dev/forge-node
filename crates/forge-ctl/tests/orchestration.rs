@@ -3574,7 +3574,7 @@ fn review_corpus_cases_prepare() {
     }
     let corpus = Path::new(env!("CARGO_MANIFEST_DIR")).join("bench/review-corpus.toml");
     let parsed: Corpus = toml::from_str(&fs::read_to_string(&corpus).unwrap()).unwrap();
-    assert_eq!(parsed.case.len(), 10);
+    assert_eq!(parsed.case.len(), 7);
     let repo = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
     let scratch = tempfile::tempdir().unwrap();
     for case in &parsed.case {
