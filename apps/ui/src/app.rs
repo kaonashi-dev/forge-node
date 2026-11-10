@@ -1752,7 +1752,6 @@ impl AppState {
                             .pr_opened(*workspace_id, url.clone(), error.clone());
                         return true;
                     }
-                    protocol::DaemonEvent::PullRequestsUpdated { .. } => return true,
                     protocol::DaemonEvent::EditorFocusRequested { session_id, .. } => {
                         self.editor_focus_requested(*session_id);
                         return true;
@@ -1785,10 +1784,11 @@ impl AppState {
                     return true;
                 }
                 let reset = matches!(event.as_ref(), protocol::DaemonEvent::FactoryReset);
-                let agents = matches!(
+                let redraw = matches!(
                     event.as_ref(),
                     protocol::DaemonEvent::AgentProfilesChanged { .. }
                         | protocol::DaemonEvent::AgentDetectionChanged { .. }
+                        | protocol::DaemonEvent::PullRequestsUpdated { .. }
                 );
                 if let Some(store) = &mut self.store {
                     let _ = store.apply_event(&event);
@@ -1825,7 +1825,7 @@ impl AppState {
                     self.select_when_listed = None;
                     self.select(id);
                 }
-                rebuild || agents
+                rebuild || redraw
             }
             UiEvent::Diff {
                 generation,
@@ -3150,6 +3150,29 @@ mod tests {
         };
         assert!(state.shows_terminal(terminal_of(&|session| session.id == active)));
         assert!(!state.shows_terminal(terminal_of(&|session| session.id != active)));
+    }
+
+    #[test]
+    fn a_pull_request_refresh_replaces_the_stored_state() {
+        let mut state = state();
+        let mut tx = Tx::default();
+        let refreshed = domain::PullRequestState {
+            error: Some("gh is not signed in".to_string()),
+            ..domain::PullRequestState::default()
+        };
+        state.apply_events(
+            vec![UiEvent::Daemon {
+                generation: state.generation,
+                event: Box::new(protocol::DaemonEvent::PullRequestsUpdated {
+                    state: refreshed.clone(),
+                }),
+            }],
+            &mut tx,
+        );
+        assert_eq!(
+            state.store.as_ref().expect("store").pull_requests,
+            refreshed
+        );
     }
 
     #[test]
