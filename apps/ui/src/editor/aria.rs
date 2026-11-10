@@ -1,7 +1,6 @@
 //! What a screen reader is told about the editor, from `Session.editor` alone.
 //!
-//! The wording matches this client, so the two clients announce the
-//! same thing for the same state. Nothing here reads the rows: the caret's line
+//! Nothing here reads the rows: the caret's line
 //! is the one piece of document text the editor publishes for this purpose.
 
 use domain::EditorState;
@@ -85,7 +84,7 @@ pub fn editor_announcement(state: Option<&EditorState>) -> String {
     }
 }
 
-/// The header's mark, as the equivalent words it.
+/// The header's mark.
 #[must_use]
 pub fn editor_mark(state: Option<&EditorState>) -> String {
     let Some(state) = state else {

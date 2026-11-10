@@ -1,4 +1,4 @@
-//! The chrome's colour roles, as `toCssVariables` derives them in the original client: read
+//! The chrome's colour roles: read
 //! from `themes.json` for a base, derived by `chrome_colors` for a custom
 //! theme, and laid over rune-kit's tokens by `Roles::kit`.
 
@@ -22,7 +22,7 @@ const CALM_HUES_LIGHT: [u32; HUE_COUNT] = [
 const TEXT_FLOOR: f64 = 4.5;
 const FOCUS_FLOOR: f64 = 3.0;
 
-/// `toCssVariables`' derived chrome as hex, named as `themes.json` carries it.
+/// The derived chrome as hex, named as `themes.json` carries it.
 #[derive(Clone, Debug, PartialEq, Eq, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ChromeColors {
@@ -75,7 +75,7 @@ fn c(value: &str) -> u32 {
     parse_hex(value).unwrap_or(0)
 }
 
-/// `readableColor`: keep the hue while it clears `floor` on every ground,
+/// Keep the hue while it clears `floor` on every ground,
 /// else step toward `toward` (or whichever of black and white reads better).
 fn readable(color: u32, grounds: &[u32], toward: u32, floor: f64) -> u32 {
     let score = |candidate: u32| {
@@ -120,8 +120,8 @@ fn light_ground(bg: u32) -> bool {
     contrast(bg, 0) > contrast(bg, 0x00ff_ffff)
 }
 
-/// The derivation `toCssVariables`, `semanticColors` and `projectHues` run,
-/// for a palette `themes.json` does not carry.
+/// The chrome, semantic and project-hue derivation for a palette
+/// `themes.json` does not carry.
 #[must_use]
 pub fn chrome_colors(p: &Palette) -> ChromeColors {
     let [bg, text, rail, sidebar, strip, surface, surface_hi, editor] = [
@@ -297,7 +297,7 @@ pub struct GitColors {
     pub ignored: Color,
 }
 
-/// The resolved theme as Rune colours: every role the original client's chrome paints with.
+/// The resolved theme as Rune colours: every role the chrome paints with.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Roles {
     pub light: bool,
@@ -437,7 +437,7 @@ impl Roles {
         self.hues[slot.filter(|&slot| slot < HUE_COUNT).unwrap_or(DEFAULT_HUE)]
     }
 
-    /// rune-kit's tokens with the original client's roles laid over them: what rune-kit
+    /// rune-kit's tokens with Forge's roles laid over them: what rune-kit
     /// derives from bg/fg/accent alone is a different theme in every base.
     #[must_use]
     pub fn kit(&self) -> Kit {

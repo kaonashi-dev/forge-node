@@ -387,7 +387,7 @@ mod tests {
         session.editor = Some(state);
         let id = session.id;
         let mut s = AppState::for_bench(store, Arc::new(Metrics::default()), SharedTerminal::new());
-        s.editor_surface = protocol::EditorSurface::Dom;
+        s.editor_surface = client::EditorSurface::Dom;
         s.select(id);
         s.editor.set_session(Some(id));
         let (handle, rx) = ConnectionHandle::test_handle(Arc::new(Metrics::default()));

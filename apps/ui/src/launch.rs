@@ -1,5 +1,4 @@
-//! What Cmd-Shift-A starts: the `ui.default_agent` preference, read the way
-//! this client reads it, so both clients launch the same thing.
+//! What Cmd-Shift-A starts: the `ui.default_agent` preference.
 
 use domain::{AgentProfileId, AgentProviderId};
 
@@ -101,7 +100,7 @@ pub fn resolve(
     }
 }
 
-/// The agent last picked beside "Resolve with AI", shared with the original client.
+/// The agent last picked beside "Resolve with AI".
 pub const RESOLVE_AGENT_KEY: &str = "ui.git.resolve_agent";
 
 /// What can launch an agent: installed providers, their profiles, which
@@ -113,7 +112,7 @@ pub struct Launchables<'a, V: Fn(&str) -> bool, P: Fn(&AgentProviderId) -> bool>
     pub takes_prompt: P,
 }
 
-/// The agent to hand a prompt to, as the original client's `resolverFor`: a still-valid
+/// The agent to hand a prompt to: a still-valid
 /// pick, else the default (refused here if it cannot take a prompt), else the
 /// only prompt-capable agent. Two candidates and no default is a guess this
 /// refuses to make; the error is the sentence to show.

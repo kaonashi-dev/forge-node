@@ -1,7 +1,6 @@
 //! Settings › Stats & usage. Two readings that never merge: `UsageAnalytics`
 //! is our count of what was spent, off the transcripts on disk, and a
-//! `ProviderUsage` is the provider's word on what allowance is left. Numbers
-//! are worded as this client words them.
+//! `ProviderUsage` is the provider's word on what allowance is left.
 
 use domain::{ProviderUsage, UsageAnalytics};
 use rune::{El, col, el, row, text};
@@ -32,7 +31,7 @@ impl Default for Usage {
     }
 }
 
-/// `1.2M`, as the original client's `compactTokens`.
+/// `1.2M`.
 #[must_use]
 pub fn compact_tokens(value: u64) -> String {
     let v = value as f64;
@@ -95,7 +94,7 @@ pub fn today_utc() -> i64 {
         .map_or(0, |since| (since.as_secs() / 86_400) as i64)
 }
 
-/// One bar per day of the window ending `today`, as `dailyCells`: the daemon
+/// One bar per day of the window ending `today`: the daemon
 /// leaves quiet days out, and a missing day is a zero, not a gap to close.
 #[must_use]
 pub fn daily_cells(
@@ -117,7 +116,7 @@ pub fn daily_cells(
         .collect()
 }
 
-/// `part` of `total` as a whole percent, as the original client's `percentLabel`: a real
+/// `part` of `total` as a whole percent: a real
 /// sliver reads `<1%` rather than `0%`.
 #[must_use]
 pub fn percent_label(part: u64, total: u64) -> String {
@@ -132,7 +131,7 @@ pub fn percent_label(part: u64, total: u64) -> String {
     }
 }
 
-/// `35d 4h`, `4h 20m`, `12m`, as the original client's `workedLabel`; `—` for nothing.
+/// `35d 4h`, `4h 20m`, `12m`; `—` for nothing.
 #[must_use]
 pub fn worked_label(secs: i64) -> String {
     if secs <= 0 {
@@ -157,16 +156,16 @@ pub fn worked_label(secs: i64) -> String {
 }
 
 /// `resets in 3h 12m`, or `None` when the provider gave no reset or it has
-/// passed, as the original client's `resetsIn`.
+/// passed.
 #[must_use]
 pub fn resets_in(at: Option<&domain::Timestamp>, now: &domain::Timestamp) -> Option<String> {
     let secs = (at?.0 - now.0).whole_seconds();
     (secs > 0).then(|| format!("resets in {}", worked_label(secs)))
 }
 
-/// How long a window lasts, from the label the provider gave it, as the original client's
-/// `windowDurationSecs`. Only a label it recognizes gets a pace mark: seven
-/// invented days for an unknown window would measure nothing.
+/// How long a window lasts, from the label the provider gave it. Only a label
+/// it recognizes gets a pace mark: seven invented days for an unknown window
+/// would measure nothing.
 #[must_use]
 pub fn window_duration_secs(label: &str) -> Option<f64> {
     let normalized = label.trim().to_ascii_lowercase();
@@ -192,7 +191,7 @@ pub fn window_duration_secs(label: &str) -> Option<f64> {
 }
 
 /// How far through its window a meter is, as a whole percent, or `None`
-/// when the window's start cannot be read (`elapsedPercent`).
+/// when the window's start cannot be read.
 #[must_use]
 pub fn elapsed_percent(
     resets_at: Option<&domain::Timestamp>,
@@ -213,7 +212,7 @@ pub enum Pace {
 }
 
 /// Spending faster, even with, or slower than the window elapses, with five
-/// points of tolerance (`paceOf`).
+/// points of tolerance.
 #[must_use]
 pub fn pace_of(used: u8, elapsed: Option<u8>) -> Option<Pace> {
     let (used, elapsed) = (i16::from(used), i16::from(elapsed?));
@@ -293,7 +292,7 @@ fn limits(usage: &[ProviderUsage], k: &Kit) -> El {
     for reading in usage {
         for window in &reading.windows {
             let used = window.used_percent.min(100);
-            // the original client's meter: amber from three quarters, red from nine tenths.
+            // Amber from three quarters, red from nine tenths.
             let fill = if used >= 90 {
                 k.c.danger.icon
             } else if used >= 75 {

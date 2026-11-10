@@ -21,7 +21,8 @@ pub use ipc::{
 };
 pub use protocol::{
     DaemonEvent, DaemonStats, EditorSurface, ErrorCode, ForgePaths, Layout, ProtocolCodecError,
-    ProtocolError, ProviderInfo, RemoveProjectPolicy, SendContextSpawn, PROTOCOL_VERSION,
+    ProtocolError, ProviderInfo, RemoveProjectPolicy, Request, Response, SendContextSpawn,
+    PROTOCOL_VERSION,
 };
 pub use store::{CellGrid, DeltaOutcome, EventOutcome, Store};
 pub use terminal_input::{

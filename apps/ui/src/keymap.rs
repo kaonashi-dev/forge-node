@@ -1,6 +1,6 @@
 //! App-wide chords, matched before a terminal or an editor sees the key, so a
 //! bound chord never leaks into a PTY. `BINDINGS` is the shipped table, in
-//! the original client's order; a person's `ui.keymap` overrides one action at a time and is
+//! menu order; a person's `ui.keymap` overrides one action at a time and is
 //! consulted first.
 
 use rune::{Chord, ChordKey, ChordMod, Key, KeyEvent};
@@ -61,7 +61,7 @@ pub enum Zoom {
 }
 
 impl Action {
-    /// The stable name `ui.keymap` stores, the same ids the original client writes.
+    /// The stable name `ui.keymap` stores.
     #[must_use]
     pub fn id(self) -> &'static str {
         match self {
@@ -488,8 +488,8 @@ pub const BINDINGS: &[Binding] = &[
 /// tab switch.
 const OPTION_DIGITS: [char; 9] = ['¡', '™', '£', '¢', '∞', '§', '¶', '•', 'ª'];
 
-/// Parse a stored spec. Rune's `mod+shift+t` is canonical; the original client's older
-/// `cmd-shift-t` is accepted so a preference written before the migration still
+/// Parse a stored spec. Rune's `mod+shift+t` is canonical; the older
+/// `cmd-shift-t` form is accepted so a preference stored that way still
 /// means what it meant.
 #[must_use]
 pub fn parse_chord(spec: &str) -> Option<Chord> {

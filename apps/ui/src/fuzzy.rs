@@ -1,4 +1,4 @@
-//! The palette's subsequence ranking, as this client:
+//! The palette's subsequence ranking:
 //! a match at a word start or in a run scores higher, which is what puts
 //! "New Terminal" ahead of "Agent Settings" for `nt`. File paths are ranked by
 //! the daemon (`SearchFiles`), not here.
@@ -9,7 +9,7 @@ const RUN: i32 = 4;
 const LENGTH_STEP: usize = 8;
 
 /// The query as it is matched: trimmed, without a leading `./`, lowercased
-/// and with whitespace removed, as `foldQuery`.
+/// and with whitespace removed.
 #[must_use]
 pub fn needle_of(query: &str) -> Vec<char> {
     let trimmed = query.trim().to_lowercase();

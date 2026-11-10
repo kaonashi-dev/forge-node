@@ -1,6 +1,5 @@
-//! The `ui.*` preferences Settings › Appearance writes, read and written
-//! exactly as this client does, so the two clients share
-//! one `app_state` row per key.
+//! The `ui.*` preferences Settings › Appearance writes, one `app_state` row
+//! per key.
 
 pub const DENSITY_KEY: &str = "ui.density";
 pub const REDUCE_MOTION_KEY: &str = "ui.reduce_motion";
@@ -20,7 +19,7 @@ pub struct Range {
     pub fallback: f64,
 }
 
-/// The chrome's `sm` rung in points; 13 is the original client's `metrics.textSM`.
+/// The chrome's `sm` rung in points.
 pub const UI_FONT_SIZE: Range = Range {
     min: 12.0,
     max: 16.0,
@@ -40,8 +39,8 @@ pub const TERMINAL_ZOOM: Range = Range {
     step: 0.1,
     fallback: 1.0,
 };
-/// Wider than the four named spacings, because the original client clamps a stored value
-/// to this range rather than to the choices.
+/// Wider than the four named spacings: a stored value is clamped to this
+/// range rather than to the choices.
 pub const EDITOR_LINE_HEIGHT: Range = Range {
     min: 1.1,
     max: 2.2,
@@ -67,7 +66,7 @@ pub struct ChromeMetrics {
 }
 
 impl ChromeMetrics {
-    /// the original client's compact ladder, or the cozy one, with Trim pulling the frame
+    /// The compact ladder, or the cozy one, with Trim pulling the frame
     /// and paddings in rather than changing a row's height.
     #[must_use]
     pub fn of(density: Density, trim: bool) -> Self {
@@ -176,7 +175,7 @@ impl Density {
         }
     }
 
-    /// the original client's `DENSITY_NOTES`: the tree row is 28 pt compact, six more cozy.
+    /// What the density means: the tree row is 28 pt compact, six more cozy.
     #[must_use]
     pub fn note(self) -> &'static str {
         match self {
@@ -197,8 +196,8 @@ pub fn flag_value(on: bool) -> &'static str {
     if on { "true" } else { "false" }
 }
 
-/// A stored number, clamped: a value an older build or the other client
-/// wrote must not be able to break the grid.
+/// A stored number, clamped: a value an older build wrote must not be able
+/// to break the grid.
 #[must_use]
 pub fn read_scale(value: Option<&str>, range: Range) -> f64 {
     match value.and_then(|value| value.trim().parse::<f64>().ok()) {

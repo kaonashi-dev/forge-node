@@ -54,7 +54,7 @@ const PRECHECK_REASONS: [(&str, &str); 3] = [
     ("merge_or_rebase=true", "A merge or rebase is in progress."),
 ];
 
-/// The daemon's removal precheck as sentences, as `describeWorktreeRemovalBlock`:
+/// The daemon's removal precheck as sentences:
 /// only the checks that failed, or the daemon's own words when none is known.
 #[must_use]
 pub fn removal_block(reason: &str) -> Vec<String> {
@@ -83,7 +83,7 @@ fn pr_note(s: &AppState, workspace: &Workspace) -> String {
     .map_or_else(String::new, |pr| format!(" · {}", pr_label(pr)))
 }
 
-/// `#12 · draft · Title`, as the original client's `prLabel` words it.
+/// `#12 · draft · Title`.
 #[must_use]
 pub fn pr_label(pr: &domain::PullRequest) -> String {
     let state = if pr.is_draft {
@@ -118,7 +118,7 @@ pub fn status_line(workspace: &Workspace) -> String {
         }
         .to_string(),
     ];
-    // A side at zero is left out, as the original client's `syncLabel` does.
+    // A side at zero is left out.
     let sync: Vec<String> = [
         status.ahead.filter(|n| *n > 0).map(|n| format!("↑{n}")),
         status.behind.filter(|n| *n > 0).map(|n| format!("↓{n}")),
@@ -141,7 +141,7 @@ fn small(label: &'static str, k: &Kit, key: String, press: impl Fn(&mut AppState
         .key(key)
 }
 
-/// A project's checkouts as the original client's `workspaceOrder` lists them by default:
+/// A project's checkouts in their default order:
 /// the repository's own checkout first, then its worktrees by name.
 #[must_use]
 pub fn checkouts_of(workspaces: &[Workspace], project: ProjectId) -> Vec<&Workspace> {
@@ -817,7 +817,7 @@ pub fn confirm_removal(s: &mut AppState) {
     );
 }
 
-/// the original client's `RemoveWorktreeDialog`: a confirmation, then the daemon's reasons
+/// A confirmation, then the daemon's reasons
 /// and an explicit force when it refuses.
 fn removal_dialog(s: &AppState, k: &Kit, layer: &mut Vec<El>) {
     let (Some(removal), Some(store)) = (&s.projects.removal, &s.store) else {
@@ -919,7 +919,7 @@ pub fn without_ignore(
         .collect()
 }
 
-/// the original client's `WorktreeIgnoresDialog`: each rule that keeps worktrees out of the
+/// Each rule that keeps worktrees out of the
 /// rail, with a way to stop it. Nothing on disk changed, so the next scan
 /// finds what a dropped rule covered.
 fn ignores_dialog(s: &AppState, k: &Kit, layer: &mut Vec<El>) {
@@ -1014,7 +1014,7 @@ fn ignores_dialog(s: &AppState, k: &Kit, layer: &mut Vec<El>) {
     .build(k, layer);
 }
 
-/// the original client's avatar text: the icon the user set, else the name's first letter.
+/// The avatar text: the icon the user set, else the name's first letter.
 fn project_mark(project: &domain::Project) -> String {
     match project.icon.as_deref().map(str::trim) {
         Some(icon) if !icon.is_empty() => icon.chars().take(2).collect(),

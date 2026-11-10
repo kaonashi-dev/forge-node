@@ -347,7 +347,7 @@ merge_or_copy "$app/Contents/MacOS/$ctl_name" "${ctl_sources[@]}"
 cat >"$app/Contents/MacOS/$gui_name" <<'LAUNCHER'
 #!/bin/bash
 here="$(cd "$(dirname "$0")" && pwd)"
-exec "$here/forge-ui" --spawn-daemon --daemon-bin "$here/forge-daemon" "$@"
+exec "$here/forge-ui" --daemon --spawn-daemon --daemon-bin "$here/forge-daemon" "$@"
 LAUNCHER
 chmod 755 "$app/Contents/MacOS/$gui_name"
 

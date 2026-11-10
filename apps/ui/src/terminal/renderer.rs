@@ -26,7 +26,7 @@ pub const MARK_BASE: u32 = 0x100;
 pub const PANES: usize = 2;
 /// Underline slots for a ⌘-hovered link: one per row a soft wrap joins.
 const LINK_SLOTS: usize = 17;
-/// Geist Mono at the original client's 1.35 line height. 8 × 18 pt is 13.3 pt type rather
+/// Geist Mono at a 1.35 line height. 8 × 18 pt is 13.3 pt type rather
 /// than 13: whole device pixels at 1× and 2×, so the drawn cell and the IME
 /// caret rect never round apart.
 pub const CELL_PT: (f32, f32) = (8.0, 18.0);
@@ -557,7 +557,7 @@ fn encode_extras(
     }
 }
 
-/// The caret's rectangle in device pixels, as the original client's `caretRect`: a beam
+/// The caret's rectangle in device pixels: a beam
 /// or underline is one logical pixel snapped onto the device grid, so a
 /// fractional cell width never blurs it; a block covers a wide cell whole;
 /// an underline stays inside its cell.
@@ -920,9 +920,9 @@ fn _cursor_shape(cursor: Cursor) -> CursorShape {
     cursor.shape
 }
 
-/// Whole cells a pane of `width` × `height` holds, as the original client's `gridSize`
-/// floors them. A pane with no whole cell keeps the last measure (`None`)
-/// rather than the original client's 1 × 1: resizing the PTY to one cell would reflow it.
+/// Whole cells a pane of `width` × `height` holds, floored. A pane with no
+/// whole cell keeps the last measure (`None`) rather than 1 × 1: resizing the
+/// PTY to one cell would reflow it.
 #[must_use]
 pub fn grid_cells(width: f32, height: f32, cell_w: f32, cell_h: f32) -> Option<(u16, u16)> {
     let whole = |length: f32, cell: f32| {

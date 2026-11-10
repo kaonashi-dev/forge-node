@@ -5,8 +5,7 @@
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
-use client::{Client, ClientError, Store};
-use protocol::Request;
+use client::{Client, ClientError, Request, Store};
 
 #[derive(serde::Serialize)]
 pub struct ProbeReport {

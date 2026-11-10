@@ -106,7 +106,7 @@ impl Section {
     }
 }
 
-/// How long the second Escape may follow the first, as the original client's `ESC_AGAIN_MS`.
+/// How long the second Escape may follow the first.
 pub const ESC_AGAIN: Duration = Duration::from_millis(1_200);
 
 /// Two Escapes leave Settings. A sequence rather than a chord, so a dialog
@@ -324,7 +324,7 @@ impl AppState {
     }
 }
 
-/// The sidebar while Settings is open, as the original client's `SettingsNav`.
+/// The sidebar while Settings is open.
 pub fn nav(s: &AppState, k: &Kit) -> El {
     let armed = s.settings.esc.armed();
     let back = SidebarRow::new(if armed {
@@ -374,7 +374,7 @@ pub fn nav(s: &AppState, k: &Kit) -> El {
     list
 }
 
-/// One labelled group of a page, as the original client's `Group`.
+/// One labelled group of a page.
 pub(crate) fn group(k: &Kit, key: &str, title: &str, description: Option<&str>) -> El {
     let mut head = col().gap(2.0).child(
         text(title.to_string())
@@ -399,8 +399,7 @@ pub(crate) fn group(k: &Kit, key: &str, title: &str, description: Option<&str>) 
         .child(head)
 }
 
-/// A label and its explanation on the left, the control on the right, as
-/// the original client's `Row`.
+/// A label and its explanation on the left, the control on the right.
 pub(crate) fn setting_row(k: &Kit, label: &str, description: Option<&str>, control: El) -> El {
     let mut words = col().gap(2.0).grow(1.0).min_w(0.0).child(
         text(label.to_string())

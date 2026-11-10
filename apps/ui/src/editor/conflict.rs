@@ -1,6 +1,5 @@
 //! A save the daemon refused because the file changed on disk under the
-//! buffer: keep mine, take disk, or compare the two (the original client's
-//! `editor/conflict/*`). The two texts are fetched on demand with
+//! buffer: keep mine, take disk, or compare the two. The two texts are fetched on demand with
 //! `GetEditorConflict`; `EditorState.conflict` only says there is something
 //! to fetch.
 

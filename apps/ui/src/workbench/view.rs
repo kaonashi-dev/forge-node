@@ -60,7 +60,7 @@ fn notice(k: &Kit, key: &'static str, message: String) -> El {
         .child(text(message).font(k.ty.small).color(k.c.text_muted))
 }
 
-/// A diff status as one letter, as the original client's `statusLetter`.
+/// A diff status as one letter.
 pub(crate) fn status_letter(status: domain::DiffStatus) -> &'static str {
     match status {
         domain::DiffStatus::Added => "A",
@@ -71,7 +71,7 @@ pub(crate) fn status_letter(status: domain::DiffStatus) -> &'static str {
     }
 }
 
-/// A diff status in words for the row's accessible name, as the original client's `statusWord`.
+/// A diff status in words for the row's accessible name.
 pub(crate) fn status_word(status: domain::DiffStatus) -> &'static str {
     match status {
         domain::DiffStatus::Added => "added",
@@ -182,7 +182,7 @@ fn changed_rows(s: &AppState, k: &Kit) -> El {
     list
 }
 
-/// The sidebar's Git panel, as the original client's `GitPanel`: the branch and its sync,
+/// The sidebar's Git panel: the branch and its sync,
 /// the changed files, and the commit box. A file's diff opens in the centre.
 pub fn git_panel(s: &AppState, k: &Kit) -> El {
     let changes = &s.workbench.changes;
@@ -347,7 +347,7 @@ pub fn changes(s: &AppState, k: &Kit) -> El {
 }
 
 /// The sidebar's Files panel: the checkout's tree. A Markdown file opens
-/// rendered in the centre, anything else in an editor, as the original client routes them.
+/// rendered in the centre, anything else in an editor.
 pub fn files_panel(s: &AppState, k: &Kit) -> El {
     if s.workbench.workspace.is_none() {
         return text("No checkout in this window.")
@@ -678,7 +678,7 @@ fn preview_view(preview: &Preview, k: &Kit) -> El {
 }
 
 /// A rebase, merge or cherry-pick that git stopped, and its unmerged paths.
-/// The sequencer operation as a sentence names it, as the original client's `operationName`:
+/// The sequencer operation as a sentence names it:
 /// unknown is a rebase, the only one older daemons reported.
 fn operation_name(operation: Option<domain::SequencerOp>) -> String {
     match operation {
@@ -690,7 +690,7 @@ fn operation_name(operation: Option<domain::SequencerOp>) -> String {
     }
 }
 
-/// `step 3 of 7`, as `rebaseSteps` says it: a step past the end is the last
+/// `step 3 of 7`: a step past the end is the last
 /// one, and an unknown or empty replay says nothing.
 fn step_label(step: Option<u32>, total: Option<u32>) -> Option<String> {
     let (step, total) = (step?, total?);

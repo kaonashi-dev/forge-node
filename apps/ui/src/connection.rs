@@ -9,14 +9,13 @@ use std::sync::{Arc, Mutex, OnceLock};
 use std::thread::{self, ThreadId};
 use std::time::{Duration, Instant};
 
-use client::{Client, Store};
+use client::{Client, DaemonEvent, Request, Store};
 use domain::{
     AgentActivity, BranchCompare, BranchRef, CommitLine, DiffFile, DiffStatus, PullRequestDraft,
     RefScope, Remote, Session, SessionId, SessionKind, SessionRole, SessionState, SessionTitle,
     TerminalId, Timestamp, WorkspaceDiff, WorkspaceId,
 };
 use flume::{Receiver, Selector, Sender};
-use protocol::{DaemonEvent, Request};
 
 use crate::terminal::SharedTerminal;
 use crate::terminal::fixture::{self, Feed};
@@ -186,7 +185,7 @@ pub enum Command {
     SendContext {
         source_session_id: SessionId,
         target_session_id: Option<SessionId>,
-        spawn: Option<protocol::SendContextSpawn>,
+        spawn: Option<client::SendContextSpawn>,
         summary: Option<String>,
         instructions: Option<String>,
         include_transcript: bool,
@@ -246,7 +245,7 @@ pub enum Command {
     },
     RemoveProject {
         project_id: domain::ProjectId,
-        policy: protocol::RemoveProjectPolicy,
+        policy: client::RemoveProjectPolicy,
     },
     /// A project's whole rule set, which replaces the one it had.
     SetWorktreeIgnores {
@@ -349,7 +348,7 @@ pub enum UiEvent {
     Connected {
         generation: u64,
         detail: String,
-        editor_surface: protocol::EditorSurface,
+        editor_surface: client::EditorSurface,
     },
     Disconnected {
         generation: u64,
@@ -409,7 +408,7 @@ pub enum UiEvent {
     },
     Paths {
         generation: u64,
-        result: Result<Box<(protocol::ForgePaths, std::path::PathBuf)>, String>,
+        result: Result<Box<(client::ForgePaths, std::path::PathBuf)>, String>,
     },
     PreferenceFailed {
         generation: u64,
@@ -756,7 +755,7 @@ impl ConnectionHandle {
         &self,
         source_session_id: SessionId,
         target_session_id: Option<SessionId>,
-        spawn: Option<protocol::SendContextSpawn>,
+        spawn: Option<client::SendContextSpawn>,
         summary: Option<String>,
         instructions: Option<String>,
         include_transcript: bool,
@@ -996,7 +995,7 @@ impl ConnectionHandle {
     pub fn remove_project(
         &self,
         project_id: domain::ProjectId,
-        policy: protocol::RemoveProjectPolicy,
+        policy: client::RemoveProjectPolicy,
     ) -> Result<(), String> {
         self.send(Command::RemoveProject { project_id, policy })
     }
@@ -1392,8 +1391,8 @@ fn run_fixture(ctx: FixtureCtx<'_>) -> Result<(), String> {
     thread::sleep(FIXTURE_CONNECT);
     sink(vec![UiEvent::Connected {
         generation,
-        detail: format!("fixture daemon, protocol {}", protocol::PROTOCOL_VERSION),
-        editor_surface: protocol::EditorSurface::Cells,
+        detail: format!("fixture daemon, protocol {}", client::PROTOCOL_VERSION),
+        editor_surface: client::EditorSurface::Cells,
     }]);
 
     let mut link = FixtureLink {
@@ -3955,7 +3954,7 @@ fn resync_live(
 
 /// The first read after connecting. It adds no project and starts no
 /// shell: an empty daemon shows the empty centre (New terminal, Add a
-/// project) as the original client's does, and a launch from Finder has `/` for its
+/// project), and a launch from Finder has `/` for its
 /// working directory, which is no one's project.
 fn bootstrap(client: &Client, metrics: &Metrics) -> Result<(Store, u64), String> {
     load_snapshot(client, metrics)
@@ -4090,7 +4089,7 @@ fn short_id_str(id: &str) -> String {
 pub fn fixture_store(path: &std::path::Path) -> Result<Store, String> {
     let bytes =
         std::fs::read(path).map_err(|error| format!("read fixture {}: {error}", path.display()))?;
-    let response: protocol::Response = serde_json::from_slice(&bytes)
+    let response: client::Response = serde_json::from_slice(&bytes)
         .map_err(|error| format!("decode fixture {}: {error}", path.display()))?;
     let mut store = Store::new();
     store.apply_snapshot(response);

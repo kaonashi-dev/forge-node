@@ -1,4 +1,4 @@
-//! Settings › General, as the original client's `General`: what is running, where its
+//! Settings › General: what is running, where its
 //! configuration lives, and the daemon's controls.
 
 use rune::{El, col, el, row, text};
@@ -12,7 +12,7 @@ fn plural(count: usize, noun: &str) -> String {
     format!("{count} {noun}{}", if count == 1 { "" } else { "s" })
 }
 
-/// What a factory reset takes, as the original client's confirmation counts it.
+/// What a factory reset takes, as its confirmation counts it.
 #[must_use]
 pub fn reset_description(projects: usize, live: usize, worktrees: usize) -> String {
     format!(

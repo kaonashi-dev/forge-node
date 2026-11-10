@@ -1,4 +1,4 @@
-//! the original client's `ThemePreview`: a terminal under the theme, its sixteen ANSI
+//! A theme's preview: a terminal under the theme, its sixteen ANSI
 //! slots, and the nine project hues as the rail draws them.
 
 use rune::{El, TextStyle, col, el, row, text};

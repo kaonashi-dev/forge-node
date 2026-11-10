@@ -47,7 +47,7 @@ pub enum SessionStatus {
 pub struct SessionRow {
     pub id: SessionId,
     pub kind: SessionKind,
-    /// Started by an agent provider; what `tabOrder` groups after shells.
+    /// Started by an agent provider; the strip groups these after shells.
     pub agent: bool,
     /// The provider's id, for its mark on the tab and the row.
     pub provider: Option<String>,
@@ -59,7 +59,7 @@ pub struct SessionRow {
     pub workspace_id: WorkspaceId,
     pub status: Option<SessionStatus>,
     pub running: bool,
-    /// How a session that stopped ended, in the original client's words.
+    /// How a session that stopped ended, in words.
     pub ended: Option<String>,
     /// An editor's file mark, resolved when the store changes.
     pub file: Option<crate::file_icons::FileIcon>,
@@ -74,10 +74,9 @@ pub fn strip_workspace(
     chosen.or(active).or(first)
 }
 
-/// A checkout's tabs: its sessions with a terminal, and its editors (which
-/// Rune shows as tabs, unlike the original client's Code strip). No checkout is no tabs,
-/// never every session. Shells lead and the rest follow, each group in
-/// creation order, as the original client's `tabOrder`; an editor is not a shell.
+/// A checkout's tabs: its sessions with a terminal, and its editors. No
+/// checkout is no tabs, never every session. Shells lead and the rest
+/// follow, each group in creation order; an editor is not a shell.
 #[must_use]
 pub fn rows_in_strip(rows: &[SessionRow], workspace: Option<WorkspaceId>) -> Vec<&SessionRow> {
     let Some(workspace) = workspace else {
@@ -129,7 +128,7 @@ pub struct AppState {
     pub metrics: Arc<Metrics>,
     pub connection: Option<ConnectionHandle>,
     pub terminal: TerminalUi,
-    pub editor_surface: protocol::EditorSurface,
+    pub editor_surface: client::EditorSurface,
     pub editor: EditorUi,
     pub workbench: Workbench,
     pub palette: crate::palette::Palette,
@@ -177,7 +176,7 @@ pub struct AppState {
     /// A workspace picked in Projects; Changes and Files show it instead of
     /// the active session's until a session is selected.
     pub chosen_workspace: Option<WorkspaceId>,
-    /// `ui.theme_base` from the daemon, shared with the original client: a the equivalent
+    /// `ui.theme_base` from the daemon: a built-in
     /// base, `"system"`, or unset.
     pub theme_pref: Option<String>,
     /// A scroll offset that brings a moved caret into view, applied once.
@@ -224,7 +223,7 @@ impl AppState {
             metrics,
             connection: None,
             terminal: TerminalUi::new(shared, fixture),
-            editor_surface: protocol::EditorSurface::Cells,
+            editor_surface: client::EditorSurface::Cells,
             editor: EditorUi::default(),
             workbench: Workbench::default(),
             palette: crate::palette::Palette::default(),
@@ -323,13 +322,13 @@ impl AppState {
 
     fn set_store(&mut self, store: Store) {
         let mut sessions: Vec<&domain::Session> = store.sessions.iter().collect();
-        // Creation order, as the original client's `byCreatedAt`; the sort is stable.
+        // Creation order; the sort is stable.
         sessions.sort_by_key(|session| session.created_at);
         self.rows = sessions
             .into_iter()
             .map(|session| {
                 let lines = session.kind == SessionKind::Editor
-                    && self.editor_surface == protocol::EditorSurface::Dom;
+                    && self.editor_surface == client::EditorSurface::Dom;
                 SessionRow {
                     id: session.id,
                     kind: session.kind,
@@ -441,8 +440,7 @@ impl AppState {
     pub fn active_line_editor(&self) -> Option<SessionId> {
         self.active_row()
             .filter(|row| {
-                row.kind == SessionKind::Editor
-                    && self.editor_surface == protocol::EditorSurface::Dom
+                row.kind == SessionKind::Editor && self.editor_surface == client::EditorSurface::Dom
             })
             .map(|row| row.id)
     }
@@ -590,7 +588,7 @@ impl AppState {
         true
     }
 
-    /// A view's chord, as the original client's `toggle_*` actions: it shows the view, or
+    /// A view's chord: it shows the view, or
     /// hides the sidebar when that view is already what it shows.
     pub fn toggle_panel(&mut self, panel: Panel) {
         if self.sidebar.is_open() && self.workbench.panel == panel {
@@ -615,7 +613,7 @@ impl AppState {
         self.show_panel(next);
     }
 
-    /// The strip's Nth tab (1-based), as Option-N in the original client.
+    /// The strip's Nth tab (1-based), as Option-N.
     pub fn focus_tab(&mut self, n: usize) {
         let Some(id) = self.tab_rows().get(n.wrapping_sub(1)).map(|row| row.id) else {
             return;
@@ -934,8 +932,8 @@ impl AppState {
     }
 
     /// Rebind one action, or unbind it with `None`, and store the result. A
-    /// conflict is reported but not refused: the original client lets the newer binding win
-    /// and says which one it shadowed.
+    /// conflict is reported but not refused: the newer binding wins, and
+    /// the report says which one it shadowed.
     pub fn rebind_key(&mut self, action: Action, chord: Option<rune::Chord>) {
         let label = chord.map(|chord| chord.label());
         self.keymap.set(action, chord);
@@ -976,8 +974,7 @@ impl AppState {
     }
 
     /// Providers the daemon found installed, for the palette's agent entries.
-    /// Installed agents the person has not hidden in Settings › Agents, as
-    /// the original client's launch lists offer them.
+    /// Installed agents the person has not hidden in Settings › Agents.
     pub(crate) fn installed_agents(&self) -> Vec<crate::agent_ops::Choice> {
         let Some(store) = &self.store else {
             return Vec::new();
@@ -985,7 +982,7 @@ impl AppState {
         crate::agent_ops::choices(store, false)
     }
 
-    /// The checkout's strip, as the original client's `sessionScope`: the checkout the
+    /// The checkout's strip: the checkout the
     /// window was pointed at, else the active session's, else the first. A
     /// stored order is applied within the shell/agent grouping.
     pub fn tab_rows(&self) -> Vec<&SessionRow> {
@@ -1080,7 +1077,7 @@ impl AppState {
 
     /// Opens the commit dialog for the workspace Changes shows, and asks Juva
     /// for a draft.
-    /// Asks Juva for a message, only when the person asks, as in the original client.
+    /// Asks Juva for a message, only when the person asks.
     pub fn draft_commit(&mut self) {
         let Some(workspace) = self.workbench.workspace else {
             return;
@@ -1291,7 +1288,7 @@ impl AppState {
         }
     }
 
-    /// Points the window at a checkout, as a rail card does in the original client: its
+    /// Points the window at a checkout, as a rail card does: its
     /// tabs, Git and Files follow, and its first session is selected.
     pub fn focus_checkout(&mut self, workspace: WorkspaceId) {
         if let Some(id) = self
@@ -1444,7 +1441,7 @@ impl AppState {
     }
 
     /// The base to paint with: the saved one, the system's pair for
-    /// `"system"`, and calm-dark when nothing is saved, as in the original client.
+    /// `"system"`, and calm-dark when nothing is saved.
     #[must_use]
     pub fn theme_base(&self, system_dark: bool) -> &str {
         match self.theme_pref.as_deref() {
@@ -1504,9 +1501,9 @@ impl AppState {
         }
     }
 
-    /// Re-reads Git when the window's checkout moved, as the original client's
-    /// `checkoutWatch`. Marks are kept per checkout, so switching away and
-    /// back is not a move, while a change made meanwhile is.
+    /// Re-reads Git when the window's checkout moved. Marks are kept per
+    /// checkout, so switching away and back is not a move, while a change made
+    /// meanwhile is.
     fn watch_checkout(&mut self) {
         let Some(workspace) = self.workbench.workspace else {
             return;
@@ -1698,13 +1695,12 @@ impl AppState {
                 if !self.accept_generation(generation) {
                     return false;
                 }
-                if let protocol::DaemonEvent::ReviewUpdated { run } = event.as_ref() {
+                if let client::DaemonEvent::ReviewUpdated { run } = event.as_ref() {
                     self.apply_review_run(run);
                     return true;
                 }
                 crate::project_ops::observe(self, event.as_ref());
-                if let protocol::DaemonEvent::ClipboardStore { terminal_id, text } = event.as_ref()
-                {
+                if let client::DaemonEvent::ClipboardStore { terminal_id, text } = event.as_ref() {
                     // Only a terminal this window shows may set the clipboard;
                     // anything else running in a PTY is not the person's choice.
                     if self.shows_terminal(*terminal_id) {
@@ -1718,19 +1714,19 @@ impl AppState {
                     }
                     return false;
                 }
-                if let protocol::DaemonEvent::FileChanged { workspace_id, path } = event.as_ref() {
+                if let client::DaemonEvent::FileChanged { workspace_id, path } = event.as_ref() {
                     self.workbench
                         .file_changed(*workspace_id, path, Instant::now());
                     return self.workbench.mode == CenterMode::Search;
                 }
-                if let protocol::DaemonEvent::EditorFrame { session_id, frame } = *event {
+                if let client::DaemonEvent::EditorFrame { session_id, frame } = *event {
                     if let Some(offset) = self.editor.apply_frame(session_id, frame) {
                         self.editor_reveal = Some(offset);
                     }
                     return true;
                 }
                 match event.as_ref() {
-                    protocol::DaemonEvent::RemoteRefsUpdated {
+                    client::DaemonEvent::RemoteRefsUpdated {
                         project_id,
                         remote,
                         updated,
@@ -1741,7 +1737,7 @@ impl AppState {
                         self.workbench.refresh();
                         return true;
                     }
-                    protocol::DaemonEvent::PullRequestOpened {
+                    client::DaemonEvent::PullRequestOpened {
                         workspace_id,
                         url,
                         error,
@@ -1752,14 +1748,14 @@ impl AppState {
                             .pr_opened(*workspace_id, url.clone(), error.clone());
                         return true;
                     }
-                    protocol::DaemonEvent::PullRequestsUpdated { .. } => return true,
-                    protocol::DaemonEvent::EditorFocusRequested { session_id, .. } => {
+                    client::DaemonEvent::PullRequestsUpdated { .. } => return true,
+                    client::DaemonEvent::EditorFocusRequested { session_id, .. } => {
                         self.editor_focus_requested(*session_id);
                         return true;
                     }
                     _ => {}
                 }
-                if let protocol::DaemonEvent::JuvaDraftReady {
+                if let client::DaemonEvent::JuvaDraftReady {
                     workspace_id,
                     draft,
                     fell_back,
@@ -1768,7 +1764,7 @@ impl AppState {
                     self.commit.apply_draft(*workspace_id, draft, *fell_back);
                     return true;
                 }
-                if let protocol::DaemonEvent::PullRequestDraftReady {
+                if let client::DaemonEvent::PullRequestDraftReady {
                     workspace_id,
                     session_id,
                     draft,
@@ -1784,11 +1780,11 @@ impl AppState {
                     self.workbench.show(CenterMode::PrCompose);
                     return true;
                 }
-                let reset = matches!(event.as_ref(), protocol::DaemonEvent::FactoryReset);
+                let reset = matches!(event.as_ref(), client::DaemonEvent::FactoryReset);
                 let agents = matches!(
                     event.as_ref(),
-                    protocol::DaemonEvent::AgentProfilesChanged { .. }
-                        | protocol::DaemonEvent::AgentDetectionChanged { .. }
+                    client::DaemonEvent::AgentProfilesChanged { .. }
+                        | client::DaemonEvent::AgentDetectionChanged { .. }
                 );
                 if let Some(store) = &mut self.store {
                     let _ = store.apply_event(&event);
@@ -1805,16 +1801,16 @@ impl AppState {
                 }
                 let rebuild = matches!(
                     event.as_ref(),
-                    protocol::DaemonEvent::SessionCreated(_)
-                        | protocol::DaemonEvent::SessionUpdated(_)
-                        | protocol::DaemonEvent::SessionRemoved { .. }
-                        | protocol::DaemonEvent::ProjectAdded(_)
-                        | protocol::DaemonEvent::ProjectUpdated(_)
-                        | protocol::DaemonEvent::ProjectRemoved { .. }
-                        | protocol::DaemonEvent::WorkspaceCreated(_)
-                        | protocol::DaemonEvent::WorkspaceUpdated(_)
-                        | protocol::DaemonEvent::WorkspaceRemoved { .. }
-                        | protocol::DaemonEvent::TerminalBell { .. }
+                    client::DaemonEvent::SessionCreated(_)
+                        | client::DaemonEvent::SessionUpdated(_)
+                        | client::DaemonEvent::SessionRemoved { .. }
+                        | client::DaemonEvent::ProjectAdded(_)
+                        | client::DaemonEvent::ProjectUpdated(_)
+                        | client::DaemonEvent::ProjectRemoved { .. }
+                        | client::DaemonEvent::WorkspaceCreated(_)
+                        | client::DaemonEvent::WorkspaceUpdated(_)
+                        | client::DaemonEvent::WorkspaceRemoved { .. }
+                        | client::DaemonEvent::TerminalBell { .. }
                 );
                 if rebuild && let Some(store) = self.store.take() {
                     self.set_store(store);
@@ -2240,7 +2236,7 @@ impl AppState {
     }
 
     /// The resize gate: attach is always safe, and the shown pane sizes its PTY
-    /// once it has been measured, as the original client's does on mount, including a session
+    /// once it has been measured, including a session
     /// restored at startup that nobody clicked. `ResizeTerminal` is always
     /// followed by an `AttachTerminal` from the worker. Attach state is
     /// updated here because this is the one UI-thread place that sees the shared
@@ -2807,7 +2803,7 @@ impl AppState {
     }
 
     /// Closes a session: at once when it is no longer running, after a
-    /// confirmation when it is, as the original client's `closeSessionFromUi` does.
+    /// confirmation when it is.
     pub fn request_close(&mut self, session: SessionId) {
         let live = self.store.as_ref().is_some_and(|store| {
             store
@@ -3028,7 +3024,7 @@ pub fn poll(state: &mut AppState, clock: f64, tx: &mut Tx) -> bool {
     state.poll(clock, tx)
 }
 
-/// The tab's marker, after the original client's `sessionWork`: waiting for the person
+/// The tab's marker: waiting for the person
 /// outranks everything; an editor or a shell is never busy, since only an
 /// agent's hooks report a turn; and a keystroke into an idle agent is a
 /// guard the daemon raises, not a turn.
@@ -3166,7 +3162,7 @@ mod tests {
                 UiEvent::Connected {
                     generation: 1,
                     detail: "one".to_string(),
-                    editor_surface: protocol::EditorSurface::Cells,
+                    editor_surface: client::EditorSurface::Cells,
                 },
             ],
             &mut tx,
@@ -3183,7 +3179,7 @@ mod tests {
                 },
                 UiEvent::Daemon {
                     generation: 1,
-                    event: Box::new(protocol::DaemonEvent::SessionUpdated(updated)),
+                    event: Box::new(client::DaemonEvent::SessionUpdated(updated)),
                 },
                 UiEvent::CommandResult {
                     generation: 1,
@@ -3462,7 +3458,7 @@ mod tests {
                 UiEvent::Connected {
                     generation: 2,
                     detail: "connected".to_string(),
-                    editor_surface: protocol::EditorSurface::Cells,
+                    editor_surface: client::EditorSurface::Cells,
                 },
             ],
             &mut tx,

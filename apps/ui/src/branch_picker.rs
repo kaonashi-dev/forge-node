@@ -1,4 +1,4 @@
-//! New worktree, as the original client's `BranchPicker`: the project's local and remote
+//! New worktree: the project's local and remote
 //! branches over `ListBranches`, a free-text branch to create, an optional
 //! folder name, and what to open once the daemon's `WorkspaceCreated` lands.
 
@@ -93,7 +93,7 @@ pub fn plausible_branch_name(name: &str) -> bool {
         })
 }
 
-/// the original client's `branchEntries`: a branch to create when the query names none,
+/// A branch to create when the query names none,
 /// then local branches (one already checked out is offered disabled, saying
 /// where), then remote ones that have no local twin.
 #[must_use]

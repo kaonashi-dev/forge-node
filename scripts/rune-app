@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
 #
 # Build `Forge Node Rune.app`: the Rune client (apps/ui) with this checkout's
-# forge-daemon and forge-editor beside it, to open from Finder or `open` and
-# review the client as it is now. A development bundle: not signed, not
-# notarized, not an installer. scripts/package-macos still builds what ships.
+# forge-daemon, forge-editor and forgectl beside it, to open from Finder or
+# `open` and review the client as it is now. A development bundle: not signed,
+# not notarized, not an installer. scripts/package-macos builds what ships.
 #
 #   scripts/rune-app          # build dist/rune/Forge Node Rune.app
 #   scripts/rune-app --open   # build, then open it
@@ -29,9 +29,9 @@ esac
 
 export SDKROOT="${SDKROOT:-$("$root/scripts/macos-sdk")}"
 
-printf '==> forge-daemon and forge-editor (release)\n'
+printf '==> forge-daemon, forge-editor and forgectl (release)\n'
 # The repository's own target/: CARGO_TARGET_DIR is apps/ui's (scripts/dev ui).
-env -u CARGO_TARGET_DIR cargo build --release -p daemon --bin forge-daemon -p editor-cli --bin forge-editor
+env -u CARGO_TARGET_DIR cargo build --release -p daemon --bin forge-daemon -p editor-cli --bin forge-editor -p forge-ctl --bin forgectl
 
 printf '==> forge-ui (release)\n'
 "$root/scripts/dev" ui build
@@ -41,7 +41,7 @@ app="$root/dist/rune/Forge Node Rune.app"
 rm -rf "$app"
 mkdir -p "$app/Contents/MacOS" "$app/Contents/Resources"
 cp "$ui_target/release/forge-ui" "$app/Contents/MacOS/forge-ui"
-cp "$root/target/release/forge-daemon" "$root/target/release/forge-editor" "$app/Contents/MacOS/"
+cp "$root/target/release/forge-daemon" "$root/target/release/forge-editor" "$root/target/release/forgectl" "$app/Contents/MacOS/"
 [ -f "$root/assets/icon/forge.icns" ] && cp "$root/assets/icon/forge.icns" "$app/Contents/Resources/forge.icns"
 
 cat > "$app/Contents/MacOS/ForgeNodeRune" <<'LAUNCHER'
@@ -56,7 +56,7 @@ mkdir -p "$FORGE_HOME"
 if [ ! -f "$FORGE_HOME/config.toml" ]; then
   printf '[editor]\nsurface = "dom"\nexecutable = "%s/forge-editor"\n' "$here" > "$FORGE_HOME/config.toml"
 fi
-exec "$here/forge-ui" --socket "$FORGE_SOCKET" --spawn-daemon --daemon-bin "$here/forge-daemon"
+exec "$here/forge-ui" --daemon --socket "$FORGE_SOCKET" --spawn-daemon --daemon-bin "$here/forge-daemon"
 LAUNCHER
 chmod +x "$app/Contents/MacOS/ForgeNodeRune"
 

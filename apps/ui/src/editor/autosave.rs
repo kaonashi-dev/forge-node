@@ -1,6 +1,5 @@
 //! `ui.editor.autosave` is a preference of this window, and the editor process
-//! is what acts on it: each live editor session is told once per change, as
-//! the original client's `createEditorAutosaveSync`.
+//! is what acts on it: each live editor session is told once per change.
 
 use std::collections::HashMap;
 

@@ -519,7 +519,7 @@ mod tests {
     fn a_line_editor_draws_its_rows_and_the_composition_at_the_caret() {
         let mut rt = runtime();
         rt.update(|s, _| {
-            s.editor_surface = protocol::EditorSurface::Dom;
+            s.editor_surface = client::EditorSurface::Dom;
             let id = s.rows[0].id;
             s.rows[0].kind = domain::SessionKind::Editor;
             s.rows[0].terminal_id = None;

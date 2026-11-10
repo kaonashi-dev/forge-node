@@ -27,7 +27,7 @@ pub struct Choice {
     pub profile: Option<AgentProfileId>,
 }
 
-/// What the launch pickers offer, in the original client's order: each provider and the
+/// What the launch pickers offer, in order: each provider and the
 /// profiles under it. Only rows that can start, and only prompt-taking rows
 /// when the launch has to carry a first prompt.
 #[must_use]
@@ -113,7 +113,7 @@ pub const ROLES: [(SessionRole, &str); 6] = [
     (SessionRole::Tester, "Tester"),
 ];
 
-/// the original client's `SendContextDialog` offers the four roles a context hand-off needs.
+/// The four roles a context hand-off offers.
 pub const CONTEXT_ROLES: [(SessionRole, &str); 4] = [
     (SessionRole::Generic, "Generic"),
     (SessionRole::Planner, "Planner"),
@@ -482,7 +482,7 @@ pub fn start_send_context(s: &mut AppState) {
         let role = CONTEXT_ROLES
             .get(send.role)
             .map_or(SessionRole::Generic, |(role, _)| role.clone());
-        let spawn = protocol::SendContextSpawn {
+        let spawn = client::SendContextSpawn {
             kind: SessionKind::Agent,
             provider_id: Some(choice.provider.clone()),
             profile_id: choice.profile,

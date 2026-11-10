@@ -1,4 +1,4 @@
-//! Forge Review, as the original client's `ReviewView`: one workspace's structured review,
+//! Forge Review: one workspace's structured review,
 //! its presets and its findings. Starting and cancelling are daemon requests;
 //! progress arrives as `ReviewUpdated` and findings are read once complete.
 
@@ -78,7 +78,7 @@ const STAGES: [ReviewStage; 4] = [
     ReviewStage::Validate,
 ];
 
-/// Findings grouped as the original client's `groupFindings`: severity groups are most
+/// Findings grouped: severity groups are most
 /// severe first; file groups are sorted by path and line. Empty groups drop.
 #[must_use]
 pub fn group_findings(findings: &[Finding], by: Grouping) -> Vec<(String, Vec<&Finding>)> {

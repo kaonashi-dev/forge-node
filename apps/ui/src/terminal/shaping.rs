@@ -14,7 +14,6 @@ use swash::zeno::Format;
 use swash::{CacheKey, FontRef};
 
 pub const ATLAS_SIZE: u32 = 2048;
-// Geist Mono, the face the original client's terminal uses first (the equivalent).
 const FONTS: [&[u8]; 3] = [
     include_bytes!("../../assets/GeistMono-Regular.ttf"),
     include_bytes!("../../assets/GeistMono-Bold.ttf"),
@@ -105,11 +104,11 @@ struct Fallback {
     nerd: Option<Vec<String>>,
 }
 
-/// The face the original client's terminal names after Geist Mono (the equivalent).
+/// The Nerd Font a prompt icon is looked for in first.
 const PREFERRED_NERD: &str = "JetBrainsMono Nerd Font Mono";
 
 /// Installed Nerd Font families, in the order a prompt icon is looked for:
-/// the original client's face, then any monospaced one (its icons fit a cell), then the
+/// `PREFERRED_NERD`, then any monospaced one (its icons fit a cell), then the
 /// rest. Prompt glyphs live in the Private Use Area, which no script
 /// fallback and no system symbol face covers.
 fn nerd_families<'a>(names: impl Iterator<Item = &'a str>) -> Vec<String> {

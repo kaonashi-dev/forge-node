@@ -69,7 +69,7 @@ impl PreviewKind {
     }
 }
 
-/// Which preview a path opens in, as the original client's `previewKindFor`: by extension,
+/// Which preview a path opens in: by extension,
 /// and a dotfile's name is not an extension. Images are the extensions the
 /// daemon's `ReadImage` serves, so a preview never asks for bytes it will be
 /// refused.
@@ -107,7 +107,7 @@ pub struct Scope {
 }
 
 /// What a checkout's status said last: the oid HEAD names and whether the
-/// tree is dirty, as the original client's `checkoutWatch` remembers it.
+/// tree is dirty.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct CheckoutMark {
     pub head: Option<String>,
@@ -128,7 +128,7 @@ pub fn checkout_moved(before: Option<&CheckoutMark>, after: Option<&CheckoutMark
     }
 }
 
-/// What the sidebar shows, as the original client's sidebar views. The centre keeps the
+/// What the sidebar shows. The centre keeps the
 /// session, a diff picked from Git, or Settings.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum Panel {
@@ -898,7 +898,7 @@ impl Workbench {
         self.compare.set_split(split);
     }
 
-    /// Shows one changed file's patch, as the original client opens one file at a time.
+    /// Shows one changed file's patch; one file is open at a time.
     pub fn select_change(&mut self, index: usize) {
         let changes = &mut self.changes;
         match changes.files.get(index) {
@@ -1049,7 +1049,7 @@ impl Workbench {
         self.files.apply_filter();
     }
 
-    /// Keeps the tree on the active editor's file, as the original client's `treeFollow`.
+    /// Keeps the tree on the active editor's file.
     /// Only a new path is followed, so a re-listing does not yank the list
     /// back from wherever the person scrolled.
     pub fn follow(&mut self, path: Option<&str>) {

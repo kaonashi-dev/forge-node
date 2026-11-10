@@ -93,7 +93,7 @@ executable = "/path/to/forge-node/target/debug/forge-editor"
 ## Bundles
 
 - `scripts/rune-app` builds `dist/rune/Forge Node Rune.app`: this checkout's
-  client, daemon and editor, with its own data directory
+  client, daemon, editor and forgectl, with its own data directory
   (`~/.forge-node-rune`). It never shares the everyday daemon's database.
 - `scripts/package-macos` builds the release `dist/macos/Forge Node.app`
   (host arch, `--universal`, `--zip`, `--updater`), signs and notarizes when
