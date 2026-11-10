@@ -75,14 +75,12 @@ impl AppState {
     /// Picks a base, `"system"` or a custom theme's JSON, and saves it where
     /// the original client keeps it; a custom one is also kept as the last custom theme.
     pub fn choose_theme(&mut self, value: String) {
-        if let Some(connection) = &self.connection {
-            let _ = connection.set_app_state(THEME_KEY, &value);
-            if theme::is_custom(&value) {
-                let _ = connection.set_app_state(CUSTOM_KEY, &value);
-            }
+        let mut saved = self.write_pref_checked(THEME_KEY, &value);
+        if saved.is_ok() && theme::is_custom(&value) {
+            saved = self.write_pref_checked(CUSTOM_KEY, &value);
         }
         self.theme_pref = Some(value);
-        self.theme_editor.error = None;
+        self.theme_editor.error = saved.err();
         self.theme_editor.status = None;
     }
 
@@ -671,6 +669,34 @@ fn controls(s: &AppState, k: &Kit, active: Option<&CustomTheme>, contrast: u8) -
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::connection::fixture_store;
+    use std::path::Path;
+    use std::sync::Arc;
+
+    #[test]
+    fn a_chosen_theme_survives_the_next_replica_rebuild() {
+        let store =
+            fixture_store(&Path::new(env!("CARGO_MANIFEST_DIR")).join("fixtures/snapshot.json"))
+                .expect("fixture snapshot decodes");
+        let mut state = AppState::for_bench(
+            store,
+            Arc::new(crate::connection::Metrics::default()),
+            crate::terminal::SharedTerminal::new(),
+        );
+        let base = state.active_theme(true).expect("a painted theme");
+        let custom = custom::variant("Mine", base.palette, 0).to_json();
+        state.choose_theme(custom.clone());
+        let session = state.store.as_ref().expect("store").sessions[0].clone();
+        state.apply_events(
+            vec![crate::connection::UiEvent::Daemon {
+                generation: state.generation,
+                event: Box::new(client::DaemonEvent::SessionUpdated(session)),
+            }],
+            &mut rune::Tx::default(),
+        );
+        assert_eq!(state.theme_pref.as_deref(), Some(custom.as_str()));
+        assert_eq!(state.pref(CUSTOM_KEY), Some(custom.as_str()));
+    }
 
     #[test]
     fn a_theme_file_over_the_budget_is_refused_before_it_is_read() {
