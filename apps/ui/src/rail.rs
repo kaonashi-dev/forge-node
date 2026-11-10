@@ -263,7 +263,6 @@ pub fn needs_you(sessions: &[Session]) -> Vec<&Session> {
         .iter()
         .filter(|session| {
             !session.state.is_terminal()
-                && !session.background
                 && session.agent_provider_id.is_some()
                 && session.activity.state == domain::ActivityState::Waiting
         })

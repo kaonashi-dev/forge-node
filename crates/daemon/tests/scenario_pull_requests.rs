@@ -658,3 +658,56 @@ fn a_clean_default_branch_has_nothing_to_propose() {
         "{refused:?}"
     );
 }
+
+#[test]
+fn a_checkout_that_changed_while_the_agent_drafted_is_not_published() {
+    let harness = common::Harness::new();
+    common::write_fake_agent_cli(harness.bin(), "claude", "forge_claude", "Claude Code 1.0.0");
+    let gh = harness.root().join("moved-gh");
+    let counter = harness.root().join("moved-count");
+    write_gh(
+        &gh,
+        &counter,
+        "https://github.com/Acme/Moved/pull/1",
+        0,
+        false,
+    );
+    let repo = dirty_main_with_remote(&harness);
+    let daemon = harness.boot_with(|config| {
+        config.github.executable = gh.to_string_lossy().into_owned();
+    });
+    let client = daemon.connect("scenario-pr-agent-moved");
+    let events = client.events();
+    let workspace = common::add_main_workspace(&client, repo.path());
+    client
+        .request(Request::OpenPullRequestWithAgent {
+            workspace_id: workspace,
+            provider_id: domain::AgentProviderId::new("claude"),
+            profile_id: None,
+            draft: false,
+        })
+        .expect("open ack");
+    let agent = background_agent(&events);
+
+    fs::write(repo.path().join("unrelated.txt"), "typed meanwhile\n").expect("edit meanwhile");
+    client
+        .request(Request::SubmitPullRequestDraft {
+            session_id: agent,
+            draft: draft("agent/moved"),
+        })
+        .expect("draft ack");
+    common::wait_for(&events, common::DEADLINE, |event| {
+        matches!(
+            event,
+            DaemonEvent::PullRequestOpened { url: None, error: Some(error), .. }
+                if error.contains("checkout changed")
+        )
+    })
+    .expect("PullRequestOpened refusing the changed checkout");
+    assert_eq!(invocation_count(&counter), 0, "nothing was opened");
+    assert_eq!(
+        common::checked_out_branch(repo.path()),
+        "main",
+        "no branch was made"
+    );
+}

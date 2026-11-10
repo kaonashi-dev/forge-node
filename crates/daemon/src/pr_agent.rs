@@ -35,6 +35,7 @@ impl Daemon {
         let diff = git_service::working_tree_diff(&path, None, git_service::DIFF_CONTEXT_LINES)
             .map_err(git_refusal)?;
         let status = git_service::status(&path).map_err(git_refusal)?;
+        let drafted = CheckoutPrint::of(&status, &diff);
         let default_branch = git_service::default_branch(&path).ok().flatten();
         let on_default =
             domain::branch_step(status.branch.as_deref(), default_branch.as_deref(), None).is_err();
@@ -58,7 +59,6 @@ impl Daemon {
                 ahead: status.ahead,
             },
         );
-        let dirty = status.dirty;
 
         if !self.lock().pr_opening.insert(workspace_id) {
             return Ok(Response::Ack);
@@ -75,7 +75,7 @@ impl Daemon {
                     profile_id,
                     prompt,
                     draft,
-                    dirty,
+                    &drafted,
                 );
             })
             .map_err(|error| {
@@ -100,7 +100,7 @@ impl Daemon {
         profile_id: Option<AgentProfileId>,
         prompt: String,
         draft: bool,
-        dirty: bool,
+        drafted: &CheckoutPrint,
     ) {
         let options = domain::AgentLaunchOptions {
             model: self.config.pull_requests.model.clone(),
@@ -142,7 +142,21 @@ impl Daemon {
             Ok(pr) => pr,
             Err(failure) => return self.pr_agent_failed(workspace_id, Some(session_id), failure),
         };
-        let commit = dirty.then(|| domain::CommitPlan {
+        // The text describes the checkout as it was when the agent read it; a
+        // branch switch or a new edit since would publish something else.
+        let now = git_service::working_tree_diff(path, None, git_service::DIFF_CONTEXT_LINES)
+            .and_then(|diff| Ok(CheckoutPrint::of(&git_service::status(path)?, &diff)));
+        if now.as_ref().ok() != Some(drafted) {
+            return self.pr_agent_failed(
+                workspace_id,
+                Some(session_id),
+                "the checkout changed while the agent was drafting (branch, commit or \
+                 uncommitted files); nothing was committed or pushed, so open the pull request \
+                 again"
+                    .into(),
+            );
+        }
+        let commit = drafted.dirty.then(|| domain::CommitPlan {
             branch: Some(pr.branch.clone()).filter(|branch| !branch.trim().is_empty()),
             message: pr.commit_message.clone(),
         });
@@ -161,11 +175,7 @@ impl Daemon {
     /// Block until the agent hands its draft over, exits, or runs out of time.
     fn await_draft(&self, session_id: SessionId) -> Result<domain::PullRequestDraft, Failure> {
         let (wake_tx, wake_rx) = flume::bounded(1);
-        {
-            let mut inner = self.lock();
-            inner.pr_agents.insert(session_id, None);
-            inner.task_waiters.push(wake_tx);
-        }
+        self.lock().task_waiters.push(wake_tx);
         let budget = self.config.pull_requests.timeout();
         let deadline = Instant::now() + budget;
         loop {
@@ -210,6 +220,33 @@ impl Daemon {
                 error: Some(error),
                 session_id,
             });
+    }
+}
+
+/// What the draft was written against: the branch, its commit, and every
+/// uncommitted change down to its patch.
+#[derive(Debug, PartialEq, Eq)]
+struct CheckoutPrint {
+    branch: Option<String>,
+    head: Option<String>,
+    dirty: bool,
+    files: u64,
+}
+
+impl CheckoutPrint {
+    fn of(status: &git_service::RepoStatus, diff: &git_service::WorkingTreeDiff) -> Self {
+        use std::hash::{Hash, Hasher};
+        let mut hasher = std::collections::hash_map::DefaultHasher::new();
+        for file in &diff.files {
+            (&file.path, file.additions, file.deletions, &file.patch).hash(&mut hasher);
+        }
+        diff.truncated.hash(&mut hasher);
+        Self {
+            branch: status.branch.clone(),
+            head: status.head.clone(),
+            dirty: status.dirty,
+            files: hasher.finish(),
+        }
     }
 }
 

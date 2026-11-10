@@ -50,11 +50,26 @@ pub fn paste_dir() -> PathBuf {
     std::env::temp_dir().join("forge-paste")
 }
 
-/// `create_new`, so a name planted in the shared temp directory is never
-/// written through.
+/// Screenshots are private: the directory is `0700` and each image `0600`,
+/// since a shared `/tmp` would otherwise let other users read them. A
+/// directory that is a symlink, or open and not ours to close, is refused, and
+/// `create_new` never writes through a name planted in it.
 pub fn save_image(image: &ClipboardImage, dir: &Path) -> std::io::Result<PathBuf> {
+    use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt, PermissionsExt};
     static NEXT: AtomicU64 = AtomicU64::new(0);
-    std::fs::create_dir_all(dir)?;
+    match std::fs::DirBuilder::new().mode(0o700).create(dir) {
+        Err(error) if error.kind() != std::io::ErrorKind::AlreadyExists => return Err(error),
+        _ => {}
+    }
+    let meta = std::fs::symlink_metadata(dir)?;
+    if !meta.is_dir() {
+        return Err(std::io::Error::other(
+            "the paste directory is not a directory",
+        ));
+    }
+    if meta.permissions().mode() & 0o077 != 0 {
+        std::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o700))?;
+    }
     let stamp = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map_or(0, |since| since.as_millis());
@@ -63,6 +78,7 @@ pub fn save_image(image: &ClipboardImage, dir: &Path) -> std::io::Result<PathBuf
     let mut file = std::fs::OpenOptions::new()
         .write(true)
         .create_new(true)
+        .mode(0o600)
         .open(&path)?;
     file.write_all(image.png())?;
     Ok(path)
@@ -108,6 +124,19 @@ mod tests {
         let second = save_image(&image, &dir).expect("written");
         assert_ne!(first, second);
         assert_eq!(std::fs::read(&first).expect("read back"), image.png());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_pasted_screenshot_is_readable_only_by_its_owner() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = std::env::temp_dir().join(format!("forge-ui-clip-mode-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let saved = save_image(&png(), &dir).expect("written");
+        let mode = |path: &Path| std::fs::metadata(path).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode(&dir), 0o700, "an open directory is closed first");
+        assert_eq!(mode(&saved), 0o600);
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

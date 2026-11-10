@@ -155,12 +155,7 @@ pub fn views(s: &AppState, k: &Kit) -> El {
         .padding(ds::SPACE_1)
         .radius(k.radius.lg)
         .fill(roles.surface);
-    let title = VIEWS
-        .iter()
-        .find(|(panel, ..)| *panel == s.workbench.panel)
-        .map_or(0.0, |(_, label, ..)| {
-            rune::text::measure(label, &[], k.ty.ui_medium, None).0
-        });
+    let title = chosen_title_width(s, k.ty.ui_medium);
     let shape = view_tab_shape(s.sidebar.width(), s.chrome_metrics().sidebar_pad[0], title);
     for (panel, label, key, glyph) in VIEWS {
         let shown = s.workbench.panel == panel;
@@ -174,6 +169,32 @@ pub fn views(s: &AppState, k: &Kit) -> El {
         );
     }
     bar
+}
+
+/// The view and the type size and weight its name was measured in.
+pub type TitleKey = (Panel, u32, u32);
+
+/// The chosen view's name in points, measured again only when the view or
+/// the type it is set in changes.
+fn chosen_title_width(s: &AppState, style: rune::TextStyle) -> f32 {
+    let key = (
+        s.workbench.panel,
+        style.size.to_bits(),
+        style.weight.to_bits(),
+    );
+    if let Some((held, width)) = s.view_title_width.get()
+        && held == key
+    {
+        return width;
+    }
+    let width = VIEWS
+        .iter()
+        .find(|(panel, ..)| *panel == key.0)
+        .map_or(0.0, |(_, label, ..)| {
+            rune::text::measure(label, &[], style, None).0
+        });
+    s.view_title_width.set(Some((key, width)));
+    width
 }
 
 /// The chosen view keeps its name only while the name fits whole beside the

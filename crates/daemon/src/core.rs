@@ -4404,6 +4404,11 @@ impl Daemon {
             if options != domain::AgentLaunchOptions::default() {
                 inner.launch_options.insert(id, options);
             }
+            // Registered with the session, before anyone can learn its id: a
+            // draft handed over before the worker waits must still reach it.
+            if background {
+                inner.pr_agents.insert(id, None);
+            }
             (cwd, spec, session)
         };
 

@@ -215,6 +215,8 @@ pub struct AppState {
     pub switch_started: Cell<Option<Instant>>,
     pub switch_ms: Cell<Option<f64>>,
     pub view_ms: Cell<Option<f64>>,
+    /// The sidebar's chosen view name, measured, by view and type.
+    pub view_title_width: Cell<Option<(crate::chrome::TitleKey, f32)>>,
     /// How far a pane header starts from the window's edge while the sidebar
     /// is collapsed and the header shares the title row with the lights.
     pub title_clear: Cell<f32>,
@@ -305,6 +307,7 @@ impl AppState {
             switch_started: Cell::new(None),
             switch_ms: Cell::new(None),
             view_ms: Cell::new(None),
+            view_title_width: Cell::new(None),
             title_clear: Cell::new(0.0),
             page_swipe: None,
             sidebar_swipe: None,
@@ -360,11 +363,14 @@ impl AppState {
 
     fn set_store(&mut self, store: Store) {
         self.rows_revision += 1;
-        // A background session is the daemon's errand, never a tab or a row.
+        // A background session is the daemon's errand, never a tab or a row,
+        // until it stops to ask the person something only they can answer.
         let mut sessions: Vec<&domain::Session> = store
             .sessions
             .iter()
-            .filter(|session| !session.background)
+            .filter(|session| {
+                !session.background || session.activity.state == ActivityState::Waiting
+            })
             .collect();
         // Creation order; the sort is stable.
         sessions.sort_by_key(|session| session.created_at);
@@ -1781,6 +1787,7 @@ impl AppState {
                 }
                 self.last_snapshot_us = Some(took_us);
                 self.set_store(*store);
+                self.reconcile_open_pr(std::time::Instant::now());
                 crate::projects::seed(self);
                 self.status = LinkStatus::Connected;
                 true
@@ -2023,6 +2030,17 @@ impl AppState {
                 }
                 true
             }
+            UiEvent::OpenPrRefused {
+                generation,
+                workspace_id,
+                message,
+            } => {
+                if !self.accept_generation(generation) {
+                    return false;
+                }
+                self.open_pr.refused(workspace_id, &message);
+                true
+            }
             UiEvent::Config { generation, result } => {
                 if !self.accept_generation(generation) {
                     return false;
@@ -2225,9 +2243,6 @@ impl AppState {
                     } else {
                         self.commit.error = Some(message.clone());
                     }
-                }
-                if label == "OpenPullRequestWithAgent" && !ok {
-                    self.open_pr.refused(&message);
                 }
                 if label == "RefreshPullRequests" && !ok && self.pr_refreshing {
                     self.pr_refreshing = false;
@@ -3995,5 +4010,18 @@ mod tests {
         let s = AppState::for_bench(store, Arc::new(Metrics::default()), SharedTerminal::new());
         assert!(s.rows.iter().all(|row| row.id != hidden));
         assert!(!s.rows.is_empty(), "the others are still listed");
+    }
+
+    #[test]
+    fn a_background_session_asking_for_approval_comes_forward() {
+        let mut store = fixture_store(&crate::bench::fixture_path()).expect("fixture");
+        let asking = store.sessions[0].id;
+        store.sessions[0].background = true;
+        store.sessions[0].activity.state = ActivityState::Waiting;
+        let s = AppState::for_bench(store, Arc::new(Metrics::default()), SharedTerminal::new());
+        assert!(
+            s.rows.iter().any(|row| row.id == asking),
+            "only the person can answer it"
+        );
     }
 }

@@ -4,6 +4,7 @@
 //! the person is by then.
 
 use std::collections::HashMap;
+use std::time::{Duration, Instant};
 
 use client::Store;
 use domain::{AgentProfileId, AgentProviderId, SessionId, WorkspaceDiff, WorkspaceId};
@@ -25,15 +26,18 @@ pub struct OpenPr {
     pub pending: HashMap<WorkspaceId, Pending>,
     /// The daemon's refusal of the last Confirm, for the checkout it named.
     pub refused: Option<(WorkspaceId, String)>,
-    /// The checkout the last Confirm named; a refusal carries no workspace.
-    last: Option<WorkspaceId>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Pending {
     /// What the progress row calls the agent.
     pub agent: String,
+    pub since: Instant,
 }
+
+/// How long a Confirm may go without its agent session appearing before a
+/// fresh snapshot counts the run as over: launching probes the agent first.
+pub const LAUNCH_GRACE: Duration = Duration::from_secs(20);
 
 /// What a `PullRequestOpened` means for the person.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -47,16 +51,18 @@ pub enum Outcome {
 
 impl OpenPr {
     pub fn started(&mut self, workspace: WorkspaceId, agent: String) {
-        self.pending.insert(workspace, Pending { agent });
+        self.pending.insert(
+            workspace,
+            Pending {
+                agent,
+                since: Instant::now(),
+            },
+        );
         self.refused = None;
-        self.last = Some(workspace);
     }
 
-    /// The daemon refused the request itself: nothing is running.
-    pub fn refused(&mut self, message: &str) {
-        let Some(workspace) = self.last.take() else {
-            return;
-        };
+    /// The daemon refused the request itself: nothing is running there.
+    pub fn refused(&mut self, workspace: WorkspaceId, message: &str) {
         self.pending.remove(&workspace);
         self.refused = Some((workspace, message.to_string()));
     }
@@ -78,6 +84,19 @@ impl OpenPr {
                 session,
             },
         })
+    }
+}
+
+impl OpenPr {
+    /// After a snapshot: runs whose agent is gone ended while this window was
+    /// not listening, so their outcome will never arrive. Returns how many.
+    pub fn reconcile(&mut self, store: &Store, now: Instant) -> usize {
+        let before = self.pending.len();
+        self.pending.retain(|workspace, pending| {
+            now.saturating_duration_since(pending.since) < LAUNCH_GRACE
+                || drafting_session(store, *workspace).is_some()
+        });
+        before - self.pending.len()
     }
 }
 
@@ -196,14 +215,10 @@ pub fn diff_summary(diff: &WorkspaceDiff) -> String {
 
 /// The background agent drafting for `workspace`, if it is still alive.
 #[must_use]
-pub fn drafting_session(store: &Store, workspace: WorkspaceId) -> Option<SessionId> {
-    store
-        .sessions
-        .iter()
-        .find(|session| {
-            session.background && session.workspace_id == workspace && session.state.is_active()
-        })
-        .map(|session| session.id)
+pub fn drafting_session(store: &Store, workspace: WorkspaceId) -> Option<&domain::Session> {
+    store.sessions.iter().find(|session| {
+        session.background && session.workspace_id == workspace && session.state.is_active()
+    })
 }
 
 impl AppState {
@@ -255,13 +270,32 @@ impl AppState {
     }
 
     /// Stops the drafting agent; the daemon then reports the run as failed.
+    /// With no agent left to stop, the run is only forgotten here.
     pub fn cancel_open_pr(&mut self, workspace: WorkspaceId) {
         let session = self
             .store
             .as_ref()
-            .and_then(|store| drafting_session(store, workspace));
-        if let (Some(session), Some(connection)) = (session, &self.connection) {
-            let _ = connection.kill_session(session);
+            .and_then(|store| drafting_session(store, workspace))
+            .map(|session| session.id);
+        match (session, &self.connection) {
+            (Some(session), Some(connection)) => {
+                let _ = connection.kill_session(session);
+            }
+            _ => {
+                self.open_pr.pending.remove(&workspace);
+            }
+        }
+    }
+
+    pub fn reconcile_open_pr(&mut self, now: Instant) {
+        let Some(store) = &self.store else {
+            return;
+        };
+        if self.open_pr.reconcile(store, now) > 0 {
+            self.toasts.neutral(
+                "A pull request run ended while disconnected",
+                Some("Check the Pull Requests view for its outcome.".into()),
+            );
         }
     }
 
@@ -530,6 +564,17 @@ fn note(k: &Kit, words: String, warn: bool) -> El {
 /// The Git panel's line while an agent drafts for this checkout.
 pub fn progress(s: &AppState, k: &Kit, workspace: WorkspaceId) -> Option<El> {
     let pending = s.open_pr.pending.get(&workspace)?;
+    let asking = s
+        .store
+        .as_ref()
+        .and_then(|store| drafting_session(store, workspace))
+        .filter(|session| session.activity.state == domain::ActivityState::Waiting)
+        .map(|session| session.id);
+    let words = if asking.is_some() {
+        format!("{} needs your approval to go on", pending.agent)
+    } else {
+        format!("{} is drafting the pull request…", pending.agent)
+    };
     Some(
         row()
             .key("open-pr-progress")
@@ -538,12 +583,27 @@ pub fn progress(s: &AppState, k: &Kit, workspace: WorkspaceId) -> Option<El> {
             .gap(crate::ds::SPACE_4)
             .items_center()
             .child(
-                text(format!("{} is drafting the pull request…", pending.agent))
+                text(words)
                     .font(k.ty.text_xsmall)
-                    .color(k.c.text_muted)
+                    .color(if asking.is_some() {
+                        k.c.warning.fg
+                    } else {
+                        k.c.text_muted
+                    })
                     .grow(1.0)
                     .truncate(),
             )
+            .children(asking.map(|session| {
+                Button::new("Show")
+                    .variant(ButtonVariant::Outline)
+                    .control_size(ControlSize::Small)
+                    .on_press(move |s: &mut AppState| {
+                        s.select(session);
+                        s.show_mode(crate::workbench::CenterMode::Session);
+                    })
+                    .build(k)
+                    .key("open-pr-show-agent")
+            }))
             .child(
                 Button::new("Cancel")
                     .variant(ButtonVariant::GhostMuted)
@@ -586,12 +646,30 @@ mod tests {
     }
 
     #[test]
-    fn a_refusal_clears_the_pending_run_and_says_why() {
+    fn a_snapshot_forgets_a_run_whose_agent_is_gone_after_the_launch_grace() {
+        let store = crate::connection::fixture_store(&crate::bench::fixture_path()).unwrap();
         let mut open = OpenPr::default();
         let workspace = WorkspaceId::new();
         open.started(workspace, "Claude".into());
-        open.refused("nothing to propose");
+        let now = Instant::now();
+        assert_eq!(open.reconcile(&store, now), 0, "still launching");
+        assert_eq!(open.reconcile(&store, now + LAUNCH_GRACE), 1);
         assert!(open.pending.is_empty());
+    }
+
+    #[test]
+    fn a_refusal_clears_the_pending_run_and_says_why() {
+        let mut open = OpenPr::default();
+        let workspace = WorkspaceId::new();
+        let other = WorkspaceId::new();
+        open.started(workspace, "Claude".into());
+        open.started(other, "Claude".into());
+        open.refused(workspace, "nothing to propose");
+        assert_eq!(
+            open.pending.keys().collect::<Vec<_>>(),
+            [&other],
+            "the other checkout's run is untouched"
+        );
         assert_eq!(
             open.refused,
             Some((workspace, "nothing to propose".to_string()))

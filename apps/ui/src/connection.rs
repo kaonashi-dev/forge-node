@@ -419,6 +419,12 @@ pub enum UiEvent {
         generation: u64,
         result: Result<Box<ConfigView>, String>,
     },
+    /// The daemon refused an `OpenPullRequestWithAgent` for this checkout.
+    OpenPrRefused {
+        generation: u64,
+        workspace_id: WorkspaceId,
+        message: String,
+    },
     PreferenceFailed {
         generation: u64,
         key: String,
@@ -3255,6 +3261,13 @@ fn handle_live_command(
                 .open_pull_request_with_agent(workspace_id, provider_id, profile_id, draft)
                 .map(|()| "drafting".to_string())
                 .map_err(|error| error.to_string());
+            if let Err(message) = &result {
+                sink(vec![UiEvent::OpenPrRefused {
+                    generation,
+                    workspace_id,
+                    message: message.clone(),
+                }]);
+            }
             live_result(
                 generation,
                 "OpenPullRequestWithAgent",
