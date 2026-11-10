@@ -227,23 +227,23 @@ mod tests {
     }
 
     #[test]
-    fn sessions_take_the_bar_while_the_sidebar_is_open_and_give_it_back_closed() {
+    fn sessions_share_one_title_row_with_the_lights_open_or_collapsed() {
         let mut rt = runtime();
         rt.state.debug = false;
         rt.invalidate();
         for step in 0..40 {
             rt.frame(0.2 + f64::from(step) / 60.0);
         }
-        let top = |rt: &Runtime<AppState>, key: &str| {
+        let rect = |rt: &Runtime<AppState>, key: &str| {
             rt.elements()
                 .into_iter()
                 .find(|e| e.key.as_deref() == Some(key))
-                .map(|e| e.rect[1])
+                .map(|e| e.rect)
         };
-        let card = top(&rt, "toolbar").expect("the band is still laid out");
-        let center = top(&rt, "center").expect("the centre");
+        let band = rect(&rt, "toolbar").expect("the band is still laid out");
+        let center = rect(&rt, "center").expect("the centre");
         assert!(
-            center <= card + 1.0,
+            center[1] <= band[1] + 1.0,
             "the centre starts where the band does"
         );
         rt.state.sidebar.set_open(false);
@@ -251,11 +251,17 @@ mod tests {
         for step in 0..40 {
             rt.frame(1.0 + f64::from(step) / 60.0);
         }
-        let card = top(&rt, "toolbar").expect("the band");
-        let center = top(&rt, "center").expect("the centre");
+        let band = rect(&rt, "toolbar").expect("the band");
+        let center = rect(&rt, "center").expect("the centre");
         assert!(
-            center >= card + rune_kit::shell::TOOLBAR_HEIGHT - 1.0,
-            "collapsed, the band keeps the lights and the toggle clear"
+            center[1] <= band[1] + 1.0,
+            "collapsed, no empty band either"
+        );
+        let toggle = rect(&rt, "sidebar-toggle").expect("the toggle stays in the title row");
+        assert!(toggle[1] + toggle[3] <= crate::ui::TITLE_H + 0.5);
+        assert!(
+            toggle[0] + toggle[2] <= rt.state.title_clear.get(),
+            "the pane header starts past the toggle"
         );
     }
 

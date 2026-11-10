@@ -432,7 +432,8 @@ fn run_app(
         .compositor(compositor)
         .chrome(Chrome {
             full_size_content: true,
-            traffic_lights: Some((16.0, 25.0)),
+            // Centred in the title row (`ui::TITLE_H`), as in Rex.
+            traffic_lights: Some((13.0, 7.0)),
             drag_regions: true,
         })
         .args(rest);

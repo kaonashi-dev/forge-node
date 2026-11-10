@@ -5,7 +5,7 @@
 use std::time::Instant;
 
 use rune::{Cx, El, col, effect, el, icon, row, text};
-use rune_kit::shell::{SidebarToggle, SplitView, Toolbar};
+use rune_kit::shell::{SplitView, Toolbar};
 use rune_kit::{Button, ButtonVariant, ControlSize, Kit, Loader};
 
 use crate::app::{AppState, CommandStatus, LinkStatus, SessionRow, SessionStatus};
@@ -52,6 +52,34 @@ pub fn session_mark(
     }
 }
 
+/// The title row the traffic lights centre in; the kit's own band is taller.
+pub const TITLE_H: f32 = crate::ds::CONTROL;
+const TOGGLE_SIDE: f32 = 20.0;
+
+/// The sidebar's toggle, beside the traffic lights in the title row whether
+/// the sidebar is open or not, as in Rex; the kit's own would sit in its
+/// taller band.
+fn sidebar_toggle(s: &AppState, k: &Kit, x: f32) -> El {
+    let open = s.sidebar.is_open();
+    crate::ds::icon_button(
+        if open {
+            &crate::glyphs::PANEL_LEFT_CLOSE
+        } else {
+            &crate::glyphs::PANEL_LEFT_OPEN
+        },
+        if open { "Hide sidebar" } else { "Show sidebar" },
+        crate::ds::IconButtonSize::Mini,
+    )
+    .shortcut("⌘B")
+    .on_press(|s: &mut AppState| {
+        let open = s.sidebar.is_open();
+        s.sidebar.set_open(!open);
+    })
+    .build(k)
+    .key("sidebar-toggle")
+    .absolute(x, (TITLE_H - TOGGLE_SIDE) / 2.0)
+}
+
 /// The shell's kit: the card around the centre is flush with the window, so
 /// its corners are square.
 fn flush_kit(k: &Kit) -> Kit {
@@ -74,24 +102,33 @@ pub fn view(s: &AppState, cx: &mut Cx<AppState>) -> El {
     );
     let metrics = s.chrome_metrics();
     let mut overlays = Vec::new();
-    // With nothing in the bar and the sidebar holding the traffic lights and its
-    // toggle, the bar is empty space; the centre takes it. Collapsed, the band
-    // stays: the lights and the toggle sit in it.
-    let full_height = crate::chrome::strip(s, &k).is_none() && !s.debug && s.sidebar.is_open();
+    let inset = cx.titlebar_inset();
+    let toggle_x = if inset > 0.0 {
+        inset + crate::ds::SPACE_4
+    } else {
+        crate::ds::SPACE_4
+    };
+    s.title_clear
+        .set(toggle_x + TOGGLE_SIDE + crate::ds::SPACE_4);
+    // The kit's band is 48 points; Rex's title row is one control tall. With no
+    // crumbs to show, the centre and the sidebar rise into the band so the
+    // lights, the toggle and the pane headers share that one row.
+    let lifted = crate::chrome::strip(s, &k).is_none() && !s.debug;
     let mut main = col()
         .key("main-pane")
         .w_full()
         .h_full()
         .min_h(0.0)
         .child(center(s, &k, &mut overlays));
-    if full_height {
+    if lifted {
         main = main.mt(-rune_kit::shell::TOOLBAR_HEIGHT);
     }
+    overlays.push(sidebar_toggle(s, &k, toggle_x));
     let shell = SplitView::new(main)
         .sidebar(
             &s.sidebar,
             |s: &mut AppState| &mut s.sidebar,
-            sidebar(s, &k),
+            sidebar(s, &k).mt(TITLE_H - rune_kit::shell::TOOLBAR_HEIGHT),
         )
         .toolbar(toolbar(s, &k))
         .titlebar_inset(cx.titlebar_inset())
@@ -100,14 +137,7 @@ pub fn view(s: &AppState, cx: &mut Cx<AppState>) -> El {
         .frame_inset(0.0)
         .toolbar_in_panel()
         .sidebar_padding(metrics.sidebar_pad[0], metrics.sidebar_pad[1])
-        .sidebar_toggle(
-            SidebarToggle::new()
-                .size(ControlSize::Large)
-                .past_lights(16.0)
-                .edge(18.0)
-                .gap(crate::ds::SPACE_2)
-                .in_header(),
-        )
+        .hide_sidebar_toggle()
         .reduced_motion(cx.is_reduced_motion() || s.reduce_motion())
         .build(&flush_kit(&k));
     // A focusable ancestor is the only public way to move focus on a sidebar
@@ -549,12 +579,17 @@ fn pane_header(s: &AppState, k: &Kit, idx: usize) -> El {
             "terminal-split-header"
         })
         .w_full()
-        .h(ds::CONTROL)
-        .pl(ds::SPACE_5)
+        .h(TITLE_H)
+        .pl(if idx == 0 && !s.sidebar.is_open() {
+            s.title_clear.get()
+        } else {
+            ds::SPACE_5
+        })
         .pr(ds::SPACE_2)
         .gap(ds::SPACE_3)
         .center_y()
         .fill(terminal_ground(s, k))
+        .window_drag()
         .child(mark)
         .child(
             text(title)

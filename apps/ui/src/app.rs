@@ -207,6 +207,9 @@ pub struct AppState {
     pub switch_started: Cell<Option<Instant>>,
     pub switch_ms: Cell<Option<f64>>,
     pub view_ms: Cell<Option<f64>>,
+    /// How far a pane header starts from the window's edge while the sidebar
+    /// is collapsed and the header shares the title row with the lights.
+    pub title_clear: Cell<f32>,
     /// Fingers' horizontal travel in a sidebar swipe still in progress.
     pub page_swipe: Option<f32>,
     /// A swipe over the centre: `Some(None)` once it has acted, so the rest of
@@ -292,6 +295,7 @@ impl AppState {
             switch_started: Cell::new(None),
             switch_ms: Cell::new(None),
             view_ms: Cell::new(None),
+            title_clear: Cell::new(0.0),
             page_swipe: None,
             sidebar_swipe: None,
             window: Cell::new([1180.0, 760.0]),
