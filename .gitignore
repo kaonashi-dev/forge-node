@@ -20,6 +20,7 @@ Cargo.lock.orig
 .DS_Store
 
 # Local dev
+node_modules/
 *.log
 /scratch
 

@@ -15,6 +15,7 @@ pub struct Config {
     pub github: GithubConfig,
     pub juva: JuvaConfig,
     pub review: ReviewConfig,
+    pub pull_requests: PullRequestsConfig,
     pub editor: EditorConfig,
     pub definitions: DefinitionsConfig,
     pub lsp: LspConfig,
@@ -371,6 +372,35 @@ impl Default for ReviewConfig {
     }
 }
 
+/// The background agent behind "Open PR": it drafts the pull request's text,
+/// then the daemon commits, pushes and opens it.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct PullRequestsConfig {
+    /// The agent's instructions before the fixed hand-over; empty uses
+    /// [`domain::DEFAULT_SYSTEM_PROMPT`].
+    pub system_prompt: String,
+    /// `None` passes no flag, so the provider's own default applies.
+    pub model: Option<String>,
+    /// `None` passes no flag, so the provider's own default applies.
+    pub effort: Option<String>,
+    /// A draft not handed over by then fails and its session is stopped;
+    /// `0` is ten minutes.
+    pub timeout_secs: u64,
+}
+
+impl PullRequestsConfig {
+    /// How long the agent gets, never zero.
+    #[must_use]
+    pub fn timeout(&self) -> std::time::Duration {
+        std::time::Duration::from_secs(if self.timeout_secs == 0 {
+            600
+        } else {
+            self.timeout_secs
+        })
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct DaemonConfig {
@@ -541,6 +571,29 @@ impl JuvaConfig {
         })
     }
 }
+
+impl Config {
+    /// The configuration as TOML for a client to read, defaults filled in.
+    /// Language-server option tables are free-form and may carry tokens, so
+    /// they are replaced by a marker.
+    ///
+    /// # Errors
+    /// The serializer's message, when a value has no TOML spelling.
+    pub fn to_display_toml(&self) -> Result<String, String> {
+        let mut shown = self.clone();
+        for server in shown.lsp.servers.values_mut() {
+            for value in [&mut server.initialization_options, &mut server.settings] {
+                if value.is_some() {
+                    *value = Some(serde_json::Value::String(REDACTED.to_owned()));
+                }
+            }
+        }
+        toml::to_string_pretty(&shown).map_err(|error| error.to_string())
+    }
+}
+
+/// Stands in for a value [`Config::to_display_toml`] does not show.
+pub const REDACTED: &str = "<hidden>";
 
 impl WorktreesConfig {
     /// The setup-script timeout, never zero (a zero would kill it instantly).
@@ -830,5 +883,28 @@ mod tests {
         let mut c = Config::default();
         c.terminal.scrollback_lines = 5_000_000;
         assert_eq!(c.effective_scrollback(), 100_000);
+    }
+
+    #[test]
+    fn the_shown_config_hides_language_server_options_and_round_trips() {
+        let mut config = Config::default();
+        config.lsp.servers.insert(
+            "secret-ls".into(),
+            languages::ServerOverride {
+                settings: Some(serde_json::json!({ "token": "abc" })),
+                ..languages::ServerOverride::default()
+            },
+        );
+        config.pull_requests.system_prompt = "Write it in Spanish.".into();
+        let shown = config.to_display_toml().expect("serializes");
+        assert!(!shown.contains("abc"));
+        assert!(shown.contains(REDACTED));
+        assert!(shown.contains("[pull_requests]"));
+        assert!(shown.contains("Write it in Spanish."));
+        let default = Config::default().to_display_toml().expect("serializes");
+        assert_eq!(
+            toml::from_str::<Config>(&default).unwrap(),
+            Config::default()
+        );
     }
 }

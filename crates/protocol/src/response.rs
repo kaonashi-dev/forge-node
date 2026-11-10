@@ -286,6 +286,16 @@ pub enum Response {
         /// `[worktrees] root` applied over the default.
         worktrees_root: PathBuf,
     },
+    /// The loaded configuration, answering `GetConfig`.
+    Config {
+        /// The file it was read from; it may not exist (all defaults).
+        path: PathBuf,
+        /// The effective configuration as TOML, defaults filled in.
+        toml: String,
+        /// The pull-request prompt in effect: `[pull_requests] system_prompt`,
+        /// or the built-in one when that is empty.
+        pull_request_prompt: String,
+    },
     OrchestrationStatus(OrchestrationLimitsView),
     RunCreated {
         run_id: RunId,

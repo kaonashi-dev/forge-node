@@ -2,6 +2,7 @@
 //! centre shows one under a page header.
 
 mod agents;
+pub mod config;
 mod general;
 mod keyboard;
 mod look;
@@ -30,10 +31,11 @@ pub enum Section {
     Storage,
     Stats,
     Appearance,
+    Config,
 }
 
 impl Section {
-    pub const ALL: [Section; 7] = [
+    pub const ALL: [Section; 8] = [
         Section::General,
         Section::Agents,
         Section::Keyboard,
@@ -41,6 +43,7 @@ impl Section {
         Section::Storage,
         Section::Stats,
         Section::Appearance,
+        Section::Config,
     ];
 
     #[must_use]
@@ -53,6 +56,7 @@ impl Section {
             Section::Storage => "Storage",
             Section::Stats => "Stats & usage",
             Section::Appearance => "Appearance",
+            Section::Config => "Configuration",
         }
     }
 
@@ -77,6 +81,10 @@ impl Section {
             Section::Appearance => {
                 "Theme, accent, density, layout and type. Changes apply as you pick them."
             }
+            Section::Config => {
+                "What the daemon read from config.toml at startup, including the pull request \
+                 prompt."
+            }
         }
     }
 
@@ -90,10 +98,11 @@ impl Section {
             Section::Storage => "storage",
             Section::Stats => "stats",
             Section::Appearance => "appearance",
+            Section::Config => "config",
         }
     }
 
-    fn icon(self) -> &'static Icon {
+    pub(crate) fn icon(self) -> &'static Icon {
         match self {
             Section::General => &glyphs::SETTINGS,
             Section::Agents => &glyphs::AGENT,
@@ -102,6 +111,7 @@ impl Section {
             Section::Storage => &glyphs::FILES,
             Section::Stats => &glyphs::STATS,
             Section::Appearance => &glyphs::APPEARANCE,
+            Section::Config => &glyphs::CODE,
         }
     }
 }
@@ -166,6 +176,7 @@ pub struct Settings {
     /// The daemon's answer to the last General or Agents action.
     pub notice: Option<(bool, String)>,
     pub keyboard: keyboard::Keyboard,
+    pub config: config::ConfigPage,
 }
 
 impl Settings {
@@ -449,6 +460,7 @@ pub fn page(s: &AppState, k: &Kit) -> El {
         Section::Storage => crate::storage::section(s, k),
         Section::Stats => crate::usage::section(s, k),
         Section::Appearance => look::section(s, k),
+        Section::Config => config::section(s, k),
     };
     let head = col()
         .key("settings-page-head")
@@ -653,7 +665,8 @@ mod tests {
                 "Shared files",
                 "Storage",
                 "Stats & usage",
-                "Appearance"
+                "Appearance",
+                "Configuration"
             ]
         );
     }

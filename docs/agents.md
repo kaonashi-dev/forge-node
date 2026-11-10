@@ -364,7 +364,7 @@ user looks somewhere else. See [terminal.md](./terminal.md#the-pty-loop-daemonsr
 
 | Provider | Injection | Signal |
 |----------|-----------|--------|
-| `opencode` | `OPENCODE_CLI_CONFIG_CONTENT` → CLI-only V2 `forge-attention.js` | execution events → working/idle; permission/form events → waiting, with BEL fallback |
+| `opencode` | `OPENCODE_CLI_CONFIG_CONTENT` → CLI-only V2 package `forge-opencode/` (entry `tui.ts`, which OpenCode's Bun loads as it is; OpenCode skips a plugin path that is a file). The source is `crates/agents/src/forge-attention.ts`: `bun install`, `bun run check` (strict `tsc`) and `bun test` in `crates/agents` | execution events → working/idle; permission/form events → waiting, with BEL fallback |
 | `claude` | `--settings` → Forge JSON (does **not** rewrite `~/.claude`) | turn/question/permission hooks → `forge-activity.sh`, with BEL fallback |
 | `cursor` | Merge `beforeShellExecution` / `beforeMCPExecution` into `~/.cursor/hooks.json` (FORGE-gated) | Best-effort — Cursor has no permission-prompt hook |
 

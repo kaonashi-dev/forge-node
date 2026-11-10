@@ -20,6 +20,8 @@ pub enum Command {
     Panel(Panel),
     ToggleSidebar,
     NewWorktree,
+    /// The planner of a spec run, in the window's checkout.
+    RunSpec,
     /// A base, or `"system"`.
     Theme(String),
     NewAgent(domain::AgentProviderId, Option<domain::AgentProfileId>),
@@ -28,6 +30,44 @@ pub enum Command {
     FindInFiles,
     SplitPane,
     JoinPanes,
+}
+
+impl Command {
+    /// The mark its palette row leads with.
+    #[must_use]
+    pub fn icon(&self) -> &'static rune::Icon {
+        use crate::glyphs;
+        match self {
+            Command::NewShell => &glyphs::TERMINAL,
+            Command::NewAgent(provider, _) => {
+                glyphs::for_session(domain::SessionKind::Agent, Some(provider.as_str()))
+            }
+            Command::Show(mode) => match mode {
+                CenterMode::Changes | CenterMode::SessionChanges => &glyphs::PATCH,
+                CenterMode::Files => &glyphs::FILES,
+                CenterMode::Projects => &glyphs::PROJECTS,
+                CenterMode::Search => &glyphs::SEARCH,
+                CenterMode::Review => &glyphs::REVIEW,
+                CenterMode::Compare | CenterMode::PrDetail | CenterMode::OpenPr => {
+                    &glyphs::PULL_REQUEST
+                }
+                CenterMode::Settings => &glyphs::SETTINGS,
+                CenterMode::Session => &glyphs::TERMINAL,
+            },
+            Command::Panel(panel) => crate::chrome::VIEWS
+                .iter()
+                .find(|(candidate, ..)| candidate == panel)
+                .map_or(&glyphs::PANEL_LEFT_OPEN, |(.., glyph)| *glyph),
+            Command::ToggleSidebar => &glyphs::PANEL_LEFT_OPEN,
+            Command::NewWorktree => &glyphs::WORKTREE,
+            Command::RunSpec => &glyphs::SPAWN_CHILD,
+            Command::Theme(_) => &glyphs::APPEARANCE,
+            Command::RunAction(_) => &glyphs::PLAY,
+            Command::Settings(section) => section.icon(),
+            Command::FindInFiles => &glyphs::SEARCH,
+            Command::SplitPane | Command::JoinPanes => &glyphs::SPLIT,
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -264,6 +304,7 @@ fn commands() -> Vec<(String, Command)> {
     let out = vec![
         ("New Terminal".to_string(), Command::NewShell),
         ("New Worktree".to_string(), Command::NewWorktree),
+        ("Run Spec…".to_string(), Command::RunSpec),
         ("Projects".to_string(), Command::Panel(Panel::Projects)),
         ("Files".to_string(), Command::Panel(Panel::Files)),
         ("Find in Files".to_string(), Command::FindInFiles),
@@ -469,7 +510,7 @@ impl Palette {
             Scope::Symbols => self.symbol_entries(text),
             Scope::Everything => {
                 let mut out = rank_entries(self.command_entries(false), text);
-                if !text.is_empty() && self.held(scope, text) {
+                if !text.is_empty() {
                     out.extend(self.files.iter().cloned().map(Entry::File));
                 }
                 out
@@ -498,7 +539,7 @@ impl Palette {
                     || matches!(
                         entry,
                         Entry::Command {
-                            command: Command::NewShell | Command::NewAgent(..),
+                            command: Command::NewShell | Command::NewAgent(..) | Command::RunSpec,
                             ..
                         }
                     )
@@ -513,14 +554,13 @@ impl Palette {
         if self.answer_for.as_ref() == Some(&(Scope::Files, text.to_string())) {
             return self.files.iter().cloned().map(Entry::File).collect();
         }
-        if self.asked.as_ref() == Some(&(Scope::Files, text.to_string())) {
-            return if self.files.is_empty() {
-                self.recent.iter().cloned().map(Entry::File).collect()
-            } else {
-                self.files.iter().cloned().map(Entry::File).collect()
-            };
+        // Until this query's answer lands, the last one stays listed: an empty
+        // list between two keystrokes reads as a flicker.
+        if self.files.is_empty() {
+            self.recent.iter().cloned().map(Entry::File).collect()
+        } else {
+            self.files.iter().cloned().map(Entry::File).collect()
         }
-        Vec::new()
     }
 
     fn symbol_entries(&self, text: &str) -> Vec<Entry> {
@@ -868,9 +908,18 @@ mod tests {
             ]
         );
         typed(&mut palette, "zz");
-        assert!(
-            palette.entries().is_empty(),
-            "typing asks the daemon instead"
+        assert_eq!(
+            palette.entries().len(),
+            2,
+            "what was listed stays until the answer, so a keystroke does not blank the list"
+        );
+        palette.apply_search(Scope::Files, "zz", vec!["zz.rs".into()]);
+        assert_eq!(palette.entries(), vec![Entry::File("zz.rs".into())]);
+        typed(&mut palette, "zzz");
+        assert_eq!(
+            palette.entries(),
+            vec![Entry::File("zz.rs".into())],
+            "the last answer stands in for the next one"
         );
         palette.show(Scope::Everything);
         assert!(
@@ -1077,9 +1126,10 @@ mod tests {
             vec![
                 "New Claude Code".to_string(),
                 "New Claude Work".to_string(),
-                "New Terminal".to_string()
+                "New Terminal".to_string(),
+                "Run Spec…".to_string()
             ],
-            "a profile is launchable by name"
+            "a profile is launchable by name, and a spec run starts agents too"
         );
         assert_eq!(palette.placeholder(), "Start a terminal or an agent…");
     }

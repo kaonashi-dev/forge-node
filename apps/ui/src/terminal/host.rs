@@ -6,6 +6,7 @@ use rune::Tx;
 use crate::app::AppState;
 use crate::keymap::{Action, Zoom};
 use crate::settings::prefs;
+use crate::terminal::clip;
 use crate::terminal::input::{CLICK_SLOP, Pointer, Press};
 use crate::terminal::links::{self, Link, Target};
 use crate::terminal::pane::Viewport;
@@ -216,18 +217,36 @@ impl AppState {
     /// Files dropped from Finder become their quoted paths at the prompt, as
     /// a paste, so a bracketed-paste shell does not run them.
     pub fn terminal_drop(&mut self, idx: usize, files: &[std::path::PathBuf], tx: &mut Tx) {
-        let words: Option<Vec<String>> = files
-            .iter()
-            .map(|file| links::shell_quote(&file.display().to_string()))
-            .collect();
-        let Some(words) = words.filter(|words| !words.is_empty()) else {
+        let Some(text) = clip::quoted_paths(files) else {
             eprintln!("[drop] refused: a path with a control character");
             return;
         };
         self.focus_pane(idx);
-        let mut text = words.join(" ");
-        text.push(' ');
         self.terminal_paste(&text, tx);
+    }
+
+    /// ⌘V with every form the clipboard held. The editor takes only text.
+    pub fn paste_content(&mut self, content: &rune::ClipboardContent, tx: &mut Tx) {
+        if !self.session_shown() || self.modal_open() {
+            return;
+        }
+        if self.active_line_editor().is_some() {
+            if !content.text().is_empty() {
+                self.paste(content.text(), tx);
+            }
+            return;
+        }
+        match clip::choose(content) {
+            clip::Pasted::Text(text) => self.terminal_paste(&text, tx),
+            clip::Pasted::Image(image) => match clip::save_image(image, &clip::paste_dir()) {
+                Ok(path) => match clip::quoted_paths(&[path]) {
+                    Some(text) => self.terminal_paste(&text, tx),
+                    None => eprintln!("[paste] image refused: its path holds a control character"),
+                },
+                Err(error) => eprintln!("[paste] image not saved: {error}"),
+            },
+            clip::Pasted::Nothing => {}
+        }
     }
 }
 

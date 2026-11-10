@@ -473,7 +473,8 @@ fn map_pull_request(
             .collect(),
         relations: PullRequestRelations {
             assigned: row.assignees.iter().any(|login| is_viewer(login)),
-            review_requested: row.review_requests.iter().any(|login| is_viewer(login)),
+            review_requested: row.viewer_review_requested
+                || row.review_requests.iter().any(|login| is_viewer(login)),
             authored: is_viewer(&row.author),
         },
         assignees: row.assignees,
@@ -761,6 +762,7 @@ mod tests {
             }],
             assignees: vec!["viewer".into()],
             review_requests: vec!["VIEWER".into()],
+            viewer_review_requested: false,
             additions: 3,
             deletions: 1,
             changed_files: 2,

@@ -20,6 +20,10 @@ use crate::terminal::input::{self, Effects, Outbox, Pointer, Press};
 use crate::terminal::pane::TerminalUi;
 use crate::workbench::{CenterMode, Panel, Workbench};
 
+/// The narrowest sidebar every view fits without overflow or wrapping; the
+/// Pull Requests scope buttons are what wrap below it.
+pub const SIDEBAR_MIN_W: f32 = 260.0;
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum LinkStatus {
     Connecting,
@@ -144,7 +148,12 @@ pub struct AppState {
     pub projects: crate::projects::Projects,
     pub commit: crate::commit::CommitBox,
     pub review: Option<crate::pr_review::ReviewDialog>,
-    pub compose: crate::pr_compose::Compose,
+    pub open_pr: crate::open_pr::OpenPr,
+    pub spec_dialog: Option<crate::spec_run::SpecDialog>,
+    /// A Refresh the person pressed is in flight; cleared by the update.
+    pub pr_refreshing: bool,
+    /// The connection generation the Pull Requests view read on its own.
+    pr_auto_read: Option<u64>,
     /// The pull-request filter field, shared by the panel across switches.
     pub pr_query: rune::TextEdit,
     /// `ui.diff.split` as this window last read or wrote it.
@@ -207,6 +216,8 @@ pub struct AppState {
     pub switch_started: Cell<Option<Instant>>,
     pub switch_ms: Cell<Option<f64>>,
     pub view_ms: Cell<Option<f64>>,
+    /// The sidebar's chosen view name, measured, by view and type.
+    pub view_title_width: Cell<Option<(crate::chrome::TitleKey, f32)>>,
     /// How far a pane header starts from the window's edge while the sidebar
     /// is collapsed and the header shares the title row with the lights.
     pub title_clear: Cell<f32>,
@@ -231,7 +242,7 @@ impl AppState {
     ) -> Self {
         metrics.note_ui_thread();
         let mut state = Self {
-            sidebar: PaneState::new(300.0).range(220.0, 520.0),
+            sidebar: PaneState::new(300.0).range(SIDEBAR_MIN_W, 520.0),
             store: None,
             rows: Vec::new(),
             workspaces: Vec::new(),
@@ -252,7 +263,10 @@ impl AppState {
             projects: crate::projects::Projects::default(),
             commit: crate::commit::CommitBox::default(),
             review: None,
-            compose: crate::pr_compose::Compose::default(),
+            open_pr: crate::open_pr::OpenPr::default(),
+            spec_dialog: None,
+            pr_refreshing: false,
+            pr_auto_read: None,
             pr_query: rune::TextEdit::new(""),
             diff_split: false,
             usage: crate::usage::Usage::default(),
@@ -295,6 +309,7 @@ impl AppState {
             switch_started: Cell::new(None),
             switch_ms: Cell::new(None),
             view_ms: Cell::new(None),
+            view_title_width: Cell::new(None),
             title_clear: Cell::new(0.0),
             page_swipe: None,
             sidebar_swipe: None,
@@ -350,7 +365,15 @@ impl AppState {
 
     fn set_store(&mut self, store: Store) {
         self.rows_revision += 1;
-        let mut sessions: Vec<&domain::Session> = store.sessions.iter().collect();
+        // A background session is the daemon's errand, never a tab or a row,
+        // until it stops to ask the person something only they can answer.
+        let mut sessions: Vec<&domain::Session> = store
+            .sessions
+            .iter()
+            .filter(|session| {
+                !session.background || session.activity.state == ActivityState::Waiting
+            })
+            .collect();
         // Creation order; the sort is stable.
         sessions.sort_by_key(|session| session.created_at);
         self.rows = sessions
@@ -548,10 +571,10 @@ impl AppState {
         self.palette.open
             || self.about
             || self.review.is_some()
+            || self.spec_dialog.is_some()
             || self.rename.is_some()
             || self.confirm_close.is_some()
             || self.settings.confirm_reset
-            || self.sync.pr.is_some()
             || self.history.confirm_delete.is_some()
             || self.storage.migration.confirm.is_some()
             || self.projects.actions.is_some()
@@ -612,7 +635,7 @@ impl AppState {
             Action::CloseSession => {
                 if matches!(
                     self.workbench.mode,
-                    CenterMode::Compare | CenterMode::PrDetail | CenterMode::PrCompose
+                    CenterMode::Compare | CenterMode::PrDetail | CenterMode::OpenPr
                 ) {
                     self.close_center();
                 } else if let Some(active) = self.active
@@ -1090,6 +1113,7 @@ impl AppState {
                 Command::Panel(panel) => self.show_panel(panel),
                 Command::ToggleSidebar => self.sidebar.toggle(),
                 Command::NewWorktree => self.new_worktree_here(),
+                Command::RunSpec => self.open_run_spec(),
                 Command::Theme(base) => self.choose_theme(base),
                 Command::FindInFiles => self.find_in_files(),
                 Command::SplitPane => {
@@ -1133,6 +1157,7 @@ impl AppState {
         self.commit.follow(Some(workspace));
         self.commit.drafting = true;
         self.commit.error = None;
+        self.commit.draft_refused = false;
         match &self.connection {
             Some(connection) => {
                 let _ = connection.draft_commit(workspace);
@@ -1149,6 +1174,7 @@ impl AppState {
         };
         self.commit.committing = true;
         self.commit.error = None;
+        self.commit.draft_refused = false;
         match &self.connection {
             Some(connection) => {
                 let _ = connection.commit(workspace, message);
@@ -1180,33 +1206,17 @@ impl AppState {
     }
 
     pub fn open_pr_dialog(&mut self) {
-        let dirty = !self.workbench.changes.files.is_empty();
-        if let Some((_, workspace, branch)) = self.workbench_project() {
-            self.sync.open_pr(workspace, branch.as_deref(), dirty);
+        if let Some((_, workspace, _)) = self.workbench_project() {
+            self.open_pr_view(workspace);
         }
     }
 
-    pub fn create_pull_request(&mut self) {
-        let Some(pr) = self.sync.pr.as_mut() else {
-            return;
-        };
-        let Some((title, body, commit)) = pr.ready() else {
-            return;
-        };
-        pr.opening = true;
-        pr.outcome = None;
-        let workspace = pr.workspace;
-        match &self.connection {
-            Some(connection) => {
-                let _ = connection.open_pull_request(workspace, title, body, commit);
-            }
-            None => self.worker_not_ready("CreatePullRequest"),
-        }
-    }
-
+    /// The person asked: past the daemon's cache, and shown as in flight.
     pub fn refresh_pull_requests(&mut self) {
-        if let Some(connection) = &self.connection {
-            let _ = connection.refresh_pull_requests();
+        if let Some(connection) = &self.connection
+            && connection.refresh_pull_requests(true).is_ok()
+        {
+            self.pr_refreshing = true;
         }
     }
 
@@ -1449,6 +1459,10 @@ impl AppState {
             .pull_request(&review.repository, review.number)
             .cloned()
         else {
+            if let Some(review) = self.review.as_mut() {
+                review.error =
+                    Some("This pull request is no longer listed; refresh and try again.".into());
+            }
             return;
         };
         let problem = if review.agent.is_none() {
@@ -1479,12 +1493,12 @@ impl AppState {
         };
         let review = self.review.take().expect("checked above");
         let prompt = review.prompt(&pr);
-        if let Some(agent) = review.agent
-            && connection
-                .create_agent(workspace, agent, None, prompt, true)
-                .is_ok()
-        {
-            self.workbench.show(CenterMode::Session);
+        let Some(agent) = review.agent else {
+            return;
+        };
+        match connection.create_agent(workspace, agent, None, prompt, true) {
+            Ok(()) => self.workbench.show(CenterMode::Session),
+            Err(error) => self.toasts.danger("The review did not start", error),
         }
     }
 
@@ -1610,6 +1624,39 @@ impl AppState {
         }
     }
 
+    /// The Pull Requests view reads once per connection when it is shown and
+    /// nothing has been read yet, rather than waiting for a press.
+    fn sync_pull_requests(&mut self) {
+        let unread = self
+            .store
+            .as_ref()
+            .is_some_and(|store| store.pull_requests.refreshed_at.is_none());
+        if self.workbench.panel != Panel::PullRequests
+            || !self.sidebar.is_open()
+            || !unread
+            || self.pr_auto_read == Some(self.generation)
+        {
+            return;
+        }
+        self.pr_auto_read = Some(self.generation);
+        self.refresh_pull_requests();
+    }
+
+    fn sync_config(&mut self) {
+        let page = &mut self.settings.config;
+        if self.workbench.mode != CenterMode::Settings
+            || self.settings.section != crate::settings::Section::Config
+            || page.asked == Some(self.generation)
+        {
+            return;
+        }
+        if let Some(connection) = &self.connection
+            && connection.config(self.generation).is_ok()
+        {
+            page.asked = Some(self.generation);
+        }
+    }
+
     fn sync_workbench(&mut self) {
         // The sidebar's panels follow the window's checkout as the strip does.
         self.sync_workbench_workspace();
@@ -1619,9 +1666,10 @@ impl AppState {
         }
         self.sync_usage();
         self.sync_storage();
+        self.sync_config();
+        self.sync_pull_requests();
         self.sync_review();
         self.commit.follow(self.workbench.workspace);
-        self.compose.follow(self.workbench.workspace);
         if let Some(store) = &self.store {
             self.workbench.pr_index.sync(&store.pull_requests);
         }
@@ -1743,6 +1791,7 @@ impl AppState {
                 }
                 self.last_snapshot_us = Some(took_us);
                 self.set_store(*store);
+                self.reconcile_open_pr(std::time::Instant::now());
                 crate::projects::seed(self);
                 self.status = LinkStatus::Connected;
                 true
@@ -1797,11 +1846,14 @@ impl AppState {
                         workspace_id,
                         url,
                         error,
+                        session_id,
                     } => {
-                        self.sync
-                            .pr_opened(*workspace_id, url.clone(), error.clone());
-                        self.compose
-                            .pr_opened(*workspace_id, url.clone(), error.clone());
+                        self.open_pr_finished(
+                            *workspace_id,
+                            url.clone(),
+                            error.clone(),
+                            *session_id,
+                        );
                         return true;
                     }
                     client::DaemonEvent::EditorFocusRequested { session_id, .. } => {
@@ -1819,22 +1871,6 @@ impl AppState {
                     self.commit.apply_draft(*workspace_id, draft, *fell_back);
                     return true;
                 }
-                if let client::DaemonEvent::PullRequestDraftReady {
-                    workspace_id,
-                    session_id,
-                    draft,
-                } = event.as_ref()
-                {
-                    self.chosen_workspace = Some(*workspace_id);
-                    self.sync_workbench_workspace();
-                    self.compose.receive(crate::pr_compose::ReceivedDraft {
-                        workspace: *workspace_id,
-                        session: *session_id,
-                        draft: draft.clone(),
-                    });
-                    self.workbench.show(CenterMode::PrCompose);
-                    return true;
-                }
                 let reset = matches!(event.as_ref(), client::DaemonEvent::FactoryReset);
                 let redraw = matches!(
                     event.as_ref(),
@@ -1844,6 +1880,15 @@ impl AppState {
                 );
                 if let Some(store) = &mut self.store {
                     let _ = store.apply_event(&event);
+                    // Indexed now, not on the next poll: a frame drawn between
+                    // the two would filter the new rows out.
+                    if matches!(
+                        event.as_ref(),
+                        client::DaemonEvent::PullRequestsUpdated { .. }
+                    ) {
+                        self.workbench.pr_index.sync(&store.pull_requests);
+                        self.pr_refreshing = false;
+                    }
                 }
                 if reset {
                     self.store = None;
@@ -1986,6 +2031,31 @@ impl AppState {
                         self.maybe_preview_migration();
                     }
                     Err(error) => self.storage.error = Some(error),
+                }
+                true
+            }
+            UiEvent::OpenPrRefused {
+                generation,
+                workspace_id,
+                message,
+            } => {
+                if !self.accept_generation(generation) {
+                    return false;
+                }
+                self.open_pr.refused(workspace_id, &message);
+                true
+            }
+            UiEvent::Config { generation, result } => {
+                if !self.accept_generation(generation) {
+                    return false;
+                }
+                let page = &mut self.settings.config;
+                match result {
+                    Ok(view) => {
+                        page.error = None;
+                        page.view = Some(*view);
+                    }
+                    Err(error) => page.error = Some(error),
                 }
                 true
             }
@@ -2178,19 +2248,13 @@ impl AppState {
                         self.commit.error = Some(message.clone());
                     }
                 }
-                if label == "CreateAgentSession" && !ok && self.compose.launching {
-                    self.compose.launching = false;
-                    self.compose.error = Some(message.clone());
+                if label == "RunSpec" {
+                    self.spec_run_result(ok, &message);
                 }
-                if label == "CommitAndOpenPullRequest" && !ok {
-                    self.compose.opening = false;
-                    self.compose.error = Some(message.clone());
-                }
-                if label == "CreatePullRequest"
-                    && !ok
-                    && let Some(workspace) = self.sync.pr.as_ref().map(|pr| pr.workspace)
-                {
-                    self.sync.pr_opened(workspace, None, Some(message.clone()));
+                if label == "RefreshPullRequests" && !ok && self.pr_refreshing {
+                    self.pr_refreshing = false;
+                    self.toasts
+                        .danger("Pull requests were not refreshed", message.clone());
                 }
                 if label == "FetchRemote" && !ok {
                     for project in std::mem::take(&mut self.sync.fetching) {
@@ -2205,6 +2269,7 @@ impl AppState {
                 self.review_command_result(label, ok, &message);
                 if label == "DraftWithJuva" && !ok {
                     self.commit.drafting = false;
+                    self.commit.draft_refused = true;
                     self.commit.error = Some(message.clone());
                 }
                 if label == "SetEditorAutosave" && !ok {
@@ -3098,7 +3163,7 @@ impl AppState {
         });
     }
 
-    fn worker_not_ready(&mut self, label: &'static str) {
+    pub(crate) fn worker_not_ready(&mut self, label: &'static str) {
         self.command_failed(label, "client worker is still starting");
     }
 }
@@ -3109,8 +3174,10 @@ pub fn poll(state: &mut AppState, clock: f64, tx: &mut Tx) -> bool {
 
 /// The tab's marker: waiting for the person
 /// outranks everything; an editor or a shell is never busy, since only an
-/// agent's hooks report a turn; and a keystroke into an idle agent is a
-/// guard the daemon raises, not a turn.
+/// agent's hooks report a turn; a keystroke into an idle agent is a
+/// guard the daemon raises, not a turn; and `Starting` is only "no hook yet",
+/// which an agent sitting at its first prompt, or one that never reports,
+/// keeps for good.
 fn row_status(session: &domain::Session) -> Option<SessionStatus> {
     if session.state.is_terminal() {
         return None;
@@ -3127,7 +3194,6 @@ fn row_status(session: &domain::Session) -> Option<SessionStatus> {
         {
             Some(SessionStatus::Busy)
         }
-        ActivityState::Starting => Some(SessionStatus::Busy),
         _ => None,
     }
 }
@@ -3825,7 +3891,7 @@ mod tests {
             CenterMode::Projects,
             CenterMode::Compare,
             CenterMode::PrDetail,
-            CenterMode::PrCompose,
+            CenterMode::OpenPr,
         ] {
             assert!(!super::closes_session(mode), "{mode:?}");
         }
@@ -3858,6 +3924,11 @@ mod tests {
         assert_eq!(
             with(&session, ActivityState::Waiting, hook),
             Some(SessionStatus::Attention)
+        );
+        assert_eq!(
+            with(&session, ActivityState::Starting, None),
+            None,
+            "no hook yet is not a turn"
         );
         let mut shell = session.clone();
         shell.kind = SessionKind::Shell;
@@ -3935,6 +4006,29 @@ mod tests {
         assert_eq!(
             state.active, active,
             "the session behind the palette stayed"
+        );
+    }
+
+    #[test]
+    fn a_background_session_is_neither_a_tab_nor_a_row() {
+        let mut store = fixture_store(&crate::bench::fixture_path()).expect("fixture");
+        let hidden = store.sessions[0].id;
+        store.sessions[0].background = true;
+        let s = AppState::for_bench(store, Arc::new(Metrics::default()), SharedTerminal::new());
+        assert!(s.rows.iter().all(|row| row.id != hidden));
+        assert!(!s.rows.is_empty(), "the others are still listed");
+    }
+
+    #[test]
+    fn a_background_session_asking_for_approval_comes_forward() {
+        let mut store = fixture_store(&crate::bench::fixture_path()).expect("fixture");
+        let asking = store.sessions[0].id;
+        store.sessions[0].background = true;
+        store.sessions[0].activity.state = ActivityState::Waiting;
+        let s = AppState::for_bench(store, Arc::new(Metrics::default()), SharedTerminal::new());
+        assert!(
+            s.rows.iter().any(|row| row.id == asking),
+            "only the person can answer it"
         );
     }
 }

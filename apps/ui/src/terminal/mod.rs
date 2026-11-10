@@ -8,6 +8,7 @@ use domain::{PtySize, ScrollbackRows, SessionId, TerminalDelta, TerminalId, Term
 pub mod alloc;
 pub mod atlas;
 pub mod attach;
+pub mod clip;
 pub mod fixture;
 pub mod host;
 pub mod input;

@@ -20,6 +20,9 @@ pub struct Rail {
     pub seeded: bool,
     /// The row the keyboard acts on.
     pub cursor: Option<String>,
+    /// The keyboard last moved the cursor, so its mark shows; a click sets
+    /// the cursor without one, as `:focus-visible` does.
+    pub keyed: bool,
 }
 
 /// The stored set; anything unparseable reads as nothing folded.

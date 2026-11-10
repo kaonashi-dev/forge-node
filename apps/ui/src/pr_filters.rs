@@ -84,6 +84,20 @@ impl Scope {
     }
 }
 
+/// Why a project contributes no pull requests, in a few words; `None` when it
+/// was read, or failed with a message of its own.
+#[must_use]
+pub fn source_note(status: &domain::PullRequestSourceStatus) -> Option<&'static str> {
+    use domain::PullRequestSourceStatus as Status;
+    match status {
+        Status::NoGitRepository => Some("not a git repository"),
+        Status::NoRemote => Some("no remote"),
+        Status::UnsupportedHost => Some("its remote is not on GitHub"),
+        Status::InvalidRemote => Some("its remote URL could not be read"),
+        _ => None,
+    }
+}
+
 #[cfg(test)]
 pub struct Indexed<'a> {
     pub pr: &'a PullRequest,

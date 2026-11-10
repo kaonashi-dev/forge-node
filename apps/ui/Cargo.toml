@@ -32,6 +32,8 @@ semver = "1"
 
 [dev-dependencies]
 pollster = "1"
+# The built-in descriptors, so spec-run checks meet real effort and prompt rules.
+agents = { path = "../../crates/agents" }
 
 [profile.release]
 debug = 1

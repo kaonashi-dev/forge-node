@@ -285,6 +285,12 @@ pub struct Session {
     /// is deleted, which leaves the session to run its stored command.
     #[serde(default)]
     pub action: Option<Box<ActionRun>>,
+    /// Launched by the daemon for its own errand (drafting a pull request), so
+    /// clients keep it out of tabs and the session tree.
+    ///
+    /// Runtime-only like [`Self::terminal_id`]: never a column, `false` on load.
+    #[serde(default)]
+    pub background: bool,
 }
 
 /// What a provider hook or a typed keystroke last said about a session.
@@ -565,6 +571,7 @@ mod tests {
             base_commit: None,
             activity: AgentActivity::unknown(),
             action: None,
+            background: false,
         };
         let json = serde_json::to_value(&session).unwrap();
         assert!(

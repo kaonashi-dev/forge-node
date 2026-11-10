@@ -142,6 +142,9 @@ pub struct GitHubPullRequest {
     pub labels: Vec<PullRequestLabel>,
     pub assignees: Vec<String>,
     pub review_requests: Vec<String>,
+    /// Found by the `review-requested:@me` search, which also counts a request
+    /// to a team the viewer belongs to; `review_requests` names only the team.
+    pub viewer_review_requested: bool,
     pub additions: u32,
     pub deletions: u32,
     pub changed_files: u32,
@@ -387,17 +390,19 @@ fn build_query(repos: &[&GitHubRepo], include_all_repos: bool) -> (String, Vec<S
             format!("p{index}Name={}", repo.name),
         ]);
     }
+    variables.push("$reviewRequestedQuery: String!".to_string());
+    fields.extend([
+        "-f".to_string(),
+        format!("reviewRequestedQuery={REVIEW_REQUESTED_QUERY}"),
+    ]);
     if include_all_repos {
         variables.extend([
             "$assignedQuery: String!".to_string(),
-            "$reviewRequestedQuery: String!".to_string(),
             "$authoredQuery: String!".to_string(),
         ]);
         fields.extend([
             "-f".to_string(),
             format!("assignedQuery={ASSIGNED_QUERY}"),
-            "-f".to_string(),
-            format!("reviewRequestedQuery={REVIEW_REQUESTED_QUERY}"),
             "-f".to_string(),
             format!("authoredQuery={AUTHORED_QUERY}"),
         ]);
@@ -411,9 +416,12 @@ fn build_query(repos: &[&GitHubRepo], include_all_repos: bool) -> (String, Vec<S
         )
         .expect("writing to a String cannot fail");
     }
+    query.push_str(
+        "  reviewRequested: search(query: $reviewRequestedQuery, type: ISSUE, first: 50) {\n    nodes { ... on PullRequest { ...PrFields } }\n  }\n",
+    );
     if include_all_repos {
         query.push_str(
-            "  assigned: search(query: $assignedQuery, type: ISSUE, first: 50) {\n    nodes { ... on PullRequest { ...PrFields } }\n  }\n  reviewRequested: search(query: $reviewRequestedQuery, type: ISSUE, first: 50) {\n    nodes { ... on PullRequest { ...PrFields } }\n  }\n  authored: search(query: $authoredQuery, type: ISSUE, first: 50) {\n    nodes { ... on PullRequest { ...PrFields } }\n  }\n",
+            "  assigned: search(query: $assignedQuery, type: ISSUE, first: 50) {\n    nodes { ... on PullRequest { ...PrFields } }\n  }\n  authored: search(query: $authoredQuery, type: ISSUE, first: 50) {\n    nodes { ... on PullRequest { ...PrFields } }\n  }\n",
         );
     }
     query.push_str(
@@ -530,45 +538,76 @@ fn parse_graphql_response(
         }
     }
 
-    if include_all_repos {
-        for alias in ["assigned", "reviewRequested", "authored"] {
-            let Some(value) = data.get(alias) else {
+    let registered: HashSet<String> = repos
+        .iter()
+        .map(|repo| repo.name_with_owner().to_ascii_lowercase())
+        .collect();
+    let aliases: &[&str] = if include_all_repos {
+        &["assigned", "reviewRequested", "authored"]
+    } else {
+        &["reviewRequested"]
+    };
+    for &alias in aliases {
+        let Some(value) = data.get(alias) else {
+            // Only the searches the user turned on are worth a failure line;
+            // the review-requested one only refines the registered repositories.
+            if !include_all_repos {
+                continue;
+            }
+            push_failure_once(
+                &mut failures,
+                search_failure_identity(alias).into(),
+                "search alias was absent from GraphQL data".into(),
+            );
+            continue;
+        };
+        if value.is_null() {
+            continue;
+        }
+        let search = match serde_json::from_value::<RawSearch>(value.clone()) {
+            Ok(search) => search,
+            Err(error) => {
                 push_failure_once(
                     &mut failures,
                     search_failure_identity(alias).into(),
-                    "search alias was absent from GraphQL data".into(),
+                    format!("invalid search data: {error}"),
+                );
+                continue;
+            }
+        };
+        for raw in connection_nodes(Some(search)) {
+            let Some(repository) = raw
+                .repository
+                .as_ref()
+                .and_then(|repo| repo.name_with_owner.as_deref())
+                .filter(|identity| !identity.is_empty())
+            else {
+                push_failure_once(
+                    &mut failures,
+                    search_failure_identity(alias).into(),
+                    "search result omitted repository identity".into(),
                 );
                 continue;
             };
-            if value.is_null() {
+            let review_requested = alias == "reviewRequested";
+            if !include_all_repos && !registered.contains(&repository.to_ascii_lowercase()) {
                 continue;
             }
-            let search = match serde_json::from_value::<RawSearch>(value.clone()) {
-                Ok(search) => search,
-                Err(error) => {
-                    push_failure_once(
-                        &mut failures,
-                        search_failure_identity(alias).into(),
-                        format!("invalid search data: {error}"),
-                    );
+            if review_requested {
+                let number = u32_value(raw.number);
+                if let Some(known) = pull_requests.iter_mut().find(|known| {
+                    known.number == number && known.repository.eq_ignore_ascii_case(repository)
+                }) {
+                    known.viewer_review_requested = true;
                     continue;
                 }
-            };
-            for raw in connection_nodes(Some(search)) {
-                let Some(repository) = raw
-                    .repository
-                    .as_ref()
-                    .and_then(|repo| repo.name_with_owner.as_deref())
-                    .filter(|identity| !identity.is_empty())
-                else {
-                    push_failure_once(
-                        &mut failures,
-                        search_failure_identity(alias).into(),
-                        "search result omitted repository identity".into(),
-                    );
-                    continue;
-                };
-                push_pull_request(&mut pull_requests, &mut seen, host, repository, raw.clone());
+            }
+            let before = pull_requests.len();
+            push_pull_request(&mut pull_requests, &mut seen, host, repository, raw.clone());
+            if review_requested && pull_requests.len() > before {
+                if let Some(added) = pull_requests.last_mut() {
+                    added.viewer_review_requested = true;
+                }
             }
         }
     }
@@ -664,6 +703,7 @@ fn convert_pull_request(host: &str, repository: &str, raw: RawPullRequest) -> Gi
             .filter_map(|request| request.requested_reviewer)
             .filter_map(|reviewer| reviewer.login.or(reviewer.slug))
             .collect(),
+        viewer_review_requested: false,
         additions: u32_value(raw.additions),
         deletions: u32_value(raw.deletions),
         changed_files: u32_value(raw.changed_files),
@@ -1177,6 +1217,33 @@ mod tests {
         assert_eq!(page.pull_requests[1].repository, "other/thing");
         assert_eq!(page.pull_requests[2].repository, "third/repo");
         assert_eq!(page.pull_requests[3].repository, "fourth/repo");
+    }
+
+    #[test]
+    fn the_review_requested_search_marks_team_requests_in_registered_repositories() {
+        let fixture = r#"{
+          "data": {
+            "viewer": { "login": "octocat" },
+            "p0": { "nameWithOwner": "acme/widgets", "pullRequests": {
+              "nodes": [{ "number": 1, "title": "For the team",
+                "reviewRequests": { "nodes": [{ "requestedReviewer": { "slug": "core" } }] } }]
+            } },
+            "reviewRequested": { "nodes": [
+              { "number": 1, "title": "For the team", "repository": { "nameWithOwner": "acme/widgets" } },
+              { "number": 9, "title": "Elsewhere", "repository": { "nameWithOwner": "other/thing" } }
+            ] }
+          }
+        }"#;
+        let page =
+            parse_fixture(fixture, 0, &[repo("github.com", "acme", "widgets")], false).unwrap();
+        assert_eq!(
+            page.pull_requests.len(),
+            1,
+            "unregistered repositories stay out"
+        );
+        assert_eq!(page.pull_requests[0].review_requests, ["core"]);
+        assert!(page.pull_requests[0].viewer_review_requested);
+        assert!(page.failures.is_empty());
     }
 
     #[test]

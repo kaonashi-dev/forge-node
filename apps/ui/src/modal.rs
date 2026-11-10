@@ -23,6 +23,7 @@ pub struct Modal {
     width: f32,
     body: Vec<El>,
     footer: Vec<El>,
+    top: bool,
 }
 
 impl Modal {
@@ -32,7 +33,16 @@ impl Modal {
             width: WIDTH_STANDARD,
             body: Vec::new(),
             footer: Vec::new(),
+            top: false,
         }
+    }
+
+    /// Hang it from near the top of the window instead of centring it, so a
+    /// body whose height follows what is typed grows downward and the field
+    /// stays put.
+    pub fn anchor_top(mut self) -> Self {
+        self.top = true;
+        self
     }
 
     pub fn description(mut self, description: impl Into<String>) -> Self {
@@ -103,8 +113,19 @@ impl Modal {
             );
         }
         dialog.build(k, layer);
+        // `Dialog::build` pushes the positioning layer last, centring its
+        // panel on both axes; only the cross (vertical) axis is replaced.
+        if self.top
+            && let Some(placed) = layer.pop()
+        {
+            let top = (s.window.get()[1] * TOP_FRACTION).max(PADDING);
+            layer.push(placed.items_start().pt(top));
+        }
     }
 }
+
+/// How far down the window an [`Modal::anchor_top`] dialog hangs.
+const TOP_FRACTION: f32 = 0.12;
 
 type RowFn<S> = Box<dyn Fn(&S, usize) -> El>;
 

@@ -72,8 +72,8 @@ pub use pr_review::{
     builtin_recipes, compose_review_prompt, recipe_or_default, ReviewRecipe, CUSTOM_RECIPE,
 };
 pub use pr_task::{
-    branch_step, builtin_tasks, task_or_default, BranchStep, CommitPlan, PrTask, PullRequestDraft,
-    TaskMode, MAX_DRAFT_FIELD_BYTES,
+    agent_prompt, branch_step, effective_system_prompt, BranchFacts, BranchStep, CommitPlan,
+    PullRequestDraft, DEFAULT_SYSTEM_PROMPT, MAX_DRAFT_FIELD_BYTES, MAX_PROMPT_PATCH,
 };
 pub use project::{is_valid_icon, InvalidIcon, Project, ProjectGroup, MAX_ICON_CHARS};
 pub use pull_request::{

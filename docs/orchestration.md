@@ -78,15 +78,14 @@ with `details.uncertain: true`.
 not write SQLite. A CLI connection is not sent terminal activity, bell,
 clipboard, editor-frame, or usage broadcasts.
 
-`pr draft` is outside the run ledger. It is how a session that the GUI's
-Open PR tab launched in a *draft* task hands back its pull request: title,
-branch, commit subject (plus optional `--commit-body`) as flags, the body on
-stdin or `--body-file`. The daemon checks that `FORGE_SESSION_ID` names a known
-session, caps each field at 64 KiB, and broadcasts `PullRequestDraftReady` for
-that session's workspace; it stores nothing. The GUI shows the text for editing
-and only then sends `CommitAndOpenPullRequest`, which commits everything once
-on a new branch when the checkout is on its default (never on the default
-itself), pushes, and runs `gh pr create --assignee @me`.
+`pr draft` is outside the run ledger. It is how the background agent behind
+the GUI's Open PR hands back its pull request: title, branch, commit subject
+(plus optional `--commit-body`) as flags, the body on stdin or `--body-file`.
+The daemon checks that `FORGE_SESSION_ID` names a known session and caps each
+field at 64 KiB. For that agent it closes the session and commits everything
+once, on a new branch when the checkout is on its default (never on the
+default itself), pushes, and runs `gh pr create --assignee @me`; any other
+session's draft is broadcast as `PullRequestDraftReady` and stored nowhere.
 
 `forge-daemon session` and `forge-daemon context` still run and print a
 deprecation hint pointing at `forgectl`.
@@ -253,11 +252,12 @@ never fetches it: an artifact needs the planner's own login and artifact tool.
 A value that looks like a path but is not a file exits 4 rather than becoming
 a one-line spec.
 
-The palette's **Run Spec…** is the same launch from the GUI: the host composes
-the brief with the same function and starts the planner in the checkout on
-screen. A relative path resolves against that checkout, the Markdown file on
-screen is prefilled, and a refusal (missing file, unknown coder) is a notice
-before anything starts.
+The palette's **Run Spec…** (also in New Session) is the same launch from the
+GUI (`apps/ui/src/spec_run.rs`): the client composes the brief with the same
+function and starts the planner in the checkout on screen. A relative path
+resolves against that checkout and is checked through the daemon's `ReadFile`
+(ADR-012), the Markdown file on screen is prefilled, and a refusal (missing
+file, unknown coder) stays in the dialog before anything starts.
 
 The planner validates every criterion (context, and a check that proves it),
 asks the person every open point at once with its question selector, writes a

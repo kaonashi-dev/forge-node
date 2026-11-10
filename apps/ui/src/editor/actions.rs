@@ -209,6 +209,11 @@ impl AppState {
     /// The field's own keys, then the editor's chords: the panel is inside
     /// the editor's context, so ⌘= still sizes the text from there.
     pub fn find_key(&mut self, ev: &KeyEvent, tx: &mut Tx) -> bool {
+        if find::is_reopen(ev) {
+            let edit = &mut self.editor.find.edit;
+            edit.set_selection(0, edit.text.len());
+            return true;
+        }
         let Some(command) = find::key_command(ev) else {
             let Some(action) = self.keymap.editor_action(ev) else {
                 return false;
@@ -219,9 +224,6 @@ impl AppState {
             }
             return handled;
         };
-        if command == EditorFindCommand::Close {
-            self.editor.find.edit.focused = false;
-        }
         self.send_editor_find(command);
         true
     }
@@ -603,6 +605,76 @@ mod tests {
                 EditorFindCommand::Next,
             ]
         );
+    }
+
+    #[test]
+    fn command_f_in_the_find_field_selects_the_pattern_without_asking_the_editor() {
+        let (mut s, rx, _) = editor_app(EditorState {
+            find: Some(Box::new(EditorFind {
+                focus: 1,
+                ..EditorFind::default()
+            })),
+            ..file()
+        });
+        s.follow_find();
+        s.editor.find.edit = rune::TextEdit::new("typed");
+        s.editor.find.edit.focused = true;
+        assert!(s.find_key(&cmd('f'), &mut Tx::default()));
+        assert_eq!(s.editor.find.edit.range(), (0, 5));
+        assert!(sent(&rx).is_empty());
+    }
+
+    #[test]
+    fn escape_in_the_find_field_hands_the_keyboard_back_to_the_editor() {
+        let (s, rx, id) = editor_app(EditorState {
+            find: Some(Box::new(EditorFind {
+                focus: 1,
+                ..EditorFind::default()
+            })),
+            ..file()
+        });
+        let mut rt = rune::Runtime::new(
+            s,
+            crate::ui::view,
+            (1180.0, 760.0),
+            rune::Env {
+                system_dark: true,
+                scale: 2.0,
+            },
+        );
+        rt.update(|s, _| s.follow_find());
+        rt.frame(0.0);
+        let key = |key| KeyEvent {
+            key,
+            mods: rune::Mods::default(),
+        };
+        rt.key(key(Key::Escape));
+        rt.frame(0.1);
+        assert!(sent(&rx).iter().any(|command| matches!(
+            command,
+            Command::EditorFind {
+                command: EditorFindCommand::Close,
+                ..
+            }
+        )));
+        // The field stays focused until the editor's echo removes the panel:
+        // the pane's focus return only fires while focus is still inside it.
+        rt.update(|s, _| {
+            let store = s.store.as_mut().expect("store");
+            let session = store.sessions.iter_mut().find(|session| session.id == id);
+            session
+                .and_then(|session| session.editor.as_mut())
+                .expect("editor")
+                .find = None;
+            s.editor_store_changed();
+        });
+        rt.frame(0.2);
+        rt.key(key(Key::Text("x".into())));
+        rt.frame(0.3);
+        assert!(sent(&rx).iter().any(|command| matches!(
+            command,
+            Command::EditorInput { session_id, .. } if *session_id == id
+        )));
     }
 
     #[test]

@@ -187,7 +187,8 @@ pub enum DaemonEvent {
         /// network error the user needs to read verbatim.
         error: Option<String>,
     },
-    /// A background `CreatePullRequest` finished.
+    /// A background `CreatePullRequest`, `CommitAndOpenPullRequest` or
+    /// `OpenPullRequestWithAgent` finished.
     PullRequestOpened {
         /// Workspace whose branch was pushed / opened.
         workspace_id: WorkspaceId,
@@ -195,6 +196,10 @@ pub enum DaemonEvent {
         url: Option<String>,
         /// Failure message when `url` is `None`.
         error: Option<String>,
+        /// The background agent that drafted it, for an
+        /// `OpenPullRequestWithAgent`; `None` otherwise.
+        #[serde(default)]
+        session_id: Option<SessionId>,
     },
     /// An agent submitted a pull-request draft with `pr_draft` (MCP or `forgectl pr draft`).
     ///

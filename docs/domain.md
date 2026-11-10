@@ -251,10 +251,9 @@ Enterprise from GitLab, so it is never guessed.
 ### `ReviewRecipe` (`pr_review.rs`)
 
 What to ask an agent for when reviewing someone else's pull request (§16.9).
-The sibling of `PrTask` (`pr_task.rs`), and deliberately not the same thing: a
-task is about your own uncommitted work on the way to *opening* a pull request,
-a recipe is about one that already exists. The difference is what the agent may
-do — a task writes, a review does not.
+The sibling of the pull-request prompt (`pr_task.rs`), and deliberately not the
+same thing: that prompt is about your own work on the way to *opening* a pull
+request, a recipe is about one that already exists.
 
 Built-in recipes live in code like the agent descriptors do, and travel with
 the launch: no table, no migration, no daemon state. `compose_review_prompt`

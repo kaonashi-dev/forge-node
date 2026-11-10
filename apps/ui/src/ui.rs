@@ -158,9 +158,9 @@ pub fn view(s: &AppState, cx: &mut Cx<AppState>) -> El {
         palette(s, &k, &mut overlays);
     }
     crate::projects::dialogs(s, &k, &mut overlays);
-    crate::sync::dialog(s, &k, &mut overlays);
     rename_dialog(s, &k, &mut overlays);
     crate::pr_review::dialog(s, &k, &mut overlays);
+    crate::spec_run::dialog(s, &k, &mut overlays);
     crate::agent_ops::dialogs(s, &k, &mut overlays);
     close_dialog(s, &k, &mut overlays);
     crate::history::delete_dialog(s, &k, &mut overlays);
@@ -170,9 +170,9 @@ pub fn view(s: &AppState, cx: &mut Cx<AppState>) -> El {
     crate::native_menus::dialog(s, &k, &mut overlays);
     tab_switcher(s, &k, &mut overlays);
     overlays.extend(crate::toasts::layer(s, &k));
-    let root = rune_kit::root(root, overlays).on_paste(
-        |s: &mut AppState, text: &str, tx: &mut rune::Tx| {
-            s.paste(text, tx);
+    let root = rune_kit::root(root, overlays).on_paste_content(
+        |s: &mut AppState, content: &rune::ClipboardContent, tx: &mut rune::Tx| {
+            s.paste_content(content, tx);
         },
     );
     s.view_ms
@@ -258,6 +258,7 @@ fn sidebar(s: &AppState, k: &Kit) -> El {
         .h_full()
         .min_h(0.0)
         .gap(10.0)
+        .child(crate::chrome::jump_to(s, k))
         .child(crate::chrome::views(s, k))
         .child(
             col()
@@ -377,7 +378,13 @@ fn status_row(s: &AppState, k: &Kit) -> El {
                 .font(k.ty.small_medium)
                 .color(k.c.text_muted),
         )
-        .child(text(detail).font(k.ty.text_xsmall).color(k.c.text_faint))
+        .child(
+            text(detail)
+                .font(k.ty.text_xsmall)
+                .color(k.c.text_faint)
+                .truncate()
+                .min_w(0.0),
+        )
 }
 
 fn center(s: &AppState, k: &Kit, layer: &mut Vec<El>) -> El {
@@ -402,8 +409,8 @@ fn center(s: &AppState, k: &Kit, layer: &mut Vec<El>) -> El {
         crate::workbench::compare::view(s, k, layer)
     } else if s.workbench.mode == CenterMode::PrDetail {
         crate::pr_detail::view(s, k)
-    } else if s.workbench.mode == CenterMode::PrCompose {
-        crate::pr_compose::view(s, k)
+    } else if s.workbench.mode == CenterMode::OpenPr {
+        crate::open_pr::view(s, k)
     } else if !in_checkout {
         empty_center(s, k)
     } else if s.active_line_editor().is_some() {
@@ -642,6 +649,7 @@ fn terminal_pane(s: &AppState, k: &Kit, idx: usize) -> El {
         .a11y_value(ui.mirror.clone())
         .live_region(rune::LiveRegion::Off)
         .focusable(true)
+        .no_focus_ring()
         .on_key(move |s: &mut AppState, ev, tx| {
             if !ev.mods.cmd {
                 s.focus_pane(idx);
@@ -892,7 +900,11 @@ fn palette(s: &AppState, k: &Kit, layer: &mut Vec<El>) {
         })
         .on_key(|s: &mut AppState, ev, tx| s.palette_key(ev, tx))
         .build(k)
-        .key("palette-input");
+        .key("palette-input")
+        // `width(None)` is the row's whole width; beside the scope chip it
+        // must take only what is left.
+        .grow(1.0)
+        .min_w(0.0);
     let mut heading = row()
         .key("palette-scope")
         .w_full()
@@ -936,12 +948,7 @@ fn palette(s: &AppState, k: &Kit, layer: &mut Vec<El>) {
             }
         })
         .build();
-    let mut body = col()
-        .key("palette-body")
-        .w_full()
-        .gap(crate::ds::SPACE_4)
-        .child(heading)
-        .child(list);
+    let mut results = col().key("palette-results").w_full().child(list);
     if entries.is_empty() {
         let mut empty = row()
             .key("palette-empty")
@@ -950,7 +957,7 @@ fn palette(s: &AppState, k: &Kit, layer: &mut Vec<El>) {
         if s.palette.searching() {
             empty = empty.child(busy(s, k));
         }
-        body = body.child(
+        results = results.child(
             empty.child(
                 text(s.palette.empty_message())
                     .font(k.ty.small)
@@ -958,6 +965,12 @@ fn palette(s: &AppState, k: &Kit, layer: &mut Vec<El>) {
             ),
         );
     }
+    let mut body = col()
+        .key("palette-body")
+        .w_full()
+        .gap(crate::ds::SPACE_4)
+        .child(heading)
+        .child(results);
     if let Some(error) = &s.palette.error {
         body = body.child(
             text(error.clone())
@@ -977,6 +990,7 @@ fn palette(s: &AppState, k: &Kit, layer: &mut Vec<El>) {
     };
     crate::modal::Modal::new("palette", title)
         .width(crate::modal::WIDTH_STANDARD)
+        .anchor_top()
         .click_outside(true)
         .on_close(|s: &mut AppState| s.palette.close())
         .child(body)
@@ -1010,7 +1024,7 @@ fn palette_row(
         .on_press(move |s: &mut AppState| s.run_palette(chosen.clone()));
     let (mark, hint, note) = match entry {
         crate::palette::Entry::Command { command, .. } => (
-            None,
+            Some(command.icon()),
             s.palette.chord(command).unwrap_or_default().to_string(),
             None,
         ),
@@ -1080,12 +1094,14 @@ fn palette_row(
     }
     if !hint.is_empty() {
         row = row.child(
-            text(hint)
-                .key(format!("palette-hint-{index}"))
-                .font(k.ty.mono)
-                .color(k.c.text_faint)
-                .w(PALETTE_HINT_W)
-                .truncate(),
+            rune::row().w(PALETTE_HINT_W).justify_end().child(
+                text(hint)
+                    .key(format!("palette-hint-{index}"))
+                    .font(k.ty.mono)
+                    .color(k.c.text_faint)
+                    .truncate()
+                    .min_w(0.0),
+            ),
         );
     }
     row

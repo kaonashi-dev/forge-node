@@ -25,7 +25,7 @@ because Rune needs edition 2024. `scripts/dev check` runs both gates.
 | Context and native menus | `apps/ui/src/menus.rs`, `native_menus.rs` |
 | Palette, keymap, tab strip, toasts | `apps/ui/src/palette.rs`, `keymap.rs`, `tabs.rs`, `toasts.rs` |
 | Agent workflow and review | `apps/ui/src/agent_ops.rs`, `handoff.rs`, `code_review.rs` |
-| Git/PR depth | `apps/ui/src/workbench/`, `pr_review.rs`, `pr_detail.rs`, `pr_compose.rs` |
+| Git/PR depth | `apps/ui/src/workbench/`, `pr_review.rs`, `pr_detail.rs`, `open_pr.rs` |
 | Updater | `apps/ui/src/updates.rs` |
 | App README and commands | `apps/ui/README.md` |
 

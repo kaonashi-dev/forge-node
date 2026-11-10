@@ -18,6 +18,8 @@ pub struct CommitBox {
     pub fell_back: bool,
     pub committing: bool,
     pub error: Option<String>,
+    /// `error` answered a draft request, not a commit.
+    pub draft_refused: bool,
     /// The last commit landed; said until the next edit.
     pub committed: bool,
 }
@@ -77,6 +79,8 @@ pub fn commit_box(s: &AppState, k: &Kit, files: usize) -> El {
     let commit = &s.commit;
     let note = if commit.committing {
         "Committing…".to_string()
+    } else if commit.error.is_some() && commit.draft_refused {
+        "Juva could not draft a message.".to_string()
     } else if commit.error.is_some() {
         "The daemon refused the commit.".to_string()
     } else if commit.committed {

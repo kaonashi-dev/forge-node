@@ -1,95 +1,33 @@
-//! Agent prompts for preparing a pull request.
+//! The prompt that asks an agent to draft a pull request, and what it hands back.
 //!
-//! A task is a *template plus a mode*. The template is the wording; the mode is
-//! what the answer is for, and it is what decides who opens the pull request:
-//!
-//! - [`TaskMode::Draft`] — the agent only writes the text and hands it back
-//!   with the `pr_draft` MCP tool or `forgectl pr draft`. Forge Node shows it for editing, then commits
-//!   everything once (on a new branch when the checkout is on its default),
-//!   pushes and calls `gh pr create` itself. The agent never touches the
-//!   working tree.
-//! - [`TaskMode::Implement`] — the agent does the work, commits, pushes and
-//!   opens the pull request. Forge Node launches it and then only watches.
-//!
-//! Making the mode a field of the task rather than a separate switch is the
-//! whole design: "summarise these changes" and "write the tests these changes
-//! are missing" want different wording *and* different endings, and a user who
-//! picked the wording would otherwise still have to remember which ending goes
-//! with it.
-//!
-//! Built-in tasks live in code, like the agent descriptors do. The GUI may
-//! persist a replacement body in its opaque app state; the task itself remains
-//! runtime-only and travels with the launch rather than becoming daemon state.
+//! The agent only writes text and hands it back through `pr_draft` or
+//! `forgectl pr draft`; the daemon then commits, pushes and opens the pull
+//! request itself. The wording before the handover is the user's
+//! (`[pull_requests] system_prompt`); the handover is not, because without it
+//! nothing ever reaches the daemon.
 
 use serde::{Deserialize, Serialize};
 
-/// What the agent's answer is for, and therefore who opens the pull request.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[non_exhaustive]
-pub enum TaskMode {
-    /// The agent writes the pull request's text; Forge Node opens it.
-    Draft,
-    /// The agent does the work and opens the pull request itself.
-    Implement,
-}
+use crate::{DiffStatus, WorkspaceDiff};
 
-impl TaskMode {
-    /// What the button that starts it should say.
-    #[must_use]
-    pub fn action(self) -> &'static str {
-        match self {
-            Self::Draft => "Draft with agent",
-            Self::Implement => "Run agent",
-        }
-    }
-
-    /// Whether Forge is the one that will push and open the pull request.
-    #[must_use]
-    pub fn forge_opens_the_pr(self) -> bool {
-        matches!(self, Self::Draft)
-    }
-}
-
-/// One thing an agent can be asked to do about a set of changes.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub struct PrTask {
-    /// Stable key, for remembering the last choice.
-    pub id: String,
-    /// What the chip says.
-    pub name: String,
-    /// One line under the name: what picking it will do.
-    pub detail: String,
-    /// Draft or implement.
-    pub mode: TaskMode,
-    /// The wording handed to the agent, before the change summary and before
-    /// anything the user adds.
-    pub body: String,
-}
-
-const DESCRIBE_INTRO: &str = "Write the pull request for the uncommitted changes in \
-    this checkout, summarised below with their diff. Say what changed and why; do \
-    not list the files, the diff already does.\n\n";
-
-const REVIEW_INTRO: &str = "Read the diff below as a reviewer would before writing \
-    anything. If you find something that would block a merge — a bug, a missing \
-    test, a leak — say so plainly at the top of the body, under a `## Concerns` \
-    heading. Then write the pull request for these uncommitted changes.\n\n";
-
-/// Shared tail of every [`TaskMode::Draft`] prompt: house style, and the one
-/// command that hands the text to Forge instead of printing it into a terminal
-/// nothing reads.
-const DRAFT_HANDOVER: &str = "Do not edit files, commit, push or open the pull \
-    request: Forge Node does that once the user has read your text.\n\n\
+/// The wording used when `[pull_requests] system_prompt` is empty.
+pub const DEFAULT_SYSTEM_PROMPT: &str = "Write the pull request for the changes in this \
+    checkout, summarised below. Say what changed and why; do not list the files, the \
+    diff already does.\n\n\
     Write it the way this team does. Read what the repository says — CONTRIBUTING, \
     AGENTS.md or CLAUDE.md, any commit or PR guide under docs/, \
     `.github/pull_request_template.md` — and its recent history: `git log -n 20` \
     and `gh pr list --state merged --limit 5 --json title,body`. If this repository \
     has too little history to show a convention, read recent merged pull requests \
-    in other repositories of the same owner. A convention you already remember for \
-    this repository or team counts too; the repository's written rules win.\n\n\
-    All the changes go into one commit, so the commit message describes them all, \
-    in this repository's commit style. The branch is used only when this checkout \
-    is on its default branch; name it the way this repository names branches.\n\n\
+    in other repositories of the same owner. The repository's written rules win.";
+
+/// Appended to every prompt, whatever the user configured.
+const DRAFT_HANDOVER: &str = "Do not edit files, commit, push or open the pull \
+    request: Forge Node does that as soon as you hand the text over.\n\n\
+    Uncommitted changes go into one commit, so the commit message describes them \
+    all, in this repository's commit style. The branch is used only when this \
+    checkout is on its default branch; name it the way this repository names \
+    branches.\n\n\
     Hand the result over with the forge MCP tool `pr_draft` (title, branch, commit, \
     commit_body, body: the pull request body in Markdown), and stop. Without that \
     tool, run this command instead, quoting each value for the shell:\n\n\
@@ -99,86 +37,110 @@ const DRAFT_HANDOVER: &str = "Do not edit files, commit, push or open the pull \
     EOF\n\
     ```";
 
-/// The tasks Forge ships.
-///
-/// Deliberately few. This is a starting point a user edits, not a catalogue to
-/// choose from: a list long enough to need scrolling would make the common case
-/// — press the button — slower than typing the prompt by hand.
+/// Patch bytes a prompt carries; past it files are named but not shown.
+pub const MAX_PROMPT_PATCH: usize = 24 * 1024;
+
+/// Where the checkout stands against its default branch.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct BranchFacts {
+    pub default_branch: Option<String>,
+    /// Commits on this branch not on its upstream; `None` when unknown.
+    pub ahead: Option<u32>,
+}
+
+/// `system_prompt` when it says anything, else [`DEFAULT_SYSTEM_PROMPT`].
 #[must_use]
-pub fn builtin_tasks() -> Vec<PrTask> {
-    vec![
-        PrTask {
-            id: "describe".to_string(),
-            name: "Describe the change".to_string(),
-            detail: "The agent writes the PR and commit text; you edit it, Forge Node commits and opens \
-                     the PR."
-                .to_string(),
-            mode: TaskMode::Draft,
-            body: format!("{DESCRIBE_INTRO}{DRAFT_HANDOVER}"),
-        },
-        PrTask {
-            id: "review".to_string(),
-            name: "Review, then describe".to_string(),
-            detail: "The agent reviews the diff first, then writes the text; Forge Node commits and \
-                     opens the PR."
-                .to_string(),
-            mode: TaskMode::Draft,
-            body: format!("{REVIEW_INTRO}{DRAFT_HANDOVER}"),
-        },
-        PrTask {
-            id: "finish".to_string(),
-            name: "Finish and open the PR".to_string(),
-            detail: "The agent reviews, commits in few groups, pushes and opens the PR in \
-                     the repo's style."
-                .to_string(),
-            mode: TaskMode::Implement,
-            body: "You are working in a git checkout that already has uncommitted \
-                   changes, summarised below. Take them to an open pull request.\n\
-                   \n\
-                   1. Learn how this team writes commits and pull requests before \
-                   writing either. Read what the repository says — CONTRIBUTING, \
-                   AGENTS.md or CLAUDE.md, any commit or PR guide under docs/, \
-                   `.github/pull_request_template.md` — then the recent history: \
-                   `git log -n 20` and `gh pr list --state merged --limit 5 \
-                   --json title,body`. If this repository has too little history \
-                   to show a convention, read recent merged pull requests in \
-                   other repositories of the same owner (`gh repo list <owner> \
-                   --limit 5`, then `gh pr list -R <owner>/<repo> --state merged \
-                   --limit 3 --json title,body`). A convention you already \
-                   remember for this repository or team counts too. Where these \
-                   disagree, the repository's own written rules win.\n\
-                   2. Review the changes as a reviewer would. Fix what would \
-                   block a merge — a bug, a broken build, a failing test — and \
-                   nothing else: do not refactor or extend the work. Run the \
-                   project's checks.\n\
-                   3. If the checked-out branch is the default branch, create a \
-                   branch for this work first, named the way this repository \
-                   names its branches. Never commit or push to the default \
-                   branch.\n\
-                   4. Commit in as few commits as tell the story honestly: \
-                   related changes together, one commit per independent concern, \
-                   never one commit per file. Follow the commit convention from \
-                   step 1.\n\
-                   5. Push with `git push -u origin HEAD`, then open the pull \
-                   request with `gh pr create --assignee @me` so it is assigned to \
-                   whoever `gh` is signed in as. Its title and body follow the \
-                   convention from step 1; fill the repository's template when it \
-                   has one. Report the pull request URL when you are done.\n\
-                   \n\
-                   Do not force-push and do not touch any other branch. If \
-                   something stops you — a check that fails for reasons outside \
-                   these changes, a convention you cannot satisfy — stop and say \
-                   so instead of working around it."
-                .to_string(),
-        },
-    ]
+pub fn effective_system_prompt(system_prompt: &str) -> &str {
+    let trimmed = system_prompt.trim();
+    if trimmed.is_empty() {
+        DEFAULT_SYSTEM_PROMPT
+    } else {
+        trimmed
+    }
+}
+
+/// The whole prompt: the user's wording, the fixed handover, then the change.
+#[must_use]
+pub fn agent_prompt(system_prompt: &str, diff: &WorkspaceDiff, branch: &BranchFacts) -> String {
+    let mut prompt = format!(
+        "{}\n\n{DRAFT_HANDOVER}\n\n## The change\n\n",
+        effective_system_prompt(system_prompt)
+    );
+    if let Some(name) = &diff.branch {
+        prompt.push_str(&format!("Branch `{name}`"));
+        if let Some(default) = &branch.default_branch {
+            prompt.push_str(&format!(" (default branch `{default}`)"));
+        }
+        prompt.push_str(". ");
+    }
+    if let Some(ahead) = branch.ahead.filter(|ahead| *ahead > 0) {
+        let base = branch
+            .default_branch
+            .as_deref()
+            .unwrap_or("the default branch");
+        prompt.push_str(&format!(
+            "{ahead} commit{} not yet pushed; read them with `git log` and \
+             `git diff {base}...HEAD`, they belong in the pull request too. ",
+            if ahead == 1 { "" } else { "s" }
+        ));
+    }
+    if diff.files.is_empty() {
+        prompt.push_str("Nothing is uncommitted.\n");
+        return prompt;
+    }
+    let (additions, deletions) = diff.totals();
+    prompt.push_str(&format!(
+        "Uncommitted: {} file{} · +{additions} −{deletions}.\n",
+        diff.files.len(),
+        if diff.files.len() == 1 { "" } else { "s" }
+    ));
+    for file in &diff.files {
+        prompt.push_str(&format!(
+            "\n- `{}` ({}, +{} −{})",
+            file.path,
+            status_word(file.status),
+            file.additions,
+            file.deletions
+        ));
+    }
+    prompt.push('\n');
+    let mut patch = String::new();
+    let mut truncated = diff.truncated;
+    for file in &diff.files {
+        if patch.len() + file.patch.len() > MAX_PROMPT_PATCH {
+            truncated = true;
+            break;
+        }
+        patch.push_str(&file.patch);
+    }
+    if !patch.is_empty() {
+        prompt.push_str("\n## The diff\n\n```diff\n");
+        prompt.push_str(&patch);
+        prompt.push_str("\n```\n");
+    }
+    if truncated {
+        prompt.push_str(
+            "\nThe diff above is incomplete: some files were left out for length. Read the \
+             rest with `git diff` before writing.\n",
+        );
+    }
+    prompt
+}
+
+fn status_word(status: DiffStatus) -> &'static str {
+    match status {
+        DiffStatus::Added => "added",
+        DiffStatus::Modified => "modified",
+        DiffStatus::Deleted => "deleted",
+        DiffStatus::Conflicted => "unresolved conflict",
+    }
 }
 
 /// Upper bound on any one field of a [`PullRequestDraft`], checked by the
 /// daemon before the draft is broadcast to every client.
 pub const MAX_DRAFT_FIELD_BYTES: usize = 64 * 1024;
 
-/// The text a [`TaskMode::Draft`] agent hands back through `pr_draft` or `forgectl pr draft`.
+/// The text the agent hands back through `pr_draft` or `forgectl pr draft`.
 ///
 /// Runtime-only: it is broadcast once and never stored.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -239,37 +201,26 @@ pub fn branch_step(
         .ok_or("this checkout is on its default branch; name a new branch for the pull request")
 }
 
-/// The task with `id`, or the first built-in when there is no such task.
-///
-/// Never `None`: every surface that asks has to render *something*, and a
-/// remembered id that no longer exists is a stale preference rather than an
-/// error worth showing.
-#[must_use]
-pub fn task_or_default(id: Option<&str>) -> PrTask {
-    let tasks = builtin_tasks();
-    id.and_then(|id| tasks.iter().find(|task| task.id == id).cloned())
-        .unwrap_or_else(|| tasks.into_iter().next().expect("there is a built-in task"))
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::{DiffFile, WorkspaceId};
 
-    #[test]
-    fn a_draft_leaves_the_pull_request_to_forge() {
-        assert!(TaskMode::Draft.forge_opens_the_pr());
-        assert!(!TaskMode::Implement.forge_opens_the_pr());
-    }
-
-    #[test]
-    fn the_builtin_tasks_have_distinct_ids_and_both_modes() {
-        let tasks = builtin_tasks();
-        let mut ids: Vec<&str> = tasks.iter().map(|task| task.id.as_str()).collect();
-        ids.sort_unstable();
-        ids.dedup();
-        assert_eq!(ids.len(), tasks.len(), "two tasks share an id");
-        assert!(tasks.iter().any(|task| task.mode == TaskMode::Draft));
-        assert!(tasks.iter().any(|task| task.mode == TaskMode::Implement));
+    fn diff(patch: &str) -> WorkspaceDiff {
+        WorkspaceDiff {
+            workspace_id: WorkspaceId::new(),
+            branch: Some("fix-x".into()),
+            files: vec![DiffFile {
+                path: "src/lib.rs".into(),
+                status: DiffStatus::Modified,
+                additions: 1,
+                deletions: 1,
+                patch: patch.into(),
+                binary: false,
+                truncated: false,
+            }],
+            truncated: false,
+        }
     }
 
     #[test]
@@ -291,20 +242,40 @@ mod tests {
     }
 
     #[test]
-    fn every_draft_task_hands_its_text_to_forgectl() {
-        for task in builtin_tasks() {
-            let hands_over =
-                task.body.contains("`pr_draft`") && task.body.contains("forgectl pr draft");
-            assert_eq!(hands_over, task.mode == TaskMode::Draft, "{}", task.id);
+    fn a_custom_prompt_replaces_the_wording_but_never_the_handover() {
+        let facts = BranchFacts::default();
+        let custom = agent_prompt("Write it in Spanish.", &diff("@@ x"), &facts);
+        assert!(custom.starts_with("Write it in Spanish."));
+        assert!(!custom.contains(DEFAULT_SYSTEM_PROMPT));
+        let default = agent_prompt("   ", &diff("@@ x"), &facts);
+        assert!(default.starts_with(DEFAULT_SYSTEM_PROMPT));
+        for prompt in [custom, default] {
+            assert!(prompt.contains("`pr_draft`"));
+            assert!(prompt.contains("forgectl pr draft"));
+            assert!(prompt.contains("```diff\n@@ x"));
         }
     }
 
-    /// A remembered choice that no longer exists is a stale preference, not a
-    /// reason to render nothing.
     #[test]
-    fn an_unknown_task_id_falls_back_to_the_first() {
-        assert_eq!(task_or_default(Some("describe")).id, "describe");
-        assert_eq!(task_or_default(Some("gone")).id, builtin_tasks()[0].id);
-        assert_eq!(task_or_default(None).id, builtin_tasks()[0].id);
+    fn a_patch_over_budget_is_named_but_left_out() {
+        let big = "x".repeat(MAX_PROMPT_PATCH + 1);
+        let prompt = agent_prompt("", &diff(&big), &BranchFacts::default());
+        assert!(prompt.contains("`src/lib.rs`"));
+        assert!(!prompt.contains(&big));
+        assert!(prompt.contains("incomplete"));
+    }
+
+    #[test]
+    fn commits_ahead_send_the_agent_to_the_branch_diff() {
+        let mut clean = diff("");
+        clean.files.clear();
+        let facts = BranchFacts {
+            default_branch: Some("main".into()),
+            ahead: Some(2),
+        };
+        let prompt = agent_prompt("", &clean, &facts);
+        assert!(prompt.contains("2 commits not yet pushed"));
+        assert!(prompt.contains("git diff main...HEAD"));
+        assert!(prompt.contains("Nothing is uncommitted."));
     }
 }

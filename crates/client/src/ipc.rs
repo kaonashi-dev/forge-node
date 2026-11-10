@@ -1114,6 +1114,19 @@ impl Client {
         }
     }
 
+    /// The configuration the daemon loaded: its file, the effective TOML and
+    /// the pull-request prompt in effect.
+    pub fn config(&self) -> Result<(std::path::PathBuf, String, String), ClientError> {
+        match self.request(Request::GetConfig)? {
+            Response::Config {
+                path,
+                toml,
+                pull_request_prompt,
+            } => Ok((path, toml, pull_request_prompt)),
+            _ => Err(ClientError::UnexpectedResponse { expected: "Config" }),
+        }
+    }
+
     /// Start a background fetch.
     ///
     /// Returns as soon as the daemon has *started* the fetch, not when it
@@ -1133,8 +1146,9 @@ impl Client {
     ///
     /// Returns after the daemon acknowledges that the operation started; the
     /// resulting state arrives as `DaemonEvent::PullRequestsUpdated`.
-    pub fn refresh_pull_requests(&self) -> Result<(), ClientError> {
-        self.expect_ack(Request::RefreshPullRequests)
+    /// `force` re-reads even when the last read is younger than the cache's TTL.
+    pub fn refresh_pull_requests(&self, force: bool) -> Result<(), ClientError> {
+        self.expect_ack(Request::RefreshPullRequests { force })
     }
 
     /// Working-tree status and bounded patch for a workspace.
@@ -1150,8 +1164,7 @@ impl Client {
         }
     }
 
-    /// Ask Juva to draft a commit message or PR description.
-    /// Start a draft. The text arrives as `DaemonEvent::JuvaDraftReady`.
+    /// Start a commit-message draft. The text arrives as `DaemonEvent::JuvaDraftReady`.
     ///
     /// Acks rather than answers because the `[juva]` endpoint opens a socket:
     /// the same shape as `fetch_remote` and `create_pull_request`.
@@ -1212,6 +1225,24 @@ impl Client {
             title: title.to_owned(),
             body: body.to_owned(),
             base: None,
+        })
+    }
+
+    /// Start a background agent that drafts the pull request, after which the
+    /// daemon commits, pushes and opens it; the outcome arrives as
+    /// `PullRequestOpened`.
+    pub fn open_pull_request_with_agent(
+        &self,
+        workspace_id: WorkspaceId,
+        provider_id: domain::AgentProviderId,
+        profile_id: Option<domain::AgentProfileId>,
+        draft: bool,
+    ) -> Result<(), ClientError> {
+        self.expect_ack(Request::OpenPullRequestWithAgent {
+            workspace_id,
+            provider_id,
+            profile_id,
+            draft,
         })
     }
 
@@ -2302,8 +2333,8 @@ mod tests {
         );
 
         let client = Client::connect(&sock.path, "0.1.0").unwrap();
-        client.refresh_pull_requests().unwrap();
-        match client.refresh_pull_requests() {
+        client.refresh_pull_requests(true).unwrap();
+        match client.refresh_pull_requests(false) {
             Err(ClientError::UnexpectedResponse { expected }) => assert_eq!(expected, "Ack"),
             other => panic!("expected UnexpectedResponse, got {other:?}"),
         }
@@ -2311,7 +2342,10 @@ mod tests {
 
         assert_eq!(
             server.join().unwrap(),
-            vec![Request::RefreshPullRequests, Request::RefreshPullRequests]
+            vec![
+                Request::RefreshPullRequests { force: true },
+                Request::RefreshPullRequests { force: false }
+            ]
         );
     }
 

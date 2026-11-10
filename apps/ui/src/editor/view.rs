@@ -124,6 +124,7 @@ pub fn pane(s: &AppState, k: &Kit) -> El {
         .min_h(0.0)
         .fill(palette.background)
         .focusable(true)
+        .no_focus_ring()
         .on_key(|s: &mut AppState, ev, tx| s.editor_key(ev, tx))
         .child(header);
     if let Some(session) = s.active_line_editor() {
@@ -355,6 +356,7 @@ fn find_panel(ui: &EditorUi, open: &EditorFind, palette: EditorPalette, k: &Kit)
         .key("editor-find")
         .role("search")
         .label("Find in file")
+        .focus_return("editor-pane")
         .w_full()
         .items_center()
         .justify_end()
@@ -394,10 +396,7 @@ fn find_panel(ui: &EditorUi, open: &EditorFind, palette: EditorPalette, k: &Kit)
                 .variant(IconButtonVariant::GhostMuted)
                 .control_size(ControlSize::Small)
                 .label("Close find")
-                .on_press(|s: &mut AppState| {
-                    s.editor.find.edit.focused = false;
-                    s.send_editor_find(EditorFindCommand::Close);
-                })
+                .on_press(|s: &mut AppState| s.send_editor_find(EditorFindCommand::Close))
                 .build(k)
                 .key("editor-find-close"),
         )

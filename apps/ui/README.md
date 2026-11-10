@@ -96,7 +96,7 @@ the queue, and a resync waits for a measurement rendered after it.
 Sidebar rows are select-only and the shell is wrapped in a `terminal-focus-proxy`, so a row
 click moves real focus to the proxy and its key handler is the terminal route. The
 `terminal-focus-indicator` names the active pane. `scripts/focus-session.json` proves a row
-click followed by typing, and `scripts/check_tree.py` asserts both a11y nodes.
+click followed by typing, and `bun scripts/check_tree.ts <tree.json>` asserts both a11y nodes.
 
 ## Boundaries
 

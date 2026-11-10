@@ -23,6 +23,7 @@ mod lsp;
 pub mod migrate_home;
 pub mod orchestration;
 pub mod paths;
+mod pr_agent;
 mod prompts;
 pub mod pull_requests;
 pub mod registry;

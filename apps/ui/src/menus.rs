@@ -1447,7 +1447,7 @@ pub fn run(s: &mut AppState, act: Act, tx: &mut Tx) {
         Act::PreviewPr(workspace) => s.open_compare(workspace),
         Act::OpenPrWithAgent(workspace) => {
             s.focus_checkout(workspace);
-            s.open_pr_compose(workspace);
+            s.open_pr_view(workspace);
         }
         Act::NewWorktree(project) => crate::branch_picker::open(s, project),
         Act::RefreshStatus(workspace) => {

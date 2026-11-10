@@ -1,8 +1,9 @@
 //! A daemon-supervised `forge-editor` under a real PTY.
 //!
-//! The harness PATH is a single directory. These tests write a small Python
-//! stand-in that speaks the control protocol, so the suite does not depend on
-//! a previously built `forge-editor` binary, and so a crash is just `sys.exit`.
+//! The harness PATH is a single directory. These tests write a small Bun
+//! stand-in (`fake_editor.ts`) that speaks the control protocol, so the suite
+//! does not depend on a previously built `forge-editor` binary, and so a crash
+//! is just `process.exit`.
 
 #![allow(
     clippy::unwrap_used,
@@ -19,392 +20,7 @@ use std::time::Duration;
 use domain::{SessionKind, SessionState};
 use protocol::{DaemonEvent, ErrorCode, Request, Response};
 
-const FAKE_EDITOR: &str = r#"#!/usr/bin/python3
-import os, socket, struct, sys, time
-
-def pack_int(n):
-    if 0 <= n <= 127:
-        return bytes([n])
-    if n <= 0xFF:
-        return bytes([0xCC, n])
-    if n <= 0xFFFF:
-        return bytes([0xCD]) + n.to_bytes(2, "big")
-    if n <= 0xFFFFFFFF:
-        return bytes([0xCE]) + n.to_bytes(4, "big")
-    return bytes([0xCF]) + n.to_bytes(8, "big")
-
-def pack_str(s):
-    b = s.encode()
-    n = len(b)
-    if n < 32:
-        return bytes([0xA0 | n]) + b
-    if n < 256:
-        return bytes([0xD9, n]) + b
-    return bytes([0xDA]) + n.to_bytes(2, "big") + b
-
-def pack_bool(v):
-    return b"\xc3" if v else b"\xc2"
-
-def pack_nil():
-    return b"\xc0"
-
-def pack_array(items):
-    n = len(items)
-    header = bytes([0x90 | n]) if n < 16 else bytes([0xDC]) + n.to_bytes(2, "big")
-    return header + b"".join(items)
-
-def pack_map(items):
-    n = len(items)
-    header = bytes([0x80 | n]) if n < 16 else bytes([0xDE]) + n.to_bytes(2, "big")
-    body = b""
-    for k, v in items:
-        body += pack_str(k) + v
-    return header + body
-
-def frame(payload):
-    return struct.pack(">I", len(payload)) + payload
-
-CONTROL_VERSION = __CONTROL_VERSION__
-
-def hello(session_id, pid):
-    inner = pack_map([
-        ("version", pack_int(CONTROL_VERSION)),
-        ("session_id", pack_str(session_id)),
-        ("pid", pack_int(pid)),
-    ])
-    return frame(pack_map([("Hello", inner)]))
-
-def opened(request_id):
-    inner = pack_map([
-        ("request_id", pack_int(request_id)),
-        ("document_version", pack_int(1)),
-    ])
-    return frame(pack_map([("Opened", inner)]))
-
-def state(path, line=1):
-    st = pack_map([
-        ("path", pack_str(path)),
-        ("line", pack_int(line)),
-        ("column", pack_int(1)),
-        ("dirty", pack_bool(False)),
-        ("read_only", pack_bool(True)),
-        ("document_version", pack_int(1)),
-    ])
-    inner = pack_map([("request_id", pack_nil()), ("state", st)])
-    return frame(pack_map([("State", inner)]))
-
-def view_frame(rows, first_line=0, total_lines=1, doc_version=1, caret=(0, 0)):
-    packed = []
-    for line, spans in rows:
-        packed.append(pack_map([
-            ("line", pack_int(line)),
-            ("truncated", pack_bool(False)),
-            ("spans", pack_array([
-                pack_map([("text", pack_str(t)), ("scope", pack_str(sc))])
-                for t, sc in spans
-            ])),
-        ]))
-    frame_body = pack_map([
-        ("buffer_id", pack_int(1)),
-        ("doc_version", pack_int(doc_version)),
-        ("first_line", pack_int(first_line)),
-        ("total_lines", pack_int(total_lines)),
-        ("rows", pack_array(packed)),
-        ("clipped", pack_bool(False)),
-        ("folded", pack_array([])),
-        ("caret", pack_map([("line", pack_int(caret[0])), ("column", pack_int(caret[1]))])),
-        ("selection", pack_array([])),
-        ("extra_carets", pack_array([])),
-        ("decorations", pack_array([])),
-    ])
-    return frame(pack_map([("ViewFrame", pack_map([("frame", frame_body)]))]))
-
-def find_definition(request_id, symbol):
-    inner = pack_map([
-        ("request_id", pack_int(request_id)),
-        ("symbol", pack_str(symbol)),
-    ])
-    return frame(pack_map([("FindDefinition", inner)]))
-
-def save_request(request_id, text, document_version):
-    inner = pack_map([
-        ("request_id", pack_int(request_id)),
-        ("text", pack_str(text)),
-        ("document_version", pack_int(document_version)),
-    ])
-    return frame(pack_map([("SaveRequest", inner)]))
-
-def read_frame(sock):
-    header = b""
-    while len(header) < 4:
-        chunk = sock.recv(4 - len(header))
-        if not chunk:
-            raise EOFError("control eof")
-        header += chunk
-    n = struct.unpack(">I", header)[0]
-    payload = b""
-    while len(payload) < n:
-        chunk = sock.recv(n - len(payload))
-        if not chunk:
-            raise EOFError("control eof")
-        payload += chunk
-    return payload
-
-def unpack(buf, i=0):
-    b = buf[i]
-    if b <= 0x7F:
-        return b, i + 1
-    if 0xA0 <= b <= 0xBF:
-        n = b & 0x1F
-        return buf[i+1:i+1+n].decode(), i + 1 + n
-    if 0x80 <= b <= 0x8F:
-        n = b & 0x0F
-        i += 1
-        out = {}
-        for _ in range(n):
-            k, i = unpack(buf, i)
-            v, i = unpack(buf, i)
-            out[k] = v
-        return out, i
-    if 0x90 <= b <= 0x9F:
-        n = b & 0x0F
-        i += 1
-        out = []
-        for _ in range(n):
-            v, i = unpack(buf, i)
-            out.append(v)
-        return out, i
-    if b in (0xDC, 0xDD):
-        width = 2 if b == 0xDC else 4
-        n = int.from_bytes(buf[i+1:i+1+width], "big")
-        i += 1 + width
-        out = []
-        for _ in range(n):
-            v, i = unpack(buf, i)
-            out.append(v)
-        return out, i
-    if b == 0xC0:
-        return None, i + 1
-    if b == 0xC2:
-        return False, i + 1
-    if b == 0xC3:
-        return True, i + 1
-    if b == 0xCC:
-        return buf[i+1], i + 2
-    if b == 0xCD:
-        return int.from_bytes(buf[i+1:i+3], "big"), i + 3
-    if b == 0xCE:
-        return int.from_bytes(buf[i+1:i+5], "big"), i + 5
-    if b == 0xCF:
-        return int.from_bytes(buf[i+1:i+9], "big"), i + 9
-    if b == 0xD9:
-        n = buf[i+1]
-        return buf[i+2:i+2+n].decode(), i + 2 + n
-    if b == 0xDA:
-        n = int.from_bytes(buf[i+1:i+3], "big")
-        return buf[i+3:i+3+n].decode(), i + 3 + n
-    if b == 0xDE:
-        n = int.from_bytes(buf[i+1:i+3], "big")
-        i += 3
-        out = {}
-        for _ in range(n):
-            k, i = unpack(buf, i)
-            v, i = unpack(buf, i)
-            out[k] = v
-        return out, i
-    raise ValueError("unsupported msgpack 0x%02x" % b)
-
-sock_path = os.environ["FORGE_EDITOR_CONTROL"]
-session_id = os.environ.get("FORGE_SESSION_ID", "")
-with open(".forge-editor-env", "w") as fh:
-    for key in ("FORGE_EDITOR_CONTROL", "FORGE_SESSION_ID", "FORGE_WORKSPACE"):
-        fh.write("%s=%s\n" % (key, os.environ.get(key, "")))
-
-mode = os.environ.get("FORGE_TEST_EDITOR_MODE", "serve")
-if mode == "hang":
-    time.sleep(30)
-    sys.exit(0)
-
-sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-sock.connect(sock_path)
-sock.sendall(hello(session_id, os.getpid()))
-welcome = unpack(read_frame(sock))[0]
-opened_msg = unpack(read_frame(sock))[0]
-open_body = opened_msg.get("Open") or {}
-text = open_body.get("text") or ""
-path = open_body.get("path") or "buffer"
-# Opened first: painting the PTY can block if its reader has not started,
-# and the handshake cannot wait on that.
-sock.sendall(opened(int(open_body.get("request_id") or 1)))
-sock.sendall(state(path, int(open_body.get("line") or 1)))
-sys.stdout.write(text)
-sys.stdout.flush()
-
-if mode == "crash":
-    time.sleep(0.2)
-    sys.exit(1)
-
-def await_message(sock, *names):
-    global path
-    # The daemon sends GitMarks unprompted; a fake that reads blindly would
-    # take it for the answer it asked for. Dispatch by name, like the real one.
-    deadline = time.time() + 20
-    while time.time() < deadline:
-        msg = unpack(read_frame(sock))[0]
-        if "Retarget" in msg:
-            path = msg["Retarget"]["path"]
-        for name in names:
-            if name in msg:
-                return name, msg[name]
-    raise SystemExit("no %s arrived" % (names,))
-
-if mode == "marks":
-    _, body = await_message(sock, "GitMarks")
-    with open(".forge-editor-marks", "w") as fh:
-        for mark in body["marks"]:
-            fh.write("%s %s\n" % (mark["line"], mark["kind"]))
-        fh.write("end\n")
-
-if mode == "save_stale":
-    # One save, after the test has made the file stale: the conflict stands
-    # so it can be read back.
-    for _ in range(600):
-        if os.path.exists(".forge-go"):
-            break
-        time.sleep(0.05)
-    sock.sendall(save_request(1001, "from the editor\n", 2))
-    name, _ = await_message(sock, "Saved", "SaveRefused")
-    with open(".forge-editor-save", "w") as fh:
-        fh.write(name + "\n")
-
-if mode == "save_twice":
-    # The test makes the file stale on disk, then drops the sentinel: the
-    # first save must be refused and the second must go through.
-    for _ in range(600):
-        if os.path.exists(".forge-go"):
-            break
-        time.sleep(0.05)
-    answers = []
-    for attempt in (1, 2):
-        sock.sendall(save_request(1000 + attempt, "from the editor\n", 2))
-        name, _ = await_message(sock, "Saved", "SaveRefused")
-        answers.append(name)
-    with open(".forge-editor-save", "w") as fh:
-        fh.write(" ".join(answers) + "\n")
-
-if mode == "definition" or (mode == "definition_nestjs" and path.endswith(".service.ts")):
-    symbol = "upsertJobScheduler" if mode == "definition_nestjs" else "answer"
-    sock.sendall(find_definition(1500, symbol))
-    _, body = await_message(sock, "Definitions")
-    with open(".forge-editor-definitions", "w") as fh:
-        for place in body["places"]:
-            fh.write("%s:%s %s\n" % (place["path"], place["line"], place["text"].strip()))
-        fh.write("end\n")
-    if mode == "definition_nestjs" and body["places"]:
-        place = body["places"][0]
-        sock.sendall(frame(pack_map([("OpenPath", pack_map([
-            ("request_id", pack_int(1501)),
-            ("path", pack_str(place["path"])),
-            ("line", pack_int(place["line"])),
-        ]))])))
-
-if mode == "definition_follow":
-    if path == "a.rs":
-        sock.sendall(find_definition(1500, "answer"))
-        _, body = await_message(sock, "Definitions")
-        place = body["places"][0]
-        sock.sendall(frame(pack_map([("OpenPath", pack_map([
-            ("request_id", pack_int(1501)),
-            ("path", pack_str(place["path"])),
-            ("line", pack_int(place["line"])),
-            ("column", pack_int(place.get("column") or 0)),
-            ("from", pack_map([
-                ("path", pack_str("a.rs")),
-                ("line", pack_int(1)),
-                ("column", pack_int(9)),
-            ])),
-        ]))])))
-    else:
-        _, body = await_message(sock, "Reveal")
-        origin = body.get("from") or {}
-        with open(".forge-editor-reveal", "w") as fh:
-            fh.write("%s %s %s %s:%s\n" % (body["line"], body.get("column"), body.get("utf16"),
-                                           origin.get("path"), origin.get("column")))
-
-if mode == "copy":
-    # Written only once the test has attached: the escape is a single burst,
-    # and a client that subscribed after it would wait for a store that has
-    # already been broadcast.
-    for _ in range(600):
-        if os.path.exists(".forge-go"):
-            break
-        time.sleep(0.05)
-    # What `Ctrl-C` leaves on the wire: the clipboard *store*, base64 of
-    # "picked up". The daemon's VT engine is the only thing that reads it.
-    sys.stdout.write("\x1b]52;c;cGlja2VkIHVw\x07")
-    sys.stdout.flush()
-
-if mode == "headless":
-    # The DOM surface: no raw mode, no ANSI, and the window is what the
-    # daemon is expected to broadcast. `--headless` must have reached argv,
-    # or the surface flag never made it to the spawn.
-    with open(".forge-editor-argv", "w") as fh:
-        fh.write(" ".join(sys.argv[1:]) + "\n")
-    sock.sendall(view_frame([(0, [("fn", "Keyword"), (" main", "Function")])],
-                            total_lines=2, doc_version=1))
-    seen = []
-    while len(seen) < 2:
-        msg = unpack(read_frame(sock))[0]
-        if "Input" in msg:
-            events = msg["Input"]["events"]
-            keys = []
-            for event in events:
-                if isinstance(event, dict) and "Key" in event:
-                    key = event["Key"]["key"]
-                    name = key["Char"] if isinstance(key, dict) else key
-                    keys.append("%s+%d" % (name, event["Key"]["modifiers"]))
-                elif isinstance(event, dict) and "Text" in event:
-                    keys.append("text:%s" % event["Text"])
-            seen.append("input " + ",".join(keys))
-        elif "SetView" in msg:
-            view = msg["SetView"]["view"]
-            seen.append("view %d %d" % (view["first_line"], view["line_count"]))
-    with open(".forge-editor-surface", "w") as fh:
-        fh.write("\n".join(seen) + "\nend\n")
-    # A second window, so the test can tell a frame that answered the input
-    # from the one that was already on screen.
-    sock.sendall(view_frame([(0, [("Xfn main", "Plain")])],
-                            total_lines=2, doc_version=2, caret=(0, 1)))
-
-if mode == "save":
-    body = os.environ.get("FORGE_TEST_SAVE_TEXT", "saved by the editor\n")
-    sock.sendall(save_request(1000, body, 2))
-    name, payload = await_message(sock, "Saved", "SaveRefused")
-    with open(".forge-editor-save", "w") as fh:
-        detail = payload.get("revision") or payload.get("reason") or ""
-        fh.write("%s %s\n" % (name, detail))
-
-if mode == "move":
-    original = path
-    receipt = ".forge-move-" + os.path.basename(original)
-    count = 0
-    while True:
-        msg = unpack(read_frame(sock))[0]
-        if "Retarget" in msg:
-            path = msg["Retarget"]["path"]
-        elif "GetState" in msg:
-            # An old queued state must never redirect the daemon's save destination.
-            sock.sendall(state(original, 7))
-        elif "Save" in msg:
-            count += 1
-            sock.sendall(save_request(2000 + count, "draft " + original + "\n", count + 1))
-            name, _ = await_message(sock, "Saved", "SaveRefused")
-            with open(receipt, "w") as fh:
-                fh.write("%s %s %d\n" % (name, path, count))
-
-while True:
-    time.sleep(0.25)
-"#;
+const FAKE_EDITOR: &str = include_str!("fake_editor.ts");
 
 /// The fake's source, speaking whatever control version this build speaks.
 ///
@@ -412,10 +28,32 @@ while True:
 /// fail every test here with "a session should reach Running" and say nothing
 /// about the handshake being the reason.
 fn fake_editor_source() -> String {
-    FAKE_EDITOR.replace(
-        "__CONTROL_VERSION__",
-        &editor_control::CONTROL_VERSION.to_string(),
+    format!(
+        "#!{}\n{}",
+        bun().display(),
+        FAKE_EDITOR.replace(
+            "__CONTROL_VERSION__",
+            &editor_control::CONTROL_VERSION.to_string(),
+        )
     )
+}
+
+/// The Bun that runs the fake, by absolute path: the harness PATH holds only
+/// its own bin directory, so `/usr/bin/env bun` would find nothing.
+fn bun() -> std::path::PathBuf {
+    let on_path = std::env::var_os("PATH").and_then(|path| {
+        std::env::split_paths(&path)
+            .map(|dir| dir.join("bun"))
+            .find(|candidate| candidate.is_file())
+    });
+    let installed = std::env::var_os("HOME")
+        .map(|home| Path::new(&home).join(".bun/bin/bun"))
+        .filter(|candidate| candidate.is_file());
+    std::env::var_os("BUN")
+        .map(std::path::PathBuf::from)
+        .or(on_path)
+        .or(installed)
+        .expect("the editor scenarios run their fake editor on Bun: install it or set BUN")
 }
 
 fn install_fake_editor(harness: &common::Harness) {
@@ -586,8 +224,8 @@ fn editor_crash_marks_the_session_and_releases_state() {
     // Rewrite the fake to crash after handshake.
     let path = harness.bin().join("forge-editor");
     let script = fake_editor_source().replace(
-        "mode = os.environ.get(\"FORGE_TEST_EDITOR_MODE\", \"serve\")",
-        "mode = \"crash\"",
+        "const mode: string = process.env.FORGE_TEST_EDITOR_MODE ?? \"serve\";",
+        "const mode: string = \"crash\";",
     );
     fs::write(&path, script).unwrap();
     let mut perms = fs::metadata(&path).unwrap().permissions();
@@ -1008,12 +646,12 @@ fn install_saving_editor(harness: &common::Harness, text: &str) {
 fn install_editor_mode(harness: &common::Harness, mode: &str, text: Option<&str>) {
     let path = harness.bin().join("forge-editor");
     let mut script = fake_editor_source().replace(
-        "mode = os.environ.get(\"FORGE_TEST_EDITOR_MODE\", \"serve\")",
-        &format!("mode = {mode:?}"),
+        "const mode: string = process.env.FORGE_TEST_EDITOR_MODE ?? \"serve\";",
+        &format!("const mode: string = {mode:?};"),
     );
     if let Some(text) = text {
         script = script.replace(
-            "os.environ.get(\"FORGE_TEST_SAVE_TEXT\", \"saved by the editor\\n\")",
+            "process.env.FORGE_TEST_SAVE_TEXT ?? \"saved by the editor\\n\"",
             &format!("{text:?}"),
         );
     }
@@ -1112,7 +750,7 @@ fn following_a_definition_reveals_it_in_the_editor_that_holds_the_file() {
     let reveal = await_receipt(&repo.path().join(".forge-editor-reveal"));
     assert_eq!(
         reveal.trim(),
-        "1 8 True a.rs:9",
+        "1 8 true a.rs:9",
         "line, UTF-16 column and origin"
     );
     common::wait_for(&events, common::DEADLINE, |event| {
@@ -1222,8 +860,8 @@ fn editor_session_refuses_binary_and_missing() {
 fn install_fake_editor_in_mode(harness: &common::Harness, mode: &str) {
     let path = harness.bin().join("forge-editor");
     let script = fake_editor_source().replace(
-        "mode = os.environ.get(\"FORGE_TEST_EDITOR_MODE\", \"serve\")",
-        &format!("mode = {mode:?}"),
+        "const mode: string = process.env.FORGE_TEST_EDITOR_MODE ?? \"serve\";",
+        &format!("const mode: string = {mode:?};"),
     );
     fs::write(&path, script).expect("write fake editor");
     let mut perms = fs::metadata(&path).unwrap().permissions();

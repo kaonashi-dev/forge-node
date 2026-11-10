@@ -1,4 +1,4 @@
-//! Juva: draft commit messages, PR descriptions and change reviews.
+//! Juva: draft commit messages.
 //!
 //! The system prompts encode the project's writing standard. [`draft`] is the
 //! deterministic form — a file list and heuristics, no network — and

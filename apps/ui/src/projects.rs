@@ -218,6 +218,7 @@ fn rail_sessions(s: &AppState) -> Vec<(WorkspaceId, SessionId)> {
 
 fn select_row(s: &mut AppState, id: String) {
     s.projects.rail.cursor = Some(id);
+    s.projects.rail.keyed = false;
 }
 
 /// Enter on a row: a session shows its terminal and hands it the keyboard;
@@ -308,6 +309,7 @@ pub fn rail_key(s: &mut AppState, ev: &KeyEvent, tx: &mut Tx) -> bool {
         }
         _ => return false,
     }
+    s.projects.rail.keyed = true;
     true
 }
 
@@ -321,7 +323,8 @@ fn chevron(open: bool) -> &'static rune::Icon {
 
 /// The cursor's mark: the row the rail's keys act on.
 fn cursored(s: &AppState, k: &Kit, id: &str, row: El) -> El {
-    if s.projects.rail.cursor.as_deref() == Some(id) {
+    let rail = &s.projects.rail;
+    if rail.keyed && rail.cursor.as_deref() == Some(id) {
         row.border(1.0, k.c.border_focus)
     } else {
         row
@@ -1381,6 +1384,10 @@ mod tests {
             Some(format!("project:{project}"))
         );
         assert!(
+            !rt.state.projects.rail.keyed,
+            "a click moves the cursor without marking the row"
+        );
+        assert!(
             rt.state.projects.rail.folds.contains(&project.to_string()),
             "a click folds the project"
         );
@@ -1402,6 +1409,7 @@ mod tests {
             cursor.starts_with("workspace:"),
             "j steps to the first checkout: {cursor}"
         );
+        assert!(rt.state.projects.rail.keyed, "a key marks the cursor");
         typed(&mut rt, "h");
         assert!(
             rt.state

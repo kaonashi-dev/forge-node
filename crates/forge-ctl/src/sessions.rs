@@ -1199,6 +1199,7 @@ mod tests {
                 base_commit: None,
                 activity: domain::AgentActivity::starting(now),
                 action: None,
+                background: false,
             });
             store.projects.push(project);
             store.workspaces.push(workspace);

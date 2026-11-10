@@ -46,23 +46,23 @@ esac
 
 url="https://github.com/${repo_slug}/releases/download/${tag}/$(basename "$artifact")"
 
+# Non-ASCII is escaped so the feed is plain ASCII whatever the notes hold.
 PROTOCOL="$protocol" VERSION="$version" BODY="$body" PLATFORM="$platform" URL="$url" \
-SIG="$(cat "$artifact.sig")" python3 - <<'PY'
-import json, os, datetime
-notes = f"protocol: {os.environ['PROTOCOL']}"
-body = os.environ.get("BODY", "").strip()
-if body:
-    notes += "\n" + body
-print(json.dumps({
-    "version": os.environ["VERSION"],
-    "notes": notes,
-    "pub_date": datetime.datetime.now(datetime.timezone.utc)
-        .replace(microsecond=0).isoformat().replace("+00:00", "Z"),
-    "platforms": {
-        os.environ["PLATFORM"]: {
-            "signature": os.environ["SIG"].strip(),
-            "url": os.environ["URL"],
-        }
-    },
-}, indent=2))
-PY
+SIG="$(cat "$artifact.sig")" bun -e '
+const env = process.env as Record<string, string | undefined>;
+const body = (env.BODY ?? "").trim();
+const manifest = {
+  version: env.VERSION ?? "",
+  notes: `protocol: ${env.PROTOCOL ?? ""}${body ? `\n${body}` : ""}`,
+  pub_date: new Date().toISOString().replace(/\.\d{3}Z$/, "Z"),
+  platforms: {
+    [env.PLATFORM ?? ""]: { signature: (env.SIG ?? "").trim(), url: env.URL ?? "" },
+  },
+};
+console.log(
+  JSON.stringify(manifest, null, 2).replace(
+    /[\u0080-\uffff]/g,
+    (c) => `\\u${c.charCodeAt(0).toString(16).padStart(4, "0")}`,
+  ),
+);
+'
