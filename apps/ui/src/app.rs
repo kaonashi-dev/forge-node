@@ -2,7 +2,7 @@
 //! Terminal deltas arrive through `SharedTerminal`; only shell events use
 //! `AppHandle::update`, so a frame of output never rebuilds the sidebar.
 
-use std::cell::Cell;
+use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -114,6 +114,15 @@ pub struct CommandStatus {
     pub took_us: u64,
 }
 
+/// The strip's rows as indices into `AppState::rows`, for the inputs they
+/// were derived from: the rows' revision, the strip's checkout and the tab
+/// order's revision.
+#[derive(Default)]
+struct TabMemo {
+    key: Option<(u64, Option<WorkspaceId>, u64)>,
+    indices: Vec<usize>,
+}
+
 pub struct AppState {
     pub sidebar: PaneState,
     pub store: Option<Store>,
@@ -190,6 +199,8 @@ pub struct AppState {
     /// next `apply_events`, which holds the `Tx`.
     pub pending_copy: Option<String>,
     pub fixture_titles: HashMap<TerminalId, String>,
+    rows_revision: u64,
+    tab_memo: RefCell<TabMemo>,
     pub out: Outbox,
     pub last_input: Option<(usize, String)>,
     pub last_focus: Option<String>,
@@ -265,6 +276,8 @@ impl AppState {
             select_when_listed: None,
             pending_copy: None,
             fixture_titles: HashMap::new(),
+            rows_revision: 0,
+            tab_memo: RefCell::default(),
             out: Outbox::default(),
             last_input: None,
             last_focus: None,
@@ -322,6 +335,7 @@ impl AppState {
     }
 
     fn set_store(&mut self, store: Store) {
+        self.rows_revision += 1;
         let mut sessions: Vec<&domain::Session> = store.sessions.iter().collect();
         // Creation order, as the original client's `byCreatedAt`; the sort is stable.
         sessions.sort_by_key(|session| session.created_at);
@@ -994,11 +1008,36 @@ impl AppState {
             self.active_row().map(|row| row.workspace_id),
             self.workspaces.first().map(|choice| choice.id),
         );
-        let base = rows_in_strip(&self.rows, workspace);
-        match workspace.and_then(|workspace| self.tabs.order_for(workspace)) {
-            Some(order) => crate::tabs::applied(&base, order),
-            None => base,
+        let key = (self.rows_revision, workspace, self.tabs.revision());
+        let mut memo = self.tab_memo.borrow_mut();
+        if memo.key != Some(key) {
+            let base = rows_in_strip(&self.rows, workspace);
+            let ordered = match workspace.and_then(|workspace| self.tabs.order_for(workspace)) {
+                Some(order) => crate::tabs::applied(&base, order),
+                None => base,
+            };
+            let at: HashMap<SessionId, usize> = self
+                .rows
+                .iter()
+                .enumerate()
+                .map(|(index, row)| (row.id, index))
+                .collect();
+            memo.indices = ordered
+                .iter()
+                .filter_map(|row| at.get(&row.id).copied())
+                .collect();
+            memo.key = Some(key);
         }
+        memo.indices
+            .iter()
+            .map(|index| &self.rows[*index])
+            .collect()
+    }
+
+    /// The rows for an edit outside a snapshot, which the strip must see.
+    pub fn rows_mut(&mut self) -> &mut Vec<SessionRow> {
+        self.rows_revision += 1;
+        &mut self.rows
     }
 
     fn step_session(&mut self, delta: isize) {
@@ -1796,6 +1835,7 @@ impl AppState {
                 if reset {
                     self.store = None;
                     self.rows.clear();
+                    self.rows_revision += 1;
                     self.workspaces.clear();
                     self.active = None;
                     self.active_text = None;
@@ -3120,6 +3160,35 @@ mod tests {
             Some(active),
             "reordering leaves the active tab"
         );
+    }
+
+    #[test]
+    fn the_strip_is_derived_once_and_follows_a_row_edit() {
+        let mut state = state();
+        let active = state.active.expect("an active session");
+        let first = state
+            .tab_rows()
+            .iter()
+            .map(|row| row.id)
+            .collect::<Vec<_>>();
+        let key = state.tab_memo.borrow().key;
+        assert!(key.is_some());
+        assert_eq!(state.tab_rows().len(), first.len());
+        assert_eq!(
+            state.tab_memo.borrow().key,
+            key,
+            "a repaint reuses the strip"
+        );
+        let Some(moved) = first.iter().copied().find(|id| *id != active) else {
+            return;
+        };
+        let index = state
+            .rows
+            .iter()
+            .position(|row| row.id == moved)
+            .expect("row");
+        state.rows_mut()[index].workspace_id = WorkspaceId::new();
+        assert!(state.tab_rows().iter().all(|row| row.id != moved));
     }
 
     #[test]

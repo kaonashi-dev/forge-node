@@ -521,8 +521,9 @@ mod tests {
         rt.update(|s, _| {
             s.editor_surface = protocol::EditorSurface::Dom;
             let id = s.rows[0].id;
-            s.rows[0].kind = domain::SessionKind::Editor;
-            s.rows[0].terminal_id = None;
+            let first = &mut s.rows_mut()[0];
+            first.kind = domain::SessionKind::Editor;
+            first.terminal_id = None;
             s.active = Some(id);
             s.editor.set_session(Some(id));
             s.editor.scroll.set([0.0, 400.0]);
