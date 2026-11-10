@@ -92,11 +92,6 @@ impl InputHold {
     }
 
     #[must_use]
-    pub fn is_empty(&self) -> bool {
-        self.events.is_empty()
-    }
-
-    #[must_use]
     pub fn refused(&self) -> u64 {
         self.refused
     }
@@ -249,28 +244,18 @@ impl Attachment {
         self.hold.refused()
     }
 
-    /// The banner the view draws while attaching or after a refusal.
+    /// The banner the view draws after a refusal, or `None`. Attaching is not
+    /// one: a tab switch passes through it in a blink, and keys typed meanwhile
+    /// are held and sent, so saying so is only noise.
     #[must_use]
     pub fn notice(&self) -> Option<String> {
-        if self.hold.refused() > 0 {
-            return Some(format!(
+        (self.hold.refused() > 0).then(|| {
+            format!(
                 "{} input(s) refused: {} KiB hold buffer full",
                 self.hold.refused(),
                 MAX_HELD_BYTES / 1024
-            ));
-        }
-        if self.state == AttachState::Attaching {
-            return Some(if self.hold.is_empty() {
-                "Attaching terminal…".to_string()
-            } else {
-                format!(
-                    "Attaching terminal — {} bytes held ({})",
-                    self.hold.bytes(),
-                    self.hold.len()
-                )
-            });
-        }
-        None
+            )
+        })
     }
 }
 

@@ -4,10 +4,15 @@
 //! account that recorded it.
 
 use domain::{ExternalAgentSession, ProjectId, WorkspaceId};
-use rune::{El, ScrollSpec, TextEdit, col, icon, row, text};
+use std::borrow::Cow;
+
+use rune::{El, ScrollSpec, TextEdit, col, el, icon, row, text};
 use rune_kit::{Button, ButtonVariant, ControlSize, Kit, SegmentedControl};
 
 use crate::app::AppState;
+
+/// A card with a preview line; shorter ones are measured as they mount.
+const HISTORY_CARD_H: f32 = 104.0;
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum Scope {
@@ -197,6 +202,109 @@ impl AppState {
     }
 }
 
+/// One run's card; built only while it is in the list's viewport.
+fn card(s: &AppState, k: &Kit, at: usize) -> El {
+    let profiles = s
+        .store
+        .as_ref()
+        .map_or(&[][..], |store| store.agent_profiles.as_slice());
+    let Some(session) = s
+        .store
+        .as_ref()
+        .and_then(|store| store.external_agents.get(at))
+    else {
+        return el();
+    };
+    let mut meta: Vec<String> = Vec::new();
+    if let Some(branch) = &session.branch {
+        meta.push(branch.clone());
+    }
+    if let Some(profile) = session
+        .profile_id
+        .and_then(|id| profiles.iter().find(|item| item.id == id))
+    {
+        meta.push(profile.name.clone());
+    }
+    meta.push(format!("{} turns", session.message_count));
+    if session.subagent_count > 0 {
+        meta.push(format!("{} subagents", session.subagent_count));
+    }
+    let blocked = s.resume_blocked(session);
+    let mut resume = Button::new("Resume")
+        .variant(ButtonVariant::Outline)
+        .control_size(ControlSize::Small)
+        .disabled(blocked.is_some());
+    if blocked.is_none() {
+        resume = resume.on_press(move |s: &mut AppState| s.resume_run(at));
+    }
+    let mut card = col()
+        .key(format!("history-{}", session.session_id))
+        .role("group")
+        .label(session.title.clone())
+        .description(blocked.clone().unwrap_or_default())
+        .w_full()
+        .gap(crate::ds::SPACE_2)
+        .padding(8.0)
+        .radius(k.radius.md)
+        .border(1.0, k.c.border_weak)
+        .child(
+            row()
+                .gap(crate::ds::SPACE_3)
+                .items_center()
+                .child(
+                    icon(
+                        crate::glyphs::brand(&session.provider).unwrap_or(&crate::glyphs::AGENT),
+                        13.0,
+                    )
+                    .color(k.c.icon_muted),
+                )
+                .child(
+                    text(session.title.clone())
+                        .font(k.ty.small_medium)
+                        .color(k.c.text_base)
+                        .truncate()
+                        .min_w(0.0)
+                        .grow(1.0),
+                )
+                .child(
+                    text(session.provider.clone())
+                        .font(k.ty.text_xsmall)
+                        .color(k.c.text_faint),
+                ),
+        )
+        .child(
+            text(meta.join(" · "))
+                .font(k.ty.text_xsmall)
+                .color(k.c.text_faint)
+                .truncate(),
+        );
+    if let Some(preview) = &session.preview {
+        card = card.child(
+            text(preview.clone())
+                .font(k.ty.text_xsmall)
+                .color(k.c.text_muted)
+                .truncate(),
+        );
+    }
+    card = card.on_secondary_press(move |s: &mut AppState, point, _| {
+        crate::menus::open(s, crate::menus::Target::HistoryRun(at), point);
+    });
+    let delete = Button::new("Delete…")
+        .variant(ButtonVariant::GhostMuted)
+        .control_size(ControlSize::Small)
+        .on_press(move |s: &mut AppState| s.request_delete(at))
+        .build(k)
+        .key(format!("delete-{at}"));
+    col().w_full().pb(crate::ds::SPACE_3).child(
+        card.child(
+            row()
+                .gap(crate::ds::SPACE_2)
+                .child(resume.build(k).key(format!("resume-{at}")))
+                .child(delete),
+        ),
+    )
+}
+
 pub fn view(s: &AppState, k: &Kit) -> El {
     let history = &s.history;
     let labels: Vec<&str> = SCOPES.iter().map(|(_, label)| *label).collect();
@@ -220,7 +328,7 @@ pub fn view(s: &AppState, k: &Kit) -> El {
         .key("history-filter")
         .w_full()
         .min_w(0.0);
-    let mut list = col().key("history-list").w_full().gap(6.0);
+    let mut list = col().key("history-list").w_full();
     let rows = s.store.as_ref().map_or_else(Vec::new, |store| {
         let project = s.workbench.workspace.and_then(|workspace| {
             store
@@ -245,114 +353,37 @@ pub fn view(s: &AppState, k: &Kit) -> El {
                 .color(k.c.text_faint),
         );
     }
-    let profiles = s
-        .store
-        .as_ref()
-        .map_or(&[][..], |store| store.agent_profiles.as_slice());
-    for at in rows.into_iter().take(200) {
-        let Some(session) = s
-            .store
-            .as_ref()
-            .and_then(|store| store.external_agents.get(at))
-        else {
-            continue;
-        };
-        let mut meta: Vec<String> = Vec::new();
-        if let Some(branch) = &session.branch {
-            meta.push(branch.clone());
-        }
-        if let Some(profile) = session
-            .profile_id
-            .and_then(|id| profiles.iter().find(|item| item.id == id))
-        {
-            meta.push(profile.name.clone());
-        }
-        meta.push(format!("{} turns", session.message_count));
-        if session.subagent_count > 0 {
-            meta.push(format!("{} subagents", session.subagent_count));
-        }
-        let blocked = s.resume_blocked(session);
-        let mut resume = Button::new("Resume")
-            .variant(ButtonVariant::Outline)
-            .control_size(ControlSize::Small)
-            .disabled(blocked.is_some());
-        if blocked.is_none() {
-            resume = resume.on_press(move |s: &mut AppState| s.resume_run(at));
-        }
-        let mut card = col()
-            .key(format!("history-{}", session.session_id))
-            .role("group")
-            .label(session.title.clone())
-            .description(blocked.clone().unwrap_or_default())
-            .w_full()
-            .gap(3.0)
-            .padding(8.0)
-            .radius(6.0)
-            .border(1.0, k.c.border_weak)
-            .child(
-                row()
-                    .gap(6.0)
-                    .items_center()
-                    .child(
-                        icon(
-                            crate::glyphs::brand(&session.provider)
-                                .unwrap_or(&crate::glyphs::AGENT),
-                            13.0,
-                        )
-                        .color(k.c.icon_muted),
-                    )
-                    .child(
-                        text(session.title.clone())
-                            .font(k.ty.small_medium)
-                            .color(k.c.text_base)
-                            .truncate()
-                            .min_w(0.0)
-                            .grow(1.0),
-                    )
-                    .child(
-                        text(session.provider.clone())
-                            .font(k.ty.text_xsmall)
-                            .color(k.c.text_faint),
-                    ),
+    if !rows.is_empty() {
+        let kit = k.clone();
+        let version = rows.clone();
+        let keys = std::rc::Rc::new(rows);
+        let build = std::rc::Rc::clone(&keys);
+        list = list
+            .growth(rune::GrowthSpec::default())
+            .virtual_rows(
+                keys.len(),
+                HISTORY_CARD_H,
+                move |s: &AppState, index| {
+                    let id = keys
+                        .get(index)
+                        .and_then(|at| s.store.as_ref()?.external_agents.get(*at));
+                    Cow::Owned(id.map_or_else(
+                        || format!("history-row-{index}"),
+                        |run| format!("history-{}", run.session_id),
+                    ))
+                },
+                move |s: &AppState, index| {
+                    build.get(index).map_or_else(el, |at| card(s, &kit, *at))
+                },
             )
-            .child(
-                text(meta.join(" · "))
-                    .font(k.ty.text_xsmall)
-                    .color(k.c.text_faint)
-                    .truncate(),
-            );
-        if let Some(preview) = &session.preview {
-            card = card.child(
-                text(preview.clone())
-                    .font(k.ty.text_xsmall)
-                    .color(k.c.text_muted)
-                    .truncate(),
-            );
-        }
-        card = card.on_secondary_press(move |s: &mut AppState, point, _| {
-            crate::menus::open(s, crate::menus::Target::HistoryRun(at), point);
-        });
-        let delete = Button::new("Delete…")
-            .variant(ButtonVariant::GhostMuted)
-            .control_size(ControlSize::Small)
-            .on_press(move |s: &mut AppState| s.request_delete(at))
-            .build(k)
-            .key(format!("delete-{at}"));
-        list = list.child(
-            card.child(
-                row()
-                    .gap(4.0)
-                    .child(resume.build(k).key(format!("resume-{at}")))
-                    .child(delete),
-            ),
-        );
+            .virtual_rows_version(version);
     }
     col()
         .key("history")
         .w_full()
         .h_full()
         .min_h(0.0)
-        .gap(8.0)
+        .gap(crate::ds::SPACE_4)
         .child(text("History").font(k.ty.small_medium).color(k.c.text_base))
         .child(scopes)
         .child(filter)
@@ -373,6 +404,7 @@ pub fn view(s: &AppState, k: &Kit) -> El {
                 .scroll(ScrollSpec {
                     stick_bottom: false,
                 })
+                .on_wheel(crate::pages::wheel)
                 .child(list),
         )
 }
@@ -393,13 +425,11 @@ pub fn delete_dialog(s: &AppState, k: &Kit, layer: &mut Vec<El>) {
         .on_press(|s: &mut AppState| s.confirm_delete())
         .build(k)
         .key("delete-confirm");
-    rune_kit::Dialog::new(
+    crate::modal::Modal::new(
         "delete-transcript",
         format!("Delete \"{}\"?", pending.title),
     )
-    .open(true)
-    .fit()
-    .width(440.0)
+    .width(crate::modal::WIDTH_PROMPT)
     .on_close(|s: &mut AppState| s.history.confirm_delete = None)
     .child(
         col()
@@ -417,13 +447,13 @@ pub fn delete_dialog(s: &AppState, k: &Kit, layer: &mut Vec<El>) {
             )
             .child(
                 row()
-                    .gap(8.0)
+                    .gap(crate::ds::SPACE_4)
                     .child(rune::el().grow(1.0))
                     .child(cancel)
                     .child(delete),
             ),
     )
-    .build(k, layer);
+    .build(s, k, layer);
 }
 
 #[must_use]

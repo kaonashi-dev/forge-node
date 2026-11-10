@@ -124,12 +124,12 @@ its cost times its rung.
 
 | Rung | Rate | Where | Budget |
 |------|------|-------|--------|
-| per cell | ~10 000 / frame | `runtime/cells.rs` (`cell_style`), `shared/cell-grid/` | **zero allocations, zero lock acquisitions** |
+| per cell | ~10 000 / frame | `apps/ui/src/terminal/renderer.rs`, `terminal/palette.rs` | **zero allocations, zero lock acquisitions** |
 | per row | ~50 / frame, ~50 / delta | `DeltaBuilder::delta`, `CellGrid::apply_delta` | one `Vec` at most |
 | per PTY batch | input-driven; not capped by `FRAME` | `Daemon::pump_terminal_batch` | no blocking syscall or grid-sized clone under the core lock |
-| per emitted delta | ≤125 /s **per attached terminal** on the daemon (`FRAME` = 8 ms); the host coalesces terminal cells at `CELL_SEND_FLOOR` (16 ms, 33 ms scrolled) | `route_terminal_delta`, `runtime_loop` | no syscall that can block, no clone that scales with the grid |
+| per emitted delta | ≤125 /s **per attached terminal** on the daemon (`FRAME` = 8 ms); the client applies each to `SharedTerminal` and the compositor draws the pane without rebuilding the view | `route_terminal_delta`, `pty_loop`, `SharedTerminal::apply_delta` | no syscall that can block, no clone that scales with the grid |
 | per frame | every repaint | Rune view build | nothing derivable from the store |
-| per store change | user actions and daemon broadcasts | `applyShellSnapshot`, `createMemo` | this is where per-frame work belongs |
+| per store change | user actions and daemon broadcasts | `AppState::set_store`, `TabMemo` | this is where per-frame work belongs |
 | per request | user-initiated | daemon request handlers | subprocesses and disk are fine, **outside the core lock** |
 | per sweep | 30 s / 300 s | idle, usage, PR sweepers | anything, within its timeout |
 
@@ -263,7 +263,7 @@ resync instead of replaying a backlog.
 ### Compute on change, not on frame
 
 Everything derivable from the store belongs where the store changes
-(`applyShellSnapshot`, a `createMemo`), not in a render path. Per frame, the
+(`AppState::set_store`, a memo such as `TabMemo`), not in a render path. Per frame, the
 audit found: the diff pane re-parsing, re-flattening and re-hashing the whole patch; the sidebar running four sorts whose comparator is
 `a.name.to_lowercase().cmp(&b.name.to_lowercase())` — two `String`s per
 comparison — over nested O(P·W·S) scans; the history panel allocating two
@@ -510,19 +510,34 @@ budgets for changes to `apps/ui`.
 | Diff | expand a 2 000-line patch ≤ 50 ms | Unified and split patches mount viewport rows plus 24 rows of overscan on either side; closed and distant patches mount no rows. |
 | File tree | 50 000 paths at 60 fps; filter keystroke ≤ 8 ms | Windowed rows with an overscan; the filter narrows the daemon's listing rather than re-scoring it. |
 
-Two costs on this side are deliberate and documented rather than fixed:
+One cost on this side is deliberate and documented rather than fixed:
 
-- **A scrolled viewport gets a full frame.** `cells::frame` sends every row
-  whenever `scroll_offset > 0`, because a damage list is expressed in
-  live-viewport rows and means nothing against a window of the scrollback. The
-  floor is raised from 16 ms to 33 ms while scrolled (`CELL_SEND_FLOOR_SCROLLED`
-  in `apps/ui/src/terminal/mod.rs`), which halves it. That is not a
-  latency regression: latency is measured against the keystroke that produced the
-  output, and a scrolled viewport is by definition not showing what a keystroke would produce.
 - **The colour of a cell is cached, the font already was.** `terminal::palette`
   (`apps/ui/src/terminal/palette.rs`) caches one colour per indexed slot and a
   bounded map for truecolour. Before it, a full-screen 256-colour TUI rebuilt a
   string per run per frame — per-cell work on the frame rung.
+
+### The Rune client's view
+
+Rune rebuilds the whole view on every commit, and a terminal that is printing
+commits up to 8 times a second (its accessibility mirror refreshes every
+125 ms), so the cost of a panel is paid per rebuild, not per user action.
+
+- A list that can hold hundreds of entries is `virtual_rows`, with
+  `virtual_rows_version` when its keys only change with its count. History
+  went from 2 531 mounted elements to 378 at 400 runs, and its frame from
+  1.75 to 0.33 ms p50.
+- A handler that only records layout (`on_layout` storing a rect) calls
+  `tx.live_only()`, so scrolling does not rebuild the view.
+- `poll` returns `true` only when something visible changed.
+- Derived data is built in `AppState::set_store`; at 400 runs and 144
+  sessions the History index and process groups cost 0.11 ms per store change.
+
+Measure with `RUNE_COMMIT_BUDGET_MS=8` (prints every commit over budget with
+its view/layout/apply split), `scripts/dev ui run --bench`,
+`apps/ui/scripts/perf.sh`, and the per-panel view cost against a large
+snapshot: `FORGE_UI_VIEW_FIXTURE=<snapshot.json> cargo test --release
+view_cost_per_panel -- --ignored --nocapture` in `apps/ui`.
 
 ### Diff and preview windows
 
@@ -545,16 +560,14 @@ Carry these forward; they are real, verified, and not yet fixed.
 | Item | Where | Why it still matters |
 |---|---|---|
 | Whole-grid delta on a line feed | `DeltaBuilder::delta` | Mid-screen edits now travel as column patches. A line feed can still report `TermDamage::Full` (see Alacritty `Term::damage()`), so that path still repaints the viewport. |
-| `resolved_env` lazy fallback | `Daemon::resolved_env` | Only reachable by a caller that skips `ensure_env`; it would still capture under the lock. |
+| `resolved_env` lazy fallback | `Daemon::resolved_env` | Only reachable by a caller that skips `ensure_env`; a debug build asserts on it and a release build logs it, but it would still capture under the lock. |
 | Full fold rescanning | `editor-cli::App::rescan_edited` | Edits still rebuild fold regions (now ~1 ms at 20 000 lines); an indent-signature splice would make it incremental. |
 | Eager diff parsing | `apps/ui/src/workbench/view.rs` | Expanded patches are parsed when their text changes; unchanged files keep identity and intra-line marks are lazy. |
 | Git work before PR cache lookup | `Daemon::refresh_pull_requests` | Remote resolution still spawns Git per project before consulting the cache. |
 | Trailing blank cells on the wire | `domain::Row` | ~70% of a typical full delta is default blanks. Eliding them is a decode-side amplification risk (a 6-byte row can claim 1 000 cells) unless the decoder is budgeted per frame. |
-| Frames through an event loop | the previous bridge's `runtime:cells` | The old client inlined JSON through the webview; Rune keeps the grid behind `Arc` and wakes one surface, with no per-frame serialization. |
-| Whole-shell publishes | `Emitter::shell`, `ShellSnapshot` | One changed section still resends every list (`external_agents` at 600 cards is ~486 KB). |
 | Transcript text under the lock | `Daemon` session transcript read | Builds up to 4 096 rows of cells under the core lock to keep a 36–96 KB text tail. |
-| Filesystem work in `build_spawn_spec` | `core.rs` | `inject_attention`, `ensure_config_dir` and executable resolution run under the core lock. |
-| `GetSnapshot` on the runtime thread | `RefreshSnapshot` in `bridge.rs` | A slow snapshot can overflow the client's 64-slot event queue and force a reconnect. |
+| Filesystem work in `build_spawn_spec` | `core.rs` | `inject_attention` (which reads and may write `~/.cursor/hooks.json`) and executable resolution run under the core lock. |
+| `GetSnapshot` on the command worker | `Command::RefreshSnapshot` in `apps/ui/src/connection.rs` | A blocking snapshot read holds the worker that also carries terminal input; whether a slow one can overflow the 64-slot event queue in the Rune client is unmeasured. |
 
 The original Rust-GUI observations about cloning the whole `Store` and
 repainting the window are historical. The Rune worker applies terminal deltas to

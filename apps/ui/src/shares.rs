@@ -11,8 +11,8 @@ use domain::{
 };
 use rune::{El, FileDialogOptions, TextEdit, col, el, row, text};
 use rune_kit::{
-    Button, ButtonVariant, ControlSize, Dialog, Kit, RadioGroup, RadioItem, SegmentedControl,
-    Switch, TextInput,
+    Button, ButtonVariant, ControlSize, Kit, RadioGroup, RadioItem, SegmentedControl, Switch,
+    TextInput,
 };
 
 use crate::app::AppState;
@@ -576,9 +576,9 @@ pub fn page(
         .key("shares-draft")
         .grow(1.0)
         .min_w(0.0);
-    let mut adder = col().gap(4.0).child(
+    let mut adder = col().gap(crate::ds::SPACE_2).child(
         row()
-            .gap(6.0)
+            .gap(crate::ds::SPACE_3)
             .items_end()
             .child(draft)
             .child(
@@ -628,7 +628,7 @@ pub fn page(
     for (label, help) in STRATEGIES {
         facts = facts.child(
             col()
-                .gap(2.0)
+                .gap(crate::ds::SPACE_1)
                 .child(text(label).font(k.ty.small_medium).color(k.c.text_base))
                 .child(caption(k, help)),
         );
@@ -646,7 +646,7 @@ pub fn page(
                 .key("shares-preview"),
         );
         if let Some(actions) = shares.actions.get(&at) {
-            let mut plan = col().key("shares-plan").gap(2.0);
+            let mut plan = col().key("shares-plan").gap(crate::ds::SPACE_1);
             if actions.is_empty() {
                 plan = plan.child(caption(k, "Nothing to do here."));
             }
@@ -692,7 +692,7 @@ fn rule_row(
     let menu = crate::menus::ButtonMenu::ShareRule(project, id);
     let line = row()
         .w_full()
-        .gap(8.0)
+        .gap(crate::ds::SPACE_4)
         .items_center()
         .child(
             text(rule.path.clone())
@@ -734,7 +734,7 @@ fn rule_row(
         .role("group")
         .label(rule.path.clone())
         .w_full()
-        .gap(4.0)
+        .gap(crate::ds::SPACE_2)
         .child(line);
     if let ShareStrategy::Run { command, .. } = &rule.strategy {
         let edit = s
@@ -817,7 +817,7 @@ fn candidates(s: &AppState, k: &Kit, project: ProjectId) -> El {
             row()
                 .key(format!("share-candidate-{index}"))
                 .w_full()
-                .gap(8.0)
+                .gap(crate::ds::SPACE_4)
                 .items_center()
                 .child(
                     text(candidate.path.clone())
@@ -875,30 +875,16 @@ pub fn dialogs(s: &AppState, k: &Kit, layer: &mut Vec<El>) {
                     .map(|p| p.name.clone())
             })
             .unwrap_or_default();
-        Dialog::new("shared-files-dialog", format!("Shared files · {name}"))
-            .open(true)
-            .width(720.0)
+        crate::modal::Modal::new("shared-files", format!("Shared files · {name}"))
+            .width(crate::modal::WIDTH_WIDE)
             .on_close(|s: &mut AppState| s.projects.share_form.target = None)
-            .child(
-                col()
-                    .key("shared-files-scroll")
-                    .w_full()
-                    .max_h(560.0)
-                    .scroll(rune::ScrollSpec {
-                        stick_bottom: false,
-                    })
-                    .child(page(s, k, Some(project), workspace)),
-            )
-            .child(
-                row().pt(12.0).child(el().grow(1.0)).child(
-                    Button::new("Done")
-                        .variant(ButtonVariant::Outline)
-                        .on_press(|s: &mut AppState| s.projects.share_form.target = None)
-                        .build(k)
-                        .key("shared-files-done"),
-                ),
-            )
-            .build(k, layer);
+            .child(page(s, k, Some(project), workspace))
+            .footer([Button::new("Done")
+                .variant(ButtonVariant::Outline)
+                .on_press(|s: &mut AppState| s.projects.share_form.target = None)
+                .build(k)
+                .key("shared-files-done")])
+            .build(s, k, layer);
     }
     removal_dialog(s, k, layer);
 }
@@ -939,20 +925,18 @@ fn removal_dialog(s: &AppState, k: &Kit, layer: &mut Vec<El>) {
                 }),
         );
     }
-    Dialog::new("share-remove", format!("Stop sharing {}?", rule.path))
+    crate::modal::Modal::new("share-remove", format!("Stop sharing {}?", rule.path))
         .description(
             "The rule goes either way. What happens to the files it already put in each \
              checkout is up to you.",
         )
-        .open(true)
-        .fit()
-        .width(460.0)
+        .width(crate::modal::WIDTH_STANDARD)
         .on_close(|s: &mut AppState| s.projects.share_form.removing = None)
         .child(choices.build(k))
         .child(
             row()
                 .pt(12.0)
-                .gap(8.0)
+                .gap(crate::ds::SPACE_4)
                 .child(el().grow(1.0))
                 .child(
                     Button::new("Cancel")
@@ -969,7 +953,7 @@ fn removal_dialog(s: &AppState, k: &Kit, layer: &mut Vec<El>) {
                         .key("share-remove-confirm"),
                 ),
         )
-        .build(k, layer);
+        .build(s, k, layer);
 }
 
 #[cfg(test)]

@@ -261,9 +261,9 @@ pub fn overview(analytics: &UsageAnalytics) -> Overview {
 
 fn tile(k: &Kit, label: &str, value: String, note: String) -> El {
     col()
-        .gap(2.0)
+        .gap(crate::ds::SPACE_1)
         .padding(12.0)
-        .radius(8.0)
+        .radius(k.radius.lg)
         .fill(k.c.surface_hover)
         .grow(1.0)
         .child(
@@ -276,7 +276,7 @@ fn tile(k: &Kit, label: &str, value: String, note: String) -> El {
 }
 
 fn limits(usage: &[ProviderUsage], k: &Kit) -> El {
-    let mut view = col().key("plan-limits").gap(4.0).child(
+    let mut view = col().key("plan-limits").gap(crate::ds::SPACE_2).child(
         text("Plan limits")
             .font(k.ty.small_medium)
             .color(k.c.text_base),
@@ -346,7 +346,7 @@ fn limits(usage: &[ProviderUsage], k: &Kit) -> El {
                     .key(format!("limit-{}-{}", reading.provider_id, window.window))
                     .role("meter")
                     .label(detail)
-                    .gap(8.0)
+                    .gap(crate::ds::SPACE_4)
                     .items_center()
                     .child(
                         text(format!("{} · {}", reading.provider_id, window.window))
@@ -390,7 +390,7 @@ pub fn section(s: &AppState, k: &Kit) -> El {
         })
         .build(k)
         .key("usage-window");
-    let mut view = col().key("usage").gap(12.0).child(windows);
+    let mut view = col().key("usage").gap(crate::ds::SPACE_5).child(windows);
     let Some(analytics) = &usage.analytics else {
         let note = usage
             .error
@@ -407,7 +407,7 @@ pub fn section(s: &AppState, k: &Kit) -> El {
     view = view.child(
         row()
             .key("usage-tiles")
-            .gap(8.0)
+            .gap(crate::ds::SPACE_4)
             .child(tile(
                 k,
                 "Tokens",
@@ -440,7 +440,7 @@ pub fn section(s: &AppState, k: &Kit) -> El {
         .role("img")
         .label(format!("Daily tokens over {} days", analytics.window_days))
         .h(CHART_H)
-        .gap(2.0)
+        .gap(crate::ds::SPACE_1)
         .items_end();
     let bar_w = if cells.len() > 45 { 3.0 } else { 6.0 };
     for (_, tokens) in &cells {
@@ -454,7 +454,7 @@ pub fn section(s: &AppState, k: &Kit) -> El {
                 .color(k.c.text_base),
         )
         .child(bars);
-    let mut providers = col().key("usage-providers").gap(4.0).child(
+    let mut providers = col().key("usage-providers").gap(crate::ds::SPACE_2).child(
         text("By provider")
             .font(k.ty.small_medium)
             .color(k.c.text_base),
@@ -475,7 +475,7 @@ pub fn section(s: &AppState, k: &Kit) -> El {
         let tokens = token_total(&provider.tokens);
         providers = providers.child(
             row()
-                .gap(12.0)
+                .gap(crate::ds::SPACE_5)
                 .child(
                     text(provider.provider_id.to_string())
                         .font(k.ty.small)

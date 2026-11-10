@@ -2,15 +2,16 @@
 //! the right, the window's drag band), the sidebar's view switcher, and its
 //! footer.
 
-use rune::{El, Icon, col, el, icon, row, text};
+use rune::{El, Icon, el, row, text};
 use rune_kit::Kit;
 
-use crate::app::{AppState, LinkStatus, SessionRow, SessionStatus};
+use crate::app::{AppState, LinkStatus};
+use crate::ds::{self, IconButtonSize, Tab, TabShape, Tone};
 use crate::glyphs;
 use crate::workbench::{CenterMode, Panel};
 
-/// A tab never grows past this, as `.session-tab-wrap { max-width: 280px }`.
-const TAB_MAX_W: f32 = 240.0;
+/// A view the switcher is not showing, drawn as its glyph alone.
+const VIEW_TAB_W: f32 = 34.0;
 
 /// The sidebar's views, in order: panel, name, element key, glyph.
 pub const VIEWS: [(Panel, &str, &str, &Icon); 6] = [
@@ -41,337 +42,155 @@ fn icon_button(
     k: &Kit,
     key: &str,
     label: &str,
+    shortcut: Option<&str>,
     glyph: &'static Icon,
     press: impl Fn(&mut AppState) + 'static,
 ) -> El {
+    let mut button = ds::icon_button(glyph, label, IconButtonSize::Regular).on_press(press);
+    if let Some(shortcut) = shortcut {
+        button = button.shortcut(shortcut);
+    }
+    button.build(k).key(key.to_string())
+}
+
+fn crumbs(key: &str, strip_h: f32) -> El {
     row()
         .key(key.to_string())
-        .role("button")
-        .label(label.to_string())
-        .size(28.0, 28.0)
-        .radius(6.0)
-        .center()
-        .hover(k.c.hover)
-        .on_press(press)
-        .child(icon(glyph, 16.0).color(k.c.icon_muted))
-}
-
-fn tab(s: &AppState, session: &SessionRow, k: &Kit) -> El {
-    let active = s.active == Some(session.id) && s.workbench.mode == CenterMode::Session;
-    let id = session.id;
-    let roles = crate::theme::roles(k);
-    let tint = match session.status {
-        Some(SessionStatus::Attention) => roles.needs_you.text,
-        Some(SessionStatus::Busy) => k.c.icon_accent,
-        None if active => k.c.icon_base,
-        None => k.c.icon_muted,
-    };
-    let waiting = session.status == Some(SessionStatus::Attention);
-    let tab_h = s.chrome_metrics().tab;
-    let mut chip = row()
-        .key(format!("t-{}", session.id_text))
-        .role("tab")
-        .label(if waiting {
-            format!("{}, waiting on you", session.title)
-        } else {
-            session.title.clone()
-        })
-        .checked(active)
-        .h(tab_h)
-        .max_w(TAB_MAX_W)
-        .pl(10.0)
-        .pr(if active { 4.0 } else { 10.0 })
-        .gap(7.0)
-        .radius(7.0)
+        .role("navigation")
+        .label("Location")
+        .h(strip_h)
+        .transition(rune::Transition::none())
+        .gap(ds::SPACE_4)
+        .px(ds::SPACE_4)
         .center_y()
-        .on_press(move |s: &mut AppState| s.select(id))
-        .on_double_press(move |s: &mut AppState| {
-            s.select(id);
-            s.request_rename();
-        })
-        .on_layout(move |s: &mut AppState, rect| s.tabs.note_rect(id, rect))
-        .on_drag(move |s: &mut AppState, drag, _| match drag.phase {
-            rune::Phase::Down => s.begin_tab_drag(id),
-            rune::Phase::Move => s.drag_tab_to(drag.window_point()[0]),
-            _ if drag.cancelled() => s.tabs.cancel_drag(),
-            _ => s.drop_tab(),
-        })
-        .child(icon(glyphs::for_row(session, active, !k.dark), 14.0).color(tint))
-        .child(
-            text(session.title.clone())
-                .font(if active {
-                    k.ty.small_medium
-                } else {
-                    k.ty.small
-                })
-                .color(if active {
-                    k.c.text_strong
-                } else {
-                    k.c.text_muted
-                })
-                .truncate()
-                .min_w(0.0)
-                .shrink(),
-        );
-    if active {
-        chip = chip.fill(roles.tab).child(
-            row()
-                .key(format!("close-{}", session.id_text))
-                .role("button")
-                .label(format!("Close {}", session.title))
-                .size(20.0, 20.0)
-                .radius(5.0)
-                .center()
-                .hover(k.c.hover)
-                .on_press(move |s: &mut AppState| s.request_close(id))
-                .child(icon(&glyphs::CLOSE, 12.0).color(k.c.icon_faint)),
-        );
-    } else {
-        chip = chip.hover(k.c.hover);
-    }
-    // The strip's bottom edge carries the active tab's line, as `.tab-indicator::after`.
-    col()
-        .key(format!("tab-{}", session.id_text))
-        .h_full()
-        .justify_center()
-        .on_secondary_press(move |s: &mut AppState, point, _| {
-            crate::menus::open(s, crate::menus::Target::Tab(id), point);
-        })
-        .child(chip)
-        .child(
-            el().pin(Some(10.0), None, Some(10.0), Some(0.0))
-                .h(2.0)
-                .radius(1.0)
-                .fill(if active {
-                    roles.hue(None)
-                } else {
-                    rune::Color::TRANSPARENT
-                }),
-        )
 }
 
-/// The line under the gap a dragged tab would drop into, in window points so
-/// it does not have to know where the strip starts.
-#[must_use]
-pub fn drop_marker(s: &AppState, k: &Kit) -> Option<El> {
-    let drag = s.tabs.drag.as_ref()?;
-    let rows = s.tab_rows();
-    let ids: Vec<domain::SessionId> = rows.iter().map(|row| row.id).collect();
-    let (x, y, h) = if let Some(id) = ids.get(drag.gap) {
-        let (_, rect) = s.tabs.rects.iter().find(|(candidate, _)| candidate == id)?;
-        (rect[0] - 1.0, rect[1], rect[3])
-    } else {
-        let id = ids.last()?;
-        let (_, rect) = s.tabs.rects.iter().find(|(candidate, _)| candidate == id)?;
-        (rect[0] + rect[2] - 1.0, rect[1], rect[3])
+/// The bar's leading part: Settings' or a centre view's crumbs, and nothing
+/// while sessions are shown, since the sidebar already lists them.
+pub fn strip(s: &AppState, k: &Kit) -> Option<El> {
+    // The toolbar's leading slot has no height of its own, so crumbs set
+    // theirs, or they would be cut while the previous ones were leaving.
+    let strip_h = s.chrome_metrics().tab + ds::SPACE_4;
+    if s.workbench.mode == CenterMode::Settings {
+        return Some(
+            crumbs("card-crumbs", strip_h)
+                .child(text("Settings").font(k.ty.ui).color(k.c.text_muted))
+                .child(text("/").font(k.ty.ui).color(k.c.text_faint).a11y_hidden())
+                .child(
+                    text(s.settings.section.label())
+                        .role("heading")
+                        .font(k.ty.ui_medium)
+                        .color(k.c.text_base),
+                ),
+        );
+    }
+    let name = match s.workbench.mode {
+        CenterMode::Compare => "Preview PR",
+        CenterMode::PrDetail => "Pull request",
+        CenterMode::PrCompose => "Open a pull request",
+        _ => return None,
     };
     Some(
-        el().key("tab-drop-marker")
-            .absolute(x, y)
-            .size(2.0, h)
-            .radius(1.0)
-            .a11y_hidden()
-            .fill(k.c.border_focus),
-    )
-}
-
-/// The strip's leading part: the checkout's tabs, or Settings' crumbs.
-pub fn strip(s: &AppState, k: &Kit) -> El {
-    if s.workbench.mode == CenterMode::Settings {
-        return row()
-            .key("card-crumbs")
-            .role("navigation")
-            .label("Location")
-            .gap(8.0)
-            .px(8.0)
-            .center_y()
-            .child(text("Settings").font(k.ty.small).color(k.c.text_muted))
-            .child(
-                text("/")
-                    .font(k.ty.small)
-                    .color(k.c.text_faint)
-                    .a11y_hidden(),
-            )
-            .child(
-                text(s.settings.section.label())
-                    .role("heading")
-                    .font(k.ty.small_medium)
-                    .color(k.c.text_base),
-            );
-    }
-    let view_name = match s.workbench.mode {
-        CenterMode::Compare => Some("Preview PR"),
-        CenterMode::PrDetail => Some("Pull request"),
-        CenterMode::PrCompose => Some("Open a pull request"),
-        _ => None,
-    };
-    if let Some(name) = view_name {
-        return row()
-            .key("center-crumbs")
-            .role("navigation")
-            .label("Location")
-            .gap(8.0)
-            .px(8.0)
-            .center_y()
+        crumbs("center-crumbs", strip_h)
             .child(
                 text(name)
                     .role("heading")
-                    .font(k.ty.small_medium)
+                    .font(k.ty.ui_medium)
                     .color(k.c.text_base),
             )
-            .child(el().grow(1.0))
             .child(icon_button(
                 k,
                 "close-center",
-                "Close this view (⌘W)",
+                "Close this view",
+                Some("⌘W"),
                 &glyphs::CLOSE,
                 |s: &mut AppState| s.close_center(),
-            ));
-    }
-    let tabs = s.tab_rows();
-    let roles = crate::theme::roles(k);
-    let mut strip = row()
-        .key("session-tabs")
-        .role("tablist")
-        .label("Sessions")
-        .h_full()
-        .gap(2.0)
-        .px(4.0)
-        .center_y()
-        .min_w(0.0)
-        .shrink()
-        .fill(roles.strip)
-        .scroll_x()
-        .child(
-            el().pin(Some(0.0), None, Some(0.0), Some(0.0))
-                .h(1.0)
-                .fill(roles.strip_rule)
-                .a11y_hidden(),
-        );
-    if tabs.is_empty() {
-        return strip.child(
-            text("No sessions")
-                .key("tab-empty")
-                .font(k.ty.small)
-                .color(k.c.text_faint),
-        );
-    }
-    // A tab cut at the strip's end fades out rather than stopping hard.
-    strip = strip.clip_fade(0.0, 0.0, 24.0, 0.0);
-    for session in tabs {
-        strip = strip.child(tab(s, session, k));
-    }
-    strip
+            )),
+    )
 }
 
-/// The strip's trailing actions: a new terminal and the palette.
-pub fn actions(k: &Kit) -> [El; 2] {
-    [
-        icon_button(
-            k,
-            "new-session",
-            "New terminal (⌘T)",
-            &glyphs::PLUS,
-            AppState::request_create,
-        ),
-        icon_button(
-            k,
-            "jump-to",
-            "Jump to… (⌘K)",
-            &glyphs::SEARCH,
-            |s: &mut AppState| s.open_palette(crate::palette::Scope::Everything),
-        ),
-    ]
-}
-
-/// The sidebar's view switcher.
+/// The sidebar's view switcher: the chosen view by glyph and name, the others
+/// by glyph alone so six fit across the sidebar.
 pub fn views(s: &AppState, k: &Kit) -> El {
+    let roles = crate::theme::roles(k);
     let mut bar = row()
         .key("sidebar-views")
         .role("tablist")
         .label("Sidebar views")
         .w_full()
-        .gap(2.0)
-        .padding(3.0);
+        .gap(ds::SPACE_1)
+        .padding(ds::SPACE_1)
+        .radius(k.radius.lg)
+        .fill(roles.surface);
     for (panel, label, key, glyph) in VIEWS {
         let shown = s.workbench.panel == panel;
         bar = bar.child(
-            row()
-                .key(key)
-                .role("tab")
-                .label(label.to_string())
-                .checked(shown)
-                .grow(1.0)
-                .h(s.chrome_metrics().tab)
-                .radius(6.0)
-                .center()
-                .fill(if shown {
-                    k.c.surface_hover
-                } else {
-                    rune::Color::TRANSPARENT
-                })
-                .hover(k.c.hover)
-                .on_press(move |s: &mut AppState| s.show_panel(panel))
-                // Six views share 300 pt, so the glyph stands alone; the name
-                // is what assistive tech and the panel's heading say.
-                .child(
-                    icon(if shown { glyphs::chosen(glyph) } else { glyph }, 16.0).color(if shown {
-                        k.c.icon_accent
-                    } else {
-                        k.c.icon_muted
-                    }),
-                ),
+            Tab::new(key, label, glyph)
+                .shape(TabShape::IconUntilChosen { width: VIEW_TAB_W })
+                .height(s.chrome_metrics().tab)
+                .chosen(shown)
+                .build(k, &roles)
+                .on_press(move |s: &mut AppState| s.show_panel(panel)),
         );
     }
     bar
 }
 
-/// The sidebar's foot: the daemon's state only while it is not connected,
-/// and Settings.
+/// What the foot says about the daemon, and in which tone.
+#[must_use]
+pub fn link_line(status: LinkStatus) -> (&'static str, Tone) {
+    match status {
+        LinkStatus::Connected => ("Daemon connected", Tone::Success),
+        LinkStatus::Connecting => ("Connecting to the daemon…", Tone::Neutral),
+        LinkStatus::Reconnecting => ("Daemon disconnected", Tone::Danger),
+    }
+}
+
+/// The sidebar's foot: the daemon's state, and Settings.
 pub fn footer(s: &AppState, k: &Kit) -> El {
-    let trouble = match s.status {
-        LinkStatus::Connected => None,
-        LinkStatus::Connecting => Some(("Connecting to the daemon…", k.c.icon_faint)),
-        LinkStatus::Reconnecting => Some(("Daemon disconnected", k.c.danger.icon)),
-    };
-    let mut foot = row()
+    let roles = crate::theme::roles(k);
+    let (label, tone) = link_line(s.status);
+    let settings_shown = s.workbench.mode == CenterMode::Settings;
+    row()
         .key("connection-status")
         .w_full()
-        .h(32.0)
-        .gap(7.0)
-        .center_y();
-    if let Some((label, dot)) = trouble {
-        foot = foot.child(el().size(6.0, 6.0).radius(3.0).fill(dot)).child(
+        .h(ds::CONTROL_FIELD)
+        .pl(ds::SPACE_2)
+        .gap(ds::SPACE_4)
+        .center_y()
+        .child(ds::dot(k, &roles, tone))
+        .child(
             text(label)
                 .role("status")
+                .label(label)
                 .font(k.ty.small)
-                .color(k.c.text_muted)
+                .color(k.c.text_faint)
                 .truncate()
                 .min_w(0.0),
-        );
-    }
-    let settings_shown = s.workbench.mode == CenterMode::Settings;
-    foot.child(el().grow(1.0)).child(icon_button(
-        k,
-        "open-settings",
-        if settings_shown {
-            "Back to work (⌘,)"
-        } else {
-            "Settings (⌘,)"
-        },
-        if settings_shown {
-            &glyphs::ARROW_LEFT
-        } else {
-            &glyphs::SETTINGS
-        },
-        |s: &mut AppState| {
-            if s.workbench.mode == CenterMode::Settings {
-                s.close_settings();
+        )
+        .child(el().grow(1.0))
+        .child(icon_button(
+            k,
+            "open-settings",
+            if settings_shown {
+                "Back to work"
             } else {
-                s.open_settings(None);
-            }
-        },
-    ))
+                "Settings"
+            },
+            Some("⌘,"),
+            if settings_shown {
+                &glyphs::ARROW_LEFT
+            } else {
+                &glyphs::SETTINGS
+            },
+            |s: &mut AppState| {
+                if s.workbench.mode == CenterMode::Settings {
+                    s.close_settings();
+                } else {
+                    s.open_settings(None);
+                }
+            },
+        ))
 }
 
 #[cfg(test)]
@@ -408,34 +227,123 @@ mod tests {
     }
 
     #[test]
-    fn dragging_a_tab_moves_it_and_leaves_the_active_session_alone() {
+    fn sessions_take_the_bar_while_the_sidebar_is_open_and_give_it_back_closed() {
         let mut rt = runtime();
-        let before: Vec<crate::app::SessionRow> =
-            rt.state.tab_rows().into_iter().cloned().collect();
-        if before.len() < 2 {
-            return;
+        rt.state.debug = false;
+        rt.invalidate();
+        for step in 0..40 {
+            rt.frame(0.2 + f64::from(step) / 60.0);
         }
-        let active = rt.state.active;
-        let first = before[0].id_text.clone();
-        let second = before[1].id_text.clone();
-        let from = rt.find(&format!("t-{second}")).expect("the second tab");
-        let to = rt.find(&format!("t-{first}")).expect("the first tab");
-        rt.pointer_down(from.0, from.1);
+        let top = |rt: &Runtime<AppState>, key: &str| {
+            rt.elements()
+                .into_iter()
+                .find(|e| e.key.as_deref() == Some(key))
+                .map(|e| e.rect[1])
+        };
+        let card = top(&rt, "toolbar").expect("the band is still laid out");
+        let center = top(&rt, "center").expect("the centre");
+        assert!(
+            center <= card + 1.0,
+            "the centre starts where the band does"
+        );
+        rt.state.sidebar.set_open(false);
+        rt.invalidate();
+        for step in 0..40 {
+            rt.frame(1.0 + f64::from(step) / 60.0);
+        }
+        let card = top(&rt, "toolbar").expect("the band");
+        let center = top(&rt, "center").expect("the centre");
+        assert!(
+            center >= card + rune_kit::shell::TOOLBAR_HEIGHT - 1.0,
+            "collapsed, the band keeps the lights and the toggle clear"
+        );
+    }
+
+    #[test]
+    fn the_foot_names_the_daemon_and_the_switcher_names_only_the_chosen_view() {
+        let mut rt = runtime();
+        rt.state.debug = false;
+        rt.invalidate();
         rt.frame(0.2);
-        for step in 1..=6 {
-            let x = from.0 + (to.0 - from.0) * step as f32 / 6.0;
-            rt.pointer_move(x, from.1);
-            rt.frame(0.2 + step as f64 / 60.0);
-        }
-        rt.pointer_up(to.0 - 4.0, to.1);
-        rt.frame(0.4);
-        let after: Vec<String> = rt
-            .state
-            .tab_rows()
+        let labels: Vec<String> = rt
+            .elements()
             .into_iter()
-            .map(|row| row.id_text.clone())
+            .filter(|e| e.role == "status")
+            .filter_map(|e| e.label)
             .collect();
-        assert_eq!(after[0], second, "the dragged tab took the first slot");
-        assert_eq!(rt.state.active, active, "reordering never selects a tab");
+        assert!(
+            labels.iter().any(|label| label == "Daemon connected"),
+            "a healthy link is said too: {labels:?}"
+        );
+        assert_eq!(link_line(LinkStatus::Reconnecting).1, Tone::Danger);
+        let shown = rt.find("view-projects").expect("the chosen view");
+        let other = rt.find("view-files").expect("another view");
+        assert!(shown.0 < other.0, "views keep their order");
+    }
+
+    #[test]
+    fn switching_views_turns_the_page_from_the_side_the_view_sits_on() {
+        use crate::workbench::Panel;
+        let mut rt = runtime();
+        let x = |rt: &Runtime<AppState>, key: &str| {
+            rt.elements()
+                .into_iter()
+                .find(|e| e.key.as_deref() == Some(key))
+                .map(|e| e.rect[0] + e.rect[2])
+        };
+        let rest = x(&rt, "sidebar-page-Projects").expect("the shown page");
+        rt.state.show_panel(Panel::Git);
+        assert!(!rt.state.workbench.panel_back);
+        rt.invalidate();
+        rt.frame(0.2);
+        rt.frame(0.23);
+        let entering = x(&rt, "sidebar-page-Git").expect("the next page mounts");
+        assert!(
+            entering > rest,
+            "a later view comes in from the trailing edge"
+        );
+        for step in 1..=60 {
+            rt.frame(0.23 + f64::from(step) / 60.0);
+        }
+        assert_eq!(
+            x(&rt, "sidebar-page-Git"),
+            Some(rest),
+            "it settles in place"
+        );
+    }
+
+    #[test]
+    fn a_sideways_swipe_over_the_list_turns_the_page_and_a_vertical_one_scrolls() {
+        use crate::workbench::Panel;
+        use rune::{GesturePhase, WheelEvent};
+        let mut rt = runtime();
+        rt.state.show_panel(Panel::Projects);
+        rt.invalidate();
+        rt.frame(0.2);
+        let (x, y) = rt.find("projects-scroll").expect("the projects list");
+        let swipe = |rt: &mut Runtime<AppState>, dx: f32, dy: f32, t: f64| {
+            let at = |ev: WheelEvent| ev.at(x, y).precise(true);
+            rt.wheel_event(at(WheelEvent::new(dx, dy).phase(GesturePhase::Began)));
+            rt.frame(t);
+            for step in 1..=4 {
+                rt.wheel_event(at(WheelEvent::new(dx, dy)));
+                rt.frame(t + f64::from(step) / 120.0);
+            }
+            rt.wheel_event(at(WheelEvent::new(0.0, 0.0).phase(GesturePhase::Ended)));
+            rt.frame(t + 0.1);
+        };
+        swipe(&mut rt, 2.0, 30.0, 0.3);
+        assert_eq!(
+            rt.state.workbench.panel,
+            Panel::Projects,
+            "a scroll is not a swipe"
+        );
+        swipe(&mut rt, -30.0, 2.0, 0.6);
+        assert_eq!(
+            rt.state.workbench.panel,
+            Panel::Files,
+            "fingers left bring the next view"
+        );
+        assert_eq!(rt.state.page_swipe, None);
     }
 }

@@ -12,7 +12,7 @@ use domain::{
 };
 use rune::{El, TextEdit, col, el, row, text};
 use rune_kit::{
-    Button, ButtonVariant, Checkbox, ControlSize, Dialog, Kit, SegmentedControl, Switch, TextInput,
+    Button, ButtonVariant, Checkbox, ControlSize, Kit, SegmentedControl, Switch, TextInput,
 };
 
 use crate::app::AppState;
@@ -536,6 +536,12 @@ where
         .key(format!("action-{name}-{key}"))
 }
 
+/// An action's label field: wide enough for `format:check`, narrow enough to
+/// leave the command the row.
+const LABEL_W: f32 = 160.0;
+/// The checkbox and the gap after it, so the second line starts under the fields.
+const DETAILS_INDENT: f32 = 26.0;
+
 fn action_row(
     k: &Kit,
     editor: &Editor,
@@ -557,8 +563,8 @@ fn action_row(
     let pinned = row_data.action.pinned;
     let mut main = row()
         .w_full()
-        .gap(6.0)
-        .items_end()
+        .gap(crate::ds::SPACE_3)
+        .items_center()
         .child(
             Checkbox::new(include)
                 .label(format!(
@@ -578,7 +584,7 @@ fn action_row(
             field(k, &row_data.label, key, "label", "Label", "label", |row| {
                 &mut row.label
             })
-            .w(140.0),
+            .w(LABEL_W),
         )
         .child(
             field(
@@ -592,6 +598,86 @@ fn action_row(
             )
             .grow(1.0)
             .min_w(0.0),
+        );
+    if movable {
+        let up = neighbour_index(rows, index, -1, shown).is_some();
+        let down = neighbour_index(rows, index, 1, shown).is_some();
+        main = main
+            .child(
+                crate::ds::icon_button(
+                    &crate::glyphs::CHEVRON_UP,
+                    "Move up",
+                    crate::ds::IconButtonSize::Mini,
+                )
+                .disabled(!up)
+                .on_press(move |s: &mut AppState| move_row(s, key, -1))
+                .build(k)
+                .key(format!("action-up-{key}")),
+            )
+            .child(
+                crate::ds::icon_button(
+                    &crate::glyphs::CHEVRON_DOWN,
+                    "Move down",
+                    crate::ds::IconButtonSize::Mini,
+                )
+                .disabled(!down)
+                .on_press(move |s: &mut AppState| move_row(s, key, 1))
+                .build(k)
+                .key(format!("action-down-{key}")),
+            );
+    }
+    if row_data.origin == Origin::Saved {
+        main = main.child(
+            crate::ds::icon_button(
+                &crate::glyphs::TRASH,
+                "Delete",
+                crate::ds::IconButtonSize::Mini,
+            )
+            .on_press(move |s: &mut AppState| {
+                if let Some(rows) = s.projects.actions.as_mut().and_then(|e| e.rows.as_mut()) {
+                    rows.retain(|row| row.key != key);
+                }
+            })
+            .build(k)
+            .key(format!("action-delete-{key}")),
+        );
+    }
+    let mut meta = Vec::new();
+    if let Some(from) = &row_data.detected_from {
+        meta.push(from.clone());
+    }
+    if row_data.drift {
+        meta.push("the repository file has changed since this import".into());
+    }
+    let open = editor.advanced.contains(&key);
+    // The second line sits under the fields, past the checkbox, so the kind,
+    // the source and the switches read as this action's and not the next one's.
+    let details = row()
+        .w_full()
+        .pl(DETAILS_INDENT)
+        .gap(crate::ds::SPACE_4)
+        .items_center()
+        .child(
+            SegmentedControl::new(&kinds, Some(kind))
+                .label("Kind")
+                .fit()
+                .on_pick(move |s: &mut AppState, at, _| {
+                    with_row(s, key, |row| row.action.kind = KINDS[at.min(4)].0);
+                })
+                .build(k)
+                .key(format!("action-kind-{key}")),
+        )
+        .child(
+            text(meta.join(" · "))
+                .font(k.ty.text_xsmall)
+                .color(if row_data.drift {
+                    k.c.warning.fg
+                } else {
+                    k.c.text_faint
+                })
+                .truncate()
+                .min_w(0.0)
+                .grow(1.0),
         )
         .child(
             Switch::new(pinned)
@@ -602,99 +688,50 @@ fn action_row(
                 })
                 .build(k)
                 .key(format!("action-pinned-{key}")),
-        );
-    if movable {
-        let up = neighbour_index(rows, index, -1, shown).is_some();
-        let down = neighbour_index(rows, index, 1, shown).is_some();
-        main = main
-            .child(
-                Button::new("↑")
-                    .variant(ButtonVariant::GhostMuted)
-                    .control_size(ControlSize::Small)
-                    .disabled(!up)
-                    .on_press(move |s: &mut AppState| move_row(s, key, -1))
-                    .build(k)
-                    .key(format!("action-up-{key}"))
-                    .label("Move up"),
-            )
-            .child(
-                Button::new("↓")
-                    .variant(ButtonVariant::GhostMuted)
-                    .control_size(ControlSize::Small)
-                    .disabled(!down)
-                    .on_press(move |s: &mut AppState| move_row(s, key, 1))
-                    .build(k)
-                    .key(format!("action-down-{key}"))
-                    .label("Move down"),
-            );
-    }
-    if row_data.origin == Origin::Saved {
-        main = main.child(
-            Button::new("Delete")
+        )
+        .child(
+            Button::new("Advanced")
+                .icon(if open {
+                    &crate::glyphs::CHEVRON_DOWN
+                } else {
+                    &crate::glyphs::CHEVRON_RIGHT
+                })
                 .variant(ButtonVariant::GhostMuted)
                 .control_size(ControlSize::Small)
+                .expanded(open)
                 .on_press(move |s: &mut AppState| {
-                    if let Some(rows) = s.projects.actions.as_mut().and_then(|e| e.rows.as_mut()) {
-                        rows.retain(|row| row.key != key);
+                    if let Some(editor) = s.projects.actions.as_mut()
+                        && !editor.advanced.remove(&key)
+                    {
+                        editor.advanced.insert(key);
                     }
                 })
                 .build(k)
-                .key(format!("action-delete-{key}")),
+                .key(format!("action-advanced-{key}")),
         );
-    }
     let mut block = col()
         .key(format!("action-row-{key}"))
         .role("group")
         .label(row_data.label.text.clone())
         .w_full()
-        .gap(6.0)
-        .py(6.0)
+        .gap(crate::ds::SPACE_3)
+        .pt(crate::ds::SPACE_5)
         .child(main)
-        .child(
-            SegmentedControl::new(&kinds, Some(kind))
-                .label("Kind")
-                .fit()
-                .on_pick(move |s: &mut AppState, at, _| {
-                    with_row(s, key, |row| row.action.kind = KINDS[at.min(4)].0);
-                })
-                .build(k)
-                .key(format!("action-kind-{key}")),
-        );
-    let mut meta = Vec::new();
-    if let Some(from) = &row_data.detected_from {
-        meta.push(from.clone());
-    }
-    if row_data.drift {
-        meta.push("the repository file has changed since this import".into());
-    }
-    if !meta.is_empty() {
-        block = block.child(text(meta.join(" · ")).font(k.ty.text_xsmall).color(
-            if row_data.drift {
-                k.c.warning.fg
-            } else {
-                k.c.text_faint
-            },
-        ));
-    }
-    let open = editor.advanced.contains(&key);
-    block = block.child(
-        Button::new(if open { "Advanced ▾" } else { "Advanced ▸" })
-            .variant(ButtonVariant::GhostMuted)
-            .control_size(ControlSize::Small)
-            .on_press(move |s: &mut AppState| {
-                if let Some(editor) = s.projects.actions.as_mut()
-                    && !editor.advanced.remove(&key)
-                {
-                    editor.advanced.insert(key);
-                }
-            })
-            .build(k)
-            .key(format!("action-advanced-{key}")),
-    );
+        .child(details);
     if open {
-        block = block.child(advanced(k, rows, index));
+        block = block.child(
+            col()
+                .w_full()
+                .pl(DETAILS_INDENT)
+                .child(advanced(k, rows, index)),
+        );
     }
-    block
+    block.child(
+        el().w_full()
+            .h(1.0)
+            .mt(crate::ds::SPACE_2)
+            .fill(k.c.border_weak),
+    )
 }
 
 fn advanced(k: &Kit, rows: &[DraftRow], index: usize) -> El {
@@ -709,7 +746,7 @@ fn advanced(k: &Kit, rows: &[DraftRow], index: usize) -> El {
     };
     let mut body = col()
         .key(format!("action-advanced-body-{key}"))
-        .gap(8.0)
+        .gap(crate::ds::SPACE_4)
         .pl(24.0)
         .child(field(
             k,
@@ -797,7 +834,7 @@ fn advanced(k: &Kit, rows: &[DraftRow], index: usize) -> El {
                 .collect()
         };
         let mut deps = col()
-            .gap(4.0)
+            .gap(crate::ds::SPACE_2)
             .child(text("Starts after").font(k.ty.small).color(k.c.text_muted));
         for other in others {
             let other_id = other.action.id;
@@ -836,7 +873,10 @@ pub fn dialog(s: &AppState, k: &Kit, layer: &mut Vec<El>) {
     let incomplete = synced.iter().any(|row| {
         row.include && (row.action.label.trim().is_empty() || row.action.command.trim().is_empty())
     });
-    let mut body = col().key("actions-dialog-body").w_full().gap(6.0);
+    let mut body = col()
+        .key("actions-dialog-body")
+        .w_full()
+        .gap(crate::ds::SPACE_3);
     if let Some(error) = &editor.error {
         body = body.child(
             text(error.clone())
@@ -889,13 +929,12 @@ pub fn dialog(s: &AppState, k: &Kit, layer: &mut Vec<El>) {
                 if indices.is_empty() {
                     return body;
                 }
-                body = body.child(
-                    text(heading.to_string())
-                        .role("heading")
-                        .font(k.ty.small_medium)
-                        .color(k.c.text_muted)
-                        .pt(8.0),
-                );
+                if !heading.is_empty() {
+                    body = body.child(
+                        crate::ds::section_header(k, heading, Some(indices.len()), None)
+                            .pt(crate::ds::SPACE_4),
+                    );
+                }
                 for at in indices {
                     let include = match origin {
                         Origin::Saved => "Keep",
@@ -924,11 +963,8 @@ pub fn dialog(s: &AppState, k: &Kit, layer: &mut Vec<El>) {
             body = section(body, Origin::Suggested, "Suggested");
             if let Some(file) = &editor.repo {
                 body = body.child(
-                    text("From .forge/actions.toml")
-                        .role("heading")
-                        .font(k.ty.small_medium)
-                        .color(k.c.text_muted)
-                        .pt(8.0),
+                    crate::ds::section_header(k, "From .forge/actions.toml", None, None)
+                        .pt(crate::ds::SPACE_4),
                 );
                 match &file.error {
                     Some(error) => {
@@ -1000,58 +1036,46 @@ pub fn dialog(s: &AppState, k: &Kit, layer: &mut Vec<El>) {
         }
         seen
     };
-    let mut dialog = Dialog::new("actions-dialog", format!("Actions · {}", editor.name))
-        .open(true)
-        .width(760.0)
+    let mut dialog = crate::modal::Modal::new("actions", format!("Actions · {}", editor.name))
+        .width(crate::modal::WIDTH_WIDE)
         .on_close(|s: &mut AppState| s.projects.actions = None);
     if !sources.is_empty() {
         dialog = dialog.description(format!("Detected from {}", sources.join(" · ")));
     }
     dialog
-        .child(
-            col()
-                .key("actions-dialog-scroll")
-                .w_full()
-                .max_h(520.0)
-                .scroll(rune::ScrollSpec {
-                    stick_bottom: false,
-                })
-                .child(body),
-        )
-        .child(
-            row()
-                .pt(12.0)
-                .gap(8.0)
-                .child(
-                    Button::new("Add action")
-                        .variant(ButtonVariant::Outline)
-                        .on_press(add_row)
-                        .build(k)
-                        .key("actions-add"),
-                )
-                .child(el().grow(1.0))
-                .child(
-                    Button::new("Cancel")
-                        .variant(ButtonVariant::Ghost)
-                        .on_press(|s: &mut AppState| s.projects.actions = None)
-                        .build(k)
-                        .key("actions-cancel"),
-                )
-                .child(
-                    Button::new(if editor.saving { "Saving…" } else { "Save" })
-                        .variant(ButtonVariant::Contrast)
-                        .disabled(
-                            editor.rows.is_none()
-                                || editor.saving
-                                || !duplicates.is_empty()
-                                || incomplete,
-                        )
-                        .on_press(save)
-                        .build(k)
-                        .key("actions-save"),
-                ),
-        )
-        .build(k, layer);
+        .child(body)
+        .footer([row()
+            .w_full()
+            .gap(crate::ds::SPACE_4)
+            .child(
+                Button::new("Add action")
+                    .variant(ButtonVariant::Outline)
+                    .on_press(add_row)
+                    .build(k)
+                    .key("actions-add"),
+            )
+            .child(el().grow(1.0))
+            .child(
+                Button::new("Cancel")
+                    .variant(ButtonVariant::Ghost)
+                    .on_press(|s: &mut AppState| s.projects.actions = None)
+                    .build(k)
+                    .key("actions-cancel"),
+            )
+            .child(
+                Button::new(if editor.saving { "Saving…" } else { "Save" })
+                    .variant(ButtonVariant::Contrast)
+                    .disabled(
+                        editor.rows.is_none()
+                            || editor.saving
+                            || !duplicates.is_empty()
+                            || incomplete,
+                    )
+                    .on_press(save)
+                    .build(k)
+                    .key("actions-save"),
+            )])
+        .build(s, k, layer);
 }
 
 #[cfg(test)]

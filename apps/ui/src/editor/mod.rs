@@ -466,7 +466,7 @@ fn command_chord(ch: char, mods: rune::Mods) -> Option<char> {
     }
 }
 
-fn modifier_bits(mods: rune::Mods) -> u8 {
+pub(crate) fn modifier_bits(mods: rune::Mods) -> u8 {
     let mut bits = 0;
     if mods.shift {
         bits |= editor_modifiers::SHIFT;
@@ -655,7 +655,7 @@ pub(crate) mod tests {
                 key: Key::Command('v'),
                 mods: rune::Mods { cmd: true, ..plain },
             }),
-            "⌘V is the native paste"
+            "⌘V belongs to the window's paste handler, not the key table"
         );
         let (to, events) = ui.take_requests().input.unwrap();
         assert_eq!(to, session);

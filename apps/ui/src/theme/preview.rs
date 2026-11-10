@@ -7,8 +7,6 @@ use rune_kit::Kit;
 use super::roles::{HUE_COUNT, Roles};
 
 const SWATCH_H: f32 = 14.0;
-const AVATAR: f32 = 18.0;
-const HUE_EDGE: f32 = 0.25;
 
 /// Every colour comes from `roles`, so a theme not yet applied (from
 /// `theme::roles_for`) previews as it would paint; `k` only sets type.
@@ -29,11 +27,11 @@ pub fn preview(k: &Kit, roles: &Roles) -> El {
         .w_full()
         .h(30.0)
         .px(12.0)
-        .gap(6.0)
+        .gap(crate::ds::SPACE_3)
         .center_y()
         .border_sides([0.0, 0.0, 1.0, 0.0], roles.surface)
         .child(el().size(7.0, 7.0).radius(2.0).fill(roles.hue(None)))
-        .child(el().size(6.0, 6.0).radius(3.0).fill(roles.success.solid))
+        .child(crate::ds::dot(k, roles, crate::ds::Tone::Success))
         .child(
             text("Terminal 1")
                 .font(k.ty.text_xsmall)
@@ -44,7 +42,7 @@ pub fn preview(k: &Kit, roles: &Roles) -> El {
         .w_full()
         .px(14.0)
         .py(12.0)
-        .gap(2.0)
+        .gap(crate::ds::SPACE_1)
         .child(line(
             "prompt-context",
             vec![
@@ -69,7 +67,7 @@ pub fn preview(k: &Kit, roles: &Roles) -> El {
     let swatches = |from: usize| {
         row()
             .w_full()
-            .gap(4.0)
+            .gap(crate::ds::SPACE_2)
             .children((from..from + 8).map(|slot| {
                 el().key(format!("ansi-{slot}"))
                     .label(format!("ANSI {slot}"))
@@ -85,7 +83,7 @@ pub fn preview(k: &Kit, roles: &Roles) -> El {
         .w_full()
         .px(14.0)
         .pb(14.0)
-        .gap(4.0)
+        .gap(crate::ds::SPACE_2)
         .child(swatches(0))
         .child(swatches(8));
     let hues = row()
@@ -94,7 +92,7 @@ pub fn preview(k: &Kit, roles: &Roles) -> El {
         .w_full()
         .px(14.0)
         .py(10.0)
-        .gap(6.0)
+        .gap(crate::ds::SPACE_3)
         .center_y()
         .border_sides([1.0, 0.0, 0.0, 0.0], roles.surface)
         .child(
@@ -104,7 +102,7 @@ pub fn preview(k: &Kit, roles: &Roles) -> El {
                 .grow(1.0),
         )
         .children((0..HUE_COUNT).map(|slot| {
-            avatar(
+            crate::ds::avatar(
                 k,
                 roles,
                 Some(slot),
@@ -125,27 +123,6 @@ pub fn preview(k: &Kit, roles: &Roles) -> El {
         .child(terminal.fill(roles.term_bg))
         .child(colors.fill(roles.term_bg))
         .child(hues)
-}
-
-/// `.project-avatar.hued`: a letter in the project's hue on a wash of it.
-pub fn avatar(k: &Kit, roles: &Roles, hue: Option<usize>, mark: &str) -> El {
-    let ink = roles.hue(hue);
-    row()
-        .size(AVATAR, AVATAR)
-        .radius(5.0)
-        .center()
-        .fill(ink.alpha(roles.hue_tint))
-        .border(1.0, ink.alpha(HUE_EDGE))
-        .child(
-            text(mark.to_string())
-                .font(TextStyle {
-                    size: 10.0,
-                    weight: 600.0,
-                    ..k.ty.text_xsmall
-                })
-                .color(ink),
-        )
-        .a11y_hidden()
 }
 
 #[cfg(test)]

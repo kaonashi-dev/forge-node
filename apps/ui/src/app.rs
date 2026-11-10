@@ -207,6 +207,14 @@ pub struct AppState {
     pub switch_started: Cell<Option<Instant>>,
     pub switch_ms: Cell<Option<f64>>,
     pub view_ms: Cell<Option<f64>>,
+    /// Fingers' horizontal travel in a sidebar swipe still in progress.
+    pub page_swipe: Option<f32>,
+    /// A swipe over the centre: `Some(None)` once it has acted, so the rest of
+    /// the gesture does nothing.
+    pub sidebar_swipe: Option<Option<f32>>,
+    /// The window's last laid-out size in points; modal bodies size their
+    /// scroll viewport from it.
+    pub window: Cell<[f32; 2]>,
     /// Decodes preview images on its own thread; `None` without a window.
     pub images: Option<rune::ImageCache>,
 }
@@ -284,6 +292,9 @@ impl AppState {
             switch_started: Cell::new(None),
             switch_ms: Cell::new(None),
             view_ms: Cell::new(None),
+            page_swipe: None,
+            sidebar_swipe: None,
+            window: Cell::new([1180.0, 760.0]),
             images: None,
         };
         if let Some(store) = initial {
@@ -495,6 +506,9 @@ impl AppState {
     }
 
     pub fn editor_key(&mut self, ev: &KeyEvent, tx: &mut Tx) -> bool {
+        if self.modal_open() {
+            return false;
+        }
         if self.editor_chord(ev, tx) || self.global_key(ev) {
             return true;
         }
@@ -516,6 +530,40 @@ impl AppState {
         self.workbench.mode == CenterMode::Session
     }
 
+    /// How tall a modal body may grow before it scrolls: the window leaves
+    /// room for the header, the footer and the layer's own padding.
+    #[must_use]
+    pub fn modal_body_max_h(&self) -> f32 {
+        (self.window.get()[1] - 190.0).max(120.0)
+    }
+
+    /// A dialog owns the keyboard; app chords and session input must not
+    /// reach the window behind it.
+    #[must_use]
+    pub fn modal_open(&self) -> bool {
+        self.palette.open
+            || self.about
+            || self.review.is_some()
+            || self.rename.is_some()
+            || self.confirm_close.is_some()
+            || self.settings.confirm_reset
+            || self.sync.pr.is_some()
+            || self.history.confirm_delete.is_some()
+            || self.storage.migration.confirm.is_some()
+            || self.projects.actions.is_some()
+            || self.projects.picker.is_some()
+            || self.projects.removal.is_some()
+            || self.projects.ignores.is_some()
+            || self.projects.share_form.target.is_some()
+            || self.projects.share_form.removing.is_some()
+            || self.menus.prompt.is_some()
+            || self.menus.confirm.is_some()
+            || self.menus.removal.is_some()
+            || self.agent_ops.handoff.is_some()
+            || self.agent_ops.spawn.is_some()
+            || self.agent_ops.send_context.is_some()
+    }
+
     /// Opens a file from the Files view in an editor in its workspace, and
     /// shows that session; the daemon answers with the session that holds it.
     pub fn open_in_editor(&mut self, path: &str) {
@@ -533,6 +581,9 @@ impl AppState {
 
     /// An app chord, taken before any surface sees the key.
     pub fn global_key(&mut self, ev: &KeyEvent) -> bool {
+        if self.modal_open() {
+            return false;
+        }
         if self.tabs.gesture.is_some() && ev.key == rune::Key::Escape {
             self.cancel_tab_switcher();
             return true;
@@ -595,6 +646,11 @@ impl AppState {
             Action::MoveTabRight => self.move_tab(1),
             Action::GoToDefinition
             | Action::GoBack
+            | Action::EditorFindNext
+            | Action::EditorFindPrevious
+            | Action::EditorAddNextOccurrence
+            | Action::EditorSelectAllOccurrences
+            | Action::EditorToggleComment
             | Action::EditorZoomIn
             | Action::EditorZoomOut
             | Action::EditorZoomReset => return self.editor_action(action),
@@ -602,14 +658,10 @@ impl AppState {
         true
     }
 
-    /// A view's chord: it shows the view, or
-    /// hides the sidebar when that view is already what it shows.
+    /// A view's chord shows the view, opening the sidebar if it is closed.
+    /// It never hides it: a two-finger swipe does that (`pages::sidebar_swipe`).
     pub fn toggle_panel(&mut self, panel: Panel) {
-        if self.sidebar.is_open() && self.workbench.panel == panel {
-            self.sidebar.set_open(false);
-        } else {
-            self.show_panel(panel);
-        }
+        self.show_panel(panel);
     }
 
     /// The next sidebar view, in the switcher's order.
@@ -686,10 +738,7 @@ impl AppState {
         let actions = self.palette_actions();
         let places = self.place_entries();
         let hints = self.palette_hints();
-        self.palette.set_agents(agents);
-        self.palette.set_actions(actions);
-        self.palette.set_places(places);
-        self.palette.set_hints(hints);
+        self.palette.set_context(agents, actions, places, hints);
     }
 
     /// Sessions and checkouts `@` lists. A session already on screen is not
@@ -779,11 +828,8 @@ impl AppState {
         };
         add(Command::NewShell, Action::NewShell);
         add(Command::NewWorktree, Action::NewWorktree);
-        for row in self.installed_agents() {
-            add(
-                Command::NewAgent(row.provider, row.profile),
-                Action::NewAgent,
-            );
+        if let crate::launch::Launch::Agent { provider, profile } = self.default_launch() {
+            add(Command::NewAgent(provider, profile), Action::NewAgent);
         }
         add(
             Command::Panel(Panel::Projects),
@@ -898,53 +944,6 @@ impl AppState {
         }
     }
 
-    /// Drops a dragged tab into the gap the pointer chose and stores that order.
-    pub fn drop_tab(&mut self) {
-        let Some(order) = self.tabs.dropped() else {
-            self.tabs.cancel_drag();
-            return;
-        };
-        let workspace = strip_workspace(
-            self.chosen_workspace,
-            self.active_row().map(|row| row.workspace_id),
-            self.workspaces.first().map(|choice| choice.id),
-        );
-        let Some(workspace) = workspace else {
-            self.tabs.cancel_drag();
-            return;
-        };
-        self.tabs.set_order(workspace, order);
-        self.tabs.cancel_drag();
-        self.persist_tab_order(workspace);
-        if let Some(active) = self.active {
-            self.tabs.touch(active);
-        }
-    }
-
-    /// A tab press that may become a drag: remember the strip it came from.
-    pub fn begin_tab_drag(&mut self, id: SessionId) {
-        let ids: Vec<SessionId> = self.tab_rows().iter().map(|row| row.id).collect();
-        let Some(gap) = ids.iter().position(|candidate| *candidate == id) else {
-            return;
-        };
-        self.tabs.begin_drag(id, gap, ids);
-    }
-
-    /// The pointer moved during a tab drag: the gap under it, never past the
-    /// shell/agent split.
-    pub fn drag_tab_to(&mut self, x: f32) {
-        let Some(id) = self.tabs.drag.as_ref().map(|drag| drag.id) else {
-            return;
-        };
-        let base = self.tab_rows();
-        let ids: Vec<SessionId> = base.iter().map(|row| row.id).collect();
-        let gap = crate::tabs::gap_at(&self.tabs.rects, &ids, x);
-        let gap = crate::tabs::clamp_gap(&base, id, gap);
-        if let Some(drag) = &mut self.tabs.drag {
-            drag.gap = gap;
-        }
-    }
-
     /// Rebind one action, or unbind it with `None`, and store the result. A
     /// conflict is reported but not refused: the newer binding wins, and
     /// the report says which one it shadowed.
@@ -1054,10 +1053,16 @@ impl AppState {
     }
 
     /// Keys inside the palette's field: move, run or close.
-    pub fn palette_key(&mut self, ev: &KeyEvent) -> bool {
+    pub fn palette_key(&mut self, ev: &KeyEvent, tx: &mut Tx) -> bool {
         match ev.key {
-            rune::Key::Up => self.palette.move_selection(-1),
-            rune::Key::Down => self.palette.move_selection(1),
+            rune::Key::Up => {
+                self.palette.move_selection(-1);
+                tx.scroll_into_view(format!("palette-{}", self.palette.selected));
+            }
+            rune::Key::Down => {
+                self.palette.move_selection(1);
+                tx.scroll_into_view(format!("palette-{}", self.palette.selected));
+            }
             rune::Key::Escape => self.palette.close(),
             rune::Key::Enter => {
                 if let Some(entry) = self.palette.chosen() {
@@ -1500,6 +1505,14 @@ impl AppState {
 
     /// Shows a sidebar view, opening the sidebar if it was hidden.
     pub fn show_panel(&mut self, panel: Panel) {
+        let at = |panel: Panel| {
+            crate::chrome::VIEWS
+                .iter()
+                .position(|(view, ..)| *view == panel)
+        };
+        if panel != self.workbench.panel {
+            self.workbench.panel_back = at(panel) < at(self.workbench.panel);
+        }
         self.sync_workbench_workspace();
         self.workbench.show_panel(panel);
         self.sidebar.set_open(true);
@@ -2583,6 +2596,14 @@ impl AppState {
     }
 
     pub fn terminal_key(&mut self, ev: &KeyEvent, tx: &mut Tx) -> bool {
+        if self.modal_open() {
+            return false;
+        }
+        // The focus proxy outlives the surface: a tab or sidebar press focuses
+        // it, and keys must reach the editor that is now on screen.
+        if self.active_line_editor().is_some() {
+            return self.editor_key(ev, tx);
+        }
         if self.global_key(ev) {
             return true;
         }
@@ -2705,7 +2726,7 @@ impl AppState {
 
     /// A paste goes to whichever surface the active session shows.
     pub fn paste(&mut self, text: &str, tx: &mut Tx) {
-        if !self.session_shown() {
+        if !self.session_shown() || self.modal_open() {
             return;
         }
         if self.active_line_editor().is_some() {
@@ -2998,10 +3019,10 @@ impl AppState {
         )
     }
 
-    pub fn launch_default(&mut self) {
+    fn default_launch(&self) -> crate::launch::Launch {
         use crate::launch::{Launch, parse, resolve, visibility_key};
         let Some(store) = &self.store else {
-            return self.open_launch_palette();
+            return Launch::Ask;
         };
         let installed: Vec<domain::AgentProviderId> = self
             .installed_agents()
@@ -3015,7 +3036,12 @@ impl AppState {
             .collect();
         let agent = parse(store.app_state_value(crate::launch::DEFAULT_AGENT_KEY));
         let visible = |key: &str| store.app_state_value(&visibility_key(key)) != Some("false");
-        match resolve(&agent, visible, &installed, &profiles) {
+        resolve(&agent, visible, &installed, &profiles)
+    }
+
+    pub fn launch_default(&mut self) {
+        use crate::launch::Launch;
+        match self.default_launch() {
             Launch::Ask => self.open_launch_palette(),
             Launch::Shell => self.request_create(),
             Launch::Agent { provider, profile } => {
@@ -3850,5 +3876,61 @@ mod tests {
             signal: None,
         };
         assert_eq!(with(&session, ActivityState::Waiting, hook), None);
+    }
+
+    #[test]
+    fn the_default_launch_is_the_only_agent_row_with_a_hint() {
+        use crate::palette::Command;
+        let mut state = state();
+        state.write_pref(crate::launch::DEFAULT_AGENT_KEY, "ask");
+        assert!(
+            !state
+                .palette_hints()
+                .iter()
+                .any(|(command, _)| matches!(command, Command::NewAgent(..)))
+        );
+        state.write_pref(crate::launch::DEFAULT_AGENT_KEY, "shell");
+        assert!(
+            !state
+                .palette_hints()
+                .iter()
+                .any(|(command, _)| matches!(command, Command::NewAgent(..)))
+        );
+        state
+            .store
+            .as_mut()
+            .expect("a fixture store")
+            .providers
+            .push(crate::test_support::provider("claude", true, true, true));
+        state.write_pref(crate::launch::DEFAULT_AGENT_KEY, "provider:claude");
+        let hints = state.palette_hints();
+        let agents: Vec<&Command> = hints
+            .iter()
+            .filter_map(|(command, _)| matches!(command, Command::NewAgent(..)).then_some(command))
+            .collect();
+        assert_eq!(agents.len(), 1, "one row carries the default launch chord");
+        assert!(matches!(
+            agents[0],
+            Command::NewAgent(provider, None) if provider.as_str() == "claude"
+        ));
+    }
+
+    #[test]
+    fn an_open_palette_blocks_app_chords() {
+        let mut state = state();
+        state.palette.show(crate::palette::Scope::Everything);
+        let active = state.active;
+        let event = KeyEvent {
+            key: rune::Key::Command('w'),
+            mods: rune::Mods {
+                cmd: true,
+                ..rune::Mods::default()
+            },
+        };
+        assert!(!state.global_key(&event));
+        assert_eq!(
+            state.active, active,
+            "the session behind the palette stayed"
+        );
     }
 }

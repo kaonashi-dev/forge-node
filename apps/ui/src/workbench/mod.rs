@@ -199,6 +199,9 @@ const DIFF_WATCH_FLOOR: Duration = Duration::from_secs(10);
 pub struct Workbench {
     pub mode: CenterMode,
     pub panel: Panel,
+    /// The shown panel sits left of the one before it in the switcher, so
+    /// it turns in from the leading edge like a page turned back.
+    pub panel_back: bool,
     visit: u64,
     pub workspace: Option<WorkspaceId>,
     pub changes: Changes,

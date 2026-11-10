@@ -598,7 +598,7 @@ fn apply_tick(
     Ok(started.elapsed().as_secs_f64() * 1000.0)
 }
 
-fn render(
+pub(crate) fn render(
     gpu: &rune::render::Gpu,
     target: &rune::render::Offscreen,
     renderer: &mut rune::render::Renderer,
@@ -1028,6 +1028,79 @@ mod tests {
             report.switch_ms.p95
         );
         assert!(report.ui_socket_ops == 0);
+    }
+
+    /// What one rebuild of the whole view costs per sidebar panel, on the
+    /// snapshot `FORGE_UI_VIEW_FIXTURE` names: `cargo test --release
+    /// view_cost_per_panel -- --ignored --nocapture`.
+    #[test]
+    #[ignore = "a measurement, run on demand against a large snapshot"]
+    fn view_cost_per_panel() {
+        use crate::workbench::Panel;
+        let path = std::env::var_os("FORGE_UI_VIEW_FIXTURE")
+            .map_or_else(fixture_path, std::path::PathBuf::from);
+        let store = fixture_store(&path).expect("fixture snapshot decodes");
+        let started = std::time::Instant::now();
+        for _ in 0..100 {
+            std::hint::black_box(crate::history::index(&store.external_agents));
+            std::hint::black_box(crate::processes::group(
+                &store.sessions,
+                &store.workspaces,
+                &store.projects,
+            ));
+        }
+        eprintln!(
+            "set_store's history index + process groups: {:.3} ms each",
+            started.elapsed().as_secs_f64() * 1000.0 / 100.0
+        );
+        for panel in [
+            Panel::Projects,
+            Panel::History,
+            Panel::PullRequests,
+            Panel::Git,
+        ] {
+            let store = fixture_store(&path).expect("fixture snapshot decodes");
+            let mut state = AppState::for_bench(
+                store,
+                std::sync::Arc::new(crate::connection::Metrics::default()),
+                crate::terminal::SharedTerminal::new(),
+            );
+            state.show_panel(panel);
+            state.history.scope = crate::history::Scope::Everywhere;
+            let mut rt = rune::Runtime::new(
+                state,
+                crate::ui::view,
+                (1440.0, 900.0),
+                rune::Env {
+                    system_dark: true,
+                    scale: 1.0,
+                },
+            );
+            rt.frame(0.0);
+            let mut views = Vec::new();
+            let mut frames = Vec::new();
+            for step in 0..200 {
+                rt.invalidate();
+                let started = std::time::Instant::now();
+                rt.frame(0.1 + f64::from(step) / 60.0);
+                frames.push(started.elapsed().as_secs_f64() * 1000.0);
+                views.extend(rt.state.view_ms.get());
+            }
+            let view = Sample::of(&mut views);
+            let frame = Sample::of(&mut frames);
+            eprintln!(
+                "{panel:?}: {} elements, {} runs; view p50 {:.3} p95 {:.3} ms; frame p50 {:.3} p95 {:.3} ms",
+                rt.elements().len(),
+                rt.state
+                    .store
+                    .as_ref()
+                    .map_or(0, |store| store.external_agents.len()),
+                view.p50,
+                view.p95,
+                frame.p50,
+                frame.p95
+            );
+        }
     }
 
     #[test]

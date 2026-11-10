@@ -6,7 +6,7 @@
 use std::sync::OnceLock;
 
 use rune::{App, AppHandle, Key, KeyEvent, MenuItem, Mods, Shortcut, Tx, col, row, text};
-use rune_kit::{Button, ButtonVariant, Dialog, Kit};
+use rune_kit::{Button, ButtonVariant, Kit};
 
 use crate::app::AppState;
 use crate::workbench::Panel;
@@ -258,7 +258,7 @@ pub fn dialog(s: &AppState, k: &Kit, layer: &mut Vec<rune::El>) {
     let line = |name: &str, value: String| {
         row()
             .w_full()
-            .gap(12.0)
+            .gap(crate::ds::SPACE_5)
             .child(
                 text(name.to_string())
                     .font(k.ty.small)
@@ -272,18 +272,16 @@ pub fn dialog(s: &AppState, k: &Kit, layer: &mut Vec<rune::El>) {
         .on_press(|s: &mut AppState| s.about = false)
         .build(k)
         .key("about-close");
-    Dialog::new("about", "Forge Node")
+    crate::modal::Modal::new("about", "Forge Node")
         .description("A terminal workbench for coding agents.")
-        .open(true)
-        .fit()
-        .width(460.0)
+        .width(crate::modal::WIDTH_STANDARD)
         .click_outside(true)
         .on_close(|s: &mut AppState| s.about = false)
         .child(
             col()
                 .key("about-facts")
                 .w_full()
-                .gap(6.0)
+                .gap(crate::ds::SPACE_3)
                 .child(line("Version", crate::updates::APP_VERSION.to_string()))
                 .child(line("Protocol", client::PROTOCOL_VERSION.to_string()))
                 .child(line(
@@ -300,8 +298,13 @@ pub fn dialog(s: &AppState, k: &Kit, layer: &mut Vec<rune::El>) {
                     .wrap(),
                 ),
         )
-        .child(row().gap(8.0).child(rune::el().grow(1.0)).child(close))
-        .build(k, layer);
+        .child(
+            row()
+                .gap(crate::ds::SPACE_4)
+                .child(rune::el().grow(1.0))
+                .child(close),
+        )
+        .build(s, k, layer);
 }
 
 #[cfg(test)]

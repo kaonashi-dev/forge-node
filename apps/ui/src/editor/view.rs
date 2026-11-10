@@ -86,7 +86,7 @@ pub fn pane(s: &AppState, k: &Kit) -> El {
         .h(STATUS_H)
         .items_center()
         .px(12.0)
-        .gap(16.0)
+        .gap(crate::ds::SPACE_6)
         .fill(palette.active_line)
         .child(
             text(match caret {
@@ -169,7 +169,7 @@ fn conflict_note(ui: &EditorUi, session: SessionId, palette: EditorPalette, k: &
         .items_center()
         .px(12.0)
         .py(4.0)
-        .gap(8.0)
+        .gap(crate::ds::SPACE_4)
         .fill(palette.git_deleted.alpha(0.12))
         .child(
             el().size(6.0, 6.0)
@@ -278,7 +278,7 @@ fn compare_row(index: usize, line: &conflict::Row, palette: EditorPalette) -> El
         .w_full()
         .h(ROW_H)
         .items_center()
-        .gap(8.0)
+        .gap(crate::ds::SPACE_4)
         .px(6.0)
         .fill(fill)
         .child(number(line.left))
@@ -319,7 +319,7 @@ fn find_panel(ui: &EditorUi, open: &EditorFind, palette: EditorPalette, k: &Kit)
         .key("editor-find-toggles")
         .role("group")
         .label("Search options")
-        .gap(2.0);
+        .gap(crate::ds::SPACE_1);
     for (flag, glyph, label) in find::TOGGLES {
         let on = find::flag(open, flag);
         toggles = toggles.child(
@@ -360,7 +360,7 @@ fn find_panel(ui: &EditorUi, open: &EditorFind, palette: EditorPalette, k: &Kit)
         .justify_end()
         .px(12.0)
         .py(4.0)
-        .gap(6.0)
+        .gap(crate::ds::SPACE_3)
         .fill(palette.active_line)
         .child(field)
         .child(
@@ -450,6 +450,7 @@ fn scroller(ui: &EditorUi, frame: &EditorFrame, palette: EditorPalette) -> El {
             stick_bottom: false,
         })
         .on_scroll_offset(move |at| scroll.set([at.offset[1], at.viewport[1]]))
+        .on_wheel(|s: &mut crate::app::AppState, ev, _tx| crate::pages::sidebar_swipe(s, &ev))
         // Rows, gutters and spans are paint: the pane's value already carries
         // the text, and hundreds of nodes per window would bury it.
         .child(content.cursor(Cursor::Text).a11y_hidden())
@@ -471,8 +472,8 @@ fn row_view(
         .w_full()
         .h(row_h)
         .items_center()
-        .on_drag(move |s: &mut AppState, drag: &mut Drag, _tx: &mut Tx| {
-            s.editor_drag(line, foldable, drag);
+        .on_drag(move |s: &mut AppState, drag: &mut Drag, tx: &mut Tx| {
+            s.editor_drag(line, foldable, drag, tx.mods());
         });
     if frame.caret.line == line {
         view = view.child(
@@ -631,6 +632,9 @@ fn range_spans(
     spans
 }
 
+/// The git mark's width: Zed's thin bar at the gutter's edge.
+const MARK_W: f32 = 3.0;
+
 fn gutter_view(line_row: &EditorRow, active: bool, palette: EditorPalette, ty: Ty) -> El {
     let line = line_row.line;
     let (mark, diagnostic, fold) = (line_row.mark, line_row.diagnostic, line_row.fold);
@@ -653,11 +657,18 @@ fn gutter_view(line_row: &EditorRow, active: bool, palette: EditorPalette, ty: T
             .w(ty.number_w)
             .align(Align::End)
             .truncate();
-        let bar = el()
-            .w(3.0)
-            .h(14.0)
-            .radius(1.5)
-            .fill(mark_color(mark, palette));
+        // A whole-row bar, so consecutive changed lines read as one strip, and
+        // a deletion a wedge on the row's top edge, where the lines went.
+        let bar = if mark == Some(EditorMark::Deleted) {
+            col().w(MARK_W).h(ty.row_h).child(
+                el().w(MARK_W * 2.0)
+                    .h(MARK_W)
+                    .radius(MARK_W / 2.0)
+                    .fill(mark_color(mark, palette)),
+            )
+        } else {
+            el().w(MARK_W).h(ty.row_h).fill(mark_color(mark, palette))
+        };
         let dot = el()
             .size(6.0, 6.0)
             .radius(3.0)
@@ -681,7 +692,7 @@ fn gutter_view(line_row: &EditorRow, active: bool, palette: EditorPalette, ty: T
             .h(ty.row_h)
             .items_center()
             .px(6.0)
-            .gap(4.0)
+            .gap(crate::ds::SPACE_2)
             .child(number)
             .child(bar)
             .child(dot)
@@ -748,7 +759,7 @@ fn text_view(
 }
 
 impl AppState {
-    pub fn editor_drag(&mut self, line: u32, foldable: bool, drag: &mut Drag) {
+    pub fn editor_drag(&mut self, line: u32, foldable: bool, drag: &mut Drag, mods: rune::Mods) {
         if drag.cancelled() {
             return;
         }
@@ -762,7 +773,20 @@ impl AppState {
         let Some(frame) = &self.editor.frame else {
             return;
         };
-        let Some(row) = frame.rows.iter().find(|row| row.line == line) else {
+        let Some(start) = frame.rows.iter().position(|row| row.line == line) else {
+            return;
+        };
+        let row_h = self.editor.row_h.max(1.0);
+        let steps = (drag.y / row_h).floor() as i64;
+        let visual =
+            (i64::from(crate::editor::visual_base(frame)) + start as i64 + steps).max(0) as u32;
+        let target = crate::editor::document_line(frame, visual);
+        let Some(row) = frame
+            .rows
+            .iter()
+            .find(|row| row.line == target)
+            .or_else(|| frame.rows.iter().find(|row| row.line == line))
+        else {
             return;
         };
         let column = self
@@ -770,7 +794,7 @@ impl AppState {
             .metrics
             .borrow_mut()
             .row(row)
-            .x_to_column(drag.x - gutter_w - TEXT_PAD);
+            .x_to_column((drag.x - gutter_w - TEXT_PAD).max(0.0));
         let kind = match drag.phase {
             Phase::Down => EditorPointer::Down,
             Phase::Move => EditorPointer::Drag,
@@ -778,9 +802,9 @@ impl AppState {
         };
         self.editor.queue(EditorInputEvent::Pointer {
             kind,
-            line,
+            line: target,
             column,
-            modifiers: 0,
+            modifiers: crate::editor::modifier_bits(mods),
         });
     }
 }

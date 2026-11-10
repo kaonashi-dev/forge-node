@@ -101,9 +101,8 @@ fn tone_ink(k: &Kit, tone: crate::pr_filters::Tone) -> rune::Color {
     let roles = crate::theme::roles(k);
     match tone {
         crate::pr_filters::Tone::Neutral => k.c.text_muted,
-        crate::pr_filters::Tone::Good => roles.git.added,
-        crate::pr_filters::Tone::Warn => k.c.warning.fg,
-        crate::pr_filters::Tone::Bad => k.c.danger.fg,
+        crate::pr_filters::Tone::Success => roles.git.added,
+        tone => tone.ink(k, &roles).fg,
     }
 }
 
@@ -148,7 +147,7 @@ pub fn view(s: &AppState, k: &Kit) -> El {
             .1
             .to_string();
         let decision = pr_filters::decision_label(pr.review_decision.clone());
-        let mut meta = row().gap(6.0).items_center().child(
+        let mut meta = row().gap(crate::ds::SPACE_3).items_center().child(
             text(repository)
                 .font(k.ty.text_xsmall)
                 .color(k.c.text_faint)
@@ -174,10 +173,10 @@ pub fn view(s: &AppState, k: &Kit) -> El {
             .role("button")
             .label(format!("Open pull request #{}: {}", pr.number, pr.title))
             .w_full()
-            .gap(4.0)
+            .gap(crate::ds::SPACE_2)
             .px(8.0)
             .py(6.0)
-            .radius(6.0)
+            .radius(k.radius.md)
             .fill(if chosen {
                 k.c.surface_hover
             } else {
@@ -187,7 +186,7 @@ pub fn view(s: &AppState, k: &Kit) -> El {
             .on_press(move |s: &mut AppState| s.open_pr_detail(open.clone()))
             .child(
                 row()
-                    .gap(7.0)
+                    .gap(crate::ds::SPACE_4)
                     .items_center()
                     .w_full()
                     .child(
@@ -206,7 +205,7 @@ pub fn view(s: &AppState, k: &Kit) -> El {
             )
             .child(meta)
     };
-    let mut list = col().key("pr-list").w_full().gap(4.0);
+    let mut list = col().key("pr-list").w_full().gap(crate::ds::SPACE_2);
     if state.is_some_and(|state| state.refreshed_at.is_none()) {
         list = list.child(
             text("Not read yet. Refresh to ask the forge.".to_string())
@@ -242,7 +241,7 @@ pub fn view(s: &AppState, k: &Kit) -> El {
         .role("radiogroup")
         .label("Which pull requests")
         .w_full()
-        .gap(3.0)
+        .gap(crate::ds::SPACE_2)
         .flex_wrap();
     for candidate in Scope::ALL {
         let chosen = candidate == scope;
@@ -274,14 +273,14 @@ pub fn view(s: &AppState, k: &Kit) -> El {
         .w_full()
         .h_full()
         .min_h(0.0)
-        .gap(8.0)
+        .gap(crate::ds::SPACE_4)
         .child(
             row()
                 .key("prs-bar")
                 .w_full()
                 .h(30.0)
                 .items_center()
-                .gap(6.0)
+                .gap(crate::ds::SPACE_3)
                 .child(
                     text("Pull Requests")
                         .font(k.ty.small_medium)
@@ -325,6 +324,7 @@ pub fn view(s: &AppState, k: &Kit) -> El {
             .scroll(ScrollSpec {
                 stick_bottom: false,
             })
+            .on_wheel(crate::pages::wheel)
             .child(list),
     )
 }
@@ -340,7 +340,7 @@ pub fn dialog(s: &AppState, k: &Kit, layer: &mut Vec<El>) {
         .unwrap_or_default();
     let mut recipes = col()
         .key("review-recipes")
-        .gap(2.0)
+        .gap(crate::ds::SPACE_1)
         .role("radiogroup")
         .label("Recipe");
     for recipe in domain::pr_review::builtin_recipes() {
@@ -364,7 +364,7 @@ pub fn dialog(s: &AppState, k: &Kit, layer: &mut Vec<El>) {
     }
     let mut picker = row()
         .key("review-agents")
-        .gap(4.0)
+        .gap(crate::ds::SPACE_2)
         .role("radiogroup")
         .label("Agent");
     for (id, name) in &agents {
@@ -409,7 +409,7 @@ pub fn dialog(s: &AppState, k: &Kit, layer: &mut Vec<El>) {
     };
     body = body.child(picker).child(
         row()
-            .gap(12.0)
+            .gap(crate::ds::SPACE_5)
             .items_center()
             .child(
                 text(note)
@@ -427,16 +427,14 @@ pub fn dialog(s: &AppState, k: &Kit, layer: &mut Vec<El>) {
                     .key("review-start"),
             ),
     );
-    rune_kit::Dialog::new(
+    crate::modal::Modal::new(
         "review",
         format!("Review #{} in {}", review.number, review.repository),
     )
-    .open(true)
-    .width(620.0)
-    .fit()
+    .width(crate::modal::WIDTH_STANDARD)
     .on_close(|s: &mut AppState| s.review = None)
     .child(body)
-    .build(k, layer);
+    .build(s, k, layer);
 }
 
 #[cfg(test)]

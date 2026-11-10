@@ -24,7 +24,7 @@ pub fn state_chip(pr: &PullRequest) -> (&'static str, Tone) {
     if pr.is_draft {
         ("Draft", Tone::Neutral)
     } else {
-        ("Open", Tone::Good)
+        ("Open", Tone::Success)
     }
 }
 
@@ -33,7 +33,7 @@ pub fn state_chip(pr: &PullRequest) -> (&'static str, Tone) {
 pub fn relation_chips(relations: &PullRequestRelations) -> Vec<(&'static str, Tone)> {
     let mut chips = Vec::new();
     if relations.review_requested {
-        chips.push(("Your review requested", Tone::Warn));
+        chips.push(("Your review requested", Tone::Warning));
     }
     if relations.assigned {
         chips.push(("Assigned to you", Tone::Neutral));
@@ -116,31 +116,14 @@ pub fn readable_date(at: Timestamp) -> String {
 }
 
 fn chip(k: &Kit, label: &str, tone: Tone) -> El {
-    let roles = crate::theme::roles(k);
-    let (fill, ink) = match tone {
-        Tone::Neutral => (k.c.surface_hover, k.c.text_muted),
-        Tone::Good => (roles.success.soft, roles.success.text),
-        Tone::Warn => (roles.warning.soft, roles.warning.text),
-        Tone::Bad => (roles.danger.soft, roles.danger.text),
-    };
-    row()
-        .h(18.0)
-        .px(6.0)
-        .radius(4.0)
-        .items_center()
-        .fill(fill)
-        .child(text(label.to_string()).font(k.ty.text_xsmall).color(ink))
+    crate::ds::chip(k, &crate::theme::roles(k), label, tone)
 }
 
 fn section(k: &Kit, title: &str, body: El) -> El {
     col()
         .w_full()
-        .gap(5.0)
-        .child(
-            text(title.to_string())
-                .font(k.ty.text_xsmall)
-                .color(k.c.text_faint),
-        )
+        .gap(crate::ds::SPACE_1)
+        .child(crate::ds::section_header(k, title, None, None))
         .child(body)
 }
 
@@ -150,11 +133,11 @@ fn people(k: &Kit, title: &str, names: &[String], empty: &str) -> El {
             .font(k.ty.text_xsmall)
             .color(k.c.text_faint)
     } else {
-        let mut list = col().gap(4.0);
+        let mut list = col().gap(crate::ds::SPACE_2);
         for name in names {
             list = list.child(
                 row()
-                    .gap(7.0)
+                    .gap(crate::ds::SPACE_4)
                     .items_center()
                     .child(
                         el().size(20.0, 20.0)
@@ -181,9 +164,9 @@ fn labels(k: &Kit, pr: &PullRequest) -> El {
             .font(k.ty.small)
             .color(k.c.text_faint);
     }
-    let mut list = col().gap(4.0);
+    let mut list = col().gap(crate::ds::SPACE_2);
     for label in &pr.labels {
-        let mut line = row().gap(7.0).items_center();
+        let mut line = row().gap(crate::ds::SPACE_4).items_center();
         if let Some(color) = label_color(&label.color) {
             line = line.child(el().size(7.0, 7.0).radius(3.5).fill(color));
         }
@@ -220,7 +203,7 @@ fn facts(k: &Kit, pr: &PullRequest) -> El {
         .flex_wrap()
         .child(
             row()
-                .gap(5.0)
+                .gap(crate::ds::SPACE_3)
                 .items_center()
                 .child(
                     text(pr.head_ref.clone())
@@ -241,7 +224,7 @@ fn facts(k: &Kit, pr: &PullRequest) -> El {
         )
         .child(
             row()
-                .gap(6.0)
+                .gap(crate::ds::SPACE_3)
                 .child(
                     text(format!("+{}", pr.additions))
                         .font(k.ty.text_xsmall)
@@ -284,7 +267,7 @@ fn details(k: &Kit, pr: &PullRequest) -> El {
         k,
         "Activity",
         col()
-            .gap(4.0)
+            .gap(crate::ds::SPACE_2)
             .child(
                 text(comment_summary(pr.comment_count))
                     .font(k.ty.small)
@@ -366,7 +349,7 @@ pub fn view(s: &AppState, k: &Kit) -> El {
     let mut trail = row()
         .key("pr-detail-trail")
         .w_full()
-        .gap(8.0)
+        .gap(crate::ds::SPACE_4)
         .items_center()
         .flex_wrap()
         .child(chip(k, state, state_tone))
@@ -400,7 +383,7 @@ pub fn view(s: &AppState, k: &Kit) -> El {
                 .build(k)
                 .key("pr-detail-open"),
         );
-    let mut tabs = row().key("pr-detail-tabs").gap(4.0).w_full();
+    let mut tabs = row().key("pr-detail-tabs").gap(crate::ds::SPACE_2).w_full();
     for (tab, label, key) in [
         (Tab::Description, "Description", "pr-detail-tab-description"),
         (Tab::Details, "Details", "pr-detail-tab-details"),
@@ -414,7 +397,7 @@ pub fn view(s: &AppState, k: &Kit) -> El {
                 .checked(shown)
                 .h(28.0)
                 .px(10.0)
-                .radius(5.0)
+                .radius(k.radius.sm)
                 .center()
                 .fill(if shown {
                     k.c.surface_hover
@@ -476,7 +459,7 @@ pub fn view(s: &AppState, k: &Kit) -> El {
         .child(facts(k, pr))
         .child(
             row()
-                .gap(12.0)
+                .gap(crate::ds::SPACE_5)
                 .items_center()
                 .child(review_button(
                     k,
@@ -529,11 +512,11 @@ fn empty(k: &Kit, message: &str) -> El {
         .w_full()
         .h_full()
         .min_h(0.0)
-        .padding(24.0)
+        .center()
         .child(
-            text(message.to_string())
-                .font(k.ty.small)
-                .color(k.c.text_faint),
+            crate::ds::Empty::new("pr-detail-missing", message)
+                .why("Refresh pull requests to read it again.")
+                .build(k),
         )
 }
 
@@ -587,7 +570,7 @@ mod tests {
         assert_eq!(
             chips,
             [
-                ("Your review requested", Tone::Warn),
+                ("Your review requested", Tone::Warning),
                 ("Assigned to you", Tone::Neutral),
                 ("You opened this", Tone::Neutral)
             ]
@@ -619,7 +602,7 @@ mod tests {
         assert_eq!(decision_label(None), None);
         assert_eq!(
             decision_label(Some(ReviewDecision::ReviewRequired)),
-            Some(("Review required", Tone::Warn))
+            Some(("Review required", Tone::Warning))
         );
     }
 

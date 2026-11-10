@@ -238,21 +238,18 @@ scrolled height, including folds outside the window, and `hidden_above` is what
 folds above `first_line` remove. `EditorInputEvent::ToggleFold { line }` folds
 or unfolds the block a gutter marker heads, the same as a click on it in the TUI.
 
-The GUI mounts `EditorView` instead of `EditorTerminalPane`, chosen from
-`HelloAck::editor_surface` — the daemon's word, taken at the handshake, because
-the Code region has to know which pane to build before an editor session exists.
-Rows are positioned by their line number inside a container as tall as the whole
-file, so the browser composites the scroll and the mounted window can change
-underneath without moving anything. The caret is one element moved by a
-transform, measured with a `Range` over the row's own text: a column is a UTF-16
-offset, and only the browser knows what that is in pixels once a font has had
-its say.
+The Rune client mounts `editor::view::pane` instead of the terminal pane,
+chosen from `HelloAck::editor_surface` — the daemon's word, taken at the
+handshake, because the Code region has to know which pane to build before an
+editor session exists. Rows are painted from the daemon's windows of lines;
+`document_line` maps a visual row back to the document, folds included. The
+caret is one element positioned from the row's measured columns: a column is a
+UTF-16 offset, and the editor's own metrics are what turn it into points.
 
-Accessibility stops being a mirror. The surface *is* the tree — a real
-`role="textbox"` with `aria-multiline` — rather than a canvas with a hidden
-paragraph beside it. The hidden `<textarea>` still takes the keys, because a
-`contenteditable` would give the browser an editing model that disagrees with
-the host's.
+Accessibility is the pane, not a hidden mirror: `role="document"` carries the
+window's text as its value and the caret's line and column in its description.
+Keys go to the pane's own `on_key`; there is no `<textarea>` and no second
+input path.
 
 ## Keys
 
@@ -268,6 +265,7 @@ the host's.
 | Ctrl-C / Ctrl-X / Ctrl-V | copy / cut / paste through an internal register |
 | Ctrl-A / Ctrl-L / Ctrl-K | select all / select line / delete line |
 | Ctrl-D | select the next occurrence, keeping the carets already placed |
+| Alt-L | select every occurrence at once (capped at 64 carets, nearest the caret first) |
 | Alt-Up / Alt-Down | add a caret on the line above / below |
 | Alt-click / Alt-drag | add a caret / a column of them |
 | Ctrl-F, Ctrl-N, Ctrl-B | find, next match, previous match |
@@ -317,21 +315,25 @@ as keys. The same chords zoom terminals and agents (`ui.terminal.zoom`) only
 while a session is on screen — the two sizes do not move together.
 
 **On a Mac the platform chords reach the editor.** `editor/actions.rs` maps
-⌘S/C/X, ⌘A, ⌘Z, ⇧⌘Z, ⌘F, ⌘G, ⇧⌘G, ⌥⌘F and ⌥⌘L onto the editor's own keys. ⌘G is
-find-next and not "go to line" — a Mac user pressing it after a search wants the
-next match — so go-to-line is ⌥⌘L. Both surfaces recognize Alt-/ by the `/`
-character or the physical Slash key, because Option can produce `÷` on macOS,
-and send Ctrl-_ to toggle comments without inserting that character.
-On the cell surface, native Edit → Copy events
-and the pane's right-click **Copy** send the same Ctrl-C to the editor, which owns
-the selection even when it extends beyond the visible rows. Dismissing the
-context menu returns keyboard focus to the editor. ⌘V is deliberately unclaimed:
-the WebView's
-`paste` event is what carries the clipboard into the pane. The context menu's
-**Paste** reads the pasteboard through the host instead: `navigator.clipboard.readText`
-is refused by WKWebView even inside a gesture, and the text never crosses the
-WebView. `--read-only` refuses every edit at the transaction
-entry and says so instead of silently dropping keys.
+⌘S/C/X, ⌘A, ⌘Z, ⇧⌘Z, ⌘F, ⌘G, ⇧⌘G, ⌥⌘F and ⌥⌘L onto the editor's own keys,
+and takes Zed's multi-caret chords: ⌘D is the next occurrence (Ctrl-D) and ⇧⌘L every
+occurrence (Alt-L) while an editor has the keyboard; elsewhere ⌘D still splits the
+pane. ⌘G is
+find-next and ⇧⌘G is find-previous, not "go to line" — a Mac user pressing them
+after a search wants the next or previous match — so go-to-line is ⌥⌘L. The
+editor recognizes Alt-/ by the `/` character or the physical Slash key, because
+Option can produce `÷` on macOS, and sends Ctrl-_ to toggle comments without
+inserting that character. The native pane's Edit → Copy and right-click
+**Copy** send the same Ctrl-C to the editor, which owns the selection even when
+it extends beyond the visible rows. Dismissing the context menu returns keyboard
+focus to the editor.
+
+⌘V is not a key-table chord. Rune intercepts it before the editor sees it and
+calls the window root's `on_paste`; `AppState::paste` sends the text to the
+active surface — an editor input event, or the terminal's paste path. The
+context menu's **Paste** reads the clipboard through `tx.read_clipboard`, so it
+never depends on the focus proxy. `--read-only` refuses every edit at the
+transaction entry and says so instead of silently dropping keys.
 
 **The mouse moves the caret.** A left click places the caret; a second click on
 the same cell selects the identifier under it (`PayinEvents` is one selection,
@@ -731,16 +733,14 @@ adding it would be trading a known cost for an unknown one.
 
 ## Accessibility
 
-The canvas is the only visual surface, and an accessibility tree cannot read
-one. The pane therefore carries a **hidden mirror** of the editor's own state
-next to it — never a second input path, and never anything read back off the
-cells.
+The pane draws its own rows, so its accessibility node is the surface rather
+than a mirror beside it — never a second input path, and never anything read
+back off the cells.
 
-- The mirror is `role="application"` with `aria-roledescription="code editor"`,
-  `aria-label` = the path and `aria-readonly` from the buffer. Not
-  `role="textbox"`: the keys go to the `<textarea class="terminal-keys">` the
-  way they always have, and a reader that took the mirror for an input would
-  offer its own editing keys against a node that has none.
+- The pane is `role="document"` with its path as the label and `aria-readonly`
+  from the buffer; the window's text is its value. It is not a text field:
+  keys go to the pane's `on_key`, and a reader that took it for an input would
+  offer editing keys the surface does not implement.
 - It says `Line 12 of 300, column 4.` plus the flags a person cannot see — read
   only, unsaved changes, how many carets, how many bytes are selected — and then
   the caret's line as text.

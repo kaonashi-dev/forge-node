@@ -8,6 +8,7 @@ mod chrome;
 mod code_review;
 mod commit;
 mod connection;
+mod ds;
 mod editor;
 mod file_icons;
 mod fuzzy;
@@ -17,7 +18,9 @@ mod history;
 mod keymap;
 mod launch;
 mod menus;
+mod modal;
 mod native_menus;
+mod pages;
 mod palette;
 mod pr_compose;
 mod pr_detail;
@@ -79,6 +82,7 @@ enum Action {
     Bench(BenchRequest),
     Startup,
     Probe,
+    Gallery,
 }
 
 struct Options {
@@ -177,6 +181,7 @@ impl Options {
                 }
                 "--bench-startup" => options.action = Action::Startup,
                 "--probe" => options.action = Action::Probe,
+                "--gallery" => options.action = Action::Gallery,
                 "--open" => {
                     let value = args.next().ok_or("--open needs a path")?;
                     options.open = Some(value);
@@ -212,6 +217,17 @@ fn run() -> Result<(), String> {
     let options = Options::parse()?;
     let metrics = Arc::new(Metrics::default());
     metrics.note_ui_thread();
+
+    if options.action == Action::Gallery {
+        App::new(AppSpec::new(
+            "Forge Node · Design system",
+            (1180.0, 900.0),
+            || (),
+            ds::gallery::view,
+        ))
+        .run();
+        return Ok(());
+    }
 
     if options.action == Action::Probe {
         if options.fixture {
@@ -461,6 +477,7 @@ Options:
   --fixture-reconnect-ms N  simulate a fixture disconnect after N ms (default 2500)
   --no-reconnect            keep the fixture connection up
   --probe                   connect, snapshot, add a project and attach a terminal
+  --gallery                 every design-system piece in a dark and a light base
   --open PATH               open PATH (relative to the first workspace) in an editor; implies --daemon
   --bench [N|switch|all|terminal-125|editor]
                             headless measurements; `all` runs every section
@@ -489,7 +506,7 @@ mod tests {
     use rune::render::KIND_EFFECT;
     use rune::{Env, Runtime};
 
-    fn runtime() -> Runtime<AppState> {
+    fn runtime_with_shared() -> (Runtime<AppState>, Arc<SharedTerminal>) {
         let store = fixture_store(&bench::fixture_path()).expect("fixture snapshot decodes");
         let metrics = Arc::new(Metrics::default());
         metrics.note_ui_thread();
@@ -512,7 +529,78 @@ mod tests {
         );
         rt.poll = Some(app::poll);
         rt.frame(0.0);
+        (rt, shared)
+    }
+
+    fn runtime() -> Runtime<AppState> {
+        runtime_with_shared().0
+    }
+
+    fn runtime_sized(width: f32, height: f32) -> Runtime<AppState> {
+        let store = fixture_store(&bench::fixture_path()).expect("fixture snapshot decodes");
+        let metrics = Arc::new(Metrics::default());
+        metrics.note_ui_thread();
+        let shared = SharedTerminal::new();
+        let mut state = AppState::for_bench(store, metrics, Arc::clone(&shared));
+        let row = state.active_row().cloned().expect("active row");
+        state
+            .terminal
+            .activate_fixture(1, row.id, row.terminal_id.expect("terminal"), (80, 24));
+        state.terminal.focus_terminal = true;
+        shared.set_measured(80, 24);
+        let mut rt = Runtime::new(
+            state,
+            ui::view,
+            (width, height),
+            Env {
+                system_dark: true,
+                scale: 2.0,
+            },
+        );
+        rt.poll = Some(app::poll);
+        rt.frame(0.0);
+        rt.frame(1.0 / 60.0);
         rt
+    }
+
+    fn places(count: usize) -> Vec<crate::palette::Entry> {
+        (0..count)
+            .map(|index| crate::palette::Entry::Session {
+                id: domain::SessionId::new(),
+                label: format!("Place {index}"),
+                note: "main".into(),
+                agent: None,
+                kind: domain::SessionKind::Shell,
+                waiting: false,
+            })
+            .collect()
+    }
+
+    fn test_gpu() -> Option<(
+        rune::render::Gpu,
+        rune::render::Offscreen,
+        rune::render::Renderer,
+    )> {
+        use rune::Compositor;
+        let mut descriptor = wgpu::InstanceDescriptor::new_without_display_handle();
+        descriptor.backends = wgpu::Backends::all();
+        descriptor
+            .flags
+            .remove(wgpu::InstanceFlags::VALIDATION_INDIRECT_CALL);
+        let probe = terminal::renderer::Terminal::new(
+            SharedTerminal::new(),
+            Arc::new(std::sync::Mutex::new(terminal::stats::Stats::default())),
+            None,
+        );
+        let gpu = rune::render::Gpu::try_with_features(
+            wgpu::Instance::new(descriptor),
+            None,
+            probe.features(),
+        )
+        .ok()?;
+        let target = rune::render::Offscreen::new(&gpu.device, 2360, 1520);
+        let renderer = rune::render::Renderer::new(&gpu.device, rune::render::OFFSCREEN_FORMAT);
+        Some((gpu, target, renderer))
     }
 
     #[test]
@@ -587,26 +675,6 @@ mod tests {
     }
 
     #[test]
-    fn a_tab_click_then_typing_still_reaches_the_terminal() {
-        let mut rt = runtime();
-        let id = rt.state.rows[2].id_text.clone();
-        let (x, y) = rt.find(&format!("t-{id}")).expect("tab is laid out");
-        rt.pointer_down(x, y);
-        rt.pointer_up(x, y);
-        rt.frame(1.0 / 60.0);
-        rt.key(rune::KeyEvent {
-            key: rune::Key::Text("q".to_string()),
-            mods: rune::Mods::default(),
-        });
-        rt.frame(1.0 / 60.0);
-        let (_, summary) = rt.state.last_input.as_ref().expect("bytes were sent");
-        assert!(
-            summary.contains("\"q\""),
-            "typed byte reached the terminal: {summary}"
-        );
-    }
-
-    #[test]
     fn the_terminal_cursor_owns_the_input_method() {
         let rt = runtime();
         let cursor = rt.state.terminal.cursor().expect("terminal grid");
@@ -620,5 +688,374 @@ mod tests {
             terminal::renderer::CELL_PT.1,
         ];
         assert_eq!(rt.ime_area, Some(expected));
+    }
+
+    fn commands(rx: &flume::Receiver<connection::Command>) -> Vec<connection::Command> {
+        let mut out = Vec::new();
+        while let Ok(command) = rx.try_recv() {
+            out.push(command);
+        }
+        out
+    }
+
+    fn editor_runtime() -> (
+        Runtime<AppState>,
+        flume::Receiver<connection::Command>,
+        String,
+    ) {
+        let (mut rt, _) = runtime_with_shared();
+        let (handle, rx) = connection::ConnectionHandle::test_handle(Arc::new(Metrics::default()));
+        rt.update(|s, _| {
+            s.connection = Some(handle);
+            s.editor_surface = client::EditorSurface::Dom;
+            let id = s.rows[0].id;
+            let id_text = s.rows[0].id_text.clone();
+            let first = &mut s.rows_mut()[0];
+            first.kind = domain::SessionKind::Editor;
+            first.terminal_id = None;
+            s.active = Some(id);
+            s.active_text = Some(id_text);
+            s.editor.set_session(Some(id));
+            s.editor.scroll.set([0.0, 400.0]);
+            let lines = [
+                (0, "fn main() {"),
+                (1, "    body();"),
+                (2, "}"),
+                (3, "tail"),
+            ];
+            let _ = s
+                .editor
+                .apply_frame(id, editor::tests::frame(0, &lines, 4, (0, 0)));
+        });
+        rt.frame(0.1);
+        let id_text = rt.state.rows[0].id_text.clone();
+        (rt, rx, id_text)
+    }
+
+    /// Selects a session the way a person does now that there is no tab strip:
+    /// its row in the sidebar.
+    fn click_session(rt: &mut Runtime<AppState>, id_text: &str) {
+        let index = rt
+            .state
+            .rows
+            .iter()
+            .position(|row| row.id_text == id_text)
+            .expect("the session has a row");
+        let (x, y) = rt
+            .find(&format!("session-row-{index}"))
+            .expect("its row is laid out");
+        rt.pointer_down(x, y);
+        rt.pointer_up(x, y);
+        rt.frame(1.0 / 60.0);
+    }
+
+    #[test]
+    fn paste_reaches_the_terminal() {
+        let mut rt = runtime();
+        rt.paste("x");
+        rt.frame(1.0 / 60.0);
+        let (_, summary) = rt.state.last_input.as_ref().expect("bytes were sent");
+        assert!(
+            summary.contains('x') && summary.contains("paste"),
+            "terminal got {summary}"
+        );
+    }
+
+    #[test]
+    fn paste_reaches_the_editor() {
+        use domain::EditorInputEvent;
+        let (mut rt, rx, _) = editor_runtime();
+        let _ = commands(&rx);
+        rt.paste("x");
+        rt.frame(1.0 / 60.0);
+        assert!(
+            commands(&rx).iter().any(|command| matches!(
+                command,
+                connection::Command::EditorInput { events, .. }
+                    if events == &[EditorInputEvent::Text("x".into())]
+            )),
+            "the editor received the paste"
+        );
+    }
+
+    #[test]
+    fn a_tab_click_then_shift_left_reaches_the_editor() {
+        use domain::{EditorInputEvent, EditorKey, editor_modifiers};
+        let (mut rt, rx, id_text) = editor_runtime();
+        click_session(&mut rt, &id_text);
+        let _ = commands(&rx);
+        rt.key(rune::KeyEvent {
+            key: rune::Key::Left,
+            mods: rune::Mods {
+                shift: true,
+                ..rune::Mods::default()
+            },
+        });
+        rt.frame(1.0 / 60.0);
+        assert!(
+            commands(&rx).iter().any(|command| matches!(
+                command,
+                connection::Command::EditorInput { events, .. }
+                    if events == &[EditorInputEvent::Key {
+                        key: EditorKey::Left,
+                        modifiers: editor_modifiers::SHIFT,
+                    }]
+            )),
+            "the editor got the shifted key"
+        );
+        assert_eq!(
+            rt.state.terminal.attach.held_len(),
+            0,
+            "nothing was held for a terminal"
+        );
+    }
+
+    #[test]
+    fn shift_command_g_finds_previous_in_the_editor_instead_of_opening_git() {
+        use domain::{EditorInputEvent, EditorKey, editor_modifiers};
+        let (mut rt, rx, id_text) = editor_runtime();
+        click_session(&mut rt, &id_text);
+        let _ = commands(&rx);
+        let panel = rt.state.workbench.panel;
+        rt.key(rune::KeyEvent {
+            key: rune::Key::Command('g'),
+            mods: rune::Mods {
+                cmd: true,
+                shift: true,
+                ..rune::Mods::default()
+            },
+        });
+        rt.frame(1.0 / 60.0);
+        assert!(
+            commands(&rx).iter().any(|command| matches!(
+                command,
+                connection::Command::EditorInput { events, .. }
+                    if events == &[EditorInputEvent::Key {
+                        key: EditorKey::Char('b'),
+                        modifiers: editor_modifiers::CONTROL,
+                    }]
+            )),
+            "find-previous reached the editor"
+        );
+        assert_eq!(rt.state.workbench.panel, panel, "the Git panel stayed shut");
+    }
+
+    #[test]
+    fn dragging_past_a_row_reaches_the_next_line() {
+        use domain::EditorInputEvent;
+        let (mut rt, rx, _) = editor_runtime();
+        let (rect, _) = rt.presented("row:0").expect("row 0 is drawn");
+        let x = rect[0] + 120.0;
+        let y = rect[1] + 2.0;
+        rt.pointer_down(x, y);
+        rt.frame(1.0 / 60.0);
+        rt.pointer_move(x, y + 20.0);
+        rt.frame(1.0 / 60.0);
+        rt.pointer_up(x, y + 20.0);
+        rt.frame(1.0 / 60.0);
+        let last = commands(&rx)
+            .into_iter()
+            .filter_map(|command| match command {
+                connection::Command::EditorInput { events, .. } => {
+                    events.into_iter().find_map(|event| match event {
+                        EditorInputEvent::Pointer { line, .. } => Some(line),
+                        _ => None,
+                    })
+                }
+                _ => None,
+            })
+            .next_back();
+        assert_eq!(last, Some(1), "the drag ended on the second row");
+    }
+
+    #[test]
+    fn a_shift_click_carries_the_shift_modifier() {
+        use domain::{EditorInputEvent, editor_modifiers};
+        let (mut rt, rx, _) = editor_runtime();
+        let (rect, _) = rt.presented("row:1").expect("row 1 is drawn");
+        rt.physical_input(rune::PhysicalInput::Modifiers(rune::Mods {
+            shift: true,
+            ..rune::Mods::default()
+        }));
+        rt.pointer_down(rect[0] + 120.0, rect[1] + 2.0);
+        rt.frame(1.0 / 60.0);
+        rt.frame(1.0 / 60.0);
+        rt.physical_input(rune::PhysicalInput::Modifiers(rune::Mods::default()));
+        let shift = commands(&rx).into_iter().find_map(|command| match command {
+            connection::Command::EditorInput { events, .. } => {
+                events.into_iter().find_map(|event| match event {
+                    EditorInputEvent::Pointer { modifiers, .. } => Some(modifiers),
+                    _ => None,
+                })
+            }
+            _ => None,
+        });
+        assert_eq!(shift, Some(editor_modifiers::SHIFT));
+    }
+
+    #[test]
+    fn the_palette_scrolls_inside_its_dialog() {
+        let mut rt = runtime_sized(1000.0, 600.0);
+        rt.update(|s, _| {
+            s.palette.show(crate::palette::Scope::Places);
+            s.palette.set_places(places(40));
+        });
+        rt.frame(1.0 / 60.0);
+        rt.frame(1.0 / 60.0);
+        let (dialog, _) = rt.presented("palette-dialog").expect("the palette dialog");
+        let (scroll, _) = rt
+            .presented("palette-scroll")
+            .expect("the palette viewport");
+        assert!(
+            scroll[0] >= dialog[0] - 0.5
+                && scroll[1] >= dialog[1] - 0.5
+                && scroll[0] + scroll[2] <= dialog[0] + dialog[2] + 0.5
+                && scroll[1] + scroll[3] <= dialog[1] + dialog[3] + 0.5,
+            "scroll {scroll:?} leaves dialog {dialog:?}"
+        );
+    }
+
+    #[test]
+    fn a_palette_hint_stays_inside_its_row() {
+        let mut rt = runtime_sized(1000.0, 600.0);
+        rt.update(|s, _| s.palette.show(crate::palette::Scope::Commands));
+        rt.frame(1.0 / 60.0);
+        rt.frame(1.0 / 60.0);
+        let (row, _) = rt.presented("palette-0").expect("the first row");
+        let (hint, _) = rt.presented("palette-hint-0").expect("its chord");
+        assert!(
+            hint[0] >= row[0] - 0.5 && hint[0] + hint[2] <= row[0] + row[2] + 0.5,
+            "hint {hint:?} leaves row {row:?}"
+        );
+    }
+
+    #[test]
+    fn the_palette_reveals_a_selected_row_past_the_first_screen() {
+        let mut rt = runtime_sized(1000.0, 600.0);
+        rt.update(|s, _| {
+            s.palette.show(crate::palette::Scope::Places);
+            s.palette.set_places(places(40));
+        });
+        rt.frame(1.0 / 60.0);
+        for _ in 0..35 {
+            rt.key(rune::KeyEvent {
+                key: rune::Key::Down,
+                mods: rune::Mods::default(),
+            });
+        }
+        rt.frame(1.0 / 60.0);
+        rt.frame(0.5);
+        rt.frame(0.5);
+        let (scroll, _) = rt
+            .presented("palette-scroll")
+            .expect("the palette viewport");
+        let (row, _) = rt
+            .presented("palette-35")
+            .expect("the selected row is built");
+        assert!(
+            row[1] >= scroll[1] - 0.5 && row[1] + row[3] <= scroll[1] + scroll[3] + 0.5,
+            "row {row:?} is outside viewport {scroll:?}"
+        );
+    }
+
+    #[test]
+    fn the_shared_files_footer_stays_inside_its_dialog() {
+        let mut rt = runtime_sized(1000.0, 600.0);
+        let project = rt
+            .state
+            .store
+            .as_ref()
+            .and_then(|store| store.projects.first())
+            .map(|project| project.id)
+            .expect("a fixture project");
+        rt.update(|s, _| {
+            s.projects.share_form.target = Some((project, None));
+        });
+        rt.frame(1.0 / 60.0);
+        rt.frame(1.0 / 60.0);
+        let (dialog, _) = rt
+            .presented("shared-files-dialog")
+            .expect("the shared files dialog");
+        let (done, _) = rt.presented("shared-files-done").expect("the Done button");
+        assert!(
+            done[1] >= dialog[1] - 0.5 && done[1] + done[3] <= dialog[1] + dialog[3] + 0.5,
+            "Done {done:?} leaves dialog {dialog:?}"
+        );
+    }
+
+    fn layered_view(s: &AppState, cx: &mut rune::Cx<AppState>) -> rune::El {
+        ui::view(s, cx).opacity(0.9)
+    }
+
+    fn render_frames(
+        rt: &mut Runtime<AppState>,
+        compositor: &mut terminal::renderer::Terminal,
+        gpu: &rune::render::Gpu,
+        target: &rune::render::Offscreen,
+        renderer: &mut rune::render::Renderer,
+        frames: usize,
+    ) {
+        for _ in 0..frames {
+            bench::render(gpu, target, renderer, rt, compositor, 1.0 / 60.0)
+                .expect("the frame draws");
+        }
+    }
+
+    fn compositor(shared: &Arc<SharedTerminal>) -> terminal::renderer::Terminal {
+        terminal::renderer::Terminal::new(
+            Arc::clone(shared),
+            Arc::new(std::sync::Mutex::new(terminal::stats::Stats::default())),
+            None,
+        )
+    }
+
+    #[test]
+    fn settings_round_trip_keeps_the_terminal_pipeline_valid() {
+        let Some((gpu, target, mut renderer)) = test_gpu() else {
+            return;
+        };
+        let (mut rt, shared) = runtime_with_shared();
+        let mut terminal = compositor(&shared);
+        let scope = gpu.device.push_error_scope(wgpu::ErrorFilter::Validation);
+        render_frames(&mut rt, &mut terminal, &gpu, &target, &mut renderer, 2);
+        rt.update(|s, _| s.open_settings(None));
+        render_frames(&mut rt, &mut terminal, &gpu, &target, &mut renderer, 3);
+        rt.update(|s, _| s.close_settings());
+        render_frames(&mut rt, &mut terminal, &gpu, &target, &mut renderer, 3);
+        let error = pollster::block_on(scope.pop());
+        assert!(error.is_none(), "terminal pipeline mismatch: {error:?}");
+    }
+
+    #[test]
+    fn the_terminal_draws_inside_an_isolated_layer() {
+        let Some((gpu, target, mut renderer)) = test_gpu() else {
+            return;
+        };
+        let store = fixture_store(&bench::fixture_path()).expect("fixture snapshot decodes");
+        let metrics = Arc::new(Metrics::default());
+        metrics.note_ui_thread();
+        let shared = SharedTerminal::new();
+        let mut state = AppState::for_bench(store, metrics, Arc::clone(&shared));
+        let row = state.active_row().cloned().expect("active row");
+        state
+            .terminal
+            .activate_fixture(1, row.id, row.terminal_id.expect("terminal"), (80, 24));
+        state.terminal.focus_terminal = true;
+        shared.set_measured(80, 24);
+        let mut rt = Runtime::new(
+            state,
+            layered_view,
+            (1180.0, 760.0),
+            Env {
+                system_dark: true,
+                scale: 2.0,
+            },
+        );
+        rt.poll = Some(app::poll);
+        let mut terminal = compositor(&shared);
+        let scope = gpu.device.push_error_scope(wgpu::ErrorFilter::Validation);
+        render_frames(&mut rt, &mut terminal, &gpu, &target, &mut renderer, 3);
+        let error = pollster::block_on(scope.pop());
+        assert!(error.is_none(), "terminal inside a layer: {error:?}");
     }
 }

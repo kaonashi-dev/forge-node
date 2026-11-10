@@ -10,7 +10,10 @@ use domain::{
 pub const HISTORY_LINES: u64 = 1000;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-#[cfg_attr(not(test), allow(dead_code))]
+#[cfg_attr(
+    not(test),
+    allow(dead_code, reason = "fixture modes are exercised by tests")
+)]
 pub enum ModeSet {
     Plain,
     Mouse,

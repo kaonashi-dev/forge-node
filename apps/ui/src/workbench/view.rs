@@ -127,8 +127,8 @@ fn changed_rows(s: &AppState, k: &Kit) -> El {
                 .w_full()
                 .h(26.0)
                 .px(8.0)
-                .gap(6.0)
-                .radius(5.0)
+                .gap(crate::ds::SPACE_3)
+                .radius(k.radius.sm)
                 .items_center()
                 .fill(if selected {
                     k.c.surface_hover
@@ -195,7 +195,7 @@ pub fn git_panel(s: &AppState, k: &Kit) -> El {
             .map(|found| found.project_id)
     });
     let fetching = project.is_some_and(|id| s.sync.fetching.contains(&id));
-    let mut actions = row().gap(4.0).flex_wrap().child(
+    let mut actions = row().gap(crate::ds::SPACE_2).flex_wrap().child(
         Button::new(if fetching { "Fetching…" } else { "Fetch" })
             .variant(ButtonVariant::GhostMuted)
             .control_size(ControlSize::Small)
@@ -222,19 +222,23 @@ pub fn git_panel(s: &AppState, k: &Kit) -> El {
                     .key("changes-open-pr"),
             );
     }
-    let mut head = col().key("git-head").w_full().gap(4.0).child(
-        row()
-            .gap(6.0)
-            .items_center()
-            .child(icon(&crate::glyphs::GIT, 14.0).color(k.c.icon_muted))
-            .child(
-                text(changes.branch.clone().unwrap_or_else(|| "Git".into()))
-                    .font(k.ty.small_medium)
-                    .color(k.c.text_base)
-                    .truncate()
-                    .min_w(0.0),
-            ),
-    );
+    let mut head = col()
+        .key("git-head")
+        .w_full()
+        .gap(crate::ds::SPACE_2)
+        .child(
+            row()
+                .gap(crate::ds::SPACE_3)
+                .items_center()
+                .child(icon(&crate::glyphs::GIT, 14.0).color(k.c.icon_muted))
+                .child(
+                    text(changes.branch.clone().unwrap_or_else(|| "Git".into()))
+                        .font(k.ty.small_medium)
+                        .color(k.c.text_base)
+                        .truncate()
+                        .min_w(0.0),
+                ),
+        );
     if let Some(note) = project.and_then(|id| s.sync.fetched.get(&id)) {
         head = head.child(
             text(note.clone())
@@ -252,7 +256,7 @@ pub fn git_panel(s: &AppState, k: &Kit) -> El {
                 .w_full()
                 .px(8.0)
                 .py(6.0)
-                .radius(6.0)
+                .radius(k.radius.md)
                 .fill(k.c.warning.bg)
                 .hover(k.c.hover)
                 .on_press(|s: &mut AppState| s.workbench.mode = CenterMode::Changes)
@@ -272,7 +276,7 @@ pub fn git_panel(s: &AppState, k: &Kit) -> El {
         .w_full()
         .h_full()
         .min_h(0.0)
-        .gap(8.0)
+        .gap(crate::ds::SPACE_4)
         .child(head)
         .child(
             col()
@@ -283,6 +287,7 @@ pub fn git_panel(s: &AppState, k: &Kit) -> El {
                 .scroll(ScrollSpec {
                     stick_bottom: false,
                 })
+                .on_wheel(crate::pages::wheel)
                 .child(changed_rows(s, k)),
         );
     if changes.loaded && changes.error.is_none() {
@@ -398,6 +403,7 @@ pub fn files_panel(s: &AppState, k: &Kit) -> El {
     .on_open(|s: &mut AppState, id: &str, _tx| s.open_in_editor(id))
     .build(s, k)
     .key(crate::menus::FILES_TREE)
+    .on_wheel(crate::pages::wheel)
     .on_secondary_press(crate::menus::files_secondary)
     .w_full()
     .grow(1.0)
@@ -416,7 +422,7 @@ pub fn files_panel(s: &AppState, k: &Kit) -> El {
         .w_full()
         .h_full()
         .min_h(0.0)
-        .gap(4.0)
+        .gap(crate::ds::SPACE_2)
         .child(filter)
         .children(s.menus.file_error.as_ref().map(|error| {
             text(error.clone())
@@ -725,13 +731,13 @@ fn stopped(state: &domain::RebaseState, error: Option<&str>, k: &Kit) -> El {
         .role("region")
         .label(title.clone())
         .w_full()
-        .gap(6.0)
+        .gap(crate::ds::SPACE_3)
         .px(12.0)
         .py(8.0)
         .fill(k.c.warning.bg)
         .child(
             row()
-                .gap(8.0)
+                .gap(crate::ds::SPACE_4)
                 .items_center()
                 .child(
                     text(title)
@@ -813,7 +819,7 @@ fn conflict_view(s: &AppState, k: &Kit) -> El {
     let mut hand = row()
         .key("conflict-hand")
         .w_full()
-        .gap(8.0)
+        .gap(crate::ds::SPACE_4)
         .items_center()
         .child(
             text(path.clone())
@@ -827,13 +833,17 @@ fn conflict_view(s: &AppState, k: &Kit) -> El {
         hand = hand.child(
             row()
                 .key("conflict-state")
-                .gap(5.0)
+                .gap(crate::ds::SPACE_3)
                 .items_center()
                 .px(6.0)
                 .h(18.0)
-                .radius(4.0)
+                .radius(k.radius.sm)
                 .fill(k.c.warning.bg)
-                .child(el().size(6.0, 6.0).radius(3.0).fill(k.c.warning.fg))
+                .child(crate::ds::dot(
+                    k,
+                    &crate::theme::roles(k),
+                    crate::ds::Tone::Warning,
+                ))
                 .child(
                     text(format!(
                         "{blocks} conflict{}",
@@ -896,7 +906,7 @@ fn conflict_view(s: &AppState, k: &Kit) -> El {
         row()
             .key("conflict-sides")
             .w_full()
-            .gap(8.0)
+            .gap(crate::ds::SPACE_4)
             .child(side_head(k, "ours", &format!("Ours {ours}")))
             .child(side_head(k, "base", "Base"))
             .child(side_head(k, "theirs", &format!("Theirs {theirs}")))
@@ -906,9 +916,13 @@ fn conflict_view(s: &AppState, k: &Kit) -> El {
     let mut regions = col().key("conflict-regions").w_full().gap(10.0);
     for (at, block) in changes.conflict_blocks.iter().enumerate() {
         let mut head = row()
-            .gap(8.0)
+            .gap(crate::ds::SPACE_4)
             .items_center()
-            .child(el().size(6.0, 6.0).radius(3.0).fill(k.c.warning.fg))
+            .child(crate::ds::dot(
+                k,
+                &crate::theme::roles(k),
+                crate::ds::Tone::Warning,
+            ))
             .child(
                 text(format!("Conflict {} of {blocks}", at + 1))
                     .font(k.ty.text_xsmall)
@@ -933,7 +947,7 @@ fn conflict_view(s: &AppState, k: &Kit) -> El {
                 .build(k)
                 .key(format!("conflict-resolve-{at}")),
         );
-        let mut sides = row().w_full().gap(8.0);
+        let mut sides = row().w_full().gap(crate::ds::SPACE_4);
         sides = sides
             .child(side_column(k, at, "ours", &block.ours))
             .child(if let Some(base) = &block.base {
@@ -942,7 +956,7 @@ fn conflict_view(s: &AppState, k: &Kit) -> El {
                 col()
                     .w(0.0)
                     .grow(1.0)
-                    .gap(3.0)
+                    .gap(crate::ds::SPACE_2)
                     .padding(6.0)
                     .fill(k.c.surface_weak)
                     .child(
@@ -960,7 +974,7 @@ fn conflict_view(s: &AppState, k: &Kit) -> El {
             .role("group")
             .label(format!("Conflict {} of {blocks}", at + 1))
             .w_full()
-            .gap(6.0)
+            .gap(crate::ds::SPACE_3)
             .child(head)
             .child(sides);
         if !block.complete {
@@ -980,9 +994,9 @@ fn conflict_view(s: &AppState, k: &Kit) -> El {
             col()
                 .key("conflict-proposal")
                 .w_full()
-                .gap(6.0)
+                .gap(crate::ds::SPACE_3)
                 .padding(8.0)
-                .radius(6.0)
+                .radius(k.radius.md)
                 .fill(k.c.surface_weak)
                 .child(
                     text("Proposed resolution · not staged · you stage it".to_string())
@@ -1022,7 +1036,7 @@ fn conflict_view(s: &AppState, k: &Kit) -> El {
     let footer = row()
         .key("conflict-foot")
         .w_full()
-        .gap(8.0)
+        .gap(crate::ds::SPACE_4)
         .items_center()
         .child(
             text(format!(
@@ -1040,7 +1054,7 @@ fn conflict_view(s: &AppState, k: &Kit) -> El {
         .w_full()
         .grow(1.0)
         .min_h(0.0)
-        .gap(8.0)
+        .gap(crate::ds::SPACE_4)
         .padding(10.0)
         .fill(k.c.surface_weak)
         .child(hand)
@@ -1065,9 +1079,9 @@ fn side_head(k: &Kit, side: &'static str, label: &str) -> El {
         .grow(1.0)
         .h(20.0)
         .px(6.0)
-        .gap(5.0)
+        .gap(crate::ds::SPACE_3)
         .items_center()
-        .radius(4.0)
+        .radius(k.radius.sm)
         .fill(k.c.surface_hover)
         .child(el().size(6.0, 6.0).radius(3.0).fill(match side {
             "ours" => k.c.text_muted,
@@ -1091,7 +1105,7 @@ fn side_column(k: &Kit, region: usize, side: &'static str, lines: &[String]) -> 
         .min_w(0.0)
         .gap(1.0)
         .padding(6.0)
-        .radius(4.0)
+        .radius(k.radius.sm)
         .fill(k.c.bg_base);
     if lines.is_empty() {
         return column.child(

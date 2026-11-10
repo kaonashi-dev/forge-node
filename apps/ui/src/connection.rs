@@ -20,7 +20,7 @@ use flume::{Receiver, Selector, Sender};
 use crate::terminal::SharedTerminal;
 use crate::terminal::fixture::{self, Feed};
 
-pub const CLIENT_VERSION: &str = env!("CARGO_PKG_VERSION");
+pub const CLIENT_VERSION: &str = crate::updates::APP_VERSION;
 const RETRY: Duration = Duration::from_millis(400);
 const CONNECT_ATTEMPTS: usize = 8;
 const FIXTURE_CONNECT: Duration = Duration::from_millis(1);
@@ -1539,14 +1539,24 @@ fn handle_fixture_command(
             ..
         } => {
             let size = size.sanitized();
-            let terminal = terminal.holding(terminal_id).unwrap_or(terminal);
+            let Some(held) = terminal.holding(terminal_id) else {
+                metrics.commands_completed.fetch_add(1, Ordering::Relaxed);
+                sink(vec![UiEvent::CommandResult {
+                    generation,
+                    label: "ResizeTerminal",
+                    ok: true,
+                    message: format!("{}x{}", size.cols, size.rows),
+                    took_us: started.elapsed().as_micros() as u64,
+                }]);
+                return;
+            };
             let session = {
-                let slot = terminal.lock();
+                let slot = held.lock();
                 slot.session_id
             };
             if let Some(session) = session {
                 let grid = fixture::titled_grid(size.cols, size.rows, "fixture shell");
-                terminal.publish_grid(generation, session, terminal_id, grid, size);
+                held.publish_grid(generation, session, terminal_id, grid, size);
                 wake();
             }
             metrics.commands_completed.fetch_add(1, Ordering::Relaxed);
@@ -2722,20 +2732,24 @@ fn handle_live_command(
                 return;
             }
             metrics.note_socket_op();
-            let terminal = terminal.holding(terminal_id).unwrap_or(terminal);
             let result = client
                 .resize_terminal(terminal_id, size)
                 .and_then(|()| client.attach_terminal(terminal_id, size));
             match result {
                 Ok(snapshot) => {
-                    let session = {
-                        let slot = terminal.lock();
-                        slot.session_id
-                    };
-                    if let Some(session) = session {
-                        terminal.publish_snapshot(generation, session, terminal_id, &snapshot);
+                    // The tab may have moved while the socket answered: publishing
+                    // this snapshot under the new terminal's id would show the old
+                    // screen in the new pane.
+                    if let Some(held) = terminal.holding(terminal_id) {
+                        let session = {
+                            let slot = held.lock();
+                            slot.session_id
+                        };
+                        if let Some(session) = session {
+                            held.publish_snapshot(generation, session, terminal_id, &snapshot);
+                        }
+                        wake();
                     }
-                    wake();
                     metrics.commands_completed.fetch_add(1, Ordering::Relaxed);
                     sink(vec![UiEvent::CommandResult {
                         generation,
@@ -4189,6 +4203,7 @@ mod tests {
         read_when_written(&out);
         let deadline = Instant::now() + Duration::from_secs(5);
         // A zombie still answers signal 0; only a reaped pid is gone.
+        // SAFETY: signal 0 only asks whether `pid` exists; nothing is sent.
         while unsafe { libc::kill(pid, 0) } == 0 {
             assert!(Instant::now() < deadline, "pid {pid} was never reaped");
             thread::sleep(Duration::from_millis(10));

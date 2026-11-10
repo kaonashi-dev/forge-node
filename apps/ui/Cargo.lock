@@ -1051,6 +1051,7 @@ dependencies = [
  "fontique",
  "libc",
  "minisign-verify",
+ "pollster",
  "rune",
  "rune-kit",
  "semver",

@@ -683,7 +683,7 @@ mod tests {
         let mut rt = rune::Runtime::new(
             s,
             crate::ui::view,
-            (1180.0, 760.0),
+            (1000.0, 600.0),
             rune::Env {
                 system_dark: true,
                 scale: 1.0,
@@ -691,6 +691,16 @@ mod tests {
         );
         rt.frame(0.0);
         rt.frame(0.5);
+        rt.frame(0.5);
+        let (dialog, _) = rt.presented("actions-dialog").expect("the actions dialog");
+        let (save_rect, _) = rt
+            .presented("actions-save")
+            .expect("the Save button is inside the panel");
+        assert!(
+            save_rect[1] >= dialog[1] - 0.5
+                && save_rect[1] + save_rect[3] <= dialog[1] + dialog[3] + 0.5,
+            "Save {save_rect:?} leaves dialog {dialog:?}"
+        );
         let save = rt.find("actions-save").expect("the Save button");
         rt.pointer_down(save.0, save.1);
         rt.pointer_up(save.0, save.1);

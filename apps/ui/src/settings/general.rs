@@ -2,7 +2,7 @@
 //! configuration lives, and the daemon's controls.
 
 use rune::{El, col, el, row, text};
-use rune_kit::{Button, ButtonVariant, ControlSize, Kit};
+use rune_kit::{Button, ButtonVariant, ControlSize, Kit, SegmentedControl};
 
 use super::{group, notice, setting_row};
 use crate::app::{AppState, LinkStatus};
@@ -24,30 +24,28 @@ pub fn reset_description(projects: usize, live: usize, worktrees: usize) -> Stri
     )
 }
 
+const FACT_LABEL_W: f32 = 120.0;
+
 fn fact(k: &Kit, name: &str, value: String) -> El {
     row()
-        .gap(12.0)
+        .gap(crate::ds::SPACE_5)
         .child(
             text(name.to_string())
-                .font(k.ty.small)
-                .color(k.c.text_faint)
-                .w(120.0),
+                .font(k.ty.ui)
+                .color(k.c.text_muted)
+                .w(FACT_LABEL_W),
         )
-        .child(text(value).font(k.ty.small).color(k.c.text_base))
+        .child(text(value).font(k.ty.ui).color(k.c.text_base))
 }
 
 fn path_line(k: &Kit, name: &str, note: &str, value: Option<String>) -> El {
     col()
-        .gap(2.0)
+        .gap(crate::ds::SPACE_1)
         .child(
             row()
-                .gap(8.0)
+                .gap(crate::ds::SPACE_4)
                 .items_center()
-                .child(
-                    text(name.to_string())
-                        .font(k.ty.small_medium)
-                        .color(k.c.text_base),
-                )
+                .child(text(name.to_string()).font(k.ty.ui).color(k.c.text_base))
                 .child(
                     text(note.to_string())
                         .font(k.ty.text_xsmall)
@@ -92,11 +90,7 @@ pub fn section(s: &AppState, k: &Kit) -> El {
         )
     });
     let overview = group(k, "general-overview", "Overview", None)
-        .child(fact(
-            k,
-            "Version",
-            format!("forge-ui v{}", env!("CARGO_PKG_VERSION")),
-        ))
+        .child(fact(k, "Version", format!("forge-ui v{APP_VERSION}")))
         .child(fact(k, "Sessions", format!("{live} live of {total}")))
         .child(fact(
             k,
@@ -122,7 +116,7 @@ pub fn section(s: &AppState, k: &Kit) -> El {
     let config_dir =
         paths.and_then(|paths| paths.config_file.parent().map(|dir| dir.to_path_buf()));
     let logs = paths.map(|paths| paths.logs.clone());
-    let mut reveal = row().gap(6.0);
+    let mut reveal = row().gap(crate::ds::SPACE_3);
     if let Some(dir) = config_dir {
         reveal = reveal.child(button(
             k,
@@ -141,6 +135,31 @@ pub fn section(s: &AppState, k: &Kit) -> El {
             move |_s| crate::storage::reveal(&dir),
         ));
     }
+    let swipe = crate::pages::SidebarSwipe::read(s.pref(crate::pages::SIDEBAR_SWIPE_KEY));
+    let labels: Vec<&str> = crate::pages::SidebarSwipe::ALL
+        .iter()
+        .map(|choice| choice.label())
+        .collect();
+    let gestures = group(k, "general-gestures", "Trackpad", None).child(setting_row(
+        k,
+        "Sidebar swipe",
+        Some("Two fingers sideways over a terminal or an editor show or hide the sidebar."),
+        SegmentedControl::new(
+            &labels,
+            crate::pages::SidebarSwipe::ALL
+                .iter()
+                .position(|choice| *choice == swipe),
+        )
+        .label("Sidebar swipe")
+        .fit()
+        .on_pick(|s: &mut AppState, index: usize, _tx| {
+            if let Some(choice) = crate::pages::SidebarSwipe::ALL.get(index) {
+                s.write_pref(crate::pages::SIDEBAR_SWIPE_KEY, choice.value());
+            }
+        })
+        .build(k)
+        .key("general-sidebar-swipe"),
+    ));
     let config = group(
         k,
         "general-config",
@@ -177,9 +196,9 @@ pub fn section(s: &AppState, k: &Kit) -> El {
             .key("daemon-status")
             .role("status")
             .label(format!("{title}: {}", s.status_detail))
-            .gap(8.0)
+            .gap(crate::ds::SPACE_4)
             .items_center()
-            .child(el().size(8.0, 8.0).radius(4.0).fill(dot))
+            .child(el().size(8.0, 8.0).radius(k.radius.sm).fill(dot))
             .child(
                 col()
                     .min_w(0.0)
@@ -194,7 +213,7 @@ pub fn section(s: &AppState, k: &Kit) -> El {
     )
     .child(
         row()
-            .gap(6.0)
+            .gap(crate::ds::SPACE_3)
             .flex_wrap()
             .child(button(
                 k,
@@ -255,8 +274,9 @@ pub fn section(s: &AppState, k: &Kit) -> El {
     col()
         .key("general")
         .w_full()
-        .gap(24.0)
+        .gap(crate::ds::SPACE_7)
         .child(overview)
+        .child(gestures)
         .child(updates(s, k))
         .child(config)
         .child(daemon)
@@ -309,7 +329,7 @@ fn updates(s: &AppState, k: &Kit) -> El {
         state,
         UpdateState::Checking | UpdateState::Downloading { .. } | UpdateState::Installing
     );
-    let mut actions = row().gap(6.0);
+    let mut actions = row().gap(crate::ds::SPACE_3);
     if busy {
         actions = actions.child(crate::ui::busy(s, k));
     }
@@ -341,7 +361,7 @@ fn updates(s: &AppState, k: &Kit) -> El {
             AppState::install_update,
         ));
     }
-    let mut words = col().gap(2.0).grow(1.0).min_w(0.0).child(
+    let mut words = col().gap(crate::ds::SPACE_1).grow(1.0).min_w(0.0).child(
         text(line)
             .key("general-update-state")
             .role("status")
@@ -373,7 +393,7 @@ fn updates(s: &AppState, k: &Kit) -> El {
         row()
             .key("general-update-row")
             .w_full()
-            .gap(12.0)
+            .gap(crate::ds::SPACE_5)
             .items_center()
             .child(words)
             .child(actions),
@@ -426,20 +446,18 @@ pub fn reset_dialog(s: &AppState, k: &Kit, layer: &mut Vec<El>) {
         .on_press(AppState::confirm_factory_reset)
         .build(k)
         .key("reset-confirm");
-    rune_kit::Dialog::new("factory-reset", "Reset Forge Node to factory defaults?")
+    crate::modal::Modal::new("factory-reset", "Reset Forge Node to factory defaults?")
         .description(reset_description(projects, live, worktrees))
-        .open(true)
-        .fit()
-        .width(460.0)
+        .width(crate::modal::WIDTH_STANDARD)
         .on_close(|s: &mut AppState| s.settings.confirm_reset = false)
         .child(
             row()
-                .gap(8.0)
+                .gap(crate::ds::SPACE_4)
                 .child(el().grow(1.0))
                 .child(cancel)
                 .child(reset),
         )
-        .build(k, layer);
+        .build(s, k, layer);
 }
 
 #[cfg(test)]

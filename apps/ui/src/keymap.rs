@@ -24,7 +24,7 @@ pub enum Action {
     NewAgent,
     Settings,
     ToggleSidebar,
-    /// Shows a sidebar view, or hides the sidebar when it already shows it.
+    /// Shows a sidebar view, opening the sidebar if it is closed.
     TogglePanel(Panel),
     CycleViews,
     NextSession,
@@ -48,6 +48,11 @@ pub enum Action {
     MoveTabRight,
     GoToDefinition,
     GoBack,
+    EditorFindNext,
+    EditorFindPrevious,
+    EditorAddNextOccurrence,
+    EditorSelectAllOccurrences,
+    EditorToggleComment,
     EditorZoomIn,
     EditorZoomOut,
     EditorZoomReset,
@@ -101,6 +106,11 @@ impl Action {
             Action::MoveTabRight => "move_tab_right",
             Action::GoToDefinition => "go_to_definition",
             Action::GoBack => "go_back",
+            Action::EditorFindNext => "editor_find_next",
+            Action::EditorFindPrevious => "editor_find_previous",
+            Action::EditorAddNextOccurrence => "editor_add_next_occurrence",
+            Action::EditorSelectAllOccurrences => "editor_select_all_occurrences",
+            Action::EditorToggleComment => "editor_toggle_comment",
             Action::EditorZoomIn => "editor_zoom_in",
             Action::EditorZoomOut => "editor_zoom_out",
             Action::EditorZoomReset => "editor_zoom_reset",
@@ -146,6 +156,11 @@ impl Action {
             Action::SplitPane | Action::TerminalZoom(_) => "Terminal",
             Action::GoToDefinition
             | Action::GoBack
+            | Action::EditorFindNext
+            | Action::EditorFindPrevious
+            | Action::EditorAddNextOccurrence
+            | Action::EditorSelectAllOccurrences
+            | Action::EditorToggleComment
             | Action::EditorZoomIn
             | Action::EditorZoomOut
             | Action::EditorZoomReset => EDITOR,
@@ -206,6 +221,11 @@ impl Action {
             "move_tab_right" => Action::MoveTabRight,
             "go_to_definition" => Action::GoToDefinition,
             "go_back" => Action::GoBack,
+            "editor_find_next" => Action::EditorFindNext,
+            "editor_find_previous" => Action::EditorFindPrevious,
+            "editor_add_next_occurrence" => Action::EditorAddNextOccurrence,
+            "editor_select_all_occurrences" => Action::EditorSelectAllOccurrences,
+            "editor_toggle_comment" => Action::EditorToggleComment,
             "editor_zoom_in" => Action::EditorZoomIn,
             "editor_zoom_out" => Action::EditorZoomOut,
             "editor_zoom_reset" => Action::EditorZoomReset,
@@ -464,6 +484,26 @@ pub const BINDINGS: &[Binding] = &[
         label: "Go back",
         chord: "ctrl+-",
         action: Action::GoBack,
+    },
+    Binding {
+        label: "Find next",
+        chord: "mod+g",
+        action: Action::EditorFindNext,
+    },
+    Binding {
+        label: "Find previous",
+        chord: "mod+shift+g",
+        action: Action::EditorFindPrevious,
+    },
+    Binding {
+        label: "Add next occurrence",
+        chord: "mod+d",
+        action: Action::EditorAddNextOccurrence,
+    },
+    Binding {
+        label: "Select all occurrences",
+        chord: "mod+shift+l",
+        action: Action::EditorSelectAllOccurrences,
     },
     Binding {
         label: "Editor: bigger text",
@@ -944,6 +984,12 @@ pub fn editor_action_for(event: &KeyEvent) -> Option<Action> {
         Key::Command(ch) if !mods.alt && !mods.ctrl => {
             match (ch.to_ascii_lowercase(), mods.shift) {
                 ('b', false) => Some(Action::GoToDefinition),
+                ('g', false) => Some(Action::EditorFindNext),
+                ('g', true) => Some(Action::EditorFindPrevious),
+                ('d', false) => Some(Action::EditorAddNextOccurrence),
+                ('l', true) => Some(Action::EditorSelectAllOccurrences),
+                // The app's ⌘/ shows the sidebar; in an editor it comments.
+                ('/', false) => Some(Action::EditorToggleComment),
                 // `=` is the unshifted plus; `+` is the keycap people read as ⌘+.
                 ('=' | '+', _) => Some(Action::EditorZoomIn),
                 ('-', false) => Some(Action::EditorZoomOut),
@@ -969,7 +1015,7 @@ fn command(ch: char, shift: bool) -> Option<Action> {
         ('w', true) => Action::CloseOtherViews,
         ('a', true) => Action::NewAgent,
         (',', false) => Action::Settings,
-        ('b', false) => Action::ToggleSidebar,
+        ('b' | '/', false) => Action::ToggleSidebar,
         ('1', false) => Action::TogglePanel(Panel::Projects),
         ('2', false) => Action::TogglePanel(Panel::Files),
         ('3', false) => Action::CycleViews,
@@ -1410,7 +1456,7 @@ mod tests {
             1
         );
         assert!(actions.contains(&Action::FocusTab(9)));
-        assert_eq!(rows.len(), 47);
+        assert_eq!(rows.len(), 51);
     }
 
     #[test]
