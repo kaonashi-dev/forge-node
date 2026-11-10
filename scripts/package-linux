@@ -137,7 +137,7 @@ write_launcher() {
   cat >"$dest" <<'LAUNCHER'
 #!/bin/bash
 here="$(cd "$(dirname "$0")" && pwd)"
-exec "$here/forge-ui" --spawn-daemon --daemon-bin "$here/forge-daemon" "$@"
+exec "$here/forge-ui" --daemon --spawn-daemon --daemon-bin "$here/forge-daemon" "$@"
 LAUNCHER
   chmod 755 "$dest"
 }

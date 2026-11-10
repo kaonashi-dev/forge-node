@@ -56,7 +56,7 @@ mkdir -p "$FORGE_HOME"
 if [ ! -f "$FORGE_HOME/config.toml" ]; then
   printf '[editor]\nsurface = "dom"\nexecutable = "%s/forge-editor"\n' "$here" > "$FORGE_HOME/config.toml"
 fi
-exec "$here/forge-ui" --socket "$FORGE_SOCKET" --spawn-daemon --daemon-bin "$here/forge-daemon"
+exec "$here/forge-ui" --daemon --socket "$FORGE_SOCKET" --spawn-daemon --daemon-bin "$here/forge-daemon"
 LAUNCHER
 chmod +x "$app/Contents/MacOS/ForgeNodeRune"
 
