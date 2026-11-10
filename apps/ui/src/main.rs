@@ -351,7 +351,7 @@ fn ime(s: &mut AppState, ev: &rune::Ime, tx: &mut rune::Tx) -> bool {
     }
     let taken = s.terminal_ime(ev, tx);
     if taken {
-        eprintln!("[ime] {ev:?}");
+        eprintln!("[ime] {}", crate::terminal::input::ime_label(ev));
     }
     taken
 }

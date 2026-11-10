@@ -2504,18 +2504,20 @@ impl AppState {
             let Some((terminal_id, ready)) = self.pane_route(idx) else {
                 continue;
             };
-            let summary = format!(
-                "{} bytes \"{}\" <- {}",
-                bytes.len(),
-                input::render_bytes(&bytes),
-                labels.join(", ")
-            );
+            let logged = format!("{} bytes <- {}", bytes.len(), labels.join(", "));
             if !ready {
-                eprintln!("[input] refused: no live grid for {terminal_id} ({summary})");
+                eprintln!("[input] refused: no live grid for {terminal_id} ({logged})");
                 continue;
             }
-            self.last_input = Some((bytes.len(), summary.clone()));
-            eprintln!("[input] {summary}");
+            eprintln!("[input] {logged}");
+            self.last_input = Some((
+                bytes.len(),
+                format!(
+                    "\"{}\" <- {}",
+                    input::render_bytes(&bytes),
+                    labels.join(", ")
+                ),
+            ));
             let Some(connection) = &self.connection else {
                 continue;
             };
@@ -2557,8 +2559,8 @@ impl AppState {
             if !pane.is_live() {
                 if pane.hold_key(ev) {
                     eprintln!(
-                        "[hold] held {:?}{} ({}) — {} bytes, {} gestures",
-                        ev.key,
+                        "[hold] held {}{} ({}) — {} bytes, {} gestures",
+                        input::key_label(&ev.key),
                         input::mod_suffix(ev.mods),
                         pane.attach.state_name(),
                         pane.attach.held_bytes(),
@@ -2566,8 +2568,8 @@ impl AppState {
                     );
                 } else {
                     eprintln!(
-                        "[hold] refused {:?}: 64 KiB hold buffer full ({} refused)",
-                        ev.key,
+                        "[hold] refused {}: 64 KiB hold buffer full ({} refused)",
+                        input::key_label(&ev.key),
                         pane.attach.refused()
                     );
                 }
