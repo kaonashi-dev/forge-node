@@ -696,7 +696,7 @@ fn editor_inner(store: Store, frames: usize) -> Result<EditorReport, String> {
         .cloned()
         .ok_or("the fixture snapshot has no sessions")?;
     let session = row.id;
-    state.rows[0].kind = SessionKind::Editor;
+    state.rows_mut()[0].kind = SessionKind::Editor;
     state.editor_surface = client::EditorSurface::Dom;
     state.active = Some(session);
     state.active_text = Some(row.id_text.clone());

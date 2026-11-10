@@ -4,6 +4,7 @@
 //! approved copy.
 
 use std::collections::HashSet;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use domain::{
     ActionKind, ActionPort, ActionReady, ActionSource, ActionSuggestion, ProjectAction,
@@ -41,6 +42,9 @@ pub enum Origin {
 /// being typed into it.
 #[derive(Clone)]
 pub struct DraftRow {
+    /// The row's identity in the dialog; `action.id` is shared by a saved
+    /// repository action and the update the file offers for it.
+    pub key: u64,
     pub action: ProjectAction,
     pub origin: Origin,
     pub include: bool,
@@ -67,7 +71,9 @@ impl DraftRow {
             ActionReady::Output { pattern, .. } => pattern.clone(),
             _ => String::new(),
         };
+        static NEXT_KEY: AtomicU64 = AtomicU64::new(0);
         DraftRow {
+            key: NEXT_KEY.fetch_add(1, Ordering::Relaxed),
             label: TextEdit::new(action.label.clone()),
             command: TextEdit::new(action.command.clone()),
             cwd: TextEdit::new(action.cwd.clone().unwrap_or_default()),
@@ -297,7 +303,7 @@ pub struct Editor {
     pub rows: Option<Vec<DraftRow>>,
     pub repo: Option<RepoActionsFile>,
     pub query: TextEdit,
-    pub advanced: HashSet<ProjectActionId>,
+    pub advanced: HashSet<u64>,
     pub saving: bool,
     pub error: Option<String>,
 }
@@ -441,19 +447,19 @@ fn add_row(s: &mut AppState) {
     rows.push(row);
 }
 
-fn with_row(s: &mut AppState, id: ProjectActionId, f: impl FnOnce(&mut DraftRow)) {
+fn with_row(s: &mut AppState, key: u64, f: impl FnOnce(&mut DraftRow)) {
     if let Some(row) = s
         .projects
         .actions
         .as_mut()
         .and_then(|e| e.rows.as_mut())
-        .and_then(|rows| rows.iter_mut().find(|row| row.action.id == id))
+        .and_then(|rows| rows.iter_mut().find(|row| row.key == key))
     {
         f(row);
     }
 }
 
-fn move_row(s: &mut AppState, id: ProjectActionId, by: isize) {
+fn move_row(s: &mut AppState, key: u64, by: isize) {
     let Some(editor) = s.projects.actions.as_mut() else {
         return;
     };
@@ -461,7 +467,7 @@ fn move_row(s: &mut AppState, id: ProjectActionId, by: isize) {
     let Some(rows) = editor.rows.as_mut() else {
         return;
     };
-    let Some(index) = rows.iter().position(|row| row.action.id == id) else {
+    let Some(index) = rows.iter().position(|row| row.key == key) else {
         return;
     };
     if let Some(to) = neighbour_index(rows, index, by, |row| matches_query(row, &query)) {
@@ -502,7 +508,7 @@ fn set_ready(row: &mut DraftRow, choice: usize) {
 fn field<F>(
     k: &Kit,
     edit: &TextEdit,
-    id: ProjectActionId,
+    key: u64,
     name: &str,
     label: &str,
     placeholder: &str,
@@ -520,14 +526,14 @@ where
                 .actions
                 .as_mut()
                 .and_then(|e| e.rows.as_mut())
-                .and_then(|rows| rows.iter_mut().find(|row| row.action.id == id))
+                .and_then(|rows| rows.iter_mut().find(|row| row.key == key))
             {
                 Some(row) => pick(row),
                 None => &mut s.scratch_edit,
             }
         })
         .build(k)
-        .key(format!("action-{name}-{id}"))
+        .key(format!("action-{name}-{key}"))
 }
 
 fn action_row(
@@ -539,7 +545,7 @@ fn action_row(
     movable: bool,
 ) -> El {
     let row_data = &rows[index];
-    let id = row_data.action.id;
+    let key = row_data.key;
     let query = editor.query.text.clone();
     let shown = |row: &DraftRow| matches_query(row, &query);
     let kind = KINDS
@@ -564,12 +570,12 @@ fn action_row(
                     }
                 ))
                 .hide_label()
-                .on_toggle(move |s: &mut AppState| with_row(s, id, |row| row.include = !include))
+                .on_toggle(move |s: &mut AppState| with_row(s, key, |row| row.include = !include))
                 .build(k)
-                .key(format!("action-include-{id}")),
+                .key(format!("action-include-{key}")),
         )
         .child(
-            field(k, &row_data.label, id, "label", "Label", "label", |row| {
+            field(k, &row_data.label, key, "label", "Label", "label", |row| {
                 &mut row.label
             })
             .w(140.0),
@@ -578,7 +584,7 @@ fn action_row(
             field(
                 k,
                 &row_data.command,
-                id,
+                key,
                 "command",
                 "Command",
                 "command",
@@ -592,10 +598,10 @@ fn action_row(
                 .label("Pinned")
                 .control_size(ControlSize::Small)
                 .on_toggle(move |s: &mut AppState| {
-                    with_row(s, id, |row| row.action.pinned = !pinned);
+                    with_row(s, key, |row| row.action.pinned = !pinned);
                 })
                 .build(k)
-                .key(format!("action-pinned-{id}")),
+                .key(format!("action-pinned-{key}")),
         );
     if movable {
         let up = neighbour_index(rows, index, -1, shown).is_some();
@@ -606,9 +612,9 @@ fn action_row(
                     .variant(ButtonVariant::GhostMuted)
                     .control_size(ControlSize::Small)
                     .disabled(!up)
-                    .on_press(move |s: &mut AppState| move_row(s, id, -1))
+                    .on_press(move |s: &mut AppState| move_row(s, key, -1))
                     .build(k)
-                    .key(format!("action-up-{id}"))
+                    .key(format!("action-up-{key}"))
                     .label("Move up"),
             )
             .child(
@@ -616,9 +622,9 @@ fn action_row(
                     .variant(ButtonVariant::GhostMuted)
                     .control_size(ControlSize::Small)
                     .disabled(!down)
-                    .on_press(move |s: &mut AppState| move_row(s, id, 1))
+                    .on_press(move |s: &mut AppState| move_row(s, key, 1))
                     .build(k)
-                    .key(format!("action-down-{id}"))
+                    .key(format!("action-down-{key}"))
                     .label("Move down"),
             );
     }
@@ -629,15 +635,15 @@ fn action_row(
                 .control_size(ControlSize::Small)
                 .on_press(move |s: &mut AppState| {
                     if let Some(rows) = s.projects.actions.as_mut().and_then(|e| e.rows.as_mut()) {
-                        rows.retain(|row| row.action.id != id);
+                        rows.retain(|row| row.key != key);
                     }
                 })
                 .build(k)
-                .key(format!("action-delete-{id}")),
+                .key(format!("action-delete-{key}")),
         );
     }
     let mut block = col()
-        .key(format!("action-row-{id}"))
+        .key(format!("action-row-{key}"))
         .role("group")
         .label(row_data.label.text.clone())
         .w_full()
@@ -649,10 +655,10 @@ fn action_row(
                 .label("Kind")
                 .fit()
                 .on_pick(move |s: &mut AppState, at, _| {
-                    with_row(s, id, |row| row.action.kind = KINDS[at.min(4)].0);
+                    with_row(s, key, |row| row.action.kind = KINDS[at.min(4)].0);
                 })
                 .build(k)
-                .key(format!("action-kind-{id}")),
+                .key(format!("action-kind-{key}")),
         );
     let mut meta = Vec::new();
     if let Some(from) = &row_data.detected_from {
@@ -670,20 +676,20 @@ fn action_row(
             },
         ));
     }
-    let open = editor.advanced.contains(&id);
+    let open = editor.advanced.contains(&key);
     block = block.child(
         Button::new(if open { "Advanced ▾" } else { "Advanced ▸" })
             .variant(ButtonVariant::GhostMuted)
             .control_size(ControlSize::Small)
             .on_press(move |s: &mut AppState| {
                 if let Some(editor) = s.projects.actions.as_mut()
-                    && !editor.advanced.remove(&id)
+                    && !editor.advanced.remove(&key)
                 {
-                    editor.advanced.insert(id);
+                    editor.advanced.insert(key);
                 }
             })
             .build(k)
-            .key(format!("action-advanced-{id}")),
+            .key(format!("action-advanced-{key}")),
     );
     if open {
         block = block.child(advanced(k, rows, index));
@@ -694,6 +700,7 @@ fn action_row(
 fn advanced(k: &Kit, rows: &[DraftRow], index: usize) -> El {
     let row_data = &rows[index];
     let id = row_data.action.id;
+    let key = row_data.key;
     let single = row_data.action.single_instance;
     let ready = match row_data.action.ready {
         ActionReady::Port { .. } => 1,
@@ -701,13 +708,13 @@ fn advanced(k: &Kit, rows: &[DraftRow], index: usize) -> El {
         _ => 0,
     };
     let mut body = col()
-        .key(format!("action-advanced-body-{id}"))
+        .key(format!("action-advanced-body-{key}"))
         .gap(8.0)
         .pl(24.0)
         .child(field(
             k,
             &row_data.cwd,
-            id,
+            key,
             "cwd",
             "Directory · relative to the checkout; empty is its root",
             "",
@@ -718,24 +725,24 @@ fn advanced(k: &Kit, rows: &[DraftRow], index: usize) -> El {
                 .label("One at a time")
                 .description("A second click shows the running one instead of starting another.")
                 .on_toggle(move |s: &mut AppState| {
-                    with_row(s, id, |row| row.action.single_instance = !single);
+                    with_row(s, key, |row| row.action.single_instance = !single);
                 })
                 .build(k)
-                .key(format!("action-single-{id}")),
+                .key(format!("action-single-{key}")),
         )
         .child(
             SegmentedControl::new(&READY, Some(ready))
                 .label("Ready when")
                 .fit()
-                .on_pick(move |s: &mut AppState, at, _| with_row(s, id, |row| set_ready(row, at)))
+                .on_pick(move |s: &mut AppState, at, _| with_row(s, key, |row| set_ready(row, at)))
                 .build(k)
-                .key(format!("action-ready-{id}")),
+                .key(format!("action-ready-{key}")),
         );
     if ready == 2 {
         body = body.child(field(
             k,
             &row_data.pattern,
-            id,
+            key,
             "pattern",
             "Output contains · plain text, any case, not a regular expression",
             "localhost:",
@@ -745,7 +752,7 @@ fn advanced(k: &Kit, rows: &[DraftRow], index: usize) -> El {
     body = body.child(field(
         k,
         &row_data.port,
-        id,
+        key,
         "port",
         "Port · injected as PORT and substituted for {port} in the command",
         "",
@@ -760,14 +767,14 @@ fn advanced(k: &Kit, rows: &[DraftRow], index: usize) -> El {
                     "Take the next free port above this one, so each checkout can serve at once.",
                 )
                 .on_toggle(move |s: &mut AppState| {
-                    with_row(s, id, |row| {
+                    with_row(s, key, |row| {
                         if let Some(port) = row.action.port.as_mut() {
                             port.per_worktree = !per;
                         }
                     });
                 })
                 .build(k)
-                .key(format!("action-per-worktree-{id}")),
+                .key(format!("action-per-worktree-{key}")),
         );
     }
     let labels: Vec<String> = row_data
@@ -806,13 +813,13 @@ fn advanced(k: &Kit, rows: &[DraftRow], index: usize) -> El {
                         } else {
                             next.push(other_id);
                         }
-                        with_row(s, id, |row| {
+                        with_row(s, key, |row| {
                             row.action.depends_on = next;
                             row.depends_on_labels.clear();
                         });
                     })
                     .build(k)
-                    .key(format!("action-dep-{id}-{other_id}")),
+                    .key(format!("action-dep-{key}-{other_id}")),
             );
         }
         body = body.child(deps);
@@ -1143,6 +1150,50 @@ mod tests {
             "the update replaces its saved row"
         );
         assert!(matches!(set[3].source, ActionSource::Detected));
+    }
+
+    #[test]
+    fn an_offered_update_is_edited_apart_from_the_saved_row_it_replaces() {
+        let store = crate::connection::fixture_store(
+            &std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("fixtures/snapshot.json"),
+        )
+        .expect("fixture snapshot decodes");
+        let mut s = AppState::for_bench(
+            store,
+            std::sync::Arc::new(crate::connection::Metrics::default()),
+            crate::terminal::SharedTerminal::new(),
+        );
+        let project = ProjectId::new();
+        let serve = saved(project, "serve", 0);
+        let repo = RepoActionsFile {
+            file_hash: "h".into(),
+            actions: vec![suggestion("serve", Some(serve.id))],
+            error: None,
+            drift: vec![serve.id],
+        };
+        let rows = build_draft(project, &[serve], &[], Some(&repo), ProjectActionId::new);
+        let (saved_key, update_key) = (rows[0].key, rows[1].key);
+        assert_ne!(saved_key, update_key);
+        s.projects.actions = Some(Editor {
+            project,
+            workspace: WorkspaceId::new(),
+            name: String::new(),
+            rows: Some(rows),
+            repo: None,
+            query: TextEdit::new(""),
+            advanced: HashSet::new(),
+            saving: false,
+            error: None,
+        });
+        with_row(&mut s, update_key, |row| {
+            row.include = true;
+            row.command = TextEdit::new("npm run serve -- --open");
+        });
+        let rows = s.projects.actions.as_ref().and_then(|e| e.rows.as_ref());
+        let rows = rows.expect("drafted rows");
+        assert_eq!(rows[0].command.text, "run serve");
+        assert!(rows[1].include);
+        assert_eq!(rows[1].command.text, "npm run serve -- --open");
     }
 
     #[test]

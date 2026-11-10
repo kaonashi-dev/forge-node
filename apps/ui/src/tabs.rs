@@ -252,6 +252,8 @@ impl Drag {
 #[derive(Default)]
 pub struct Tabs {
     order: BTreeMap<String, Vec<SessionId>>,
+    /// Advances whenever `order` may have changed.
+    revision: u64,
     seeded: bool,
     mru: Vec<SessionId>,
     pub gesture: Option<Gesture>,
@@ -267,6 +269,12 @@ impl Tabs {
         }
         self.seeded = true;
         self.order = parse_order(raw);
+        self.revision += 1;
+    }
+
+    #[must_use]
+    pub fn revision(&self) -> u64 {
+        self.revision
     }
 
     #[must_use]
@@ -276,6 +284,7 @@ impl Tabs {
 
     pub fn set_order(&mut self, workspace: WorkspaceId, ids: Vec<SessionId>) {
         self.order.insert(workspace.to_string(), ids);
+        self.revision += 1;
     }
 
     /// Drops ids and checkouts the replica no longer has, so a removed tab
@@ -286,6 +295,7 @@ impl Tabs {
             ids.retain(|id| live.contains(id));
             workspaces.contains(workspace)
         });
+        self.revision += 1;
         self.mru.retain(|id| live.contains(id));
         self.rects.retain(|(id, _)| live.contains(id));
         if let Some(gesture) = &mut self.gesture {

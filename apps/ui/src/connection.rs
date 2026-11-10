@@ -445,6 +445,13 @@ pub enum UiEvent {
         ticket: u64,
         result: Result<(), String>,
     },
+    /// A `RenamePath` the daemon confirmed.
+    PathMoved {
+        generation: u64,
+        workspace_id: WorkspaceId,
+        from: String,
+        to: String,
+    },
     Project {
         generation: u64,
         reply: Box<crate::project_ops::Reply>,
@@ -3543,9 +3550,17 @@ fn handle_live_command(
         } => {
             metrics.note_socket_op();
             let result = client
-                .rename_path(workspace_id, from, to.clone())
+                .rename_path(workspace_id, from.clone(), to.clone())
                 .map(|()| format!("moved to {to}"))
                 .map_err(|error| error.to_string());
+            if result.is_ok() {
+                sink(vec![UiEvent::PathMoved {
+                    generation,
+                    workspace_id,
+                    from,
+                    to,
+                }]);
+            }
             live_result(generation, "RenamePath", result, sink, metrics, started);
         }
         Command::CopyPath {

@@ -2,7 +2,7 @@
 //! Terminal deltas arrive through `SharedTerminal`; only shell events use
 //! `AppHandle::update`, so a frame of output never rebuilds the sidebar.
 
-use std::cell::Cell;
+use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -113,6 +113,15 @@ pub struct CommandStatus {
     pub took_us: u64,
 }
 
+/// The strip's rows as indices into `AppState::rows`, for the inputs they
+/// were derived from: the rows' revision, the strip's checkout and the tab
+/// order's revision.
+#[derive(Default)]
+struct TabMemo {
+    key: Option<(u64, Option<WorkspaceId>, u64)>,
+    indices: Vec<usize>,
+}
+
 pub struct AppState {
     pub sidebar: PaneState,
     pub store: Option<Store>,
@@ -189,6 +198,8 @@ pub struct AppState {
     /// next `apply_events`, which holds the `Tx`.
     pub pending_copy: Option<String>,
     pub fixture_titles: HashMap<TerminalId, String>,
+    rows_revision: u64,
+    tab_memo: RefCell<TabMemo>,
     pub out: Outbox,
     pub last_input: Option<(usize, String)>,
     pub last_focus: Option<String>,
@@ -264,6 +275,8 @@ impl AppState {
             select_when_listed: None,
             pending_copy: None,
             fixture_titles: HashMap::new(),
+            rows_revision: 0,
+            tab_memo: RefCell::default(),
             out: Outbox::default(),
             last_input: None,
             last_focus: None,
@@ -321,6 +334,7 @@ impl AppState {
     }
 
     fn set_store(&mut self, store: Store) {
+        self.rows_revision += 1;
         let mut sessions: Vec<&domain::Session> = store.sessions.iter().collect();
         // Creation order; the sort is stable.
         sessions.sort_by_key(|session| session.created_at);
@@ -991,11 +1005,36 @@ impl AppState {
             self.active_row().map(|row| row.workspace_id),
             self.workspaces.first().map(|choice| choice.id),
         );
-        let base = rows_in_strip(&self.rows, workspace);
-        match workspace.and_then(|workspace| self.tabs.order_for(workspace)) {
-            Some(order) => crate::tabs::applied(&base, order),
-            None => base,
+        let key = (self.rows_revision, workspace, self.tabs.revision());
+        let mut memo = self.tab_memo.borrow_mut();
+        if memo.key != Some(key) {
+            let base = rows_in_strip(&self.rows, workspace);
+            let ordered = match workspace.and_then(|workspace| self.tabs.order_for(workspace)) {
+                Some(order) => crate::tabs::applied(&base, order),
+                None => base,
+            };
+            let at: HashMap<SessionId, usize> = self
+                .rows
+                .iter()
+                .enumerate()
+                .map(|(index, row)| (row.id, index))
+                .collect();
+            memo.indices = ordered
+                .iter()
+                .filter_map(|row| at.get(&row.id).copied())
+                .collect();
+            memo.key = Some(key);
         }
+        memo.indices
+            .iter()
+            .map(|index| &self.rows[*index])
+            .collect()
+    }
+
+    /// The rows for an edit outside a snapshot, which the strip must see.
+    pub fn rows_mut(&mut self) -> &mut Vec<SessionRow> {
+        self.rows_revision += 1;
+        &mut self.rows
     }
 
     fn step_session(&mut self, delta: isize) {
@@ -1748,7 +1787,6 @@ impl AppState {
                             .pr_opened(*workspace_id, url.clone(), error.clone());
                         return true;
                     }
-                    client::DaemonEvent::PullRequestsUpdated { .. } => return true,
                     client::DaemonEvent::EditorFocusRequested { session_id, .. } => {
                         self.editor_focus_requested(*session_id);
                         return true;
@@ -1781,10 +1819,11 @@ impl AppState {
                     return true;
                 }
                 let reset = matches!(event.as_ref(), client::DaemonEvent::FactoryReset);
-                let agents = matches!(
+                let redraw = matches!(
                     event.as_ref(),
                     client::DaemonEvent::AgentProfilesChanged { .. }
                         | client::DaemonEvent::AgentDetectionChanged { .. }
+                        | client::DaemonEvent::PullRequestsUpdated { .. }
                 );
                 if let Some(store) = &mut self.store {
                     let _ = store.apply_event(&event);
@@ -1792,6 +1831,7 @@ impl AppState {
                 if reset {
                     self.store = None;
                     self.rows.clear();
+                    self.rows_revision += 1;
                     self.workspaces.clear();
                     self.active = None;
                     self.active_text = None;
@@ -1821,7 +1861,7 @@ impl AppState {
                     self.select_when_listed = None;
                     self.select(id);
                 }
-                rebuild || agents
+                rebuild || redraw
             }
             UiEvent::Diff {
                 generation,
@@ -1895,6 +1935,17 @@ impl AppState {
                     .search
                     .apply(scope, &query, result.map(|results| *results));
                 true
+            }
+            UiEvent::PathMoved {
+                generation,
+                workspace_id,
+                from,
+                to,
+            } => {
+                if !self.accept_generation(generation) {
+                    return false;
+                }
+                self.workbench.path_moved(workspace_id, &from, &to)
             }
             UiEvent::Watched {
                 generation,
@@ -3121,6 +3172,35 @@ mod tests {
     }
 
     #[test]
+    fn the_strip_is_derived_once_and_follows_a_row_edit() {
+        let mut state = state();
+        let active = state.active.expect("an active session");
+        let first = state
+            .tab_rows()
+            .iter()
+            .map(|row| row.id)
+            .collect::<Vec<_>>();
+        let key = state.tab_memo.borrow().key;
+        assert!(key.is_some());
+        assert_eq!(state.tab_rows().len(), first.len());
+        assert_eq!(
+            state.tab_memo.borrow().key,
+            key,
+            "a repaint reuses the strip"
+        );
+        let Some(moved) = first.iter().copied().find(|id| *id != active) else {
+            return;
+        };
+        let index = state
+            .rows
+            .iter()
+            .position(|row| row.id == moved)
+            .expect("row");
+        state.rows_mut()[index].workspace_id = WorkspaceId::new();
+        assert!(state.tab_rows().iter().all(|row| row.id != moved));
+    }
+
+    #[test]
     fn a_tab_order_is_stored_under_the_original_client_key() {
         let mut state = state();
         let workspace = state.workspaces[0].id;
@@ -3148,6 +3228,29 @@ mod tests {
         };
         assert!(state.shows_terminal(terminal_of(&|session| session.id == active)));
         assert!(!state.shows_terminal(terminal_of(&|session| session.id != active)));
+    }
+
+    #[test]
+    fn a_pull_request_refresh_replaces_the_stored_state() {
+        let mut state = state();
+        let mut tx = Tx::default();
+        let refreshed = domain::PullRequestState {
+            error: Some("gh is not signed in".to_string()),
+            ..domain::PullRequestState::default()
+        };
+        state.apply_events(
+            vec![UiEvent::Daemon {
+                generation: state.generation,
+                event: Box::new(client::DaemonEvent::PullRequestsUpdated {
+                    state: refreshed.clone(),
+                }),
+            }],
+            &mut tx,
+        );
+        assert_eq!(
+            state.store.as_ref().expect("store").pull_requests,
+            refreshed
+        );
     }
 
     #[test]
