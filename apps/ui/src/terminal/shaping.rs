@@ -409,18 +409,12 @@ impl Shaper {
         } else {
             0.0
         };
-        let start = self.arena.len() as u32;
-        let (mut pen, mut notdef, mut flattened) = (0.0f32, false, false);
-        for &(gid, gx, gy, adv) in &glyphs {
-            notdef |= gid == 0;
-            let (slot, flat) = self.glyph_slot(face, gid, px);
-            flattened |= flat;
-            if slot.w != 0 {
-                let x = (offset + pen + gx + slot.left as f32).round();
-                let y = -(slot.top as f32) - gy.round();
-                self.arena.push(Placed { slot, x, y });
-            }
-            pen += adv;
+        let generation = self.generation;
+        let (mut start, mut notdef, mut flattened) = self.place(face, &glyphs, px, offset);
+        if self.generation != generation {
+            // A full atlas was reset mid-run: the glyphs placed before it point at evicted texels.
+            self.arena.clear();
+            (start, notdef, flattened) = self.place(face, &glyphs, px, offset);
         }
         let len = self.arena.len() as u32 - start;
         if len == 0 {
@@ -441,6 +435,29 @@ impl Shaper {
         self.shape_us += elapsed;
         self.shape_us_max = self.shape_us_max.max(elapsed);
         (self.runs.len() - 1) as u32
+    }
+
+    fn place(
+        &mut self,
+        face: usize,
+        glyphs: &[(u16, f32, f32, f32)],
+        px: f32,
+        offset: f32,
+    ) -> (u32, bool, bool) {
+        let start = self.arena.len() as u32;
+        let (mut pen, mut notdef, mut flattened) = (0.0f32, false, false);
+        for &(gid, gx, gy, adv) in glyphs {
+            notdef |= gid == 0;
+            let (slot, flat) = self.glyph_slot(face, gid, px);
+            flattened |= flat;
+            if slot.w != 0 {
+                let x = (offset + pen + gx + slot.left as f32).round();
+                let y = -(slot.top as f32) - gy.round();
+                self.arena.push(Placed { slot, x, y });
+            }
+            pen += adv;
+        }
+        (start, notdef, flattened)
     }
 
     fn choose_face(&mut self, text: &str, style: usize, base: char) -> usize {
@@ -611,6 +628,32 @@ mod tests {
         };
         assert!(ink(&s, &a) > ink(&s, &p), "e + acute has more ink than e");
         assert!(!run.notdef && !a.notdef);
+    }
+
+    #[test]
+    fn a_full_atlas_during_a_run_restarts_it_in_the_fresh_atlas() {
+        let mut s = shaper();
+        for c in 'a'..='z' {
+            s.run(&c.to_string(), REGULAR, 1);
+        }
+        let generation = s.generation;
+        s.pending.clear();
+        s.shelf_y = ATLAS_SIZE - 2;
+        let id = s.run("x\u{301}", REGULAR, 1);
+        assert_eq!(s.generation, generation + 1, "the run filled the atlas");
+        let run = s.run_at(id);
+        assert!(run.len >= 2, "{run:?}");
+        assert_eq!(run.start, 0);
+        for k in 0..run.len as usize {
+            let slot = s.placed(&run, k).slot;
+            assert!(
+                s.pending
+                    .iter()
+                    .any(|u| (u.x, u.y) == (slot.x as u32, slot.y as u32)),
+                "glyph {k} points at a texel uploaded after the reset"
+            );
+        }
+        assert_eq!(s.run("x\u{301}", REGULAR, 1), id);
     }
 
     #[test]
