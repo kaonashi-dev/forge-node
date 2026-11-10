@@ -8,8 +8,7 @@ use domain::{
 };
 use rune::{El, TextEdit, col, el, row, text};
 use rune_kit::{
-    Button, ButtonVariant, Checkbox, ControlSize, Dialog, Kit, SegmentedControl, TextArea,
-    TextInput,
+    Button, ButtonVariant, Checkbox, ControlSize, Kit, SegmentedControl, TextArea, TextInput,
 };
 
 use crate::app::AppState;
@@ -604,7 +603,10 @@ fn agent_picker(
     prefix: &str,
     picker: Picker,
 ) -> El {
-    let mut list = col().key(format!("{prefix}-agents")).w_full().gap(2.0);
+    let mut list = col()
+        .key(format!("{prefix}-agents"))
+        .w_full()
+        .gap(crate::ds::SPACE_1);
     if rows.is_empty() {
         return list.child(
             text("No installed agent is available to launch.")
@@ -642,7 +644,7 @@ fn footer(
 ) -> El {
     row()
         .pt(12.0)
-        .gap(8.0)
+        .gap(crate::ds::SPACE_4)
         .child(el().grow(1.0))
         .child(
             Button::new("Cancel")
@@ -717,7 +719,7 @@ fn handoff_dialog(s: &AppState, k: &Kit, layer: &mut Vec<El>) {
         .child(
             row()
                 .key("handoff-source")
-                .gap(6.0)
+                .gap(crate::ds::SPACE_3)
                 .items_center()
                 .child(
                     text(handoff.title.clone())
@@ -799,10 +801,8 @@ fn handoff_dialog(s: &AppState, k: &Kit, layer: &mut Vec<El>) {
         && !handoff.starting
         && matches!(handoff.capture, Capture::Ready { .. })
         && !handoff.prompt.text.trim().is_empty();
-    Dialog::new("handoff", "Continue in a new session")
-        .open(true)
-        .fit()
-        .width(680.0)
+    crate::modal::Modal::new("handoff", "Continue in a new session")
+        .width(crate::modal::WIDTH_WIDE)
         .on_close(|s: &mut AppState| s.agent_ops.handoff = None)
         .child(body)
         .child(footer(
@@ -814,7 +814,7 @@ fn handoff_dialog(s: &AppState, k: &Kit, layer: &mut Vec<El>) {
             start_handoff,
             !ready,
         ))
-        .build(k, layer);
+        .build(s, k, layer);
 }
 
 fn role_picker(
@@ -914,10 +914,8 @@ fn spawn_dialog(s: &AppState, k: &Kit, layer: &mut Vec<El>) {
     } else {
         "Spawn child"
     };
-    Dialog::new("spawn-child", "Spawn child session")
-        .open(true)
-        .fit()
-        .width(620.0)
+    crate::modal::Modal::new("spawn-child", "Spawn child session")
+        .width(crate::modal::WIDTH_STANDARD)
         .on_close(|s: &mut AppState| s.agent_ops.spawn = None)
         .child(body)
         .child(footer(
@@ -929,7 +927,7 @@ fn spawn_dialog(s: &AppState, k: &Kit, layer: &mut Vec<El>) {
             start_spawn_child,
             spawn.starting || provider.is_none(),
         ))
-        .build(k, layer);
+        .build(s, k, layer);
 }
 
 fn send_context_dialog(s: &AppState, k: &Kit, layer: &mut Vec<El>) {
@@ -1007,7 +1005,7 @@ fn send_context_dialog(s: &AppState, k: &Kit, layer: &mut Vec<El>) {
                 .color(k.c.text_faint),
         );
     } else {
-        let mut list = col().key("send-context-sessions").gap(2.0);
+        let mut list = col().key("send-context-sessions").gap(crate::ds::SPACE_1);
         for (index, (id, title)) in sessions.iter().enumerate() {
             let chosen =
                 send.target_session == Some(*id) || send.target_session.is_none() && index == 0;
@@ -1031,7 +1029,7 @@ fn send_context_dialog(s: &AppState, k: &Kit, layer: &mut Vec<El>) {
         }
         body = body.child(
             col()
-                .gap(2.0)
+                .gap(crate::ds::SPACE_1)
                 .child(text("Session").font(k.ty.text_xsmall).color(k.c.text_faint))
                 .child(list),
         );
@@ -1098,10 +1096,8 @@ fn send_context_dialog(s: &AppState, k: &Kit, layer: &mut Vec<El>) {
     let blocked = send.starting
         || (send.spawn && provider.is_none())
         || (!send.spawn && sessions.is_empty() && send.target_session.is_none());
-    Dialog::new("send-context", "Send context")
-        .open(true)
-        .fit()
-        .width(620.0)
+    crate::modal::Modal::new("send-context", "Send context")
+        .width(crate::modal::WIDTH_STANDARD)
         .on_close(|s: &mut AppState| s.agent_ops.send_context = None)
         .child(body)
         .child(footer(
@@ -1113,7 +1109,7 @@ fn send_context_dialog(s: &AppState, k: &Kit, layer: &mut Vec<El>) {
             start_send_context,
             blocked,
         ))
-        .build(k, layer);
+        .build(s, k, layer);
 }
 
 pub fn dialogs(s: &AppState, k: &Kit, layer: &mut Vec<El>) {

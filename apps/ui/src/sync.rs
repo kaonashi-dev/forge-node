@@ -124,7 +124,7 @@ pub fn dialog(s: &AppState, k: &Kit, layer: &mut Vec<El>) {
     let Some(pr) = &s.sync.pr else {
         return;
     };
-    let mut body = col().gap(8.0);
+    let mut body = col().gap(crate::ds::SPACE_4);
     match &pr.outcome {
         Some(Ok(url)) => {
             let target = url.clone();
@@ -197,7 +197,7 @@ pub fn dialog(s: &AppState, k: &Kit, layer: &mut Vec<El>) {
             };
             body = body.child(
                 row()
-                    .gap(12.0)
+                    .gap(crate::ds::SPACE_5)
                     .items_center()
                     .child(
                         text(note)
@@ -221,13 +221,11 @@ pub fn dialog(s: &AppState, k: &Kit, layer: &mut Vec<El>) {
             );
         }
     }
-    rune_kit::Dialog::new("pull-request", "Open a pull request")
-        .open(true)
-        .width(560.0)
-        .fit()
+    crate::modal::Modal::new("pull-request", "Open a pull request")
+        .width(crate::modal::WIDTH_STANDARD)
         .on_close(|s: &mut AppState| s.sync.pr = None)
         .child(body)
-        .build(k, layer);
+        .build(s, k, layer);
 }
 
 #[cfg(test)]

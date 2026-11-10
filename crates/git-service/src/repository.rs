@@ -148,7 +148,8 @@ pub fn ignored_paths(repo: &Path) -> Result<Vec<IgnoredPath>, GitError> {
             "--no-renames",
             "-z",
         ],
-    )?;
+    )?
+    .complete()?;
     if !out.success() {
         return Err(GitError::CommandFailed {
             args: vec![
@@ -183,6 +184,23 @@ pub fn ignored_paths(repo: &Path) -> Result<Vec<IgnoredPath>, GitError> {
     Ok(found)
 }
 
+/// Largest `info/exclude` rewritten; one past it is refused, never truncated.
+const MAX_EXCLUDE_BYTES: u64 = 1024 * 1024;
+
+fn read_capped(path: &Path, cap: u64) -> std::io::Result<String> {
+    use std::io::Read as _;
+    let file = std::fs::File::open(path)?;
+    let mut text = String::new();
+    file.take(cap + 1).read_to_string(&mut text)?;
+    if text.len() as u64 > cap {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            "file over its budget",
+        ));
+    }
+    Ok(text)
+}
+
 /// Rewrite the block of ignore rules Forge manages in the repository's
 /// **common** `info/exclude`.
 ///
@@ -197,7 +215,7 @@ pub fn ignored_paths(repo: &Path) -> Result<Vec<IgnoredPath>, GitError> {
 pub fn set_local_excludes(repo: &Path, patterns: &[String]) -> Result<(), GitError> {
     let info = common_dir(repo)?.join("info");
     let file = info.join("exclude");
-    let existing = match std::fs::read_to_string(&file) {
+    let existing = match read_capped(&file, MAX_EXCLUDE_BYTES) {
         Ok(text) => text,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => String::new(),
         Err(e) => return Err(GitError::Io(e)),
@@ -383,6 +401,8 @@ pub fn compare_base(repo: &Path, requested: Option<&str>) -> Option<String> {
 /// [`GitError::CommandFailed`] if git reports an error (e.g. not a repo).
 pub fn status(repo: &Path) -> Result<RepoStatus, GitError> {
     const ARGS: [&str; 3] = ["status", "--porcelain=v2", "--branch"];
+    // A prefix is still the whole answer: the branch headers come first and
+    // one entry is enough to say dirty, so a huge change set is not an error.
     let out = run_git(Some(repo), &ARGS)?.ok(&ARGS)?;
     Ok(parse_status_v2(&out.stdout))
 }
@@ -393,7 +413,7 @@ pub fn status(repo: &Path) -> Result<RepoStatus, GitError> {
 /// [`GitError::CommandFailed`] if git reports an error.
 pub fn list_branches(repo: &Path) -> Result<Vec<String>, GitError> {
     const ARGS: [&str; 3] = ["branch", "--list", "--format=%(refname:short)"];
-    let out = run_git(Some(repo), &ARGS)?.ok(&ARGS)?;
+    let out = run_git(Some(repo), &ARGS)?.ok(&ARGS)?.complete()?;
     Ok(out
         .stdout
         .lines()
@@ -429,7 +449,7 @@ pub fn list_refs(repo: &Path) -> Result<Vec<RefEntry>, GitError> {
         "refs/heads",
         "refs/remotes",
     ];
-    let out = run_git(Some(repo), &ARGS)?.ok(&ARGS)?;
+    let out = run_git(Some(repo), &ARGS)?.ok(&ARGS)?.complete()?;
     Ok(parse_refs(&out.stdout))
 }
 
@@ -442,7 +462,7 @@ pub fn list_refs(repo: &Path) -> Result<Vec<RefEntry>, GitError> {
 /// [`GitError::CommandFailed`] if git reports an error.
 pub fn list_remotes(repo: &Path) -> Result<Vec<(String, String)>, GitError> {
     const ARGS: [&str; 2] = ["remote", "-v"];
-    let out = run_git(Some(repo), &ARGS)?.ok(&ARGS)?;
+    let out = run_git(Some(repo), &ARGS)?.ok(&ARGS)?.complete()?;
     let mut seen: Vec<(String, String)> = Vec::new();
     for line in out.stdout.lines() {
         // `origin\tgit@host:repo.git (fetch)`
@@ -466,7 +486,7 @@ pub fn list_remotes(repo: &Path) -> Result<Vec<(String, String)>, GitError> {
 /// [`GitError::CommandFailed`] if git reports an error.
 pub fn list_worktrees(repo: &Path) -> Result<Vec<WorktreeEntry>, GitError> {
     const ARGS: [&str; 3] = ["worktree", "list", "--porcelain"];
-    let out = run_git(Some(repo), &ARGS)?.ok(&ARGS)?;
+    let out = run_git(Some(repo), &ARGS)?.ok(&ARGS)?.complete()?;
     Ok(parse_worktrees(&out.stdout))
 }
 

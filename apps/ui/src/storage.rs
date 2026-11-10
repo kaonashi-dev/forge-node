@@ -10,7 +10,7 @@ use std::time::{Duration, Instant};
 
 use client::{ForgePaths, Layout};
 use rune::{El, col, row, text};
-use rune_kit::{Button, ButtonVariant, ControlSize, Dialog, Kit};
+use rune_kit::{Button, ButtonVariant, ControlSize, Kit};
 
 use crate::app::AppState;
 
@@ -205,7 +205,7 @@ fn path_row(k: &Kit, name: &str, note: Option<&str>, value: Option<&Path>) -> El
                 .color(k.c.text_faint),
         );
     }
-    row().gap(12.0).w_full().child(label).child(
+    row().gap(crate::ds::SPACE_5).w_full().child(label).child(
         text(value.map_or_else(
             || "unavailable".to_string(),
             |path| path.display().to_string(),
@@ -231,7 +231,7 @@ fn reveal_button(k: &Kit, label: String, key: &str, path: &Path) -> El {
 fn group(k: &Kit, key: &str, title: &str, description: &str) -> El {
     col()
         .key(key.to_string())
-        .gap(6.0)
+        .gap(crate::ds::SPACE_3)
         .child(
             text(title.to_string())
                 .font(k.ty.small_medium)
@@ -412,7 +412,7 @@ fn migration_group(s: &AppState, k: &Kit, paths: &ForgePaths, left: usize) -> Op
         view = view.child(
             col()
                 .key("storage-migration-plan")
-                .gap(2.0)
+                .gap(crate::ds::SPACE_1)
                 .child(
                     text(format!(
                         "{} worktree{} to move · {} skipped · {} transcript{} would stop matching",
@@ -452,7 +452,7 @@ fn migration_group(s: &AppState, k: &Kit, paths: &ForgePaths, left: usize) -> Op
             .build(k)
             .key(key)
     };
-    let mut actions = row().gap(8.0).items_center();
+    let mut actions = row().gap(crate::ds::SPACE_4).items_center();
     if needs_move {
         for (label, key, action) in move_choices(paths.layout, left) {
             actions = actions.child(button(label, key, action));
@@ -580,14 +580,18 @@ pub fn dialogs(s: &AppState, k: &Kit, layer: &mut Vec<El>) {
         })
         .build(k)
         .key("storage-migration-confirm");
-    Dialog::new("storage-migration-confirm", title)
+    crate::modal::Modal::new("storage-migration-confirm", title)
         .description(description)
-        .open(true)
-        .fit()
-        .width(460.0)
+        .width(crate::modal::WIDTH_STANDARD)
         .on_close(|s: &mut AppState| s.storage.migration.confirm = None)
-        .child(row().gap(8.0).items_center().child(cancel).child(confirm))
-        .build(k, &mut overlay);
+        .child(
+            row()
+                .gap(crate::ds::SPACE_4)
+                .items_center()
+                .child(cancel)
+                .child(confirm),
+        )
+        .build(s, k, &mut overlay);
     layer.extend(overlay);
 }
 
@@ -721,6 +725,8 @@ fn run_bounded(
                 return Ok((status, stdout, stderr));
             }
             Ok(None) if Instant::now() >= deadline => {
+                // SAFETY: `kill` reads only its two integer arguments; the
+                // negative pid is the child's own process group.
                 unsafe {
                     libc::kill(-(child.id() as i32), libc::SIGKILL);
                 }
@@ -736,6 +742,8 @@ fn run_bounded(
             }
             Ok(None) => std::thread::sleep(Duration::from_millis(25)),
             Err(error) => {
+                // SAFETY: `kill` reads only its two integer arguments; the
+                // negative pid is the child's own process group.
                 unsafe {
                     libc::kill(-(child.id() as i32), libc::SIGKILL);
                 }

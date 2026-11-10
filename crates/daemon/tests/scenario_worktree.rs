@@ -361,7 +361,7 @@ fn sessions_launched_in_a_worktree_run_there_and_main_keeps_its_branch() {
     assert_eq!(
         common::checked_out_branch(repo.path()),
         "main",
-        "creating a worktree must not move the main checkout (§19 C)"
+        "creating a worktree must not move the main checkout"
     );
 
     // The shell compares the two paths itself and prints a short verdict: a
@@ -387,7 +387,7 @@ fn sessions_launched_in_a_worktree_run_there_and_main_keeps_its_branch() {
     assert_eq!(
         verdict.trim(),
         "forge_cwd_ok",
-        "`pwd` in the shell must be the worktree path (§19 C)"
+        "`pwd` in the shell must be the worktree path"
     );
 
     // --- an agent in the same worktree ---
@@ -404,7 +404,7 @@ fn sessions_launched_in_a_worktree_run_there_and_main_keeps_its_branch() {
         agent_verdict.as_deref(),
         Some("forge_opencode_cwd_ok"),
         "the agent must be launched in the worktree the daemon advertises \
-         through FORGE_WORKSPACE (§13.3)"
+         through FORGE_WORKSPACE"
     );
 
     let refused = client.request(Request::RemoveWorktree {
@@ -413,7 +413,7 @@ fn sessions_launched_in_a_worktree_run_there_and_main_keeps_its_branch() {
     });
     assert!(
         refused.is_err(),
-        "RemoveWorktree must refuse while sessions are running (§14.4)"
+        "RemoveWorktree must refuse while sessions are running"
     );
     assert!(worktree.path.is_dir(), "and must not touch the disk");
 
@@ -444,7 +444,7 @@ fn sessions_launched_in_a_worktree_run_there_and_main_keeps_its_branch() {
     assert_eq!(
         common::checked_out_branch(repo.path()),
         "main",
-        "and the main checkout is still on its own branch (§19 C)"
+        "and the main checkout is still on its own branch"
     );
 
     common::stop_daemon(&client);
@@ -500,7 +500,7 @@ fn a_worktree_whose_sessions_have_ended_can_be_removed() {
 
     assert!(
         outcome.is_ok(),
-        "a worktree whose sessions have ended passes every §14.4 pre-check, so \
+        "a worktree whose sessions have ended passes every removal pre-check, so \
          removing it must succeed; got {outcome:?} \
          (workspace still in the model: {still_listed}, directory still on disk: {still_on_disk})"
     );

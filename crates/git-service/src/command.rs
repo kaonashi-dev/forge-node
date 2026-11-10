@@ -71,6 +71,10 @@ pub struct GitOutput {
     pub stderr: String,
     /// Process exit code, or `-1` if the process was terminated by a signal.
     pub status: i32,
+    /// A stream passed [`MAX_CAPTURE_BYTES`]: what is held is its prefix, and
+    /// the command still ran to the end. A reader that parses the whole
+    /// listing checks this through [`GitOutput::complete`].
+    pub truncated: bool,
 }
 
 impl GitOutput {
@@ -85,6 +89,21 @@ impl GitOutput {
     #[must_use]
     pub fn stdout_trimmed(&self) -> &str {
         self.stdout.trim()
+    }
+
+    /// Return `self` unless a stream was cut, for a reader whose answer would
+    /// look exhaustive while missing its tail.
+    ///
+    /// # Errors
+    /// [`GitError::OutputLimit`] when [`truncated`](GitOutput::truncated).
+    pub fn complete(self) -> Result<Self, GitError> {
+        if self.truncated {
+            Err(GitError::OutputLimit {
+                limit: MAX_CAPTURE_BYTES,
+            })
+        } else {
+            Ok(self)
+        }
     }
 
     /// Return `self` if the command succeeded, otherwise a
@@ -186,7 +205,14 @@ pub(crate) fn git_path(dir: &Path, name: &str) -> Option<PathBuf> {
 /// - [`GitError::Timeout`] if the command runs longer than [`GIT_TIMEOUT`]; the
 ///   child process is sent `SIGKILL` before returning.
 pub fn run_git(repo: Option<&Path>, args: &[&str]) -> Result<GitOutput, GitError> {
-    run_git_inner(repo, args, GIT_TIMEOUT, false, Capture::All).map(|(output, _)| output)
+    run_git_inner(
+        repo,
+        args,
+        GIT_TIMEOUT,
+        false,
+        Capture::Drain(MAX_CAPTURE_BYTES),
+    )
+    .map(|(output, _)| output)
 }
 
 /// Most a bounded capture keeps of either stream.
@@ -242,9 +268,19 @@ pub fn run_git_prefix(
 /// How much of a command's output is held.
 #[derive(Clone, Copy)]
 enum Capture {
-    All,
+    /// Keep a prefix and discard the rest without killing: a commit or a
+    /// merge whose hook talks too much still has to finish.
+    Drain(usize),
     Refuse(usize),
     Prefix(usize),
+}
+
+/// What a stream past its limit does to the command.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Overflow {
+    Refuse,
+    Prefix,
+    Drain,
 }
 
 /// Run a `git` command that talks to a remote, with its own timeout and with
@@ -332,9 +368,11 @@ fn run_git_inner(
     let (tx, rx) = mpsc::channel();
     std::thread::spawn(move || {
         let _ = tx.send(match capture {
-            Capture::All => child.wait_with_output().map(|output| (output, false)),
-            Capture::Refuse(limit) => bounded_output(child, limit, limit, false),
-            Capture::Prefix(limit) => bounded_output(child, limit, PREFIX_STDERR_BYTES, true),
+            Capture::Drain(limit) => bounded_output(child, limit, limit, Overflow::Drain),
+            Capture::Refuse(limit) => bounded_output(child, limit, limit, Overflow::Refuse),
+            Capture::Prefix(limit) => {
+                bounded_output(child, limit, PREFIX_STDERR_BYTES, Overflow::Prefix)
+            }
         });
     });
 
@@ -344,6 +382,7 @@ fn run_git_inner(
                 stdout: decode(output.stdout),
                 stderr: decode(output.stderr),
                 status: output.status.code().unwrap_or(-1),
+                truncated: cut,
             },
             cut,
         )),
@@ -396,7 +435,7 @@ pub(crate) fn wait_bounded(
     child: std::process::Child,
     limit: usize,
 ) -> Result<std::process::Output, GitError> {
-    bounded_output(child, limit, limit, false)
+    bounded_output(child, limit, limit, Overflow::Refuse)
         .map(|(output, _)| output)
         .map_err(
             |error| match error.get_ref().and_then(|inner| inner.downcast_ref()) {
@@ -410,14 +449,14 @@ fn bounded_output(
     mut child: std::process::Child,
     stdout_limit: usize,
     stderr_limit: usize,
-    prefix: bool,
+    overflow: Overflow,
 ) -> std::io::Result<(std::process::Output, bool)> {
     let pid = child.id();
     let stdout = child.stdout.take();
     let stderr = child.stderr.take();
     std::thread::scope(|scope| {
-        let stderr = scope.spawn(move || capture(stderr, stderr_limit, prefix, pid));
-        let stdout = capture(stdout, stdout_limit, prefix, pid);
+        let stderr = scope.spawn(move || capture(stderr, stderr_limit, overflow, pid));
+        let stdout = capture(stdout, stdout_limit, overflow, pid);
         let stderr = stderr.join().unwrap_or_else(|_| {
             kill_process_group(pid);
             Err(std::io::Error::other("git stderr reader panicked"))
@@ -439,22 +478,30 @@ fn bounded_output(
 fn capture(
     reader: Option<impl std::io::Read>,
     limit: usize,
-    prefix: bool,
+    overflow: Overflow,
     pid: u32,
 ) -> std::io::Result<(Vec<u8>, bool)> {
     use std::io::Read;
     let mut bytes = Vec::new();
-    if let Some(reader) = reader {
-        if let Err(error) = reader.take(limit as u64 + 1).read_to_end(&mut bytes) {
-            kill_process_group(pid);
-            return Err(error);
-        }
+    let Some(mut reader) = reader else {
+        return Ok((bytes, false));
+    };
+    if let Err(error) = (&mut reader).take(limit as u64 + 1).read_to_end(&mut bytes) {
+        kill_process_group(pid);
+        return Err(error);
     }
     if bytes.len() <= limit {
         return Ok((bytes, false));
     }
+    if overflow == Overflow::Drain {
+        bytes.truncate(limit);
+        // The pipe is emptied, not held, or the command would block on a
+        // full pipe until the timeout killed it.
+        let _ = std::io::copy(&mut reader, &mut std::io::sink());
+        return Ok((bytes, true));
+    }
     kill_process_group(pid);
-    if !prefix {
+    if overflow == Overflow::Refuse {
         return Err(std::io::Error::other(OverLimit(limit)));
     }
     bytes.truncate(limit);
@@ -504,7 +551,7 @@ mod tests {
                 .spawn()
                 .unwrap();
             let pid = child.id();
-            let error = bounded_output(child, 128, 128, false).unwrap_err();
+            let error = bounded_output(child, 128, 128, Overflow::Refuse).unwrap_err();
             assert!(error.to_string().contains("capture budget"));
             assert_eq!(
                 nix::sys::wait::waitpid(
@@ -527,7 +574,8 @@ mod tests {
             .spawn()
             .unwrap();
         let pid = child.id();
-        let (output, cut) = bounded_output(child, 64, PREFIX_STDERR_BYTES, true).unwrap();
+        let (output, cut) =
+            bounded_output(child, 64, PREFIX_STDERR_BYTES, Overflow::Prefix).unwrap();
         assert!(cut);
         assert_eq!(output.stdout, "a line\n".repeat(10).as_bytes()[..64]);
         assert_eq!(
@@ -554,7 +602,31 @@ mod tests {
             stdout: stdout.to_owned(),
             stderr: stderr.to_owned(),
             status,
+            truncated: false,
         }
+    }
+
+    #[test]
+    fn a_drained_capture_keeps_a_prefix_and_lets_the_command_finish() {
+        use std::os::unix::process::CommandExt;
+        let child = Command::new("/bin/sh")
+            .args([
+                "-c",
+                "i=0; while [ $i -lt 2000 ]; do printf 'a line\\n'; i=$((i+1)); done; exit 3",
+            ])
+            .process_group(0)
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .unwrap();
+        let (output, cut) = bounded_output(child, 64, 64, Overflow::Drain).unwrap();
+        assert!(cut);
+        assert_eq!(output.stdout.len(), 64);
+        assert_eq!(
+            output.status.code(),
+            Some(3),
+            "the command ran to its own exit rather than being killed"
+        );
     }
 
     /// ADR-008 fixes the per-command budget; a silent change here would let a

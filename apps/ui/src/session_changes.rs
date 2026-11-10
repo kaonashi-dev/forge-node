@@ -164,7 +164,10 @@ fn header(s: &AppState, k: &Kit) -> El {
 pub fn view(s: &AppState, k: &Kit) -> El {
     let view = &s.session_changes;
     let workspace = view.session.and_then(|session| workspace_of(s, session));
-    let mut body = col().key("session-changes").w_full().gap(8.0);
+    let mut body = col()
+        .key("session-changes")
+        .w_full()
+        .gap(crate::ds::SPACE_4);
     if view.session.is_none() {
         body = body.child(
             text("Open a session and choose Session Changes.")
@@ -209,7 +212,7 @@ pub fn view(s: &AppState, k: &Kit) -> El {
             let mut commits = col()
                 .key("session-changes-commits")
                 .w_full()
-                .gap(2.0)
+                .gap(crate::ds::SPACE_1)
                 .child(
                     text(commits_heading(changes.summary.commit_count))
                         .font(k.ty.small_medium)
@@ -219,7 +222,7 @@ pub fn view(s: &AppState, k: &Kit) -> El {
                 commits = commits.child(
                     row()
                         .w_full()
-                        .gap(8.0)
+                        .gap(crate::ds::SPACE_4)
                         .child(
                             text(commit.short_id.clone())
                                 .font(k.ty.mono)
@@ -262,7 +265,7 @@ pub fn view(s: &AppState, k: &Kit) -> El {
                     file.additions,
                     file.deletions
                 );
-                let mut counts = row().gap(6.0);
+                let mut counts = row().gap(crate::ds::SPACE_3);
                 if file.binary {
                     counts = counts.child(text("bin").font(k.ty.text_xsmall).color(k.c.text_faint));
                 } else {
@@ -286,8 +289,8 @@ pub fn view(s: &AppState, k: &Kit) -> El {
                         .w_full()
                         .h(26.0)
                         .px(8.0)
-                        .gap(8.0)
-                        .radius(5.0)
+                        .gap(crate::ds::SPACE_4)
+                        .radius(k.radius.sm)
                         .items_center()
                         .hover(k.c.hover)
                         .on_press_tx(move |s: &mut AppState, tx| {

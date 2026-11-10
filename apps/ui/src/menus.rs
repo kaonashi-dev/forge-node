@@ -13,7 +13,7 @@ use domain::{
 };
 use rune::{El, Icon, KeyEvent, PointerPress, TextEdit, Tx, col, el, row, text};
 use rune_kit::{
-    Button, ButtonVariant, Dialog, Kit, Menu, MenuEntry, MenuItem, RadioGroup, RadioItem, TextInput,
+    Button, ButtonVariant, Kit, Menu, MenuEntry, MenuItem, RadioGroup, RadioItem, TextInput,
 };
 
 use crate::app::AppState;
@@ -37,9 +37,6 @@ pub enum Target {
     Checkout(WorkspaceId),
     /// A session's row in the rail.
     Session(SessionId),
-    /// A tab in the strip: a session's, or an editor's, which has the editor
-    /// tab menu.
-    Tab(SessionId),
     Files(WorkspaceId, FileTarget),
     /// A named group's header in the rail.
     Group(ProjectGroupId),
@@ -55,8 +52,10 @@ pub enum Target {
 pub enum ButtonMenu {
     /// The rail head's "+".
     RailAdd,
-    /// A checkout's ▶: its project's actions.
+    /// A checkout's Run: its project's actions.
     Run(WorkspaceId),
+    /// A project row's ⋯: the same items as its context menu.
+    Project(ProjectId),
     /// A share rule's ⋯.
     ShareRule(ProjectId, ShareRuleId),
     /// Settings › Agents' "New profile ▾": one entry per provider.
@@ -68,6 +67,7 @@ impl ButtonMenu {
         match self {
             ButtonMenu::RailAdd => "rail-add".into(),
             ButtonMenu::Run(workspace) => format!("run-{workspace}"),
+            ButtonMenu::Project(project) => format!("project-menu-{project}"),
             ButtonMenu::ShareRule(_, rule) => format!("share-rule-menu-{rule}"),
             ButtonMenu::NewProfile => "new-profile".into(),
         }
@@ -117,8 +117,6 @@ pub enum Glyph {
     Activity,
     ChevronUp,
     ChevronDown,
-    ChevronLeft,
-    ChevronRight,
 }
 
 #[must_use]
@@ -155,8 +153,6 @@ pub fn icon(glyph: &Glyph) -> Option<&'static Icon> {
         Glyph::Activity => &forge::ACTIVITY,
         Glyph::ChevronUp => &forge::CHEVRON_UP,
         Glyph::ChevronDown => &forge::CHEVRON_DOWN,
-        Glyph::ChevronLeft => &forge::CHEVRON_LEFT,
-        Glyph::ChevronRight => &forge::CHEVRON_RIGHT,
         Glyph::None => return None,
     })
 }
@@ -190,7 +186,6 @@ pub enum Act {
     Kill(SessionId),
     Restart(SessionId),
     Close(SessionId),
-    CloseEditors(Vec<SessionId>),
     OpenFile(String),
     EditFile(WorkspaceId, String),
     InsertReference(WorkspaceId, String),
@@ -221,7 +216,6 @@ pub enum Act {
     RunAction(WorkspaceId, ProjectActionId),
     NewProfile(AgentProviderId),
     FocusSession(SessionId),
-    MoveTab(SessionId, isize),
     OpenUrl(String),
     ReapplyRule(ProjectId, ShareRuleId),
     MoveRule(ProjectId, ShareRuleId, isize),
@@ -339,19 +333,6 @@ pub fn items(s: &AppState, target: &Target) -> Vec<Entry> {
         Target::Project(project) => project_items(s, *project),
         Target::Checkout(workspace) => checkout_items(s, *workspace),
         Target::Session(session) => session_items(s, *session),
-        Target::Tab(session) => {
-            let editor = s
-                .rows
-                .iter()
-                .any(|row| row.id == *session && row.kind == SessionKind::Editor);
-            let mut items = if editor {
-                editor_tab_items(s, *session)
-            } else {
-                session_items(s, *session)
-            };
-            items.extend(tab_move_items(s, *session));
-            items
-        }
         Target::Files(workspace, file) => file_items(s, *workspace, file),
         Target::Group(group) => group_items(*group),
         Target::Editor(session) => editor_pane_items(s, *session),
@@ -383,6 +364,7 @@ pub fn button_items(s: &AppState, menu: &ButtonMenu) -> Vec<Entry> {
             item("New group…", Glyph::Folder, Act::NewGroup),
         ],
         ButtonMenu::Run(workspace) => run_items(s, *workspace),
+        ButtonMenu::Project(project) => project_items(s, *project),
         ButtonMenu::ShareRule(project, rule) => vec![
             item(
                 "Re-apply everywhere",
@@ -964,75 +946,6 @@ fn history_items(s: &AppState, at: usize) -> Vec<Entry> {
     ]
 }
 
-/// An editor tab's menu: each bulk close
-/// is about the tab the menu opened on, not the active one.
-fn editor_tab_items(s: &AppState, session_id: SessionId) -> Vec<Entry> {
-    let editors: Vec<SessionId> = s
-        .tab_rows()
-        .into_iter()
-        .filter(|row| row.kind == SessionKind::Editor)
-        .map(|row| row.id)
-        .collect();
-    let at = editors.iter().position(|id| *id == session_id);
-    let others: Vec<SessionId> = editors
-        .iter()
-        .copied()
-        .filter(|id| *id != session_id)
-        .collect();
-    let right: Vec<SessionId> = at.map_or_else(Vec::new, |at| editors[at + 1..].to_vec());
-    vec![
-        item("Close", Glyph::Close, Act::CloseEditors(vec![session_id])),
-        item(
-            "Close Others",
-            Glyph::Close,
-            Act::CloseEditors(others.clone()),
-        )
-        .enabled(!others.is_empty()),
-        item(
-            "Close to the Right",
-            Glyph::Close,
-            Act::CloseEditors(right.clone()),
-        )
-        .enabled(!right.is_empty()),
-        Entry::Rule,
-        item("Close All", Glyph::Trash, Act::CloseEditors(editors)).danger(),
-    ]
-}
-
-/// Moving a tab is a strip gesture a keyboard or a menu can also make. A tab
-/// never crosses the shell/agent split, so an end tab disables its direction.
-fn tab_move_items(s: &AppState, session: SessionId) -> Vec<Entry> {
-    let tabs = s.tab_rows();
-    let at = tabs.iter().position(|row| row.id == session);
-    let can = |delta: isize| {
-        let Some(at) = at else {
-            return false;
-        };
-        let Some(to) = at.checked_add_signed(delta) else {
-            return false;
-        };
-        matches!(
-            (tabs.get(at), tabs.get(to)),
-            (Some(left), Some(right)) if crate::tabs::is_shell(left) == crate::tabs::is_shell(right)
-        )
-    };
-    vec![
-        Entry::Rule,
-        item(
-            "Move Tab Left",
-            Glyph::ChevronLeft,
-            Act::MoveTab(session, -1),
-        )
-        .enabled(can(-1)),
-        item(
-            "Move Tab Right",
-            Glyph::ChevronRight,
-            Act::MoveTab(session, 1),
-        )
-        .enabled(can(1)),
-    ]
-}
-
 /// A Files tree row's menu.
 fn file_items(s: &AppState, workspace: WorkspaceId, target: &FileTarget) -> Vec<Entry> {
     let root = s.store.as_ref().and_then(|store| {
@@ -1596,7 +1509,6 @@ pub fn run(s: &mut AppState, act: Act, tx: &mut Tx) {
         Act::Kill(session) => s.kill_session(session),
         Act::Restart(session) => s.restart_session(session),
         Act::Close(session) => s.request_close(session),
-        Act::CloseEditors(sessions) => close_editors(s, sessions),
         Act::OpenFile(path) => s.open_in_editor(&path),
         Act::EditFile(workspace, path) => {
             if send(s, "CreateEditorSession", |c| c.open_editor(workspace, path)) {
@@ -1686,7 +1598,6 @@ pub fn run(s: &mut AppState, act: Act, tx: &mut Tx) {
             s.settings.profile = Some(crate::settings::ProfileForm::new(provider));
         }
         Act::FocusSession(session) => s.focus_session(session),
-        Act::MoveTab(session, by) => s.move_tab_by(session, by),
         Act::OpenUrl(url) => {
             if let Err(error) = tx.open_url(&url) {
                 eprintln!("[open] {url}: {error:?}");
@@ -2217,7 +2128,7 @@ impl Ask {
 fn footer(cancel: El, confirm: El) -> El {
     row()
         .pt(12.0)
-        .gap(8.0)
+        .gap(crate::ds::SPACE_4)
         .child(el().grow(1.0))
         .child(cancel)
         .child(confirm)
@@ -2260,7 +2171,7 @@ fn prompt_dialog(s: &AppState, k: &Kit, layer: &mut Vec<El>) {
         .on_press(submit_prompt)
         .build(k)
         .key("menu-prompt-confirm");
-    let mut body = col().gap(6.0).child(field);
+    let mut body = col().gap(crate::ds::SPACE_3).child(field);
     if let Some(error) = &prompt.error {
         body = body.child(
             text(error.clone())
@@ -2270,10 +2181,8 @@ fn prompt_dialog(s: &AppState, k: &Kit, layer: &mut Vec<El>) {
                 .color(k.c.danger.fg),
         );
     }
-    Dialog::new("menu-prompt", prompt.ask.title())
-        .open(true)
-        .fit()
-        .width(420.0)
+    crate::modal::Modal::new("menu-prompt", prompt.ask.title())
+        .width(crate::modal::WIDTH_PROMPT)
         .click_outside(true)
         .on_close(|s: &mut AppState| s.menus.prompt = None)
         .child(body)
@@ -2281,7 +2190,7 @@ fn prompt_dialog(s: &AppState, k: &Kit, layer: &mut Vec<El>) {
             cancel_button(k, "menu-prompt-cancel", |s| s.menus.prompt = None),
             submit,
         ))
-        .build(k, layer);
+        .build(s, k, layer);
 }
 
 fn confirm_dialog(s: &AppState, k: &Kit, layer: &mut Vec<El>) {
@@ -2293,17 +2202,15 @@ fn confirm_dialog(s: &AppState, k: &Kit, layer: &mut Vec<El>) {
         .on_press(confirm)
         .build(k)
         .key("menu-confirm");
-    Dialog::new("menu-confirm-dialog", pending.title.clone())
+    crate::modal::Modal::new("menu-confirm-dialog", pending.title.clone())
         .description(pending.description)
-        .open(true)
-        .fit()
-        .width(420.0)
+        .width(crate::modal::WIDTH_PROMPT)
         .on_close(|s: &mut AppState| s.menus.confirm = None)
         .child(footer(
             cancel_button(k, "menu-confirm-cancel", |s| s.menus.confirm = None),
             go,
         ))
-        .build(k, layer);
+        .build(s, k, layer);
 }
 
 /// The policy is chosen before the request,
@@ -2345,11 +2252,14 @@ fn removal_dialog(s: &AppState, k: &Kit, layer: &mut Vec<El>) {
                 }),
         );
     }
-    let mut consequences = col().key("remove-project-consequences").gap(4.0).child(
-        text("What happens")
-            .font(k.ty.small_medium)
-            .color(k.c.text_muted),
-    );
+    let mut consequences = col()
+        .key("remove-project-consequences")
+        .gap(crate::ds::SPACE_2)
+        .child(
+            text("What happens")
+                .font(k.ty.small_medium)
+                .color(k.c.text_muted),
+        );
     for line in describe_removal(chosen, footprint) {
         consequences = consequences.child(text(line).font(k.ty.small).color(k.c.text_base));
     }
@@ -2358,22 +2268,25 @@ fn removal_dialog(s: &AppState, k: &Kit, layer: &mut Vec<El>) {
         .on_press(remove_project)
         .build(k)
         .key("remove-project-confirm");
-    Dialog::new("remove-project", format!("Remove {name}?"))
+    crate::modal::Modal::new("remove-project", format!("Remove {name}?"))
         .description(if footprint.checkouts == 1 {
             "One checkout is registered under it.".to_string()
         } else {
             format!("{} checkouts are registered under it.", footprint.checkouts)
         })
-        .open(true)
-        .fit()
-        .width(460.0)
+        .width(crate::modal::WIDTH_STANDARD)
         .on_close(|s: &mut AppState| s.menus.removal = None)
-        .child(col().gap(12.0).child(group.build(k)).child(consequences))
+        .child(
+            col()
+                .gap(crate::ds::SPACE_5)
+                .child(group.build(k))
+                .child(consequences),
+        )
         .child(footer(
             cancel_button(k, "remove-project-cancel", |s| s.menus.removal = None),
             go,
         ))
-        .build(k, layer);
+        .build(s, k, layer);
 }
 
 #[cfg(test)]
@@ -2589,116 +2502,6 @@ mod tests {
             act_of(entries, "Zed"),
             Act::OpenIn(Opener::Zed, "/home/dev/forge".into()),
             "Open in opens the project's root, not the checkout"
-        );
-    }
-
-    #[test]
-    fn a_session_offers_kill_while_it_runs_and_restart_after() {
-        let s = state(store());
-        let running = items(&s, &Target::Session(id("1000")));
-        assert_eq!(
-            labels(&running),
-            [
-                "Rename…",
-                "Continue in a New Session…",
-                "Spawn Child…",
-                "Send Context…",
-                "Session Changes",
-                "Review (off)",
-                "—",
-                "Kill!",
-                "Close!",
-            ],
-            "Review is for agents"
-        );
-        assert_eq!(
-            labels(&rendered(running.clone())),
-            [
-                "Rename…",
-                "Continue in a New Session…",
-                "Spawn Child…",
-                "Send Context…",
-                "Session Changes",
-                "Review (off)",
-                "—",
-                "Kill!",
-                "Close!",
-            ],
-            "every session item is ported"
-        );
-        assert_eq!(
-            act_of(&running, "Continue in a New Session…"),
-            Act::ContinueInNewSession(id("1000"))
-        );
-        assert_eq!(
-            act_of(&running, "Spawn Child…"),
-            Act::SpawnChild(id("1000"))
-        );
-        assert_eq!(
-            act_of(&running, "Send Context…"),
-            Act::SendContext(id("1000"))
-        );
-        assert_eq!(
-            act_of(&running, "Session Changes"),
-            Act::SessionChanges(id("1000"))
-        );
-        assert_eq!(act_of(&running, "Review"), Act::ReviewWorkspace(id(MAIN)));
-        assert_eq!(
-            labels(&rendered(items(&s, &Target::Tab(id("1003"))))),
-            [
-                "Rename…",
-                "Continue in a New Session…",
-                "Spawn Child…",
-                "Send Context…",
-                "Session Changes",
-                "Review (off)",
-                "—",
-                "Restart",
-                "Close!",
-                "—",
-                "Move Tab Left",
-                "Move Tab Right"
-            ],
-            "a shell's tab has the session's menu plus tab moves"
-        );
-    }
-
-    #[test]
-    fn an_editor_tab_closes_others_and_to_its_right_among_editors() {
-        let mut store = store();
-        let editors: Vec<SessionId> = ["1002", "1005", "1006"].map(id).to_vec();
-        for session in &mut store.sessions {
-            if editors.contains(&session.id) {
-                session.kind = SessionKind::Editor;
-            }
-        }
-        let mut s = state(store);
-        s.select(id("1000"));
-        let middle = items(&s, &Target::Tab(editors[1]));
-        assert_eq!(
-            labels(&middle),
-            [
-                "Close",
-                "Close Others",
-                "Close to the Right",
-                "—",
-                "Close All!",
-                "—",
-                "Move Tab Left",
-                "Move Tab Right"
-            ]
-        );
-        assert_eq!(
-            act_of(&middle, "Close Others"),
-            Act::CloseEditors(vec![editors[0], editors[2]])
-        );
-        assert_eq!(
-            act_of(&middle, "Close to the Right"),
-            Act::CloseEditors(vec![editors[2]])
-        );
-        assert_eq!(
-            labels(&items(&s, &Target::Tab(editors[2])))[2],
-            "Close to the Right (off)"
         );
     }
 

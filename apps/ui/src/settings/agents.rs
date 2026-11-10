@@ -376,7 +376,7 @@ fn default_choices(s: &AppState, k: &Kit) -> El {
         .role("radiogroup")
         .label("Default agent")
         .w_full()
-        .gap(8.0)
+        .gap(crate::ds::SPACE_4)
         .flex_wrap();
     for (index, (agent, label, note, enabled)) in choices.into_iter().enumerate() {
         let checked = agent == current;
@@ -406,40 +406,34 @@ fn provider_card(s: &AppState, info: &ProviderInfo, k: &Kit) -> El {
     let name = info.descriptor.display_name.clone();
     let visible = s.agent_visible(&key);
     let is_default = s.default_agent() == DefaultAgent::Provider(key.clone());
-    let mut title =
-        row()
-            .gap(8.0)
-            .items_center()
-            .child(
-                text(name.clone())
-                    .font(k.ty.small_medium)
-                    .color(if visible {
-                        k.c.text_base
-                    } else {
-                        k.c.text_faint
-                    }),
-            );
+    let roles = crate::theme::roles(k);
+    let mut title = row().gap(crate::ds::SPACE_4).items_center().child(
+        text(name.clone()).font(k.ty.ui_medium).color(if visible {
+            k.c.text_base
+        } else {
+            k.c.text_faint
+        }),
+    );
     if is_default {
-        title = title.child(
-            row()
-                .px(6.0)
-                .py(1.0)
-                .radius(8.0)
-                .fill(k.c.surface_hover)
-                .child(
-                    text("Default")
-                        .font(k.ty.text_xsmall)
-                        .color(k.c.text_accent),
-                ),
-        );
+        title = title.child(crate::ds::chip(
+            k,
+            &roles,
+            "Default",
+            crate::ds::Tone::Accent,
+        ));
     }
-    let mut head = row().w_full().gap(8.0).items_center().child(
-        col().grow(1.0).min_w(0.0).gap(2.0).child(title).child(
-            text(format!("{key} · {}", detection_label(info)))
-                .font(k.ty.text_xsmall)
-                .color(k.c.text_faint)
-                .truncate(),
-        ),
+    let mut head = row().w_full().gap(crate::ds::SPACE_4).items_center().child(
+        col()
+            .grow(1.0)
+            .min_w(0.0)
+            .gap(crate::ds::SPACE_1)
+            .child(title)
+            .child(
+                text(format!("{key} · {}", detection_label(info)))
+                    .font(k.ty.text_xsmall)
+                    .color(k.c.text_faint)
+                    .truncate(),
+            ),
     );
     if !is_default && visible && installed(info) {
         let make = DefaultAgent::Provider(key.clone());
@@ -453,8 +447,7 @@ fn provider_card(s: &AppState, info: &ProviderInfo, k: &Kit) -> El {
     let toggle_key = key.clone();
     head = head.child(
         Switch::new(visible)
-            .label(format!("{name} enabled"))
-            .hide_label()
+            .label("Show in pickers")
             .on_toggle(move |s: &mut AppState| {
                 let next = !s.agent_visible(&toggle_key);
                 s.set_agent_visible(&toggle_key, next);
@@ -487,9 +480,15 @@ fn provider_card(s: &AppState, info: &ProviderInfo, k: &Kit) -> El {
         .grow(1.0)
         .min_w(0.0);
     let pin_id = id.clone();
+    // An empty field pins nothing, which is how a pinned path is cleared;
+    // the client is not told whether one is pinned, so it says what it does.
     let pin = small(
-        if empty { "Clear override" } else { "Pin" },
-        ButtonVariant::Outline,
+        if empty { "Use detected" } else { "Pin" },
+        if empty {
+            ButtonVariant::GhostMuted
+        } else {
+            ButtonVariant::Outline
+        },
     )
     .on_press(move |s: &mut AppState| s.pin_provider_command(&pin_id))
     .build(k)
@@ -497,9 +496,9 @@ fn provider_card(s: &AppState, info: &ProviderInfo, k: &Kit) -> El {
     let mut card = col()
         .key(format!("provider-{key}"))
         .w_full()
-        .gap(8.0)
-        .padding(10.0)
-        .radius(8.0)
+        .gap(crate::ds::SPACE_4)
+        .padding(crate::ds::SPACE_5)
+        .radius(k.radius.lg)
         .border(1.0, k.c.border_weak)
         .child(head)
         .child(setting_row(
@@ -515,7 +514,7 @@ fn provider_card(s: &AppState, info: &ProviderInfo, k: &Kit) -> El {
         .child(
             row()
                 .w_full()
-                .gap(6.0)
+                .gap(crate::ds::SPACE_3)
                 .items_center()
                 .child(field)
                 .child(pin),
@@ -609,7 +608,7 @@ fn profile_rows(s: &AppState, k: &Kit) -> El {
                 .key(format!("profile-{id}"))
                 .w_full()
                 .h(34.0)
-                .gap(8.0)
+                .gap(crate::ds::SPACE_4)
                 .items_center()
                 .child(
                     text(profile.name.clone())
@@ -696,9 +695,9 @@ fn profile_form(s: &AppState, form: &ProfileForm, k: &Kit) -> El {
         .role("form")
         .label(title.clone())
         .w_full()
-        .gap(8.0)
+        .gap(crate::ds::SPACE_4)
         .padding(12.0)
-        .radius(8.0)
+        .radius(k.radius.lg)
         .border(1.0, k.c.border_weak)
         .child(text(title).font(k.ty.small_medium).color(k.c.text_base));
     if form.is_new && !providers.is_empty() {
@@ -800,7 +799,7 @@ fn profile_form(s: &AppState, form: &ProfileForm, k: &Kit) -> El {
     let invalid = form.name.text.trim().is_empty() || parse_args(&form.args.text).is_err();
     view.child(
         row()
-            .gap(6.0)
+            .gap(crate::ds::SPACE_3)
             .child(
                 Button::new(if form.saving { "Saving…" } else { "Save" })
                     .variant(ButtonVariant::Submit)
@@ -824,7 +823,7 @@ pub fn section(s: &AppState, k: &Kit) -> El {
     col()
         .key("agents")
         .w_full()
-        .gap(24.0)
+        .gap(crate::ds::SPACE_7)
         .child(default_choices(s, k))
         .children(notice(s, k))
         .child(providers(s, k))

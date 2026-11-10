@@ -86,6 +86,9 @@ pub enum Command {
     /// already placed. With nothing selected it takes the word under the caret
     /// first, the way `Ctrl-D` does everywhere else.
     AddNextOccurrence,
+    /// Select every occurrence of what is selected, or of the word under the
+    /// caret, at once. Capped at `MAX_CURSORS`, keeping those nearest the caret.
+    SelectAllOccurrences,
     /// Drop back to one caret.
     CollapseCarets,
 }
@@ -128,6 +131,7 @@ impl Command {
             Command::ReplaceAll { .. } => "find.replaceAll",
             Command::AddCaretVertically { .. } => "select.addCaret",
             Command::AddNextOccurrence => "select.addNextOccurrence",
+            Command::SelectAllOccurrences => "select.allOccurrences",
             Command::CollapseCarets => "select.collapseCarets",
         }
     }
@@ -281,6 +285,7 @@ pub fn execute(document: &mut Document, command: Command) -> Outcome {
         Command::FindPrevious(query) => find(document, &query, false),
         Command::AddCaretVertically { down } => add_caret_vertically(document, down),
         Command::AddNextOccurrence => add_next_occurrence(document),
+        Command::SelectAllOccurrences => select_all_occurrences(document),
         Command::CollapseCarets => {
             let single = document.selection().single();
             document.set_selection(single);
@@ -402,6 +407,38 @@ fn add_next_occurrence(document: &mut Document) -> Outcome {
     } else {
         Outcome::refused(Refusal::NoMatch)
     }
+}
+
+fn select_all_occurrences(document: &mut Document) -> Outcome {
+    let text = document.text();
+    let primary = document.selection().primary();
+    let word = primary.is_empty();
+    let (start, end) = if word {
+        movement::word_span(text, primary.head)
+    } else {
+        let range = primary.range();
+        (range.start, range.end)
+    };
+    if start == end {
+        return Outcome::refused(Refusal::NoMatch);
+    }
+    let mut query = Query::literal(text.slice(Range::new(start, end)).to_string());
+    // The word under a bare caret means that identifier, not every string
+    // that contains it: `total` must leave `subtotal` alone.
+    if word {
+        query = query.whole_word();
+    }
+    let found = search::around(text, &query, start, crate::limits::MAX_CURSORS);
+    let at = found
+        .iter()
+        .position(|hit| hit.start >= start)
+        .unwrap_or(found.len().saturating_sub(1));
+    let cursors = found
+        .iter()
+        .map(|hit| crate::Cursor::new(hit.start, hit.end))
+        .collect();
+    document.set_selection(Selection::many(cursors, at));
+    Outcome::default()
 }
 
 /// The terminator a new line should carry: the one the current line already
@@ -1021,6 +1058,42 @@ mod tests {
 
         run(&mut doc, Command::InsertText("n".to_string()));
         assert_eq!(doc.as_str(), "n = n + n\n");
+    }
+
+    #[test]
+    fn every_occurrence_is_selected_at_once_and_edits_together() {
+        let mut doc = document("total = total + total\nother\n");
+        run(&mut doc, Command::SelectAllOccurrences);
+        assert_eq!(doc.selection().count(), 3);
+        run(&mut doc, Command::InsertText("n".to_string()));
+        assert_eq!(doc.as_str(), "n = n + n\nother\n");
+    }
+
+    #[test]
+    fn a_caret_past_thousands_of_matches_keeps_its_own_occurrence() {
+        let mut doc = document(&"total\n".repeat(6_000));
+        let last = doc.as_str().len() - "total\n".len();
+        doc.set_selection(crate::Selection::caret(last));
+        run(&mut doc, Command::SelectAllOccurrences);
+        assert_eq!(doc.selection().count(), crate::limits::MAX_CURSORS);
+        run(&mut doc, Command::InsertText("x".to_string()));
+        assert!(
+            doc.as_str().ends_with("x\n"),
+            "the caret's own line changed"
+        );
+        assert!(
+            doc.as_str().starts_with("total\n"),
+            "the top was left alone"
+        );
+    }
+
+    #[test]
+    fn every_occurrence_of_the_word_under_the_caret_is_whole_words_only() {
+        let mut doc = document("n = total + subtotal\n");
+        doc.set_selection(crate::Selection::caret(5));
+        run(&mut doc, Command::SelectAllOccurrences);
+        run(&mut doc, Command::InsertText("sum".to_string()));
+        assert_eq!(doc.as_str(), "n = sum + subtotal\n");
     }
 
     #[test]

@@ -173,60 +173,6 @@ pub fn applied<'a>(base: &[&'a SessionRow], order: &[SessionId]) -> Vec<&'a Sess
     grouped(out)
 }
 
-/// Keep a drag inside its kind: a shell does not land among agents.
-#[must_use]
-pub fn clamp_gap(base: &[&SessionRow], from: SessionId, gap: usize) -> usize {
-    let Some(from_row) = base.iter().find(|row| row.id == from) else {
-        return gap;
-    };
-    let dragging_shell = is_shell(from_row);
-    let (mut start, mut end) = (0, base.len());
-    for (index, row) in base.iter().enumerate() {
-        if dragging_shell && !is_shell(row) {
-            end = index;
-            break;
-        }
-        if !dragging_shell && is_shell(row) {
-            start = index + 1;
-        }
-    }
-    gap.clamp(start, end)
-}
-
-/// Move a tab into a gap: 0 is before the first tab, length after the last.
-#[must_use]
-pub fn move_to_gap(order: &[SessionId], from: SessionId, gap: usize) -> Vec<SessionId> {
-    let mut next = order.to_vec();
-    let Some(from_index) = next.iter().position(|id| *id == from) else {
-        return next;
-    };
-    let bounded = gap.min(next.len());
-    let insert_at = if from_index < bounded {
-        bounded - 1
-    } else {
-        bounded
-    };
-    if insert_at == from_index {
-        return next;
-    }
-    next.remove(from_index);
-    next.insert(insert_at, from);
-    next
-}
-
-/// Which gap a pointer is in: the midpoint of each tab, then its slot.
-#[must_use]
-pub fn gap_at(rects: &[(SessionId, [f32; 4])], ids: &[SessionId], x: f32) -> usize {
-    for (index, id) in ids.iter().enumerate() {
-        if let Some((_, rect)) = rects.iter().find(|(candidate, _)| candidate == id)
-            && x < rect[0] + rect[2] / 2.0
-        {
-            return index;
-        }
-    }
-    ids.len()
-}
-
 #[derive(Clone, Debug)]
 pub struct Gesture {
     pub targets: Vec<SessionId>,
@@ -234,19 +180,6 @@ pub struct Gesture {
     pub index: usize,
     pub shown: bool,
     started: Instant,
-}
-
-#[derive(Clone, Debug)]
-pub struct Drag {
-    pub id: SessionId,
-    pub gap: usize,
-    original: Vec<SessionId>,
-}
-
-impl Drag {
-    fn from_id(id: SessionId, gap: usize, original: Vec<SessionId>) -> Self {
-        Self { id, gap, original }
-    }
 }
 
 #[derive(Default)]
@@ -257,9 +190,6 @@ pub struct Tabs {
     seeded: bool,
     mru: Vec<SessionId>,
     pub gesture: Option<Gesture>,
-    pub drag: Option<Drag>,
-    /// Each tab's laid-out rect, refreshed by the strip's layout pass.
-    pub rects: Vec<(SessionId, [f32; 4])>,
 }
 
 impl Tabs {
@@ -297,7 +227,6 @@ impl Tabs {
         });
         self.revision += 1;
         self.mru.retain(|id| live.contains(id));
-        self.rects.retain(|(id, _)| live.contains(id));
         if let Some(gesture) = &mut self.gesture {
             gesture.targets.retain(|id| live.contains(id));
             if gesture.targets.is_empty() {
@@ -305,13 +234,6 @@ impl Tabs {
             } else {
                 gesture.index = gesture.index.min(gesture.targets.len() - 1);
             }
-        }
-        if self
-            .drag
-            .as_ref()
-            .is_some_and(|drag| !live.contains(&drag.id))
-        {
-            self.drag = None;
         }
     }
 
@@ -334,34 +256,6 @@ impl Tabs {
 
     pub fn touch(&mut self, id: SessionId) {
         touch_mru(&mut self.mru, id);
-    }
-
-    pub fn note_rect(&mut self, id: SessionId, rect: [f32; 4]) {
-        match self
-            .rects
-            .iter_mut()
-            .find(|(candidate, _)| *candidate == id)
-        {
-            Some((_, existing)) => *existing = rect,
-            None => self.rects.push((id, rect)),
-        }
-    }
-
-    pub fn begin_drag(&mut self, id: SessionId, gap: usize, original: Vec<SessionId>) {
-        self.drag = Some(Drag::from_id(id, gap, original));
-    }
-
-    pub fn cancel_drag(&mut self) {
-        self.drag = None;
-    }
-
-    /// The order a release would store, or `None` when the pointer is still
-    /// in the gap the tab came from.
-    #[must_use]
-    pub fn dropped(&self) -> Option<Vec<SessionId>> {
-        let drag = self.drag.as_ref()?;
-        let moved = move_to_gap(&drag.original, drag.id, drag.gap);
-        (moved != drag.original).then_some(moved)
     }
 
     pub fn start_gesture(&mut self, targets: Vec<SessionId>, foreign_at: usize, index: usize) {
@@ -482,39 +376,6 @@ mod tests {
         assert_eq!(applied[0].id, ids[1]);
         assert_eq!(applied[1].id, ids[0]);
         assert_eq!(applied.len(), base.len(), "an unknown id is ignored");
-    }
-
-    #[test]
-    fn a_tab_moves_into_the_gap_under_the_pointer() {
-        let order = vec![id(1), id(2), id(3)];
-        assert_eq!(move_to_gap(&order, id(1), 3), vec![id(2), id(3), id(1)]);
-        assert_eq!(move_to_gap(&order, id(3), 0), vec![id(3), id(1), id(2)]);
-        assert_eq!(move_to_gap(&order, id(2), 1), order);
-        assert_eq!(move_to_gap(&order, id(2), 2), order);
-    }
-
-    #[test]
-    fn a_drag_stays_inside_its_kind() {
-        let state = state();
-        let base = crate::app::rows_in_strip(&state.rows, state.workspaces.first().map(|w| w.id));
-        let shells: Vec<&SessionRow> = base.iter().copied().filter(|row| is_shell(row)).collect();
-        let agents: Vec<&SessionRow> = base.iter().copied().filter(|row| !is_shell(row)).collect();
-        if let Some(shell) = shells.first().filter(|_| !agents.is_empty()) {
-            let gap = clamp_gap(&base, shell.id, base.len());
-            assert!(gap <= shells.len(), "a shell cannot pass the agent group");
-        }
-    }
-
-    #[test]
-    fn a_gap_is_the_midpoint_between_tabs() {
-        let rects = [
-            (id(1), [0.0, 0.0, 100.0, 30.0]),
-            (id(2), [102.0, 0.0, 100.0, 30.0]),
-        ];
-        let ids = [id(1), id(2)];
-        assert_eq!(gap_at(&rects, &ids, 10.0), 0);
-        assert_eq!(gap_at(&rects, &ids, 60.0), 1);
-        assert_eq!(gap_at(&rects, &ids, 500.0), 2);
     }
 
     #[test]

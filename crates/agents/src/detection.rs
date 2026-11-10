@@ -12,7 +12,7 @@ use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::sync::mpsc::{self, RecvTimeoutError};
 use std::thread;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use domain::{
     AgentDescriptor, DetectionResult, DetectionStatus, ResolvedEnvironment, Timestamp, VersionProbe,
@@ -212,22 +212,29 @@ fn run_args(
     });
 
     let timeout = Duration::from_millis(timeout_ms);
+    let deadline = Instant::now() + timeout;
     match rx.recv_timeout(timeout) {
-        Ok((stdout, stderr)) => match child.wait() {
-            Ok(status) if status.success() => ProbeOutcome::Completed { stdout, stderr },
-            Ok(status) => ProbeOutcome::Failed(std::io::Error::other(format!(
+        // Closed pipes do not prove an exit: a program can close both and
+        // keep running, so the wait is bounded by the same deadline.
+        Ok((stdout, stderr)) => match wait_until(&mut child, deadline) {
+            Some(Ok(status)) if status.success() => ProbeOutcome::Completed { stdout, stderr },
+            Some(Ok(status)) => ProbeOutcome::Failed(std::io::Error::other(format!(
                 "version probe exited with {status}"
             ))),
-            Err(error) => ProbeOutcome::Failed(error),
+            Some(Err(error)) => ProbeOutcome::Failed(error),
+            None => {
+                kill_grouped_child(child);
+                ProbeOutcome::TimedOut
+            }
         },
         Err(RecvTimeoutError::Timeout) => {
             // A hung probe: killing the group closes the pipes so the reader
             // and notifier threads unwind on their own.
-            kill_grouped_child(&mut child);
+            kill_grouped_child(child);
             ProbeOutcome::TimedOut
         }
         Err(RecvTimeoutError::Disconnected) => {
-            kill_grouped_child(&mut child);
+            kill_grouped_child(child);
             ProbeOutcome::Failed(std::io::Error::other(
                 "version probe reader thread disconnected",
             ))
@@ -283,7 +290,7 @@ fn shebang(program: &Path) -> Option<Shebang> {
 ///
 /// A wrapper script that does not `exec` leaves its own child holding the
 /// pipes; killing only the wrapper would strand that descendant.
-pub(crate) fn kill_grouped_child(child: &mut Child) {
+pub(crate) fn kill_grouped_child(mut child: Child) {
     #[cfg(unix)]
     {
         unsafe extern "C" {
@@ -296,7 +303,57 @@ pub(crate) fn kill_grouped_child(child: &mut Child) {
         }
     }
     let _ = child.kill();
-    let _ = child.wait();
+    // SIGKILL lands at once for almost every process; one in uninterruptible
+    // sleep dies only when that sleep ends, and is reaped on its own thread so
+    // the prober does not wait with it.
+    if wait_until(&mut child, Instant::now()).is_some() {
+        return;
+    }
+    let slot = std::sync::Arc::new(std::sync::Mutex::new(Some(child)));
+    let theirs = std::sync::Arc::clone(&slot);
+    let spawned = thread::Builder::new()
+        .name("probe-reap".into())
+        .spawn(move || reap(&theirs));
+    if spawned.is_err() {
+        // No thread to hand it to: an unreaped child is a zombie for the
+        // daemon's lifetime, so this caller waits instead.
+        reap(&slot);
+    }
+}
+
+fn reap(slot: &std::sync::Mutex<Option<Child>>) {
+    let child = slot
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .take();
+    if let Some(mut child) = child {
+        let _ = child.wait();
+    }
+}
+
+/// The child's exit status once it has one, or `None` at `deadline`.
+///
+/// `try_wait` has nothing to block on, so this polls; the probe's own
+/// deadline bounds it, with a short grace when the pipes closed at the wire.
+fn wait_until(
+    child: &mut Child,
+    deadline: Instant,
+) -> Option<std::io::Result<std::process::ExitStatus>> {
+    const STEP: Duration = Duration::from_millis(5);
+    const GRACE: Duration = Duration::from_millis(200);
+    let deadline = deadline.max(Instant::now() + GRACE);
+    loop {
+        match child.try_wait() {
+            Ok(Some(status)) => return Some(Ok(status)),
+            Err(error) => return Some(Err(error)),
+            Ok(None) => {}
+        }
+        let now = Instant::now();
+        if now >= deadline {
+            return None;
+        }
+        thread::sleep(STEP.min(deadline - now));
+    }
 }
 
 /// Read a captured pipe into a buffer, tolerating read errors.
@@ -399,6 +456,27 @@ mod tests {
             }
             other => panic!("expected Installed via cursor-agent, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn a_probe_that_closes_its_pipes_and_lingers_times_out() {
+        let dir = tempfile::tempdir().unwrap();
+        let program = write_script(
+            dir.path(),
+            "lingers",
+            "#!/bin/sh\nexec >&- 2>&-\n/bin/sleep 30\n",
+        );
+        let env = env_with_path(vec![dir.path().to_path_buf()]);
+        let started = Instant::now();
+        let outcome = run_args(&program, &[], 300, &env);
+        assert!(
+            matches!(outcome, ProbeOutcome::TimedOut),
+            "closed pipes are not an exit"
+        );
+        assert!(
+            started.elapsed() < Duration::from_secs(5),
+            "the wait is bounded by the probe's deadline"
+        );
     }
 
     #[test]

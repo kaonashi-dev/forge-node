@@ -497,7 +497,7 @@ pub fn variant(name: &str, palette: Palette, contrast: u8) -> CustomTheme {
 /// Contrast as a continuous control: a 0–1 track position and the 0–100
 /// level `with_contrast` takes.
 // Settings › Appearance moves to a slider separately; until then only tests call these.
-#[cfg_attr(not(test), allow(dead_code))]
+#[cfg_attr(not(test), allow(dead_code, reason = "only tests call the slider yet"))]
 pub mod slider {
     use super::{CustomTheme, DEFAULT_CONTRAST, variant};
 

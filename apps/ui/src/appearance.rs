@@ -186,14 +186,14 @@ fn card(k: &Kit, palette: &custom::Palette, label: &str, note: Option<&str>, cho
     let window = row()
         .h(52.0)
         .w_full()
-        .gap(6.0)
+        .gap(crate::ds::SPACE_3)
         .padding(6.0)
-        .radius(6.0)
+        .radius(k.radius.md)
         .fill(c(&palette.rail))
         .child(
             col()
                 .w(28.0)
-                .gap(4.0)
+                .gap(crate::ds::SPACE_2)
                 .child(bar(&palette.surface_hi))
                 .child(bar(&palette.accent))
                 .child(bar(&palette.surface_hi)),
@@ -201,14 +201,14 @@ fn card(k: &Kit, palette: &custom::Palette, label: &str, note: Option<&str>, cho
         .child(
             el().grow(1.0)
                 .h_full()
-                .radius(4.0)
+                .radius(k.radius.sm)
                 .fill(c(&palette.bg))
                 .border(
                     1.0,
                     c(palette.border.as_deref().unwrap_or(&palette.surface)),
                 ),
         );
-    let mut name = row().gap(6.0).items_center().child(
+    let mut name = row().gap(crate::ds::SPACE_3).items_center().child(
         text(label.to_string())
             .font(k.ty.small)
             .color(k.c.text_base)
@@ -225,9 +225,9 @@ fn card(k: &Kit, palette: &custom::Palette, label: &str, note: Option<&str>, cho
     }
     col()
         .w(132.0)
-        .gap(6.0)
+        .gap(crate::ds::SPACE_3)
         .padding(6.0)
-        .radius(8.0)
+        .radius(k.radius.lg)
         .border(
             if chosen { 2.0 } else { 1.0 },
             if chosen {
@@ -262,7 +262,7 @@ pub fn section(s: &AppState, k: &Kit) -> El {
     let mut cards = row()
         .key("theme-options")
         .w_full()
-        .gap(8.0)
+        .gap(crate::ds::SPACE_4)
         .flex_wrap()
         .role("radiogroup")
         .label("Theme");
@@ -365,7 +365,7 @@ pub fn section(s: &AppState, k: &Kit) -> El {
         .key("theme-download");
     let mut view = col()
         .key("appearance")
-        .gap(12.0)
+        .gap(crate::ds::SPACE_5)
         .child(
             row()
                 .items_center()
@@ -380,7 +380,7 @@ pub fn section(s: &AppState, k: &Kit) -> El {
         .child(cards)
         .child(
             row()
-                .gap(4.0)
+                .gap(crate::ds::SPACE_2)
                 .child(customize)
                 .child(import)
                 .child(download),
@@ -395,7 +395,7 @@ pub fn section(s: &AppState, k: &Kit) -> El {
         .map_or(custom::DEFAULT_CONTRAST, CustomTheme::contrast);
     let mut swatches = row()
         .key("accent-swatches")
-        .gap(8.0)
+        .gap(crate::ds::SPACE_4)
         .items_center()
         .role("radiogroup")
         .label("Accent");
@@ -426,7 +426,7 @@ pub fn section(s: &AppState, k: &Kit) -> El {
     }
     view = view.child(
         row()
-            .gap(12.0)
+            .gap(crate::ds::SPACE_5)
             .items_center()
             .child(text("Accent").font(k.ty.small_medium).color(k.c.text_base))
             .child(swatches)
@@ -463,7 +463,7 @@ pub fn section(s: &AppState, k: &Kit) -> El {
 
 fn controls(s: &AppState, k: &Kit, active: Option<&CustomTheme>, contrast: u8) -> El {
     let dark = k.dark;
-    let mut rows = col().key("theme-controls").gap(8.0);
+    let mut rows = col().key("theme-controls").gap(crate::ds::SPACE_4);
     for (index, (key, label, id)) in COLORS.iter().copied().enumerate() {
         let shown = active.map_or("#000000", |theme| color_of(theme.origin(), key));
         let commit = move |s: &mut AppState| {
@@ -512,7 +512,10 @@ fn controls(s: &AppState, k: &Kit, active: Option<&CustomTheme>, contrast: u8) -
         );
     }
     if let Some(theme) = active {
-        let mut ansi = row().key("theme-ansi").gap(4.0).items_center();
+        let mut ansi = row()
+            .key("theme-ansi")
+            .gap(crate::ds::SPACE_2)
+            .items_center();
         for color in &theme.origin().ansi {
             ansi = ansi.child(swatch(k, color, 12.0));
         }
@@ -584,7 +587,7 @@ fn controls(s: &AppState, k: &Kit, active: Option<&CustomTheme>, contrast: u8) -
         .child(
             el().absolute(180.0 * level - 6.0, 4.0)
                 .size(12.0, 12.0)
-                .radius(6.0)
+                .radius(k.radius.md)
                 .fill(k.c.text_strong)
                 .border(1.0, k.c.border_strong),
         );
@@ -662,7 +665,7 @@ fn controls(s: &AppState, k: &Kit, active: Option<&CustomTheme>, contrast: u8) -
         .build(k)
         .key("theme-copy");
     rows.child(paste)
-        .child(row().gap(6.0).child(apply).child(copy))
+        .child(row().gap(crate::ds::SPACE_3).child(apply).child(copy))
 }
 
 #[cfg(test)]

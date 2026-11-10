@@ -43,16 +43,19 @@ impl AppState {
 }
 
 pub fn section(s: &AppState, k: &Kit) -> El {
-    let mut page = col().key("keyboard-keymap").w_full().gap(16.0);
+    let mut page = col()
+        .key("keyboard-keymap")
+        .w_full()
+        .gap(crate::ds::SPACE_6);
 
     let conflicts = s.keymap.conflicts();
     if !conflicts.is_empty() {
-        let mut list = col().key("keymap-conflicts").gap(6.0);
+        let mut list = col().key("keymap-conflicts").gap(crate::ds::SPACE_3);
         for conflict in conflicts {
             list = list.child(
                 row()
                     .key(format!("keymap-conflict-{}", conflict.label()))
-                    .gap(8.0)
+                    .gap(crate::ds::SPACE_4)
                     .child(
                         text(conflict.label())
                             .font(k.ty.mono)
@@ -182,7 +185,7 @@ fn table(s: &AppState, k: &Kit) -> El {
             .w_full()
             .h(30.0)
             .px(8.0)
-            .radius(5.0)
+            .radius(k.radius.sm)
             .items_center()
             .fill(if index % 2 == 0 {
                 k.c.surface_hover

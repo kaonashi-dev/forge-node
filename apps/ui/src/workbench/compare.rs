@@ -352,7 +352,7 @@ fn file_head(s: &AppState, look: &Look, index: usize) -> El {
         .w_full()
         .h(ROW_H)
         .px(6.0)
-        .gap(6.0)
+        .gap(crate::ds::SPACE_3)
         .items_center()
         .fill(look.surface)
         .hover(look.surface)
@@ -408,7 +408,7 @@ fn cell(look: &Look, number: Option<u32>, patch_row: Option<&Row>, key: String) 
         .grow(1.0)
         .min_w(0.0)
         .h(ROW_H)
-        .gap(4.0)
+        .gap(crate::ds::SPACE_2)
         .items_center()
         .fill(fill)
         .child(
@@ -444,7 +444,7 @@ fn unified_row(s: &AppState, look: &Look, file: usize, at: usize) -> El {
         .key(format!("compare-unified-{file}-{at}"))
         .w_full()
         .h(ROW_H)
-        .gap(4.0)
+        .gap(crate::ds::SPACE_2)
         .items_center()
         .fill(fill);
     if let Some(after) = after {
@@ -554,7 +554,7 @@ fn display_row(s: &AppState, look: &Look, index: usize) -> El {
                 .key(format!("compare-commit-{}", commit.short_id))
                 .h(18.0)
                 .px(8.0)
-                .gap(8.0)
+                .gap(crate::ds::SPACE_4)
                 .items_center()
                 .child(
                     text(commit.short_id.clone())
@@ -642,7 +642,7 @@ fn head(s: &AppState, k: &Kit, layer: &mut Vec<El>) -> El {
         .w_full()
         .h(36.0)
         .px(12.0)
-        .gap(8.0)
+        .gap(crate::ds::SPACE_4)
         .items_center()
         .child(text(branch).font(k.ty.small_medium).color(k.c.text_base))
         .child(text("→").font(k.ty.small).color(k.c.text_faint))
@@ -729,7 +729,7 @@ fn body(s: &AppState, k: &Kit) -> El {
             .h(26.0)
             .px(8.0)
             .items_center()
-            .radius(5.0)
+            .radius(k.radius.sm)
             .fill(if all_selected {
                 k.c.surface_hover
             } else {
@@ -750,9 +750,9 @@ fn body(s: &AppState, k: &Kit) -> El {
                 .w_full()
                 .h(26.0)
                 .px(8.0)
-                .gap(6.0)
+                .gap(crate::ds::SPACE_3)
                 .items_center()
-                .radius(5.0)
+                .radius(k.radius.sm)
                 .fill(if selected {
                     k.c.surface_hover
                 } else {
@@ -810,7 +810,7 @@ fn body(s: &AppState, k: &Kit) -> El {
                 .h(26.0)
                 .px(8.0)
                 .items_center()
-                .radius(4.0)
+                .radius(k.radius.sm)
                 .hover(k.c.hover)
                 .on_press(|s: &mut AppState| s.workbench.compare.toggle_commits())
                 .child(text(label).font(k.ty.text_xsmall).color(k.c.text_muted)),

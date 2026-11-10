@@ -24,6 +24,9 @@ use client::RowDamage;
 /// The primary pane's effect mark; the split column's is the next one.
 pub const MARK_BASE: u32 = 0x100;
 pub const PANES: usize = 2;
+/// Rune's isolated-layer target (`render::layers::FORMAT` is crate-private): an
+/// effect slot inside a partial-opacity ancestor is drawn in this format.
+const LAYER_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba16Float;
 /// Underline slots for a ⌘-hovered link: one per row a soft wrap joins.
 const LINK_SLOTS: usize = 17;
 /// Geist Mono at a 1.35 line height. 8 × 18 pt is 13.3 pt type rather
@@ -202,6 +205,20 @@ fn make_pane_gpu(device: &wgpu::Device, cols: usize, rows: usize) -> PaneGpu {
         uploaded_scroll: None,
         extras_key: u64::MAX,
     }
+}
+
+/// A fresh atlas has no rows from the old one, so every row and the extras
+/// must be encoded again before the next draw.
+fn reset_pane_uploads(pg: &mut PaneGpu) {
+    pg.uploaded.iter_mut().for_each(|u| *u = Uploaded::Unset);
+    pg.extras_key = u64::MAX;
+}
+
+/// The atlas holds glyphs rasterized at the window's scale only. A slot an
+/// ancestor scales (an enter animation) would stretch them, so it draws
+/// nothing until that scale returns to 1; the atlas is never rebuilt for it.
+fn scale_matches(site: f32, atlas: f32) -> bool {
+    (site - atlas).abs() <= 1e-4
 }
 
 fn pipeline(gpu: &mut Gpu, device: &wgpu::Device, format: wgpu::TextureFormat) -> usize {
@@ -740,7 +757,9 @@ impl Compositor<AppState> for Terminal {
         }
         let shared = Arc::clone(&self.shared);
         let split = shared.beside().cloned();
-        let gpu = self.gpu.as_mut().unwrap();
+        let Some(gpu) = self.gpu.as_mut() else {
+            return;
+        };
         let misses0 = gpu.atlas.misses;
 
         // Compared as `&str`, so a frame whose theme did not change allocates nothing.
@@ -796,10 +815,15 @@ impl Compositor<AppState> for Terminal {
         if gpu.atlas.generation != self.last_atlas_gen {
             self.last_atlas_gen = gpu.atlas.generation;
             for pg in gpu.panes.iter_mut().flatten() {
-                pg.uploaded.iter_mut().for_each(|u| *u = Uploaded::Unset);
+                reset_pane_uploads(pg);
+            }
+            shared.request_redraw();
+            if let Some(split) = &split {
+                split.request_redraw();
             }
         }
-        let pipe = pipeline(gpu, device, f.format);
+        pipeline(gpu, device, f.format);
+        pipeline(gpu, device, LAYER_FORMAT);
         let new_glyphs = gpu.atlas.misses != misses0;
         let a1 = alloc::count();
         let t1 = Instant::now();
@@ -810,6 +834,7 @@ impl Compositor<AppState> for Terminal {
         let mut drawn_instances = 0u64;
         let mut hook_allocs = 0u64;
         let gpu = &*gpu;
+        let atlas_scale = gpu.atlas.scale;
         let cell_w = gpu.atlas.cell_w;
         let cell_h = gpu.atlas.cell_h;
         f.ui.draw_with(
@@ -823,11 +848,24 @@ impl Compositor<AppState> for Terminal {
                     (1, Some(split)) => &**split,
                     _ => return,
                 };
+                if !scale_matches(s.scale, atlas_scale) {
+                    return;
+                }
                 let r = s.instance.rect;
-                if let Some((cols, rows)) = grid_cells(r[2], r[3], cell_w, cell_h) {
-                    replica.set_measured(cols, rows);
+                if let Some((cols, rows)) = grid_cells(r[2], r[3], cell_w, cell_h)
+                    && replica.set_measured(cols, rows)
+                {
+                    replica.request_redraw();
                 }
                 let Some(pg) = gpu.panes[idx].as_ref() else {
+                    return;
+                };
+                let Some(pipe) = gpu
+                    .pipelines
+                    .iter()
+                    .find(|(format, _)| *format == s.format)
+                    .map(|(_, pipe)| pipe)
+                else {
                     return;
                 };
                 let h0 = alloc::count();
@@ -840,7 +878,7 @@ impl Compositor<AppState> for Terminal {
                     pad: 0.0,
                 };
                 let count = pg.insts.len() as u32;
-                pass.set_pipeline(&gpu.pipelines[pipe].1);
+                pass.set_pipeline(pipe);
                 pass.set_bind_group(0, &gpu.bind, &[]);
                 pass.set_vertex_buffer(0, pg.buffer.slice(..));
                 pass.set_immediates(0, bytemuck::bytes_of(&params));
@@ -858,7 +896,10 @@ impl Compositor<AppState> for Terminal {
             }
         }
         let us = |a: Instant, b: Instant| b.duration_since(a).as_secs_f64() * 1e6;
-        let mut st = self.stats.lock().unwrap();
+        let mut st = self
+            .stats
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         st.frames += 1;
         st.draw_calls += draws;
         st.instances_drawn += drawn_instances;
@@ -898,7 +939,12 @@ impl Compositor<AppState> for Terminal {
     }
 
     fn summary(&mut self, _device: &wgpu::Device) -> Option<String> {
-        Some(self.stats.lock().unwrap().report())
+        Some(
+            self.stats
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .report(),
+        )
     }
 }
 
@@ -926,6 +972,35 @@ pub fn grid_cells(width: f32, height: f32, cell_w: f32, cell_h: f32) -> Option<(
     };
     let (cols, rows) = (whole(width, cell_w), whole(height, cell_h));
     (cols > 0 && rows > 0).then_some((cols, rows))
+}
+
+#[cfg(test)]
+mod upload_tests {
+    use super::*;
+
+    #[test]
+    fn a_new_atlas_generation_reuploads_every_row_and_the_extras() {
+        let Ok(gpu) = rune::render::Gpu::try_with_features(
+            wgpu::Instance::default(),
+            None,
+            wgpu::Features::empty(),
+        ) else {
+            return;
+        };
+        let mut pane = make_pane_gpu(&gpu.device, 4, 2);
+        pane.uploaded[0] = Uploaded::Blank;
+        pane.extras_key = 7;
+        reset_pane_uploads(&mut pane);
+        assert!(pane.uploaded.iter().all(|u| matches!(u, Uploaded::Unset)));
+        assert_eq!(pane.extras_key, u64::MAX);
+    }
+
+    #[test]
+    fn a_slot_at_another_scale_draws_nothing() {
+        assert!(scale_matches(2.0, 2.0));
+        assert!(scale_matches(2.0 + 1e-5, 2.0));
+        assert!(!scale_matches(1.5, 2.0));
+    }
 }
 
 #[cfg(test)]

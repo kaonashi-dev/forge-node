@@ -118,7 +118,11 @@ pub fn view(s: &AppState, k: &Kit) -> El {
                 note(k, "project-search-none", "Nothing matches that.")
             }
             Some(results) => {
-                let mut list = col().key("project-search-files").w_full().gap(6.0).px(8.0);
+                let mut list = col()
+                    .key("project-search-files")
+                    .w_full()
+                    .gap(crate::ds::SPACE_3)
+                    .px(8.0);
                 for file in &results.files {
                     list = list.child(file_group(s, k, file));
                 }
@@ -151,8 +155,8 @@ fn file_group(s: &AppState, k: &Kit, file: &FileHits) -> El {
         .w_full()
         .h(26.0)
         .px(6.0)
-        .gap(6.0)
-        .radius(5.0)
+        .gap(crate::ds::SPACE_3)
+        .radius(k.radius.sm)
         .items_center()
         .hover(k.c.hover)
         .on_press(move |s: &mut AppState| s.workbench.search.toggle(&path))
@@ -199,7 +203,7 @@ fn file_group(s: &AppState, k: &Kit, file: &FileHits) -> El {
             .w_full()
             .ml(18.0)
             .py(2.0)
-            .radius(5.0)
+            .radius(k.radius.sm)
             .fill(k.c.surface_weak);
         for line in excerpt {
             lines = lines.child(excerpt_line(k, &file.path, line));

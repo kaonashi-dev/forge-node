@@ -181,7 +181,7 @@ fn small_icon(
         .role("button")
         .label(label)
         .size(22.0, 22.0)
-        .radius(5.0)
+        .radius(k.radius.sm)
         .center()
         .hover(k.c.hover)
         .on_press_tx(press)
@@ -190,7 +190,7 @@ fn small_icon(
 
 pub fn view(s: &AppState, k: &Kit) -> El {
     let now = domain::Timestamp::now();
-    let mut list = col().key("process-list").w_full().gap(12.0);
+    let mut list = col().key("process-list").w_full().gap(crate::ds::SPACE_5);
     if s.processes.is_empty() {
         list = list.child(
             text("Nothing running. Run an action from a checkout's row or the command palette.")
@@ -203,7 +203,7 @@ pub fn view(s: &AppState, k: &Kit) -> El {
         let mut section = col()
             .role("group")
             .label(group.project.clone())
-            .gap(2.0)
+            .gap(crate::ds::SPACE_1)
             .child(
                 text(group.project.clone())
                     .font(k.ty.small_medium)
@@ -218,7 +218,7 @@ pub fn view(s: &AppState, k: &Kit) -> El {
                 Phase::Waiting => k.c.icon_muted,
                 Phase::Exited(_) => k.c.icon_faint,
             };
-            let mut side = row().gap(2.0).items_center().child(
+            let mut side = row().gap(crate::ds::SPACE_1).items_center().child(
                 text(status(process, &now))
                     .font(k.ty.text_xsmall)
                     .color(k.c.text_faint),
@@ -264,8 +264,8 @@ pub fn view(s: &AppState, k: &Kit) -> El {
                     .w_full()
                     .h(28.0)
                     .px(6.0)
-                    .gap(6.0)
-                    .radius(5.0)
+                    .gap(crate::ds::SPACE_3)
+                    .radius(k.radius.sm)
                     .items_center()
                     .hover(k.c.hover)
                     .child(
@@ -286,7 +286,7 @@ pub fn view(s: &AppState, k: &Kit) -> El {
                             .description(reason)
                             .grow(1.0)
                             .min_w(0.0)
-                            .gap(6.0)
+                            .gap(crate::ds::SPACE_3)
                             .items_center()
                             .on_press(move |s: &mut AppState| s.focus_session(id))
                             .child(
@@ -313,7 +313,7 @@ pub fn view(s: &AppState, k: &Kit) -> El {
         .w_full()
         .h_full()
         .min_h(0.0)
-        .gap(8.0)
+        .gap(crate::ds::SPACE_4)
         .child(
             text("Processes")
                 .font(k.ty.small_medium)
@@ -328,6 +328,7 @@ pub fn view(s: &AppState, k: &Kit) -> El {
                 .scroll(ScrollSpec {
                     stick_bottom: false,
                 })
+                .on_wheel(crate::pages::wheel)
                 .child(list.child(el().h(1.0))),
         )
 }

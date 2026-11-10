@@ -553,10 +553,7 @@ impl AppState {
 }
 
 fn section(k: &Kit, title: impl Into<String>) -> El {
-    text(title.into())
-        .font(k.ty.small_medium)
-        .color(k.c.text_muted)
-        .pt(6.0)
+    crate::ds::section_header(k, &title.into(), None, None)
 }
 
 fn note(k: &Kit, message: impl Into<String>) -> El {
@@ -576,7 +573,7 @@ fn setup(s: &AppState, k: &Kit) -> El {
         .as_ref()
         .map(|store| reviewers(&store.providers))
         .unwrap_or_default();
-    let mut body = col().key("review-setup").w_full().gap(8.0);
+    let mut body = col().key("review-setup").w_full().gap(crate::ds::SPACE_4);
     if offered.is_empty() {
         body = body.child(note(k, "No installed agent can run a Forge Review."));
     }
@@ -646,7 +643,7 @@ fn setup(s: &AppState, k: &Kit) -> El {
                 rules = rules.child(
                     row()
                         .w_full()
-                        .gap(6.0)
+                        .gap(crate::ds::SPACE_3)
                         .child(
                             text(format!("{:?}", rule.severity))
                                 .font(k.ty.text_xsmall)
@@ -685,18 +682,22 @@ fn setup(s: &AppState, k: &Kit) -> El {
         && !s.code_review.starting
         && (!custom || !s.code_review.instructions.text.trim().is_empty());
     body = body.child(
-        row().w_full().gap(8.0).child(el().grow(1.0)).child(
-            Button::new(if s.code_review.starting {
-                "Starting…"
-            } else {
-                "Review changes"
-            })
-            .variant(ButtonVariant::Contrast)
-            .disabled(!ready)
-            .on_press(|s: &mut AppState| s.start_code_review())
-            .build(k)
-            .key("review-start"),
-        ),
+        row()
+            .w_full()
+            .gap(crate::ds::SPACE_4)
+            .child(el().grow(1.0))
+            .child(
+                Button::new(if s.code_review.starting {
+                    "Starting…"
+                } else {
+                    "Review changes"
+                })
+                .variant(ButtonVariant::Contrast)
+                .disabled(!ready)
+                .on_press(|s: &mut AppState| s.start_code_review())
+                .build(k)
+                .key("review-start"),
+            ),
     );
     body
 }
@@ -791,36 +792,40 @@ fn findings(s: &AppState, k: &Kit, run: &ReviewRun) -> El {
         return col();
     }
     let groups = group_findings(&report.findings, s.code_review.grouping);
-    let mut body = col().key("review-findings").w_full().gap(8.0).child(
-        row()
-            .w_full()
-            .items_center()
-            .child(section(
-                k,
-                format!(
-                    "{} finding{}",
-                    report.findings.len(),
-                    if report.findings.len() == 1 { "" } else { "s" }
+    let mut body = col()
+        .key("review-findings")
+        .w_full()
+        .gap(crate::ds::SPACE_4)
+        .child(
+            row()
+                .w_full()
+                .items_center()
+                .child(section(
+                    k,
+                    format!(
+                        "{} finding{}",
+                        report.findings.len(),
+                        if report.findings.len() == 1 { "" } else { "s" }
+                    ),
+                ))
+                .child(el().grow(1.0))
+                .child(
+                    Button::new(match s.code_review.grouping {
+                        Grouping::Severity => "By severity",
+                        Grouping::File => "By file",
+                    })
+                    .variant(ButtonVariant::GhostMuted)
+                    .control_size(ControlSize::Small)
+                    .on_press(|s: &mut AppState| {
+                        s.code_review.grouping = match s.code_review.grouping {
+                            Grouping::Severity => Grouping::File,
+                            Grouping::File => Grouping::Severity,
+                        };
+                    })
+                    .build(k)
+                    .key("review-grouping"),
                 ),
-            ))
-            .child(el().grow(1.0))
-            .child(
-                Button::new(match s.code_review.grouping {
-                    Grouping::Severity => "By severity",
-                    Grouping::File => "By file",
-                })
-                .variant(ButtonVariant::GhostMuted)
-                .control_size(ControlSize::Small)
-                .on_press(|s: &mut AppState| {
-                    s.code_review.grouping = match s.code_review.grouping {
-                        Grouping::Severity => Grouping::File,
-                        Grouping::File => Grouping::Severity,
-                    };
-                })
-                .build(k)
-                .key("review-grouping"),
-            ),
-    );
+        );
     for (key, group) in groups {
         body = body.child(section(k, key));
         for finding in group {
@@ -843,14 +848,14 @@ fn findings(s: &AppState, k: &Kit, run: &ReviewRun) -> El {
             let mut item = col()
                 .key(format!("review-finding-row-{}", finding.id))
                 .w_full()
-                .gap(4.0)
+                .gap(crate::ds::SPACE_2)
                 .padding(8.0)
-                .radius(5.0)
+                .radius(k.radius.sm)
                 .fill(k.c.surface_hover)
                 .child(
                     row()
                         .w_full()
-                        .gap(8.0)
+                        .gap(crate::ds::SPACE_4)
                         .items_center()
                         .child(
                             text(format!("{:?}", finding.severity))
@@ -894,7 +899,7 @@ fn findings(s: &AppState, k: &Kit, run: &ReviewRun) -> El {
                     col()
                         .w_full()
                         .padding(8.0)
-                        .radius(4.0)
+                        .radius(k.radius.sm)
                         .fill(k.c.bg_deep)
                         .child(
                             text(suggestion.clone())
@@ -915,7 +920,7 @@ fn coverage(k: &Kit, run: &ReviewRun) -> El {
     let mut body = col()
         .key("review-coverage")
         .w_full()
-        .gap(4.0)
+        .gap(crate::ds::SPACE_2)
         .child(section(k, "Coverage"))
         .child(note(
             k,
@@ -998,13 +1003,17 @@ pub fn view(s: &AppState, k: &Kit) -> El {
         Some(run) => {
             body = body.child(run_header(k, run, head));
             if running(run) {
-                let mut progress = col().key("review-progress").w_full().gap(6.0).child(
-                    Progress::new(Some(stage_progress(run.stage) / 100.0))
-                        .label(stage_label(run.stage))
-                        .show_value()
-                        .build(k),
-                );
-                let mut actions = row().gap(6.0);
+                let mut progress = col()
+                    .key("review-progress")
+                    .w_full()
+                    .gap(crate::ds::SPACE_3)
+                    .child(
+                        Progress::new(Some(stage_progress(run.stage) / 100.0))
+                            .label(stage_label(run.stage))
+                            .show_value()
+                            .build(k),
+                    );
+                let mut actions = row().gap(crate::ds::SPACE_3);
                 if let Some(session) = run.session_id {
                     actions = actions.child(
                         Button::new("Show the reviewer session")

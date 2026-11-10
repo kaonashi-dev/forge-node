@@ -497,5 +497,11 @@ fn git(dir: &Path, args: &[&str]) -> Result<String, String> {
     if !out.success() {
         return Err(format!("git {}: {}", args.join(" "), out.stderr.trim()));
     }
+    if out.truncated {
+        return Err(format!(
+            "git {}: output over the capture budget",
+            args.join(" ")
+        ));
+    }
     Ok(out.stdout)
 }

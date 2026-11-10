@@ -4,9 +4,10 @@
 
 use domain::{ProjectGroupId, ProjectId, SessionId, Workspace, WorkspaceId, WorkspaceKind};
 use rune::{El, KeyEvent, ScrollSpec, Tx, col, el, row, text};
-use rune_kit::{Button, ButtonVariant, ControlSize, Dialog, Kit};
+use rune_kit::{Button, ButtonVariant, ControlSize, Kit};
 
 use crate::app::AppState;
+use crate::ds::{self, Emphasis, IconButtonSize, Row, Tone};
 use crate::menus::ButtonMenu;
 use crate::rail::{Rail, RowKind, Step};
 use crate::workbench::CenterMode;
@@ -70,19 +71,6 @@ pub fn removal_block(reason: &str) -> Vec<String> {
     }
 }
 
-/// The open pull request on this checkout's branch, as a suffix.
-fn pr_note(s: &AppState, workspace: &Workspace) -> String {
-    let Some(store) = &s.store else {
-        return String::new();
-    };
-    crate::sync::pull_request_for(
-        &store.pull_requests.pull_requests,
-        workspace.project_id,
-        workspace.branch.as_deref(),
-    )
-    .map_or_else(String::new, |pr| format!(" · {}", pr_label(pr)))
-}
-
 /// `#12 · draft · Title`.
 #[must_use]
 pub fn pr_label(pr: &domain::PullRequest) -> String {
@@ -132,9 +120,38 @@ pub fn status_line(workspace: &Workspace) -> String {
     parts.join(" · ")
 }
 
-fn small(label: &'static str, k: &Kit, key: String, press: impl Fn(&mut AppState) + 'static) -> El {
+/// A checkout's state as one chip. Nothing until git has answered, since
+/// unmeasured is not clean.
+#[must_use]
+pub fn checkout_chip(status: &domain::WorkspaceStatus) -> Option<(String, Tone)> {
+    status.measured_at?;
+    let sync: Vec<String> = [
+        status.ahead.filter(|n| *n > 0).map(|n| format!("↑{n}")),
+        status.behind.filter(|n| *n > 0).map(|n| format!("↓{n}")),
+    ]
+    .into_iter()
+    .flatten()
+    .collect();
+    let sync = sync.join(" ");
+    Some(match (status.dirty, sync.is_empty()) {
+        (true, true) => ("changes".to_string(), Tone::Warning),
+        (true, false) => (format!("changes {sync}"), Tone::Warning),
+        (false, true) => ("clean".to_string(), Tone::Neutral),
+        (false, false) => (sync, Tone::Info),
+    })
+}
+
+/// One of the launchers under the chosen checkout.
+fn launcher(
+    k: &Kit,
+    label: impl Into<String>,
+    glyph: &'static rune::Icon,
+    key: String,
+    press: impl Fn(&mut AppState) + 'static,
+) -> El {
     Button::new(label)
-        .variant(ButtonVariant::GhostMuted)
+        .icon(glyph)
+        .variant(ButtonVariant::Outline)
         .control_size(ControlSize::Small)
         .on_press(press)
         .build(k)
@@ -330,7 +347,7 @@ fn needs_you_block(s: &AppState, k: &Kit) -> Option<El> {
         .role("region")
         .label("Needs you")
         .w_full()
-        .gap(4.0);
+        .gap(crate::ds::SPACE_2);
     for session in waiting {
         let id = session.id;
         let place = store
@@ -359,13 +376,13 @@ fn needs_you_block(s: &AppState, k: &Kit) -> Option<El> {
                 .w_full()
                 .px(8.0)
                 .py(6.0)
-                .radius(6.0)
+                .radius(k.radius.md)
                 .fill(roles.needs_you.soft)
                 .hover(k.c.hover)
                 .on_press(move |s: &mut AppState| s.focus_session(id))
                 .child(
                     row()
-                        .gap(6.0)
+                        .gap(crate::ds::SPACE_3)
                         .items_center()
                         .child(
                             rune::icon(&crate::glyphs::NEEDS_YOU, 12.0)
@@ -394,6 +411,7 @@ fn needs_you_block(s: &AppState, k: &Kit) -> Option<El> {
 
 fn group_header(s: &AppState, k: &Kit, group: ProjectGroupId, projects: &[ProjectId]) -> El {
     let store = s.store.as_ref();
+    let roles = crate::theme::roles(k);
     let name = store
         .and_then(|store| store.project_groups.iter().find(|g| g.id == group))
         .map_or_else(String::new, |g| g.name.clone());
@@ -409,17 +427,29 @@ fn group_header(s: &AppState, k: &Kit, group: ProjectGroupId, projects: &[Projec
         });
     let id = format!("group:{target}");
     let fold = target.clone();
-    let mut line = row()
-        .key(format!("group-row-{group}"))
+    let mut line = Row::new(format!("group-row-{group}"), name)
         .role("treeitem")
-        .label(name.clone())
-        .w_full()
-        .gap(6.0)
-        .px(4.0)
-        .py(3.0)
-        .radius(5.0)
-        .items_center()
-        .hover(k.c.hover)
+        .emphasis(Emphasis::Quiet)
+        .height(s.chrome_metrics().row)
+        .leading(rune::icon(chevron(open), ds::ICON_SMALL).color(k.c.icon_faint))
+        .leading(
+            rune::icon(
+                if open {
+                    &crate::glyphs::FOLDER_OPEN
+                } else {
+                    &crate::glyphs::FILES
+                },
+                ds::ICON_ROW,
+            )
+            .color(k.c.icon_muted),
+        );
+    if asking {
+        line = line.trailing(
+            rune::icon(&crate::glyphs::NEEDS_YOU, ds::ICON_SMALL).color(roles.needs_you.solid),
+        );
+    }
+    let line = line
+        .build(k, &roles)
         .on_press(move |s: &mut AppState| {
             select_row(s, format!("group:{fold}"));
             toggle_fold(s, &fold);
@@ -429,40 +459,20 @@ fn group_header(s: &AppState, k: &Kit, group: ProjectGroupId, projects: &[Projec
         .on_key(rail_key)
         .on_secondary_press(move |s: &mut AppState, point, _| {
             crate::menus::open(s, crate::menus::Target::Group(group), point);
-        })
-        .child(
-            rune::icon(
-                if open {
-                    &crate::glyphs::FOLDER_OPEN
-                } else {
-                    &crate::glyphs::FILES
-                },
-                12.0,
-            )
-            .color(k.c.icon_muted),
-        )
-        .child(
-            text(name)
-                .font(k.ty.text_xsmall_medium)
-                .color(k.c.text_faint)
-                .truncate()
-                .min_w(0.0)
-                .grow(1.0),
-        );
-    if asking {
-        line = line.child(
-            rune::icon(&crate::glyphs::NEEDS_YOU, 12.0)
-                .color(crate::theme::roles(k).needs_you.solid),
-        );
-    }
+        });
     cursored(s, k, &id, line)
 }
 
-fn project_block(s: &AppState, k: &Kit, project: &domain::Project) -> El {
+fn project_block(
+    s: &AppState,
+    k: &Kit,
+    hues: &std::collections::BTreeMap<String, usize>,
+    project: &domain::Project,
+    depth: u8,
+) -> El {
     let Some(store) = &s.store else {
         return el();
     };
-    let hues = crate::menus::parse_hues(store.app_state_value(crate::menus::PROJECT_HUES_KEY));
     let roles = crate::theme::roles(k);
     let hue = hues.get(&project.id.to_string()).copied();
     let mark = project_mark(project);
@@ -472,12 +482,44 @@ fn project_block(s: &AppState, k: &Kit, project: &domain::Project) -> El {
     let workspaces = crate::rail::ordered(&store.workspaces, project_id, &s.projects.rail.order);
     let asking = !open && workspaces.iter().any(|w| wants_you(s, w.id));
     let fold = target.clone();
-    let mut head = row()
-        .key(format!("project-row-{project_id}"))
+    let menu = ButtonMenu::Project(project_id);
+    let mut head = Row::new(format!("project-row-{project_id}"), project.name.clone())
         .role("treeitem")
-        .label(project.name.clone())
-        .gap(10.0)
-        .items_center()
+        .indent(depth)
+        .height(s.chrome_metrics().row)
+        .emphasis(Emphasis::Strong)
+        .leading(rune::icon(chevron(open), ds::ICON_SMALL).color(k.c.icon_faint))
+        .leading(ds::avatar(k, &roles, hue, &mark))
+        .action(
+            ds::icon_button(
+                &crate::glyphs::PLUS,
+                format!("New worktree in {}", project.name),
+                IconButtonSize::Mini,
+            )
+            .on_press(move |s: &mut AppState| crate::branch_picker::open(s, project_id))
+            .build(k)
+            .key(format!("new-worktree-{project_id}")),
+        )
+        .action(
+            ds::icon_button(
+                &crate::glyphs::MORE_HORIZONTAL,
+                format!("More for {}", project.name),
+                IconButtonSize::Mini,
+            )
+            .expanded(s.menus.button.as_ref() == Some(&menu))
+            .on_press(move |s: &mut AppState| {
+                s.menus.button = Some(ButtonMenu::Project(project_id));
+            })
+            .build(k)
+            .key(menu.trigger()),
+        );
+    if asking {
+        head = head.trailing(
+            rune::icon(&crate::glyphs::NEEDS_YOU, ds::ICON_SMALL).color(roles.needs_you.solid),
+        );
+    }
+    let head = head
+        .build(k, &roles)
         .on_press(move |s: &mut AppState| {
             select_row(s, format!("project:{fold}"));
             toggle_fold(s, &fold);
@@ -487,62 +529,46 @@ fn project_block(s: &AppState, k: &Kit, project: &domain::Project) -> El {
         .on_key(rail_key)
         .on_secondary_press(move |s: &mut AppState, point, _| {
             crate::menus::open(s, crate::menus::Target::Project(project_id), point);
-        })
-        .child(crate::theme::preview::avatar(k, &roles, hue, &mark))
-        .child(
-            text(project.name.clone())
-                .font(k.ty.small_medium)
-                .color(k.c.text_muted)
-                .grow(1.0)
-                .truncate()
-                .min_w(0.0),
-        );
-    if asking {
-        head = head.child(rune::icon(&crate::glyphs::NEEDS_YOU, 12.0).color(roles.needs_you.solid));
-    }
-    head = head
-        .child(rune::icon(chevron(open), 12.0).color(k.c.icon_muted))
-        .child(small(
-            "+ Worktree",
-            k,
-            format!("new-worktree-{project_id}"),
-            move |s: &mut AppState| crate::branch_picker::open(s, project_id),
-        ));
+        });
     let mut block = col()
         .key(format!("project-{project_id}"))
         .role("group")
         .label(project.name.clone())
-        .gap(4.0)
+        .w_full()
+        .gap(ds::SPACE_1)
         .child(cursored(s, k, &format!("project:{target}"), head));
     if open {
         for workspace in workspaces {
-            block = block.child(workspace_row(s, k, workspace));
+            block = block.child(workspace_row(s, k, workspace, depth + 1));
         }
     }
     block
 }
 
 pub fn view(s: &AppState, k: &Kit) -> El {
-    let add = Button::new("+")
-        .variant(ButtonVariant::GhostMuted)
-        .control_size(ControlSize::Small)
-        .on_press(|s: &mut AppState| s.menus.button = Some(ButtonMenu::RailAdd))
-        .build(k)
-        .key(ButtonMenu::RailAdd.trigger())
-        .label("Add a project or a group");
+    let add = ds::icon_button(
+        &crate::glyphs::PLUS,
+        "Add a project or a group",
+        IconButtonSize::Mini,
+    )
+    .expanded(s.menus.button == Some(ButtonMenu::RailAdd))
+    .on_press(|s: &mut AppState| s.menus.button = Some(ButtonMenu::RailAdd))
+    .build(k)
+    .key(ButtonMenu::RailAdd.trigger());
     let Some(store) = &s.store else {
         return col()
             .key("projects")
-            .child(text("No replica yet.").font(k.ty.small));
+            .child(ds::Empty::new("projects-empty", "No replica yet").build(k));
     };
     let mut list = col()
         .key("project-list")
         .role("tree")
         .label("Projects, checkouts and sessions")
         .w_full()
-        .gap(14.0);
+        .gap(ds::SPACE_1);
+    let hues = crate::menus::parse_hues(store.app_state_value(crate::menus::PROJECT_HUES_KEY));
     for (group, projects) in crate::rail::grouped(store) {
-        let mut section = col().w_full().gap(10.0);
+        let mut section = col().w_full().gap(ds::SPACE_1);
         let open = match group {
             Some(group) => {
                 section = section
@@ -557,44 +583,36 @@ pub fn view(s: &AppState, k: &Kit) -> El {
             }
         };
         if open {
-            let mut children = col().w_full().gap(14.0);
-            if group.is_some() {
-                children = children.pl(8.0);
-            }
+            let depth = u8::from(group.is_some());
             for project in projects
                 .iter()
                 .filter_map(|id| store.projects.iter().find(|p| p.id == *id))
             {
-                children = children.child(project_block(s, k, project));
+                section = section.child(project_block(s, k, &hues, project, depth));
             }
-            section = section.child(children);
         }
         list = list.child(section);
     }
     if store.projects.is_empty() {
         list = list.child(
-            text("No projects. Add a folder to start.")
-                .font(k.ty.small)
-                .color(k.c.text_muted),
+            ds::Empty::new("projects-empty", "No projects")
+                .why("Add a folder to start.")
+                .build(k),
         );
     }
-    let mut column = col().key("projects").w_full().h_full().min_h(0.0).gap(8.0);
+    let mut column = col()
+        .key("projects")
+        .w_full()
+        .h_full()
+        .min_h(0.0)
+        .gap(ds::SPACE_4);
     if let Some(block) = needs_you_block(s, k) {
         column = column.child(block);
     }
     column
         .child(
-            row()
-                .key("projects-bar")
-                .w_full()
-                .items_center()
-                .child(
-                    text("Projects")
-                        .font(k.ty.small_medium)
-                        .color(k.c.text_base)
-                        .grow(1.0),
-                )
-                .child(add),
+            ds::section_header(k, "Projects", Some(store.projects.len()), Some(add))
+                .key("projects-bar"),
         )
         .child(
             col()
@@ -605,51 +623,53 @@ pub fn view(s: &AppState, k: &Kit) -> El {
                 .scroll(ScrollSpec {
                     stick_bottom: false,
                 })
+                .on_wheel(crate::pages::wheel)
                 .child(list),
         )
 }
 
-fn workspace_row(s: &AppState, k: &Kit, workspace: &Workspace) -> El {
-    let id = workspace.id;
-    let kind = match workspace.kind {
-        WorkspaceKind::Main => "main checkout",
-        _ => "worktree",
-    };
-    let branch = workspace
-        .branch
-        .clone()
-        .unwrap_or_else(|| "detached".into());
-    let fold = id.to_string();
-    let open = !s.projects.rail.folds.contains(&fold);
+/// The launchers under the chosen checkout: a shell, its changes, its files,
+/// its actions, and the actions pinned to it.
+fn launchers(s: &AppState, k: &Kit, id: WorkspaceId, depth: u8) -> El {
     let mut actions = row()
-        .gap(2.0)
+        .key(format!("launchers-{id}"))
+        .w_full()
+        .gap(ds::SPACE_2)
         .flex_wrap()
-        .child(small(
-            "Shell",
+        .pl(ds::SPACE_2 + f32::from(depth) * ds::INDENT)
+        .pt(ds::SPACE_3)
+        .pb(ds::SPACE_4)
+        .child(launcher(
             k,
+            "Shell",
+            &crate::glyphs::TERMINAL,
             format!("shell-{id}"),
             move |s: &mut AppState| s.shell_in(id),
         ))
-        .child(small(
-            "Git",
+        .child(launcher(
             k,
+            "Git",
+            &crate::glyphs::GIT,
             format!("changes-{id}"),
             move |s: &mut AppState| {
                 s.inspect(id, CenterMode::Changes);
             },
         ))
-        .child(small(
-            "Files",
+        .child(launcher(
             k,
+            "Files",
+            &crate::glyphs::FILES,
             format!("files-{id}"),
             move |s: &mut AppState| {
                 s.inspect(id, CenterMode::Files);
             },
         ))
         .child(
-            Button::new("▶")
-                .variant(ButtonVariant::GhostMuted)
+            Button::new("Run")
+                .icon(&crate::glyphs::PLAY)
+                .variant(ButtonVariant::Outline)
                 .control_size(ControlSize::Small)
+                .expanded(s.menus.button == Some(ButtonMenu::Run(id)))
                 .on_press(move |s: &mut AppState| s.menus.button = Some(ButtonMenu::Run(id)))
                 .build(k)
                 .key(ButtonMenu::Run(id).trigger())
@@ -665,37 +685,103 @@ fn workspace_row(s: &AppState, k: &Kit, workspace: &Workspace) -> El {
         let running = s.action_running(id, &action.id);
         let action_id = action.id;
         actions = actions.child(
-            Button::new(if running {
-                format!("● {}", action.label)
-            } else {
-                action.label.clone()
-            })
-            .variant(if running {
-                ButtonVariant::Outline
-            } else {
-                ButtonVariant::GhostMuted
-            })
-            .control_size(ControlSize::Small)
-            .on_press(move |s: &mut AppState| s.run_action(id, action_id))
-            .build(k)
-            .key(format!("action-{id}-{}", action.id)),
+            Button::new(action.label.clone())
+                .icon(if running {
+                    &crate::glyphs::STOP
+                } else {
+                    &crate::glyphs::PLAY
+                })
+                .variant(if running {
+                    ButtonVariant::Neutral
+                } else {
+                    ButtonVariant::Outline
+                })
+                .control_size(ControlSize::Small)
+                .on_press(move |s: &mut AppState| s.run_action(id, action_id))
+                .build(k)
+                .key(format!("action-{id}-{}", action.id))
+                .label(if running {
+                    format!("{}, running", action.label)
+                } else {
+                    action.label.clone()
+                }),
         );
     }
+    actions
+}
+
+fn workspace_row(s: &AppState, k: &Kit, workspace: &Workspace, depth: u8) -> El {
+    let id = workspace.id;
+    let roles = crate::theme::roles(k);
+    let kind = match workspace.kind {
+        WorkspaceKind::Main => "main checkout",
+        _ => "worktree",
+    };
+    let branch = workspace
+        .branch
+        .clone()
+        .unwrap_or_else(|| "detached".into());
+    let name = workspace.label();
+    let title = if name == branch {
+        branch.clone()
+    } else {
+        format!("{name} · {branch}")
+    };
+    let fold = id.to_string();
+    let open = !s.projects.rail.folds.contains(&fold);
     let current = s.workbench.workspace == Some(id);
-    let card = col()
-        .key(format!("checkout-{id}"))
+    let session_here = s
+        .active
+        .and_then(|active| s.rows.iter().find(|row| row.id == active))
+        .is_some_and(|row| row.workspace_id == id);
+    let mut line = Row::new(format!("checkout-{id}"), title)
+        .label(format!("Show {name}"))
+        .indent(depth)
+        .height(s.chrome_metrics().row)
+        .selected(current && !session_here)
+        .leading(
+            rune::icon(
+                if workspace.kind == WorkspaceKind::Main {
+                    &crate::glyphs::GIT
+                } else {
+                    &crate::glyphs::WORKTREE
+                },
+                ds::ICON_ROW,
+            )
+            .color(k.c.icon_muted),
+        )
+        .meta(kind, Tone::Neutral);
+    if let Some(store) = &s.store
+        && let Some(pr) = crate::sync::pull_request_for(
+            &store.pull_requests.pull_requests,
+            workspace.project_id,
+            workspace.branch.as_deref(),
+        )
+    {
+        line = line.trailing(
+            ds::chip(k, &roles, format!("#{}", pr.number), Tone::Accent).label(pr_label(pr)),
+        );
+    }
+    if let Some((label, tone)) = checkout_chip(&workspace.status) {
+        line = line.trailing(ds::chip(k, &roles, label, tone));
+    }
+    let chevron = el()
+        .key(format!("fold-{id}"))
         .role("button")
-        .label(format!("Show {}", workspace.label()))
-        .w_full()
-        .px(8.0)
-        .py(5.0)
-        .radius(6.0)
-        .fill(if current {
-            k.c.surface_hover
-        } else {
-            rune::Color::TRANSPARENT
-        })
+        .label(if open { "Fold" } else { "Unfold" })
+        .padding(ds::SPACE_1)
+        .radius(k.radius.sm)
         .hover(k.c.hover)
+        .on_press(move |s: &mut AppState| toggle_fold(s, &fold))
+        .child(rune::icon(chevron(open), ds::ICON_SMALL).color(k.c.icon_faint));
+    line = if open {
+        line.action(chevron)
+    } else {
+        line.trailing(chevron)
+    };
+    let card = line
+        .build(k, &roles)
+        .description(status_line(workspace))
         .on_press(move |s: &mut AppState| {
             select_row(s, format!("workspace:{id}"));
             s.focus_checkout(id);
@@ -705,54 +791,14 @@ fn workspace_row(s: &AppState, k: &Kit, workspace: &Workspace) -> El {
         .on_key(rail_key)
         .on_secondary_press(move |s: &mut AppState, point, _| {
             crate::menus::open(s, crate::menus::Target::Checkout(id), point);
-        })
-        .child(
-            rune::row()
-                .gap(6.0)
-                .items_center()
-                .child(
-                    rune::icon(
-                        if workspace.kind == WorkspaceKind::Main {
-                            &crate::glyphs::GIT
-                        } else {
-                            &crate::glyphs::WORKTREE
-                        },
-                        13.0,
-                    )
-                    .color(k.c.icon_muted),
-                )
-                .child(
-                    text(format!("{} · {branch}", workspace.label()))
-                        .font(k.ty.small_medium)
-                        .color(k.c.text_base)
-                        .truncate()
-                        .min_w(0.0)
-                        .grow(1.0),
-                )
-                .child(
-                    el().key(format!("fold-{id}"))
-                        .role("button")
-                        .label(if open { "Fold" } else { "Unfold" })
-                        .padding(2.0)
-                        .radius(4.0)
-                        .hover(k.c.hover)
-                        .on_press(move |s: &mut AppState| toggle_fold(s, &fold))
-                        .child(rune::icon(chevron(open), 12.0).color(k.c.icon_muted)),
-                ),
-        )
-        .child(
-            text(format!(
-                "{kind} · {}{}",
-                status_line(workspace),
-                pr_note(s, workspace)
-            ))
-            .font(k.ty.text_xsmall)
-            .color(if workspace.status.dirty {
-                k.c.warning.fg
-            } else {
-                k.c.text_faint
-            }),
-        )
+        });
+    let mut block = col()
+        .key(format!("workspace-{id}"))
+        .role("group")
+        .label(format!("{name} · {branch}"))
+        .w_full()
+        .gap(ds::SPACE_1)
+        .child(cursored(s, k, &format!("workspace:{id}"), card))
         .children(
             s.projects
                 .refused
@@ -764,15 +810,9 @@ fn workspace_row(s: &AppState, k: &Kit, workspace: &Workspace) -> El {
                         .role("status")
                         .font(k.ty.text_xsmall)
                         .color(k.c.warning.fg)
+                        .pl(ds::SPACE_2 + f32::from(depth + 1) * ds::INDENT)
                 }),
         );
-    let mut block = col()
-        .key(format!("workspace-{id}"))
-        .role("group")
-        .label(format!("{} · {branch}", workspace.label()))
-        .w_full()
-        .gap(4.0)
-        .child(cursored(s, k, &format!("workspace:{id}"), card));
     if open {
         let sessions = s
             .rows
@@ -784,10 +824,13 @@ fn workspace_row(s: &AppState, k: &Kit, workspace: &Workspace) -> El {
                     s,
                     k,
                     &format!("session:{}", row.id),
-                    crate::ui::session_row(s, row, index, k),
+                    crate::ui::session_row(s, row, index, depth + 1, k),
                 )
             });
-        block = block.children(sessions).child(actions.px(4.0));
+        block = block.children(sessions);
+        if current {
+            block = block.child(launchers(s, k, id, depth + 1));
+        }
     }
     block
 }
@@ -826,7 +869,7 @@ fn removal_dialog(s: &AppState, k: &Kit, layer: &mut Vec<El>) {
     let workspace = store.workspaces.iter().find(|w| w.id == removal.workspace);
     let name = workspace.map_or_else(|| "this worktree".to_string(), Workspace::label);
     let managed = workspace.is_none_or(|w| w.managed_by_app);
-    let mut body = col().key("remove-worktree-body").gap(8.0);
+    let mut body = col().key("remove-worktree-body").gap(crate::ds::SPACE_4);
     match &removal.reason {
         None => {
             body = body.child(
@@ -871,16 +914,14 @@ fn removal_dialog(s: &AppState, k: &Kit, layer: &mut Vec<El>) {
             );
         }
     }
-    Dialog::new("remove-worktree", format!("Remove {name}?"))
-        .open(true)
-        .fit()
-        .width(440.0)
+    crate::modal::Modal::new("remove-worktree", format!("Remove {name}?"))
+        .width(crate::modal::WIDTH_PROMPT)
         .on_close(|s: &mut AppState| s.projects.removal = None)
         .child(body)
         .child(
             row()
                 .pt(12.0)
-                .gap(8.0)
+                .gap(crate::ds::SPACE_4)
                 .child(el().grow(1.0))
                 .child(
                     Button::new("Cancel")
@@ -901,7 +942,7 @@ fn removal_dialog(s: &AppState, k: &Kit, layer: &mut Vec<El>) {
                     .key("remove-worktree-confirm"),
                 ),
         )
-        .build(k, layer);
+        .build(s, k, layer);
 }
 
 /// The project's rules without the one at `path`: the daemon replaces the
@@ -936,7 +977,7 @@ fn ignores_dialog(s: &AppState, k: &Kit, layer: &mut Vec<El>) {
         .iter()
         .filter(|rule| rule.project_id == project)
         .collect();
-    let mut body = col().key("worktree-ignores").gap(8.0).child(
+    let mut body = col().key("worktree-ignores").gap(crate::ds::SPACE_4).child(
         text(if rules.is_empty() {
             "Forge Node adopts every worktree this repository lists, wherever it lives."
         } else {
@@ -953,13 +994,13 @@ fn ignores_dialog(s: &AppState, k: &Kit, layer: &mut Vec<El>) {
             row()
                 .key(format!("worktree-ignore-{index}"))
                 .w_full()
-                .gap(8.0)
+                .gap(crate::ds::SPACE_4)
                 .items_center()
                 .child(
                     col()
                         .grow(1.0)
                         .min_w(0.0)
-                        .gap(2.0)
+                        .gap(crate::ds::SPACE_1)
                         .child(
                             text(rule.path.display().to_string())
                                 .font(k.ty.mono)
@@ -993,13 +1034,11 @@ fn ignores_dialog(s: &AppState, k: &Kit, layer: &mut Vec<El>) {
                 ),
         );
     }
-    Dialog::new(
+    crate::modal::Modal::new(
         "worktree-ignores-dialog",
         format!("Ignored worktrees · {name}"),
     )
-    .open(true)
-    .fit()
-    .width(520.0)
+    .width(crate::modal::WIDTH_STANDARD)
     .on_close(|s: &mut AppState| s.projects.ignores = None)
     .child(body)
     .child(
@@ -1011,7 +1050,7 @@ fn ignores_dialog(s: &AppState, k: &Kit, layer: &mut Vec<El>) {
                 .key("worktree-ignores-done"),
         ),
     )
-    .build(k, layer);
+    .build(s, k, layer);
 }
 
 /// The avatar text: the icon the user set, else the name's first letter.
@@ -1051,6 +1090,30 @@ mod tests {
         assert_eq!(
             status_line(&workspace(WorkspaceStatus::default())),
             "not measured yet"
+        );
+    }
+
+    #[test]
+    fn the_checkout_chip_waits_for_git_and_names_what_it_measured() {
+        assert_eq!(checkout_chip(&WorkspaceStatus::default()), None);
+        let measured = |dirty, ahead, behind| WorkspaceStatus {
+            dirty,
+            ahead,
+            behind,
+            measured_at: Some(domain::Timestamp::now()),
+            ..WorkspaceStatus::default()
+        };
+        assert_eq!(
+            checkout_chip(&measured(false, None, None)),
+            Some(("clean".into(), Tone::Neutral))
+        );
+        assert_eq!(
+            checkout_chip(&measured(true, Some(2), Some(0))),
+            Some(("changes ↑2".into(), Tone::Warning))
+        );
+        assert_eq!(
+            checkout_chip(&measured(false, Some(0), Some(3))),
+            Some(("↓3".into(), Tone::Info))
         );
     }
 

@@ -289,9 +289,9 @@ pub fn key(pr: &PullRequest) -> String {
 #[must_use]
 pub fn decision_label(decision: Option<ReviewDecision>) -> Option<(&'static str, Tone)> {
     match decision {
-        Some(ReviewDecision::Approved) => Some(("Approved", Tone::Good)),
-        Some(ReviewDecision::ChangesRequested) => Some(("Changes requested", Tone::Bad)),
-        Some(ReviewDecision::ReviewRequired) => Some(("Review required", Tone::Warn)),
+        Some(ReviewDecision::Approved) => Some(("Approved", Tone::Success)),
+        Some(ReviewDecision::ChangesRequested) => Some(("Changes requested", Tone::Danger)),
+        Some(ReviewDecision::ReviewRequired) => Some(("Review required", Tone::Warning)),
         Some(other) => Some((unknown_decision(&other), Tone::Neutral)),
         None => None,
     }
@@ -306,13 +306,7 @@ fn unknown_decision(value: &ReviewDecision) -> &'static str {
     }
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Tone {
-    Neutral,
-    Good,
-    Warn,
-    Bad,
-}
+pub use crate::ds::Tone;
 
 #[cfg(test)]
 mod tests {
@@ -496,11 +490,11 @@ mod tests {
     fn decisions_name_the_verdict_the_host_sent() {
         assert_eq!(
             decision_label(Some(ReviewDecision::Approved)),
-            Some(("Approved", Tone::Good))
+            Some(("Approved", Tone::Success))
         );
         assert_eq!(
             decision_label(Some(ReviewDecision::ChangesRequested)),
-            Some(("Changes requested", Tone::Bad))
+            Some(("Changes requested", Tone::Danger))
         );
         assert_eq!(decision_label(None), None);
     }

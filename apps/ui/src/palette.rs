@@ -2,6 +2,9 @@
 //! mixed list ⌘K opens on. Commands are filtered here; files and symbols are
 //! ranked by the daemon (`SearchFiles`), so this side never walks a checkout.
 
+use std::cell::RefCell;
+use std::rc::Rc;
+
 use domain::{SessionId, SessionKind, WorkspaceId};
 use rune::TextEdit;
 
@@ -163,6 +166,19 @@ impl Entry {
             Entry::Symbol(hit) => format!("{} {}", hit.path, hit.text),
         }
     }
+
+    /// What the selection follows when the palette's context is refreshed and
+    /// the ranking moves the row.
+    #[must_use]
+    pub fn identity(&self) -> String {
+        match self {
+            Entry::Command { command, .. } => format!("command:{command:?}"),
+            Entry::File(path) => format!("file:{path}"),
+            Entry::Session { id, .. } => format!("session:{id}"),
+            Entry::Checkout { id, .. } => format!("checkout:{id}"),
+            Entry::Symbol(hit) => format!("symbol:{}:{}", hit.path, hit.line),
+        }
+    }
 }
 
 /// The chord that runs a command, shown beside it.
@@ -184,6 +200,8 @@ pub fn chord(command: &Command) -> Option<&'static str> {
         _ => return None,
     })
 }
+
+type EntriesCache = (Scope, String, u64, Rc<Vec<Entry>>);
 
 pub struct Palette {
     pub open: bool,
@@ -212,6 +230,10 @@ pub struct Palette {
     /// The checkout the last search was asked in; another one's answer is
     /// never listed under it.
     pub asked_in: Option<crate::workbench::Scope>,
+    /// Bumped by anything that can change the list, so the cached ranking is
+    /// rebuilt once rather than on every frame.
+    revision: u64,
+    cache: RefCell<Option<EntriesCache>>,
 }
 
 impl Default for Palette {
@@ -232,6 +254,8 @@ impl Default for Palette {
             error: None,
             hints: Vec::new(),
             asked_in: None,
+            revision: 0,
+            cache: RefCell::new(None),
         }
     }
 }
@@ -301,24 +325,60 @@ impl Palette {
         self.asked = None;
         self.error = None;
         self.asked_in = None;
+        self.touch();
+    }
+
+    fn touch(&mut self) {
+        self.revision = self.revision.wrapping_add(1);
     }
 
     /// Files opened lately, listed while ⌘P's query is empty.
     pub fn set_recent(&mut self, recent: Vec<String>) {
         self.recent = recent;
+        self.touch();
     }
 
     pub fn set_actions(&mut self, actions: Vec<(domain::ProjectActionId, String)>) {
         self.actions = actions;
+        self.touch();
     }
 
     pub fn set_agents(&mut self, agents: Vec<crate::agent_ops::Choice>) {
         self.agents = agents;
+        self.touch();
     }
 
     /// Sessions and checkouts, newest context first, from the replica.
     pub fn set_places(&mut self, places: Vec<Entry>) {
         self.places = places;
+        self.touch();
+    }
+
+    /// Replaces every context list at once, keeping the selected row if it
+    /// survived the reorder.
+    pub fn set_context(
+        &mut self,
+        agents: Vec<crate::agent_ops::Choice>,
+        actions: Vec<(domain::ProjectActionId, String)>,
+        places: Vec<Entry>,
+        hints: Vec<(Command, String)>,
+    ) {
+        let keep = self.chosen().map(|entry| entry.identity());
+        self.agents = agents;
+        self.actions = actions;
+        self.places = places;
+        self.hints = hints;
+        self.touch();
+        if let Some(keep) = keep
+            && let Some(index) = self
+                .entries()
+                .iter()
+                .position(|entry| entry.identity() == keep)
+        {
+            self.selected = index;
+            return;
+        }
+        self.clamp_selection();
     }
 
     /// What the running keymap writes beside each command.
@@ -380,7 +440,27 @@ impl Palette {
     /// What is listed for the current scope and query.
     #[must_use]
     pub fn entries(&self) -> Vec<Entry> {
+        self.entries_cached().as_ref().clone()
+    }
+
+    /// [`Self::entries`] shared with a virtual list, rebuilt only when the
+    /// query or the palette's context changed.
+    #[must_use]
+    pub fn entries_cached(&self) -> Rc<Vec<Entry>> {
         let (scope, text) = self.parsed();
+        if let Some((held_scope, held_text, held_revision, out)) = self.cache.borrow().as_ref()
+            && *held_scope == scope
+            && held_text == text
+            && *held_revision == self.revision
+        {
+            return Rc::clone(out);
+        }
+        let out = Rc::new(self.compute_entries(scope, text));
+        *self.cache.borrow_mut() = Some((scope, text.to_string(), self.revision, Rc::clone(&out)));
+        out
+    }
+
+    fn compute_entries(&self, scope: Scope, text: &str) -> Vec<Entry> {
         match scope {
             Scope::Commands => rank_entries(self.command_entries(false), text),
             Scope::Launch => rank_entries(self.command_entries(true), text),
@@ -475,6 +555,7 @@ impl Palette {
         match scope {
             Scope::Everything | Scope::Files => {
                 self.asked = Some(current);
+                self.touch();
                 Some(Search::Files(text))
             }
             Scope::Symbols => {
@@ -484,6 +565,7 @@ impl Palette {
                 };
                 let symbol = symbol.to_string();
                 self.asked = Some((scope, symbol.clone()));
+                self.touch();
                 Some(Search::Symbols(symbol))
             }
             Scope::Commands | Scope::Places | Scope::Launch => None,
@@ -499,6 +581,7 @@ impl Palette {
         self.answer_for = Some((scope, query.to_string()));
         self.files.clear();
         self.symbols.clear();
+        self.touch();
     }
 
     /// Drops the held answer: the checkout it was asked in is no longer
@@ -509,6 +592,7 @@ impl Palette {
         self.answer_for = None;
         self.asked = None;
         self.asked_in = None;
+        self.touch();
     }
 
     pub fn apply_search(&mut self, scope: Scope, query: &str, paths: Vec<String>) {
@@ -519,6 +603,7 @@ impl Palette {
         self.files = paths;
         self.symbols.clear();
         self.error = None;
+        self.touch();
         self.clamp_selection();
     }
 
@@ -530,6 +615,7 @@ impl Palette {
         self.symbols = hits;
         self.files.clear();
         self.error = None;
+        self.touch();
         self.clamp_selection();
     }
 
@@ -569,7 +655,7 @@ impl Palette {
     }
 
     pub fn move_selection(&mut self, delta: isize) {
-        let count = self.entries().len();
+        let count = self.entries_cached().len();
         if count == 0 {
             self.selected = 0;
             return;
@@ -579,12 +665,14 @@ impl Palette {
     }
 
     fn clamp_selection(&mut self) {
-        self.selected = self.selected.min(self.entries().len().saturating_sub(1));
+        self.selected = self
+            .selected
+            .min(self.entries_cached().len().saturating_sub(1));
     }
 
     #[must_use]
     pub fn chosen(&self) -> Option<Entry> {
-        self.entries().into_iter().nth(self.selected)
+        self.entries_cached().get(self.selected).cloned()
     }
 }
 
@@ -891,6 +979,54 @@ mod tests {
         assert_eq!(palette.chip(), None);
         palette.show(Scope::Launch);
         assert_eq!(palette.placeholder(), "Start a terminal or an agent…");
+    }
+
+    #[test]
+    fn a_refreshed_context_keeps_the_selected_entry() {
+        let mut palette = Palette::default();
+        palette.show(Scope::Places);
+        let first = Entry::Session {
+            id: SessionId::new(),
+            label: "First".into(),
+            note: "main".into(),
+            agent: None,
+            kind: SessionKind::Shell,
+            waiting: false,
+        };
+        let second = Entry::Session {
+            id: SessionId::new(),
+            label: "Second".into(),
+            note: "main".into(),
+            agent: None,
+            kind: SessionKind::Shell,
+            waiting: false,
+        };
+        palette.set_places(vec![first.clone(), second.clone()]);
+        palette.move_selection(1);
+        assert_eq!(palette.chosen(), Some(second.clone()));
+        palette.set_context(
+            Vec::new(),
+            Vec::new(),
+            vec![second.clone(), first],
+            Vec::new(),
+        );
+        assert_eq!(
+            palette.chosen(),
+            Some(second),
+            "selection follows the row, not the index"
+        );
+    }
+
+    #[test]
+    fn entries_are_rebuilt_only_when_the_context_or_query_changes() {
+        let mut palette = Palette::default();
+        palette.show(Scope::Commands);
+        let first = palette.entries_cached();
+        let second = palette.entries_cached();
+        assert!(Rc::ptr_eq(&first, &second));
+        palette.set_places(Vec::new());
+        let third = palette.entries_cached();
+        assert!(!Rc::ptr_eq(&second, &third));
     }
 
     #[test]

@@ -4,7 +4,7 @@
 
 use domain::{AgentProfileId, AgentProviderId, ProjectId, Workspace};
 use rune::{El, TextEdit, col, el, row, text};
-use rune_kit::{Button, ButtonVariant, ControlSize, Dialog, Kit, TextInput};
+use rune_kit::{Button, ButtonVariant, ControlSize, Kit, TextInput};
 
 use crate::app::AppState;
 use crate::project_ops::{Op, send};
@@ -450,8 +450,8 @@ pub fn dialog(s: &AppState, k: &Kit, layer: &mut Vec<El>) {
             .w_full()
             .px(8.0)
             .py(4.0)
-            .gap(8.0)
-            .radius(5.0)
+            .gap(crate::ds::SPACE_4)
+            .radius(k.radius.sm)
             .items_center()
             .fill(if current {
                 k.c.surface_hover
@@ -513,7 +513,10 @@ pub fn dialog(s: &AppState, k: &Kit, layer: &mut Vec<El>) {
         })
         .build(k)
         .key("branch-picker-name");
-    let mut launches = row().key("branch-picker-launch").gap(4.0).flex_wrap();
+    let mut launches = row()
+        .key("branch-picker-launch")
+        .gap(crate::ds::SPACE_2)
+        .flex_wrap();
     for (index, (label, launch)) in launch_options(s).into_iter().enumerate() {
         let chosen = picker.launch == launch;
         launches = launches.child(
@@ -546,7 +549,7 @@ pub fn dialog(s: &AppState, k: &Kit, layer: &mut Vec<El>) {
         .child(name)
         .child(
             col()
-                .gap(4.0)
+                .gap(crate::ds::SPACE_2)
                 .child(text("Open with").font(k.ty.small).color(k.c.text_muted))
                 .child(launches),
         );
@@ -571,7 +574,7 @@ pub fn dialog(s: &AppState, k: &Kit, layer: &mut Vec<El>) {
     }
     let has_remote = matches!(&picker.branches, Some(Ok(b)) if !b.remotes.is_empty());
     let can_create = rows.get(picker.cursor).is_some_and(|entry| entry.enabled) && !busy;
-    let mut footer = row().pt(12.0).gap(8.0);
+    let mut footer = row().pt(12.0).gap(crate::ds::SPACE_4);
     if has_remote {
         footer = footer.child(
             Button::new(if picker.fetching {
@@ -608,15 +611,13 @@ pub fn dialog(s: &AppState, k: &Kit, layer: &mut Vec<El>) {
             .build(k)
             .key("worktree-create"),
         );
-    Dialog::new("new-worktree", "New worktree")
-        .open(true)
-        .fit()
-        .width(520.0)
+    crate::modal::Modal::new("new-worktree", "New worktree")
+        .width(crate::modal::WIDTH_STANDARD)
         .click_outside(!busy)
         .on_close(|s: &mut AppState| s.projects.picker = None)
         .child(body)
         .child(footer)
-        .build(k, layer);
+        .build(s, k, layer);
 }
 
 #[cfg(test)]

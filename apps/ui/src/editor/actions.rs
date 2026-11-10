@@ -26,6 +26,27 @@ const COPY: EditorInputEvent = EditorInputEvent::Key {
     key: EditorKey::Char('c'),
     modifiers: editor_modifiers::CONTROL,
 };
+const NEXT_OCCURRENCE: EditorInputEvent = EditorInputEvent::Key {
+    key: EditorKey::Char('d'),
+    modifiers: editor_modifiers::CONTROL,
+};
+const ALL_OCCURRENCES: EditorInputEvent = EditorInputEvent::Key {
+    key: EditorKey::Char('l'),
+    modifiers: editor_modifiers::ALT,
+};
+/// Ctrl-_ is what a PTY can carry for Ctrl-/, the editor's comment key.
+const TOGGLE_COMMENT: EditorInputEvent = EditorInputEvent::Key {
+    key: EditorKey::Char('_'),
+    modifiers: editor_modifiers::CONTROL,
+};
+const FIND_NEXT: EditorInputEvent = EditorInputEvent::Key {
+    key: EditorKey::Char('n'),
+    modifiers: editor_modifiers::CONTROL,
+};
+const FIND_PREVIOUS: EditorInputEvent = EditorInputEvent::Key {
+    key: EditorKey::Char('b'),
+    modifiers: editor_modifiers::CONTROL,
+};
 
 /// Every element of the editor pane is keyed under this prefix, so a focused
 /// key says whether the keyboard is inside it.
@@ -35,9 +56,9 @@ impl AppState {
     /// The editor context's chords, asked before the app's: a line editor is
     /// shown and the keyboard is in its pane, or nowhere in particular.
     pub fn editor_chord(&mut self, ev: &KeyEvent, tx: &mut Tx) -> bool {
-        let inside = tx
-            .focused()
-            .is_none_or(|focused| focused.starts_with(KEY_PREFIX));
+        let inside = tx.focused().is_none_or(|focused| {
+            focused.starts_with(KEY_PREFIX) || focused == crate::ui::FOCUS_PROXY_KEY
+        });
         if !inside || self.active_line_editor().is_none() || !self.session_shown() {
             return false;
         }
@@ -55,6 +76,11 @@ impl AppState {
         match action {
             Action::GoToDefinition => self.send_editor_input(DEFINITION),
             Action::GoBack => self.send_editor_input(BACK),
+            Action::EditorFindNext => self.send_editor_input(FIND_NEXT),
+            Action::EditorFindPrevious => self.send_editor_input(FIND_PREVIOUS),
+            Action::EditorAddNextOccurrence => self.send_editor_input(NEXT_OCCURRENCE),
+            Action::EditorSelectAllOccurrences => self.send_editor_input(ALL_OCCURRENCES),
+            Action::EditorToggleComment => self.send_editor_input(TOGGLE_COMMENT),
             Action::EditorZoomIn => self.zoom_editor(Some(true)),
             Action::EditorZoomOut => self.zoom_editor(Some(false)),
             Action::EditorZoomReset => self.zoom_editor(None),
@@ -430,6 +456,50 @@ mod tests {
         s.workbench.show(CenterMode::Changes);
         assert!(s.editor_key(&cmd('b'), &mut Tx::default()));
         assert_ne!(s.sidebar.is_open(), open, "under Changes ⌘B is the app's");
+    }
+
+    #[test]
+    fn command_slash_comments_in_the_editor_and_toggles_the_sidebar_elsewhere() {
+        let (mut s, rx, id) = editor_app(file());
+        let open = s.sidebar.is_open();
+        assert!(s.editor_key(&cmd('/'), &mut Tx::default()));
+        assert_eq!(
+            s.sidebar.is_open(),
+            open,
+            "the editor keeps ⌘/ for comments"
+        );
+        assert!(sent(&rx).iter().any(|command| matches!(
+            command,
+            Command::EditorInput { session_id, .. } if *session_id == id
+        )));
+        s.workbench.show(CenterMode::Changes);
+        assert!(s.editor_key(&cmd('/'), &mut Tx::default()));
+        assert_ne!(s.sidebar.is_open(), open, "elsewhere ⌘/ is the sidebar's");
+    }
+
+    #[test]
+    fn command_d_and_shift_command_l_are_zeds_multi_caret_chords_in_the_editor() {
+        let (mut s, rx, id) = editor_app(file());
+        assert!(s.editor_key(&cmd('d'), &mut Tx::default()));
+        assert_eq!(
+            s.pane_count(),
+            1,
+            "⌘D in the editor does not split the pane"
+        );
+        let mut all = cmd('l');
+        all.mods.shift = true;
+        assert!(s.editor_key(&all, &mut Tx::default()));
+        let events: Vec<EditorInputEvent> = sent(&rx)
+            .into_iter()
+            .filter_map(|command| match command {
+                Command::EditorInput {
+                    session_id, events, ..
+                } if session_id == id => Some(events),
+                _ => None,
+            })
+            .flatten()
+            .collect();
+        assert_eq!(events, [NEXT_OCCURRENCE, ALL_OCCURRENCES]);
     }
 
     #[test]

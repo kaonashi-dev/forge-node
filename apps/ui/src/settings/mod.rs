@@ -348,7 +348,7 @@ pub fn nav(s: &AppState, k: &Kit) -> El {
         .role("navigation")
         .label("Settings sections")
         .w_full()
-        .gap(2.0)
+        .gap(crate::ds::SPACE_1)
         .child(back)
         .child(
             text("Settings")
@@ -376,11 +376,11 @@ pub fn nav(s: &AppState, k: &Kit) -> El {
 
 /// One labelled group of a page.
 pub(crate) fn group(k: &Kit, key: &str, title: &str, description: Option<&str>) -> El {
-    let mut head = col().gap(2.0).child(
+    let mut head = col().gap(crate::ds::SPACE_1).child(
         text(title.to_string())
             .role("heading")
-            .font(k.ty.small_medium)
-            .color(k.c.text_base),
+            .font(k.ty.ui_medium)
+            .color(k.c.text_strong),
     );
     if let Some(description) = description {
         head = head.child(
@@ -395,17 +395,17 @@ pub(crate) fn group(k: &Kit, key: &str, title: &str, description: Option<&str>) 
         .role("group")
         .label(title.to_string())
         .w_full()
-        .gap(8.0)
+        .gap(crate::ds::SPACE_4)
         .child(head)
 }
 
 /// A label and its explanation on the left, the control on the right.
 pub(crate) fn setting_row(k: &Kit, label: &str, description: Option<&str>, control: El) -> El {
-    let mut words = col().gap(2.0).grow(1.0).min_w(0.0).child(
-        text(label.to_string())
-            .font(k.ty.small)
-            .color(k.c.text_base),
-    );
+    let mut words = col()
+        .gap(crate::ds::SPACE_1)
+        .grow(1.0)
+        .min_w(0.0)
+        .child(text(label.to_string()).font(k.ty.ui).color(k.c.text_base));
     if let Some(description) = description {
         words = words.child(
             text(description.to_string())
@@ -416,7 +416,7 @@ pub(crate) fn setting_row(k: &Kit, label: &str, description: Option<&str>, contr
     }
     row()
         .w_full()
-        .gap(12.0)
+        .gap(crate::ds::SPACE_5)
         .items_center()
         .child(words)
         .child(control)
@@ -435,6 +435,10 @@ pub(crate) fn notice(s: &AppState, k: &Kit) -> Option<El> {
 }
 
 /// The centre while Settings is open: the chosen section under its header.
+/// A settings page reads as a column of text; past this a label and its
+/// control drift apart across a wide window.
+const PAGE_MAX_W: f32 = 760.0;
+
 pub fn page(s: &AppState, k: &Kit) -> El {
     let section = s.settings.section;
     let body = match section {
@@ -448,7 +452,7 @@ pub fn page(s: &AppState, k: &Kit) -> El {
     };
     let head = col()
         .key("settings-page-head")
-        .gap(4.0)
+        .gap(crate::ds::SPACE_2)
         .child(
             text(section.label())
                 .role("heading")
@@ -457,7 +461,7 @@ pub fn page(s: &AppState, k: &Kit) -> El {
         )
         .child(
             text(section.summary())
-                .font(k.ty.small)
+                .font(k.ty.text_xsmall)
                 .color(k.c.text_faint)
                 .wrap(),
         );
@@ -467,13 +471,19 @@ pub fn page(s: &AppState, k: &Kit) -> El {
             .w_full()
             .grow(1.0)
             .min_h(0.0)
-            .padding(24.0)
-            .gap(20.0)
+            .padding(crate::ds::SPACE_7)
             .scroll(ScrollSpec {
                 stick_bottom: false,
             })
-            .child(head)
-            .child(body),
+            .child(
+                col()
+                    .key("settings-column")
+                    .w_full()
+                    .max_w(PAGE_MAX_W)
+                    .gap(crate::ds::SPACE_7)
+                    .child(head)
+                    .child(body),
+            ),
     )
 }
 

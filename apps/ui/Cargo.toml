@@ -30,7 +30,23 @@ tar = "0.4"
 flate2 = "1"
 semver = "1"
 
+[dev-dependencies]
+pollster = "1"
+
 [profile.release]
 debug = 1
 codegen-units = 16
 lto = false
+
+# The root workspace's lints; this client is its own workspace and would not
+# inherit them.
+[lints.rust]
+unsafe_op_in_unsafe_fn = "warn"
+
+[lints.clippy]
+allow_attributes_without_reason = "warn"
+undocumented_unsafe_blocks = "warn"
+multiple_unsafe_ops_per_block = "warn"
+dbg_macro = "warn"
+unwrap_used = "warn"
+todo = "warn"

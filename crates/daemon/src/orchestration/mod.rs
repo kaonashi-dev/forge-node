@@ -3094,8 +3094,14 @@ fn git_facts(
     let files = git_service::run_git(Some(path), &refs)
         .ok()
         .map(|out| {
-            out.stdout
-                .lines()
+            let mut lines: Vec<&str> = out.stdout.lines().collect();
+            if out.truncated {
+                // The last name may be cut mid-path; the list is a prefix.
+                lines.pop();
+                tracing::warn!(?path, kept = lines.len(), "changed-file list truncated");
+            }
+            lines
+                .into_iter()
                 .filter(|line| !line.trim().is_empty())
                 .map(str::to_owned)
                 .collect()

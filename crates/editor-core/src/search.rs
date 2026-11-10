@@ -247,6 +247,34 @@ pub fn count_matches_before(text: &Text, query: &Query, offset: usize, limit: us
     before(&mut scan(text, query))
 }
 
+/// Up to `limit` matches nearest `at`, in order and in one pass: half before
+/// it and half from it on, either side taking what the other cannot fill. A
+/// caret deep in a large file keeps its own match, which a capped `find_all`
+/// from the top would not reach.
+#[must_use]
+pub fn around(text: &Text, query: &Query, at: usize, limit: usize) -> Vec<Range> {
+    let mut before = std::collections::VecDeque::with_capacity(limit);
+    let mut after = Vec::new();
+    let mut after_cap = None;
+    for range in scan(text, query) {
+        if range.start < at {
+            if before.len() == limit {
+                before.pop_front();
+            }
+            before.push_back(range);
+            continue;
+        }
+        let cap = *after_cap.get_or_insert(limit - before.len().min(limit / 2));
+        if after.len() == cap {
+            break;
+        }
+        after.push(range);
+    }
+    let keep = (limit - after.len()).min(before.len());
+    let skip = before.len() - keep;
+    before.into_iter().skip(skip).chain(after).collect()
+}
+
 /// The first match at or after `from`, wrapping to the start of the buffer.
 #[must_use]
 pub fn find_next(text: &Text, query: &Query, from: usize) -> Option<Range> {

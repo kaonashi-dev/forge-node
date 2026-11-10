@@ -19,6 +19,8 @@ pub struct Palette {
     pub preedit_fg: u32,
 }
 
+const FORGE_BG: u32 = rgb(0x16, 0x15, 0x14);
+
 const FORGE_DARK: [u32; 16] = [
     rgb(0x1a, 0x19, 0x18),
     rgb(0xe2, 0x64, 0x5a),
@@ -80,6 +82,15 @@ impl Palette {
         palette
     }
 
+    /// The terminal ground of a built-in base, without building the other 255
+    /// colours; the pane's padding needs only this one.
+    #[must_use]
+    pub fn bg_for_base(base: &str) -> u32 {
+        crate::theme::theme(base)
+            .and_then(|theme| parse_hex(&theme.palette.term_bg))
+            .unwrap_or(FORGE_BG)
+    }
+
     /// The 16 named colors and default fg/bg are `forge-dark`'s; 16..=255 is
     /// the xterm cube and ramp.
     pub fn forge_dark() -> Self {
@@ -97,7 +108,7 @@ impl Palette {
         let fg = rgb(0xcf, 0xc6, 0xb8);
         Palette {
             fg,
-            bg: rgb(0x16, 0x15, 0x14),
+            bg: FORGE_BG,
             ansi,
             selection: with_alpha(rgb(0x4f, 0xa3, 0x9b), SELECTION_ALPHA),
             cursor: with_alpha(rgb(0xed, 0xe5, 0xd6), CURSOR_ALPHA),
@@ -198,5 +209,57 @@ mod theme_tests {
         assert_eq!(at(232), rgb(8, 8, 8), "the grey ramp");
         assert_eq!(at(255), rgb(0xee, 0xee, 0xee));
         assert_eq!(palette.resolve(Color::Rgb(1, 2, 3), 0), rgb(1, 2, 3));
+    }
+
+    #[test]
+    fn the_ground_matches_the_full_palette() {
+        for base in crate::theme::bases() {
+            assert_eq!(
+                Palette::bg_for_base(base),
+                Palette::for_base(base).bg,
+                "{base}"
+            );
+        }
+        assert_eq!(
+            Palette::bg_for_base("no-such-base"),
+            Palette::forge_dark().bg
+        );
+    }
+
+    #[test]
+    fn every_light_theme_has_a_visible_ansi_black() {
+        let channel = |value: u32| {
+            let value = value as f32 / 255.0;
+            if value <= 0.039_28 {
+                value / 12.92
+            } else {
+                ((value + 0.055) / 1.055).powf(2.4)
+            }
+        };
+        let luminance = |color: u32| {
+            0.2126 * channel((color >> 16) & 0xff)
+                + 0.7152 * channel((color >> 8) & 0xff)
+                + 0.0722 * channel(color & 0xff)
+        };
+        let contrast = |a: u32, b: u32| {
+            let (a, b) = (luminance(a), luminance(b));
+            (a.max(b) + 0.05) / (a.min(b) + 0.05)
+        };
+        for base in crate::theme::bases() {
+            let Some(theme) = crate::theme::theme(base) else {
+                continue;
+            };
+            if !theme.light {
+                continue;
+            }
+            let palette = Palette::for_base(base);
+            let ratio = contrast(palette.ansi[0], palette.bg);
+            assert!(
+                ratio >= 4.5,
+                "{base}: ansi[0] {:#08x} on {:#08x} is {ratio:.2}:1",
+                palette.ansi[0],
+                palette.bg
+            );
+        }
     }
 }

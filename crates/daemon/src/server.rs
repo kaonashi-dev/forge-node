@@ -86,14 +86,8 @@ fn accept_error_is_transient(error: &std::io::Error) -> bool {
     )
 }
 
-/// Poll the shutdown flag so the accept loop can exit promptly after StopDaemon.
 async fn wait_for_shutdown(daemon: &Arc<Daemon>) {
-    loop {
-        if daemon.is_shutting_down() {
-            return;
-        }
-        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
-    }
+    daemon.shutdown_requested().await;
 }
 
 /// Read one length-prefixed frame payload (ADR-004) from `reader`.
@@ -171,8 +165,6 @@ async fn handle_connection(daemon: Arc<Daemon>, stream: UnixStream) -> std::io::
     }
 
     let client_id = ClientId::new();
-    let rx = daemon.registry().register_kind(client_id, client_kind);
-
     let ack = DaemonMessage::HelloAck(HelloAck {
         protocol_version: PROTOCOL_VERSION,
         daemon_version: daemon.version.clone(),
@@ -183,12 +175,11 @@ async fn handle_connection(daemon: Arc<Daemon>, stream: UnixStream) -> std::io::
             crate::config::EditorSurface::Dom => protocol::EditorSurface::Dom,
         },
     });
-    // Deliver the ack through the per-client channel so a single writer owns the
-    // socket write half.
-    if !daemon.registry().send_to(client_id, ack) {
-        daemon.registry().unregister(client_id);
-        return Ok(());
-    }
+    // The ack goes through the per-client channel so a single writer owns the
+    // socket, and is queued before the client is visible to broadcasts.
+    let rx = daemon
+        .registry()
+        .register_greeted(client_id, client_kind, Some(ack));
 
     // ---- Writer task: drain the client channel to the socket ----
     let writer_daemon = Arc::clone(&daemon);

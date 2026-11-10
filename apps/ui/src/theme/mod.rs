@@ -236,7 +236,9 @@ struct Resolved {
 
 /// Tokens every base and every contrast level moves. Views ask per row, and
 /// hashing the whole token set cost more than the rows (the switch bench).
-type Fingerprint = [rune::Color; 10];
+/// Nothing `settings::prefs::apply_kit` rewrites may be in it, or Glass makes
+/// every dark base resolve to the default's roles.
+type Fingerprint = [rune::Color; 9];
 
 fn fingerprint(kit: &rune_kit::Kit) -> Fingerprint {
     let c = &kit.c;
@@ -248,7 +250,6 @@ fn fingerprint(kit: &rune_kit::Kit) -> Fingerprint {
         c.text_muted,
         c.text_faint,
         c.border_muted,
-        c.layer_02,
         c.layer_03,
         c.danger.icon,
     ]
@@ -327,6 +328,21 @@ mod tests {
         assert!(!theme(default_base(true)).expect("calm-dark").light);
         assert!(theme(default_base(false)).expect("calm-light").light);
         assert_eq!(accents(false).len(), accents(true).len());
+    }
+
+    #[test]
+    fn every_base_keeps_its_roles_under_the_visual_preferences() {
+        use crate::settings::prefs::{Density, apply_kit};
+        for base in bases() {
+            for glass in [false, true] {
+                let mut kit = kit(base, true);
+                apply_kit(&mut kit, Density::Cozy, true, glass, true);
+                assert!(
+                    Arc::ptr_eq(&roles(&kit), &roles_for(base, true)),
+                    "{base} with glass={glass} kept its own roles"
+                );
+            }
+        }
     }
 
     #[test]

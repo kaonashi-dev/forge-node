@@ -485,7 +485,7 @@ pub fn view(s: &AppState, k: &Kit) -> El {
     }
 
     let tasks = domain::pr_task::builtin_tasks();
-    let mut task_list = col().key("compose-tasks").w_full().gap(4.0);
+    let mut task_list = col().key("compose-tasks").w_full().gap(crate::ds::SPACE_2);
     for task in &tasks {
         let chosen = compose.task_id == task.id;
         let id = task.id.clone();
@@ -501,10 +501,10 @@ pub fn view(s: &AppState, k: &Kit) -> El {
                 .label(task.name.clone())
                 .checked(chosen)
                 .w_full()
-                .gap(8.0)
+                .gap(crate::ds::SPACE_4)
                 .px(10.0)
                 .py(6.0)
-                .radius(6.0)
+                .radius(k.radius.md)
                 .items_center()
                 .fill(if chosen {
                     k.c.surface_hover
@@ -531,7 +531,11 @@ pub fn view(s: &AppState, k: &Kit) -> El {
         );
     }
 
-    let mut picker = row().key("compose-agents").w_full().gap(4.0).flex_wrap();
+    let mut picker = row()
+        .key("compose-agents")
+        .w_full()
+        .gap(crate::ds::SPACE_2)
+        .flex_wrap();
     let offered = workspace
         .map(|(_, store)| choices(store))
         .unwrap_or_default();
@@ -617,18 +621,22 @@ pub fn view(s: &AppState, k: &Kit) -> El {
                 .child(text("Agent").font(k.ty.text_xsmall).color(k.c.text_faint))
                 .child(picker)
                 .child(
-                    row().gap(12.0).items_center().child(launch).child(
-                        text(hint)
-                            .key("compose-note")
-                            .role("status")
-                            .font(k.ty.text_xsmall)
-                            .color(if compose.error.is_some() {
-                                k.c.warning.fg
-                            } else {
-                                k.c.text_faint
-                            })
-                            .grow(1.0),
-                    ),
+                    row()
+                        .gap(crate::ds::SPACE_5)
+                        .items_center()
+                        .child(launch)
+                        .child(
+                            text(hint)
+                                .key("compose-note")
+                                .role("status")
+                                .font(k.ty.text_xsmall)
+                                .color(if compose.error.is_some() {
+                                    k.c.warning.fg
+                                } else {
+                                    k.c.text_faint
+                                })
+                                .grow(1.0),
+                        ),
                 )
                 .children(
                     (if compose.prompt_open {
@@ -672,9 +680,9 @@ fn draft_form(s: &AppState, k: &Kit) -> El {
     col()
         .key("compose-draft")
         .w_full()
-        .gap(8.0)
+        .gap(crate::ds::SPACE_4)
         .padding(12.0)
-        .radius(8.0)
+        .radius(k.radius.lg)
         .fill(k.c.surface_weak)
         .child(
             text("Draft ready".to_string())
@@ -724,7 +732,7 @@ fn draft_form(s: &AppState, k: &Kit) -> El {
         )
         .child(
             row()
-                .gap(8.0)
+                .gap(crate::ds::SPACE_4)
                 .items_center()
                 .child(
                     Button::new(if compose.opening {

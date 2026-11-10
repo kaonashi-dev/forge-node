@@ -5,13 +5,20 @@
 use std::time::Instant;
 
 use rune::{Cx, El, col, effect, el, icon, row, text};
-use rune_kit::shell::{SidebarRow, SidebarToggle, SplitView, Toolbar};
+use rune_kit::shell::{SplitView, Toolbar};
 use rune_kit::{Button, ButtonVariant, ControlSize, Kit, Loader};
 
 use crate::app::{AppState, CommandStatus, LinkStatus, SessionRow, SessionStatus};
 use crate::terminal::input::{Pointer, Press};
 use crate::terminal::renderer::MARK_BASE;
 use crate::workbench::CenterMode;
+
+/// The focusable ancestor a sidebar or tab press walks up to; keys it hears
+/// belong to whatever surface the window shows.
+pub const FOCUS_PROXY_KEY: &str = "terminal-focus-proxy";
+
+const PALETTE_ROW_H: f32 = 30.0;
+const PALETTE_HINT_W: f32 = 90.0;
 
 /// A spinner while work is running, or a still ellipsis when ui.reduce_motion
 /// (or the system setting) says not to animate.
@@ -28,6 +35,59 @@ pub fn busy(s: &AppState, k: &Kit) -> El {
     }
 }
 
+/// The mark of a session at work: `for_row` names it `LOADER`, a glyph that
+/// cannot turn, so it is drawn as the kit's spinner unless motion is reduced.
+#[must_use]
+pub fn session_mark(
+    s: &AppState,
+    k: &Kit,
+    glyph: &'static rune::Icon,
+    size: f32,
+    ink: rune::Color,
+) -> El {
+    if std::ptr::eq(glyph, &crate::glyphs::LOADER) && !s.reduce_motion() {
+        Loader::new().size(size).color(ink).build(k).a11y_hidden()
+    } else {
+        icon(glyph, size).color(ink)
+    }
+}
+
+/// The title row the traffic lights centre in; the kit's own band is taller.
+pub const TITLE_H: f32 = crate::ds::CONTROL;
+const TOGGLE_SIDE: f32 = 20.0;
+
+/// The sidebar's toggle, beside the traffic lights in the title row whether
+/// the sidebar is open or not, as in Rex; the kit's own would sit in its
+/// taller band.
+fn sidebar_toggle(s: &AppState, k: &Kit, x: f32) -> El {
+    let open = s.sidebar.is_open();
+    crate::ds::icon_button(
+        if open {
+            &crate::glyphs::PANEL_LEFT_CLOSE
+        } else {
+            &crate::glyphs::PANEL_LEFT_OPEN
+        },
+        if open { "Hide sidebar" } else { "Show sidebar" },
+        crate::ds::IconButtonSize::Mini,
+    )
+    .shortcut("⌘B")
+    .on_press(|s: &mut AppState| {
+        let open = s.sidebar.is_open();
+        s.sidebar.set_open(!open);
+    })
+    .build(k)
+    .key("sidebar-toggle")
+    .absolute(x, (TITLE_H - TOGGLE_SIDE) / 2.0)
+}
+
+/// The shell's kit: the card around the centre is flush with the window, so
+/// its corners are square.
+fn flush_kit(k: &Kit) -> Kit {
+    let mut flush = k.clone();
+    flush.radius.lg = 0.0;
+    flush
+}
+
 pub fn view(s: &AppState, cx: &mut Cx<AppState>) -> El {
     s.metrics.note_ui_thread();
     let started = Instant::now();
@@ -42,50 +102,58 @@ pub fn view(s: &AppState, cx: &mut Cx<AppState>) -> El {
     );
     let metrics = s.chrome_metrics();
     let mut overlays = Vec::new();
-    let main = col()
+    let inset = cx.titlebar_inset();
+    let toggle_x = if inset > 0.0 {
+        inset + crate::ds::SPACE_4
+    } else {
+        crate::ds::SPACE_4
+    };
+    s.title_clear
+        .set(toggle_x + TOGGLE_SIDE + crate::ds::SPACE_4);
+    // The kit's band is 48 points; Rex's title row is one control tall. With no
+    // crumbs to show, the centre and the sidebar rise into the band so the
+    // lights, the toggle and the pane headers share that one row.
+    let lifted = crate::chrome::strip(s, &k).is_none() && !s.debug;
+    let mut main = col()
         .key("main-pane")
         .w_full()
         .h_full()
         .min_h(0.0)
         .child(center(s, &k, &mut overlays));
+    if lifted {
+        main = main.mt(-rune_kit::shell::TOOLBAR_HEIGHT);
+    }
+    overlays.push(sidebar_toggle(s, &k, toggle_x));
     let shell = SplitView::new(main)
         .sidebar(
             &s.sidebar,
             |s: &mut AppState| &mut s.sidebar,
-            sidebar(s, &k),
+            sidebar(s, &k).mt(TITLE_H - rune_kit::shell::TOOLBAR_HEIGHT),
         )
         .toolbar(toolbar(s, &k))
         .titlebar_inset(cx.titlebar_inset())
-        .frame_inset(metrics.frame)
+        // Flush, as Rex: the card's own edge is the line between the
+        // sidebar and the terminal, and no margin frames it.
+        .frame_inset(0.0)
         .toolbar_in_panel()
         .sidebar_padding(metrics.sidebar_pad[0], metrics.sidebar_pad[1])
-        .sidebar_toggle(
-            SidebarToggle::new()
-                .size(ControlSize::Large)
-                .past_lights(16.0)
-                .edge(18.0)
-                .gap(4.0)
-                .in_header(),
-        )
+        .hide_sidebar_toggle()
         .reduced_motion(cx.is_reduced_motion() || s.reduce_motion())
-        .build(&k);
+        .build(&flush_kit(&k));
     // A focusable ancestor is the only public way to move focus on a sidebar
     // press in this Rune pin (`Runtime::set_focus` is crate-private). Sidebar
     // rows are select-only, so the press walks up to this proxy; the proxy's
     // key handler is the same terminal route as `AppSpec::on_key`.
     let root = col()
-        .key("terminal-focus-proxy")
+        .key(FOCUS_PROXY_KEY)
         .w_full()
         .h_full()
         .min_h(0.0)
         .focusable(true)
         .no_focus_ring()
         .on_key(|s: &mut AppState, ev, tx| s.terminal_key(ev, tx))
-        .child(shell)
-        .on_paste(|s: &mut AppState, text: &str, tx: &mut rune::Tx| {
-            s.paste(text, tx);
-        });
-    overlays.extend(crate::chrome::drop_marker(s, &k));
+        .on_layout(|s: &mut AppState, rect| s.window.set([rect[2], rect[3]]))
+        .child(shell);
     if s.palette.open {
         palette(s, &k, &mut overlays);
     }
@@ -102,7 +170,11 @@ pub fn view(s: &AppState, cx: &mut Cx<AppState>) -> El {
     crate::native_menus::dialog(s, &k, &mut overlays);
     tab_switcher(s, &k, &mut overlays);
     overlays.extend(crate::toasts::layer(s, &k));
-    let root = rune_kit::root(root, overlays);
+    let root = rune_kit::root(root, overlays).on_paste(
+        |s: &mut AppState, text: &str, tx: &mut rune::Tx| {
+            s.paste(text, tx);
+        },
+    );
     s.view_ms
         .set(Some(started.elapsed().as_secs_f64() * 1000.0));
     if let Some(switch) = s.switch_started.take() {
@@ -115,7 +187,10 @@ pub fn view(s: &AppState, cx: &mut Cx<AppState>) -> El {
 /// The card strip: the checkout's tabs, then its actions; the band the
 /// window drags by.
 fn toolbar(s: &AppState, k: &Kit) -> Toolbar {
-    let mut bar = Toolbar::new().leading(crate::chrome::strip(s, k));
+    let mut bar = Toolbar::new();
+    if let Some(crumbs) = crate::chrome::strip(s, k) {
+        bar = bar.leading(crumbs);
+    }
     if s.glass() && k.dark {
         bar = bar.material(rune::SystemMaterial::Glass);
     }
@@ -141,8 +216,7 @@ fn toolbar(s: &AppState, k: &Kit) -> Toolbar {
                 AppState::request_reconnect,
             ));
     }
-    let [create, jump] = crate::chrome::actions(k);
-    bar.trailing(create).trailing(jump)
+    bar
 }
 
 /// The sidebar: the view switcher, the chosen view, and the footer. Each
@@ -191,49 +265,81 @@ fn sidebar(s: &AppState, k: &Kit) -> El {
                 .w_full()
                 .grow(1.0)
                 .min_h(0.0)
-                .child(panel),
+                // Hard edges, so a page sliding out never draws over the switcher.
+                .clip_fade(0.0, 0.0, 0.0, 0.0)
+                .child(
+                    col()
+                        .key(format!("sidebar-page-{:?}", s.workbench.panel))
+                        .w_full()
+                        .h_full()
+                        .min_h(0.0)
+                        .transition(page_turn(s))
+                        .offset(
+                            s.page_swipe
+                                .map_or(0.0, |dx| crate::pages::drag_offset(s.workbench.panel, dx)),
+                            0.0,
+                        )
+                        .on_wheel(crate::pages::wheel)
+                        .child(panel),
+                ),
         )
         .child(status_row(s, k))
 }
 
+/// The sidebar's views swap like pages: the next view pushes in from the
+/// side it sits on in the switcher. Reduce Motion keeps only a fade.
+fn page_turn(s: &AppState) -> rune::Transition {
+    if s.reduce_motion() {
+        rune::Transition::opacity()
+    } else if s.workbench.panel_back {
+        rune::Transition::push(rune::Edge::Leading)
+    } else {
+        rune::Transition::push(rune::Edge::Trailing)
+    }
+}
+
 /// A session under its checkout in Projects: select-only, so a press walks
 /// up to the terminal's focus proxy and typing reaches the terminal.
-pub fn session_row(s: &AppState, session: &SessionRow, index: usize, k: &Kit) -> El {
+pub fn session_row(s: &AppState, session: &SessionRow, index: usize, depth: u8, k: &Kit) -> El {
+    use crate::ds::{self, Emphasis, Tone};
     let selected = s.active == Some(session.id) && s.workbench.mode == CenterMode::Session;
     let id = session.id;
     let glyph = crate::glyphs::for_row(session, selected, !k.dark);
     let roles = crate::theme::roles(k);
-    let mut item = SidebarRow::new(session.title.as_str())
-        .select_only()
+    let mut item = ds::Row::new(format!("session-row-{index}"), session.title.as_str())
+        .indent(depth)
         .height(s.chrome_metrics().row)
-        .avatar(icon(glyph, 14.0).color(match session.status {
-            _ if selected => k.c.icon_base,
-            Some(SessionStatus::Attention) => roles.needs_you.solid,
-            Some(SessionStatus::Busy) => k.c.icon_accent,
-            None => k.c.icon_muted,
-        }))
+        .emphasis(Emphasis::Quiet)
         .selected(selected)
-        .on_select(move |s: &mut AppState, _| {
+        .leading(session_mark(
+            s,
+            k,
+            glyph,
+            ds::ICON_ROW,
+            match session.status {
+                _ if selected => k.c.icon_base,
+                Some(SessionStatus::Attention) => roles.needs_you.solid,
+                Some(SessionStatus::Busy) => k.c.icon_accent,
+                None => k.c.icon_muted,
+            },
+        ));
+    item = match (session.status, &session.ended) {
+        (Some(SessionStatus::Attention), _) => item
+            .meta("Needs you", Tone::NeedsYou)
+            .label(format!("{}, waiting on you", session.title)),
+        (Some(SessionStatus::Busy), _) => item.label(format!("{}, working", session.title)),
+        (None, Some(ended)) => item.meta(ended.as_str(), Tone::Neutral),
+        (None, None) => item,
+    };
+    item.build(k, &roles)
+        .on_press(move |s: &mut AppState| {
             s.select(id);
             s.show_mode(CenterMode::Session);
         })
-        .on_double_click(move |s: &mut AppState, _| {
+        .on_double_press(move |s: &mut AppState| {
             s.select(id);
             s.request_rename();
-        });
-    if let Some(status) = session.status {
-        item = item.status(match status {
-            SessionStatus::Attention => rune_kit::shell::RowStatus::Other(
-                el().size(7.0, 7.0).radius(3.5).fill(roles.needs_you.solid),
-            ),
-            SessionStatus::Busy => rune_kit::shell::RowStatus::Busy,
-        });
-    }
-    if let Some(ended) = &session.ended {
-        item = item.detail(ended.as_str());
-    }
-    item.build(k)
-        .key(format!("session-row-{index}"))
+        })
         .on_secondary_press(move |s: &mut AppState, point, _| {
             crate::menus::open(s, crate::menus::Target::Session(id), point);
         })
@@ -263,9 +369,9 @@ fn status_row(s: &AppState, k: &Kit) -> El {
         .w_full()
         .h(30.0)
         .px(8.0)
-        .gap(7.0)
+        .gap(crate::ds::SPACE_4)
         .center_y()
-        .child(el().size(8.0, 8.0).radius(4.0).fill(color))
+        .child(el().size(8.0, 8.0).radius(k.radius.sm).fill(color))
         .child(
             text(s.status.label())
                 .font(k.ty.small_medium)
@@ -318,44 +424,20 @@ fn center(s: &AppState, k: &Kit, layer: &mut Vec<El>) -> El {
 }
 
 fn terminal_surface(s: &AppState, k: &Kit) -> El {
-    let active = s.terminal.focus_terminal;
-    let color = if active {
-        k.c.success.icon
-    } else {
-        k.c.warning.icon
-    };
-    let focus = row()
-        .key("terminal-focus-indicator")
-        .role("status")
-        .label("Keyboard input: terminal")
-        .description(if active {
-            "Terminal has keyboard input"
-        } else {
-            "Click the terminal pane to focus it"
-        })
-        .gap(6.0)
-        .center_y()
-        .child(el().size(6.0, 6.0).radius(3.0).fill(color))
-        .child(
-            text(if active {
-                "keyboard active"
+    let column = |idx: usize| {
+        col()
+            .key(if idx == 0 {
+                "terminal-column"
             } else {
-                "click to focus"
+                "terminal-split-extra"
             })
-            .font(k.ty.text_xsmall)
-            .color(k.c.text_faint),
-        );
-    let header = row()
-        .key("session-header")
-        .w_full()
-        .h(28.0)
-        .px(10.0)
-        .gap(10.0)
-        .center_y()
-        .fill(k.c.bg_deep)
-        .child(session_crumbs(s, k))
-        .children(provider_chip(s, k))
-        .children(s.debug.then_some(focus));
+            .w(0.0)
+            .min_w(0.0)
+            .h_full()
+            .transition(rune::Transition::none())
+            .child(pane_header(s, k, idx))
+            .child(pane_inset(s, k, idx).w_full().grow(1.0))
+    };
     let body = if s.pane_count() == 2 {
         let ratio = s.split_ratio();
         row()
@@ -367,27 +449,25 @@ fn terminal_surface(s: &AppState, k: &Kit) -> El {
                 s.split.width = rect[2];
                 tx.live_only();
             })
-            .child(pane_inset(s, k, 0).w(0.0).grow(ratio).min_w(0.0))
+            .child(column(0).grow(ratio))
             .child(split_handle(k))
-            .child(
-                col()
-                    .key("terminal-split-extra")
-                    .w(0.0)
-                    .grow(1.0 - ratio)
-                    .min_w(0.0)
-                    .h_full()
-                    .child(split_header(s, k))
-                    .child(pane_inset(s, k, 1).w_full().grow(1.0)),
-            )
+            .child(column(1).grow(1.0 - ratio))
     } else {
-        pane_inset(s, k, 0).w_full().grow(1.0)
+        row()
+            .key("terminal-split")
+            .w_full()
+            .grow(1.0)
+            .min_h(0.0)
+            .child(column(0).grow(1.0))
     };
     col()
         .key("terminal-surface")
         .w_full()
         .h_full()
         .min_h(0.0)
-        .child(header)
+        // A terminal is text, not a card: fading it in puts the effect slot in an
+        // Rgba16Float layer, and the glyphs are unreadable while it fades.
+        .transition(rune::Transition::none())
         .child(body)
 }
 
@@ -401,11 +481,14 @@ fn pane_inset(s: &AppState, k: &Kit, idx: usize) -> El {
             "terminal-inset-split"
         })
         .min_h(0.0)
-        .px(24.0)
-        .py(16.0)
+        .px(crate::ds::SPACE_5)
+        .pb(crate::ds::SPACE_3)
         .fill(terminal_ground(s, k))
         .child(terminal_pane(s, k, idx))
 }
+
+/// Wide enough to grab; it draws a hairline.
+const SPLIT_HANDLE_W: f32 = 5.0;
 
 /// A column divider that stores a fraction: a
 /// remembered width of one column would starve the other after a resize.
@@ -413,10 +496,11 @@ fn split_handle(k: &Kit) -> El {
     el().key("terminal-split-handle")
         .role("separator")
         .label("Resize the split")
-        .w(5.0)
+        .w(SPLIT_HANDLE_W)
         .h_full()
-        .fill(k.c.border_base)
+        .center()
         .cursor(rune::Cursor::ResizeColumn)
+        .child(el().w(1.0).h_full().fill(k.c.border_base))
         .on_drag(|s: &mut AppState, drag, tx| {
             let from = match drag.phase {
                 rune::Phase::Down => {
@@ -448,28 +532,70 @@ fn split_handle(k: &Kit) -> El {
         })
 }
 
-/// The split column's own header: its session, and the join that closes it.
-fn split_header(s: &AppState, k: &Kit) -> El {
-    let title = s
-        .split
-        .pane
-        .as_ref()
-        .and_then(|pane| s.rows.iter().find(|row| row.id == pane.session))
-        .map_or_else(|| "Terminal".to_string(), |row| row.title.clone());
+/// A pane's title bar, as Rex draws one: the session's mark and title, and the
+/// pane's own actions at the end — split beside the first, close the second
+/// (its session keeps running in the sidebar).
+fn pane_header(s: &AppState, k: &Kit, idx: usize) -> El {
+    use crate::ds::{self, IconButtonSize};
+    let session = s
+        .pane_session(idx)
+        .and_then(|session| s.rows.iter().find(|row| row.id == session));
+    let title = session.map_or_else(|| "Terminal".to_string(), |row| row.title.clone());
+    let focused = s.focused_pane() == idx;
+    let mark = session.map_or_else(
+        || icon(&crate::glyphs::TERMINAL, ds::ICON_ROW).color(k.c.icon_muted),
+        |row| {
+            session_mark(
+                s,
+                k,
+                crate::glyphs::for_row(row, true, !k.dark),
+                ds::ICON_ROW,
+                k.c.icon_muted,
+            )
+        },
+    );
+    let action = if idx == 1 {
+        ds::icon_button(
+            &crate::glyphs::CLOSE,
+            "Close this pane",
+            IconButtonSize::Mini,
+        )
+        .on_press(|s: &mut AppState| s.join_panes())
+        .build(k)
+        .key("terminal-split-join")
+    } else if s.pane_count() == 1 {
+        ds::icon_button(&crate::glyphs::SPLIT, "Split right", IconButtonSize::Mini)
+            .shortcut("⌘D")
+            .on_press(AppState::split_pane)
+            .build(k)
+            .key("terminal-split-open")
+    } else {
+        el()
+    };
     row()
-        .key("terminal-split-header")
+        .key(if idx == 0 {
+            "terminal-header"
+        } else {
+            "terminal-split-header"
+        })
         .w_full()
-        .h(28.0)
-        .pl(10.0)
-        .pr(4.0)
-        .gap(6.0)
+        .h(TITLE_H)
+        .pl(if idx == 0 && !s.sidebar.is_open() {
+            s.title_clear.get()
+        } else {
+            ds::SPACE_5
+        })
+        .pr(ds::SPACE_2)
+        .gap(ds::SPACE_3)
         .center_y()
-        .fill(k.c.bg_deep)
+        .fill(terminal_ground(s, k))
+        .window_drag()
+        .child(mark)
         .child(
             text(title)
                 .role("heading")
-                .font(k.ty.small_medium)
-                .color(if s.focused_pane() == 1 {
+                .font(k.ty.ui)
+                .color(if focused {
                     k.c.text_base
                 } else {
                     k.c.text_muted
@@ -478,122 +604,15 @@ fn split_header(s: &AppState, k: &Kit) -> El {
                 .grow(1.0)
                 .min_w(0.0),
         )
-        .child(
-            row()
-                .key("terminal-split-join")
-                .role("button")
-                .label("Join panes")
-                .size(22.0, 22.0)
-                .radius(5.0)
-                .center()
-                .hover(k.c.hover)
-                .on_press(|s: &mut AppState| s.join_panes())
-                .child(icon(&crate::glyphs::CLOSE, 14.0).color(k.c.icon_muted)),
-        )
+        .child(action)
 }
 
 /// The active theme's terminal background, as a Rune colour.
 fn terminal_ground(s: &AppState, k: &Kit) -> rune::Color {
-    let packed = crate::terminal::palette::Palette::for_base(s.theme_base(k.dark)).bg;
+    let packed = crate::terminal::palette::Palette::bg_for_base(s.theme_base(k.dark));
     let channel = |shift: u32| (packed >> shift) & 0xff;
     let srgb = format!("#{:02x}{:02x}{:02x}", channel(0), channel(8), channel(16));
     rune::color::hex(&srgb).unwrap_or(k.c.bg_base)
-}
-
-/// The header's crumbs: project / checkout / session.
-fn session_crumbs(s: &AppState, k: &Kit) -> El {
-    let mut crumbs = row()
-        .key("session-crumbs")
-        .role("navigation")
-        .label("Session location")
-        .gap(6.0)
-        .grow(1.0)
-        .min_w(0.0)
-        .center_y();
-    let session = s.active.and_then(|id| {
-        s.store
-            .as_ref()?
-            .sessions
-            .iter()
-            .find(|session| session.id == id)
-    });
-    let store = s.store.as_ref();
-    let workspace = session.and_then(|session| {
-        store?
-            .workspaces
-            .iter()
-            .find(|workspace| workspace.id == session.workspace_id)
-    });
-    let project = workspace.and_then(|workspace| {
-        store?
-            .projects
-            .iter()
-            .find(|project| project.id == workspace.project_id)
-    });
-    let sep = || {
-        text("/")
-            .font(k.ty.small)
-            .color(k.c.text_faint)
-            .a11y_hidden()
-    };
-    if let Some(project) = project {
-        crumbs = crumbs
-            .child(
-                text(project.name.clone())
-                    .font(k.ty.small)
-                    .color(k.c.text_muted)
-                    .truncate(),
-            )
-            .child(sep());
-    }
-    if let Some(workspace) = workspace {
-        let place = workspace
-            .display_name
-            .clone()
-            .or_else(|| workspace.branch.clone())
-            .unwrap_or_else(|| workspace.path.display().to_string());
-        crumbs = crumbs
-            .child(text(place).font(k.ty.mono).color(k.c.text_muted).truncate())
-            .child(sep());
-    }
-    let title = s
-        .active_row()
-        .map_or_else(|| "Terminal".to_string(), |row| row.title.clone());
-    crumbs.child(
-        text(title)
-            .role("heading")
-            .font(k.ty.small_medium)
-            .color(k.c.text_base)
-            .truncate(),
-    )
-}
-
-/// The agent's provider by its display name, for an agent session.
-fn provider_chip(s: &AppState, k: &Kit) -> Option<El> {
-    let store = s.store.as_ref()?;
-    let provider = store
-        .sessions
-        .iter()
-        .find(|session| Some(session.id) == s.active)?
-        .agent_provider_id
-        .as_ref()?;
-    let name = store
-        .providers
-        .iter()
-        .find(|info| &info.descriptor.id == provider)
-        .map_or_else(
-            || provider.to_string(),
-            |info| info.descriptor.display_name.clone(),
-        );
-    Some(
-        row()
-            .key("session-chip")
-            .px(8.0)
-            .py(2.0)
-            .radius(10.0)
-            .fill(k.c.surface_hover)
-            .child(text(name).font(k.ty.text_xsmall).color(k.c.text_muted)),
-    )
 }
 
 fn terminal_pane(s: &AppState, k: &Kit, idx: usize) -> El {
@@ -629,7 +648,9 @@ fn terminal_pane(s: &AppState, k: &Kit, idx: usize) -> El {
             }
             s.terminal_key(ev, tx)
         })
-        .on_wheel(move |s: &mut AppState, ev, tx| s.terminal_wheel(idx, &ev, tx))
+        .on_wheel(move |s: &mut AppState, ev, tx| {
+            crate::pages::sidebar_swipe(s, &ev) || s.terminal_wheel(idx, &ev, tx)
+        })
         .on_drag(move |s: &mut AppState, drag, tx| {
             let phase = match drag.phase {
                 rune::Phase::Down => Press::Down,
@@ -681,7 +702,7 @@ fn terminal_pane(s: &AppState, k: &Kit, idx: usize) -> El {
                 .absolute(8.0, 8.0)
                 .px(8.0)
                 .h(22.0)
-                .radius(4.0)
+                .radius(k.radius.sm)
                 .fill(k.c.bg_deep)
                 .border(1.0, k.c.warning.border)
                 .center_y()
@@ -734,7 +755,7 @@ fn placeholder(s: &AppState, k: &Kit) -> El {
 }
 
 fn section(k: &Kit, title: &str) -> El {
-    text(title).font(k.ty.small_medium).color(k.c.text_muted)
+    crate::ds::section_header(k, title, None, None)
 }
 
 fn divider(k: &Kit) -> El {
@@ -819,7 +840,7 @@ fn status_stats(s: &AppState, k: &Kit) -> Vec<El> {
 fn stat(label: &str, value: String, k: &Kit) -> El {
     row()
         .w_full()
-        .gap(8.0)
+        .gap(crate::ds::SPACE_4)
         .child(
             row().w(170.0).child(
                 text(label.to_string())
@@ -843,7 +864,7 @@ fn command_line(command: Option<&CommandStatus>, k: &Kit) -> El {
     };
     row()
         .w_full()
-        .gap(8.0)
+        .gap(crate::ds::SPACE_4)
         .child(
             text(command.label)
                 .font(k.ty.small_medium)
@@ -858,7 +879,7 @@ fn command_line(command: Option<&CommandStatus>, k: &Kit) -> El {
 }
 
 fn palette(s: &AppState, k: &Kit, layer: &mut Vec<El>) {
-    let entries = s.palette.entries();
+    let entries = s.palette.entries_cached();
     let (scope, _) = s.palette.parsed();
     let field = rune_kit::TextInput::new(&s.palette.edit)
         .placeholder(s.palette.placeholder())
@@ -869,18 +890,22 @@ fn palette(s: &AppState, k: &Kit, layer: &mut Vec<El>) {
             s.palette.selected = 0;
             s.palette.clear_error();
         })
-        .on_key(|s: &mut AppState, ev, _| s.palette_key(ev))
+        .on_key(|s: &mut AppState, ev, tx| s.palette_key(ev, tx))
         .build(k)
         .key("palette-input");
-    let mut heading = row().key("palette-scope").w_full().gap(8.0).items_center();
+    let mut heading = row()
+        .key("palette-scope")
+        .w_full()
+        .gap(crate::ds::SPACE_4)
+        .items_center();
     if let Some((prefix, label)) = s.palette.chip() {
         heading = heading.child(
             row()
                 .px(7.0)
                 .py(2.0)
-                .radius(5.0)
+                .radius(k.radius.sm)
                 .fill(k.c.surface_hover)
-                .gap(4.0)
+                .gap(crate::ds::SPACE_2)
                 .child(
                     text(prefix.to_string())
                         .font(k.ty.mono)
@@ -895,103 +920,37 @@ fn palette(s: &AppState, k: &Kit, layer: &mut Vec<El>) {
         );
     }
     heading = heading.child(field);
-    let mut list = col()
-        .key("palette-list")
-        .gap(2.0)
+    let list_h = (s.modal_body_max_h() - 72.0).max(PALETTE_ROW_H);
+    let list = crate::modal::ModalList::new("palette", entries.len(), PALETTE_ROW_H, list_h)
+        .selected(Some(s.palette.selected))
         .role("listbox")
-        .label("Results");
-    for (index, entry) in entries.iter().enumerate().take(30) {
-        let selected = index == s.palette.selected;
-        let chosen = entry.clone();
-        let mut row = row()
-            .key(format!("palette-{index}"))
-            .role("option")
-            .label(entry.label().to_string())
-            .focus_selected(selected)
-            .w_full()
-            .h(30.0)
-            .px(10.0)
-            .gap(8.0)
-            .items_center()
-            .radius(6.0)
-            .fill(if selected {
-                k.c.surface_hover
-            } else {
-                rune::Color::TRANSPARENT
-            })
-            .on_press(move |s: &mut AppState| s.run_palette(chosen.clone()));
-        let (mark, hint, note) = match entry {
-            crate::palette::Entry::Command { command, .. } => (
-                None,
-                s.palette.chord(command).unwrap_or_default().to_string(),
-                None,
-            ),
-            crate::palette::Entry::File(path) => (
-                Some(crate::file_icons::for_path(path).icon(!k.dark)),
-                "file".to_string(),
-                None,
-            ),
-            crate::palette::Entry::Session {
-                agent,
-                kind,
-                waiting,
-                note,
-                ..
-            } => {
-                let glyph = if *waiting {
-                    &crate::glyphs::NEEDS_YOU
-                } else {
-                    crate::glyphs::for_session(*kind, agent.as_deref())
-                };
-                (
-                    Some(glyph),
-                    if *waiting { "waiting" } else { "" }.to_string(),
-                    Some(note.as_str()),
-                )
+        .label("Results")
+        .row({
+            let entries = std::rc::Rc::clone(&entries);
+            let k = k.clone();
+            let selected = s.palette.selected;
+            move |s: &AppState, index| {
+                entries.get(index).map_or_else(el, |entry| {
+                    palette_row(s, &k, index, entry, index == selected)
+                })
             }
-            crate::palette::Entry::Checkout { note, .. } => (
-                Some(&crate::glyphs::WORKTREE),
-                "checkout".to_string(),
-                Some(note.as_str()),
-            ),
-            crate::palette::Entry::Symbol(hit) => (
-                Some(crate::file_icons::for_path(&hit.path).icon(!k.dark)),
-                format!("{}:{}", hit.path, hit.line),
-                Some(hit.text.as_str()),
-            ),
-        };
-        if let Some(mark) = mark {
-            row = row.child(icon(mark, 14.0));
-        }
-        row = row.child(
-            text(entry.label().to_string())
-                .font(k.ty.small)
-                .color(k.c.text_base)
-                .grow(1.0)
-                .min_w(0.0)
-                .truncate(),
-        );
-        if let Some(note) = note.filter(|note| !note.is_empty()) {
-            row = row.child(
-                text(note.to_string())
-                    .font(k.ty.text_xsmall)
-                    .color(k.c.text_faint)
-                    .truncate()
-                    .min_w(0.0)
-                    .shrink(),
-            );
-        }
-        if !hint.is_empty() {
-            row = row.child(text(hint).font(k.ty.mono).color(k.c.text_faint).w(90.0));
-        }
-        list = list.child(row);
-    }
+        })
+        .build();
+    let mut body = col()
+        .key("palette-body")
+        .w_full()
+        .gap(crate::ds::SPACE_4)
+        .child(heading)
+        .child(list);
     if entries.is_empty() {
-        let mut empty = row().gap(8.0).items_center();
+        let mut empty = row()
+            .key("palette-empty")
+            .gap(crate::ds::SPACE_4)
+            .items_center();
         if s.palette.searching() {
             empty = empty.child(busy(s, k));
         }
-        list = list.child(
+        body = body.child(
             empty.child(
                 text(s.palette.empty_message())
                     .font(k.ty.small)
@@ -1000,7 +959,7 @@ fn palette(s: &AppState, k: &Kit, layer: &mut Vec<El>) {
         );
     }
     if let Some(error) = &s.palette.error {
-        list = list.child(
+        body = body.child(
             text(error.clone())
                 .key("palette-error")
                 .role("status")
@@ -1016,71 +975,180 @@ fn palette(s: &AppState, k: &Kit, layer: &mut Vec<El>) {
         crate::palette::Scope::Symbols => "Go to Symbol".to_string(),
         crate::palette::Scope::Launch => "New Session".to_string(),
     };
-    rune_kit::Dialog::new("palette", title)
-        .open(true)
+    crate::modal::Modal::new("palette", title)
+        .width(crate::modal::WIDTH_STANDARD)
         .click_outside(true)
-        .width(640.0)
         .on_close(|s: &mut AppState| s.palette.close())
-        .child(heading)
-        .child(list)
-        .build(k, layer);
+        .child(body)
+        .build(s, k, layer);
+}
+
+fn palette_row(
+    s: &AppState,
+    k: &Kit,
+    index: usize,
+    entry: &crate::palette::Entry,
+    selected: bool,
+) -> El {
+    let chosen = entry.clone();
+    let mut row = row()
+        .key(format!("palette-{index}"))
+        .role("option")
+        .label(entry.label().to_string())
+        .focus_selected(selected)
+        .w_full()
+        .h(PALETTE_ROW_H)
+        .px(10.0)
+        .gap(crate::ds::SPACE_4)
+        .items_center()
+        .radius(k.radius.md)
+        .fill(if selected {
+            k.c.surface_hover
+        } else {
+            rune::Color::TRANSPARENT
+        })
+        .on_press(move |s: &mut AppState| s.run_palette(chosen.clone()));
+    let (mark, hint, note) = match entry {
+        crate::palette::Entry::Command { command, .. } => (
+            None,
+            s.palette.chord(command).unwrap_or_default().to_string(),
+            None,
+        ),
+        crate::palette::Entry::File(path) => (
+            Some(crate::file_icons::for_path(path).icon(!k.dark)),
+            "file".to_string(),
+            None,
+        ),
+        crate::palette::Entry::Session {
+            id,
+            agent,
+            kind,
+            waiting,
+            note,
+            ..
+        } => {
+            // An open file is known by its language mark, as in the sidebar;
+            // the plain code sheet would make every editor look alike.
+            let file = s
+                .rows
+                .iter()
+                .find(|row| row.id == *id)
+                .and_then(|row| row.file)
+                .map(|file| file.icon(!k.dark));
+            let glyph = if *waiting {
+                &crate::glyphs::NEEDS_YOU
+            } else {
+                file.unwrap_or_else(|| crate::glyphs::for_session(*kind, agent.as_deref()))
+            };
+            (
+                Some(glyph),
+                if *waiting { "waiting" } else { "" }.to_string(),
+                Some(note.as_str()),
+            )
+        }
+        crate::palette::Entry::Checkout { note, .. } => (
+            Some(&crate::glyphs::WORKTREE),
+            "checkout".to_string(),
+            Some(note.as_str()),
+        ),
+        crate::palette::Entry::Symbol(hit) => (
+            Some(crate::file_icons::for_path(&hit.path).icon(!k.dark)),
+            format!("{}:{}", hit.path, hit.line),
+            Some(hit.text.as_str()),
+        ),
+    };
+    if let Some(mark) = mark {
+        row = row.child(icon(mark, 14.0));
+    }
+    row = row.child(
+        text(entry.label().to_string())
+            .font(k.ty.small)
+            .color(k.c.text_base)
+            .grow(1.0)
+            .min_w(0.0)
+            .truncate(),
+    );
+    if let Some(note) = note.filter(|note| !note.is_empty()) {
+        row = row.child(
+            text(note.to_string())
+                .font(k.ty.text_xsmall)
+                .color(k.c.text_faint)
+                .truncate()
+                .min_w(0.0)
+                .shrink(),
+        );
+    }
+    if !hint.is_empty() {
+        row = row.child(
+            text(hint)
+                .key(format!("palette-hint-{index}"))
+                .font(k.ty.mono)
+                .color(k.c.text_faint)
+                .w(PALETTE_HINT_W)
+                .truncate(),
+        );
+    }
+    row
 }
 
 /// Hold-Control tab list. It never takes focus: the gesture is keyboard-only,
 /// Tab steps it, and releasing Control commits the highlighted row.
 fn tab_switcher(s: &AppState, k: &Kit, layer: &mut Vec<El>) {
+    const ROW_H: f32 = 30.0;
     let Some((targets, index, foreign_at)) = s.tabs.shown_gesture() else {
         return;
     };
     let ids: Vec<domain::SessionId> = targets.to_vec();
-    let mut card = col()
-        .gap(2.0)
-        .w(420.0)
-        .padding(10.0)
-        .radius(8.0)
-        .fill(k.c.layer_01)
-        .border(1.0, k.c.border_base);
+    let rows: Vec<(String, String, &'static rune::Icon)> = ids
+        .iter()
+        .enumerate()
+        .map(|(at, id)| {
+            let session = s.rows.iter().find(|row| row.id == *id);
+            let title = session.map_or_else(|| id.to_string(), |row| row.title.clone());
+            let glyph = session.map_or(&crate::glyphs::TERMINAL, |row| {
+                crate::glyphs::for_row(row, at == index, !k.dark)
+            });
+            let note = if at >= foreign_at {
+                session
+                    .and_then(|session| {
+                        let store = s.store.as_ref()?;
+                        let workspace = store
+                            .workspaces
+                            .iter()
+                            .find(|workspace| workspace.id == session.workspace_id)?;
+                        store
+                            .projects
+                            .iter()
+                            .find(|project| project.id == workspace.project_id)
+                            .map(|project| project.name.clone())
+                            .or_else(|| workspace.branch.clone())
+                    })
+                    .unwrap_or_default()
+            } else {
+                String::new()
+            };
+            (title, note, glyph)
+        })
+        .collect();
     let mut list = col()
         .key("tab-switcher-list")
         .role("listbox")
         .label("Switch Tab")
-        .gap(2.0);
-    for (at, id) in ids.iter().enumerate() {
-        let Some(session) = s.rows.iter().find(|row| row.id == *id) else {
-            continue;
-        };
+        .gap(crate::ds::SPACE_1)
+        .reveal_selected(true);
+    for (at, (title, note, glyph)) in rows.iter().enumerate() {
         let selected = at == index;
-        let glyph = crate::glyphs::for_row(session, selected, !k.dark);
-        let note = if at >= foreign_at {
-            s.store
-                .as_ref()
-                .and_then(|store| {
-                    let workspace = store
-                        .workspaces
-                        .iter()
-                        .find(|workspace| workspace.id == session.workspace_id)?;
-                    store
-                        .projects
-                        .iter()
-                        .find(|project| project.id == workspace.project_id)
-                        .map(|project| project.name.clone())
-                        .or_else(|| workspace.branch.clone())
-                })
-                .unwrap_or_default()
-        } else {
-            String::new()
-        };
         let mut item = row()
             .key(format!("tab-switcher-{at}"))
             .role("option")
-            .label(session.title.clone())
+            .label(title.clone())
             .focus_selected(selected)
             .w_full()
-            .h(30.0)
+            .h(ROW_H)
             .px(8.0)
-            .gap(8.0)
+            .gap(crate::ds::SPACE_4)
             .items_center()
-            .radius(6.0)
+            .radius(k.radius.md)
             .fill(if selected {
                 k.c.surface_hover
             } else {
@@ -1088,7 +1156,7 @@ fn tab_switcher(s: &AppState, k: &Kit, layer: &mut Vec<El>) {
             })
             .child(icon(glyph, 14.0).color(k.c.icon_muted))
             .child(
-                text(session.title.clone())
+                text(title.clone())
                     .font(if selected {
                         k.ty.small_medium
                     } else {
@@ -1105,7 +1173,7 @@ fn tab_switcher(s: &AppState, k: &Kit, layer: &mut Vec<El>) {
             );
         if !note.is_empty() {
             item = item.child(
-                text(note)
+                text(note.clone())
                     .font(k.ty.text_xsmall)
                     .color(k.c.text_faint)
                     .truncate(),
@@ -1113,7 +1181,25 @@ fn tab_switcher(s: &AppState, k: &Kit, layer: &mut Vec<El>) {
         }
         list = list.child(item);
     }
-    card = card
+    let list = col()
+        .key("tab-switcher-scroll")
+        .w_full()
+        .h((rows.len() as f32 * ROW_H).min(s.modal_body_max_h().min(360.0)))
+        .shrink()
+        .min_h(if rows.is_empty() { 0.0 } else { ROW_H })
+        .scroll(rune::ScrollSpec {
+            stick_bottom: false,
+        })
+        .scroll_edge_fade(12.0)
+        .scroll_margin(12.0)
+        .child(list);
+    let card = col()
+        .gap(crate::ds::SPACE_1)
+        .w(420.0)
+        .padding(10.0)
+        .radius(k.radius.lg)
+        .fill(k.c.layer_01)
+        .border(1.0, k.c.border_base)
         .child(
             text("Switch Tab")
                 .font(k.ty.text_xsmall_medium)
@@ -1136,108 +1222,91 @@ fn tab_switcher(s: &AppState, k: &Kit, layer: &mut Vec<El>) {
             .h_full()
             .pt(72.0)
             .items_center()
-            .child(card),
+            .child(k.elevate(card, &k.elevation.overlay)),
     );
 }
 
 /// The empty centre: what can be started from here.
 fn empty_center(s: &AppState, k: &Kit) -> El {
+    use crate::ds;
+    const ENTRY_W: f32 = 360.0;
+    const ENTRY_LABEL_W: f32 = 120.0;
     let has_projects = s
         .store
         .as_ref()
         .is_some_and(|store| !store.projects.is_empty());
     let entry =
         |key: &'static str, label: &'static str, note: &'static str, run: fn(&mut AppState)| {
-            row()
-                .key(key)
-                .role("button")
-                .label(label)
-                .w(360.0)
-                .px(12.0)
-                .py(8.0)
-                .gap(12.0)
-                .radius(6.0)
-                .items_center()
-                .on_press(run)
-                .child(
-                    text(label)
-                        .font(k.ty.small_medium)
-                        .color(k.c.text_base)
-                        .w(120.0),
-                )
-                .child(
-                    text(note)
-                        .font(k.ty.text_xsmall)
-                        .color(k.c.text_faint)
-                        .grow(1.0),
-                )
+            k.interactive(
+                row()
+                    .key(key)
+                    .role("button")
+                    .label(label)
+                    .w(ENTRY_W)
+                    .h(ds::CONTROL_FIELD)
+                    .px(ds::SPACE_5)
+                    .gap(ds::SPACE_5)
+                    .radius(k.radius.md)
+                    .items_center()
+                    .on_press(run),
+            )
+            .child(
+                text(label)
+                    .font(k.ty.ui_medium)
+                    .color(k.c.text_base)
+                    .w(ENTRY_LABEL_W),
+            )
+            .child(
+                text(note)
+                    .font(k.ty.text_xsmall)
+                    .color(k.c.text_faint)
+                    .grow(1.0),
+            )
         };
-    let add = entry(
-        "empty-add-project",
-        "Add a project",
-        "Point Forge Node at a repository to work in",
-        |s| {
+    let add = |note| {
+        entry("empty-add-project", "Add a project", note, |s| {
             s.show_mode(CenterMode::Projects);
-        },
-    );
-    let mut view = col()
+        })
+    };
+    let empty = if has_projects {
+        ds::Empty::new("empty-center", "No sessions open")
+            .why("Everything here is closed. Start one to get back to work.")
+            .action(entry(
+                "empty-new-terminal",
+                "New terminal",
+                "A shell in the current checkout",
+                |s| s.request_create(),
+            ))
+            .action(entry(
+                "empty-new-agent",
+                "New agent",
+                "Start a coding agent in a session",
+                |s| {
+                    s.open_launch_palette();
+                },
+            ))
+            .action(entry(
+                "empty-new-worktree",
+                "New worktree",
+                "Checkout a branch in a new folder",
+                |s| {
+                    s.show_mode(CenterMode::Projects);
+                },
+            ))
+            .action(add("Work in another repository"))
+    } else {
+        ds::Empty::new("empty-center", "No projects yet")
+            .why("Point Forge Node at a repository to work in.")
+            .action(add("Choose a folder with a git repository"))
+    };
+    col()
         .key("center-placeholder")
         .w_full()
         .h_full()
         .grow(1.0)
         .min_h(0.0)
-        .gap(6.0)
         .center()
-        .child(
-            text("No sessions open")
-                .font(k.ty.body_medium)
-                .color(k.c.text_base),
-        )
-        .child(
-            text(if has_projects {
-                "Everything here is closed. Start one to get back to work."
-            } else {
-                "Nothing is set up yet."
-            })
-            .font(k.ty.small)
-            .color(k.c.text_faint)
-            .pb(10.0),
-        );
-    if !has_projects {
-        return view.child(add);
-    }
-    view = view
-        .child(entry(
-            "empty-new-terminal",
-            "New terminal",
-            "A shell in the current checkout",
-            |s| s.request_create(),
-        ))
-        .child(entry(
-            "empty-new-agent",
-            "New agent",
-            "Start a coding agent in a session",
-            |s| {
-                s.open_launch_palette();
-            },
-        ))
-        .child(entry(
-            "empty-new-worktree",
-            "New worktree",
-            "Checkout a branch in a new folder",
-            |s| {
-                s.show_mode(CenterMode::Projects);
-            },
-        ))
-        .child(entry(
-            "empty-add-project",
-            "Add a project",
-            "Work in another repository",
-            |s| {
-                s.show_mode(CenterMode::Projects);
-            },
-        ));
-    view
+        .child(empty.build(k))
 }
 
 /// The rename prompt, as a dialog layer.
@@ -1264,14 +1333,12 @@ fn rename_dialog(s: &AppState, k: &Kit, layer: &mut Vec<El>) {
         })
         .build(k)
         .key("rename-input");
-    rune_kit::Dialog::new("rename", "Rename session")
-        .open(true)
-        .fit()
-        .width(420.0)
+    crate::modal::Modal::new("rename", "Rename session")
+        .width(crate::modal::WIDTH_PROMPT)
         .click_outside(true)
         .on_close(|s: &mut AppState| s.rename = None)
         .child(field)
-        .build(k, layer);
+        .build(s, k, layer);
 }
 
 /// The confirmation before a close stops a live process.
@@ -1294,18 +1361,16 @@ fn close_dialog(s: &AppState, k: &Kit, layer: &mut Vec<El>) {
         .on_press(|s: &mut AppState| s.confirm_close_session())
         .build(k)
         .key("close-confirm");
-    rune_kit::Dialog::new("close-session", format!("{title} is still running."))
+    crate::modal::Modal::new("close-session", format!("{title} is still running."))
         .description("Closing it stops the process. Anything it has not written is lost.")
-        .open(true)
-        .fit()
-        .width(420.0)
+        .width(crate::modal::WIDTH_PROMPT)
         .on_close(|s: &mut AppState| s.confirm_close = None)
         .child(
             row()
-                .gap(8.0)
+                .gap(crate::ds::SPACE_4)
                 .child(el().grow(1.0))
                 .child(cancel)
                 .child(close),
         )
-        .build(k, layer);
+        .build(s, k, layer);
 }
