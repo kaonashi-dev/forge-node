@@ -88,6 +88,7 @@ impl Selection {
     }
 
     /// Inclusive, ordered endpoints after word/line expansion (a line spans its soft-wrapped continuations).
+    #[must_use]
     pub fn range(&self, viewport: &Viewport<'_>) -> ((u16, i64), (u16, i64)) {
         let (a, b) = if (self.anchor.1, self.anchor.0) <= (self.head.1, self.head.0) {
             (self.anchor, self.head)

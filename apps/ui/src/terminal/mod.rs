@@ -108,6 +108,7 @@ impl SharedTerminal {
             .unwrap_or_else(|poisoned| poisoned.into_inner())
     }
 
+    #[must_use]
     pub fn meta(&self) -> Meta {
         let slot = self.lock();
         Meta {
@@ -265,10 +266,12 @@ impl SharedTerminal {
         }
     }
 
+    #[must_use]
     pub fn grid_epoch(&self) -> u64 {
         self.grid_epoch.load(Ordering::Acquire)
     }
 
+    #[must_use]
     pub fn resync_epoch(&self) -> u64 {
         self.resync_epoch.load(Ordering::Acquire)
     }
@@ -277,10 +280,12 @@ impl SharedTerminal {
         self.render_epoch.fetch_add(1, Ordering::Release);
     }
 
+    #[must_use]
     pub fn animating(&self) -> bool {
         self.render_epoch.load(Ordering::Acquire) != self.rendered_epoch.load(Ordering::Acquire)
     }
 
+    #[must_use]
     pub fn render_epoch(&self) -> u64 {
         self.render_epoch.load(Ordering::Acquire)
     }
@@ -308,6 +313,7 @@ impl SharedTerminal {
 
     /// Advances on every compositor measurement, including an unchanged one, so
     /// a resync can require a frame that rendered after it.
+    #[must_use]
     pub fn measure_epoch(&self) -> u64 {
         self.measure_epoch.load(Ordering::Acquire)
     }

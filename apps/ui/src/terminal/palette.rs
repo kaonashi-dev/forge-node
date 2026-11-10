@@ -4,11 +4,19 @@ pub const fn rgb(r: u8, g: u8, b: u8) -> u32 {
     r as u32 | (g as u32) << 8 | (b as u32) << 16 | 0xff00_0000
 }
 
+/// Overlays are drawn over the glyphs, so the two that cover text are translucent.
+const SELECTION_ALPHA: u8 = 0x66;
+const CURSOR_ALPHA: u8 = 0xaa;
+
 #[derive(Clone)]
 pub struct Palette {
     pub fg: u32,
     pub bg: u32,
     pub ansi: [u32; 256],
+    pub selection: u32,
+    pub cursor: u32,
+    pub preedit_bg: u32,
+    pub preedit_fg: u32,
 }
 
 const FORGE_DARK: [u32; 16] = [
@@ -58,6 +66,16 @@ impl Palette {
             palette.fg = fg;
             palette.bg = bg;
             palette.ansi[..16].copy_from_slice(&named);
+            palette.preedit_fg = fg;
+        }
+        if let Some(accent) = parse_hex(&colors.accent) {
+            palette.selection = with_alpha(accent, SELECTION_ALPHA);
+        }
+        if let Some(caret) = parse_hex(&theme.editor.caret) {
+            palette.cursor = with_alpha(caret, CURSOR_ALPHA);
+        }
+        if let Some(surface) = parse_hex(&colors.surface_hi) {
+            palette.preedit_bg = surface;
         }
         palette
     }
@@ -76,14 +94,20 @@ impl Palette {
             let g = (8 + 10 * (i - 232)) as u8;
             ansi[i as usize] = rgb(g, g, g);
         }
+        let fg = rgb(0xcf, 0xc6, 0xb8);
         Palette {
-            fg: rgb(0xcf, 0xc6, 0xb8),
+            fg,
             bg: rgb(0x16, 0x15, 0x14),
             ansi,
+            selection: with_alpha(rgb(0x4f, 0xa3, 0x9b), SELECTION_ALPHA),
+            cursor: with_alpha(rgb(0xed, 0xe5, 0xd6), CURSOR_ALPHA),
+            preedit_bg: rgb(0x2a, 0x27, 0x25),
+            preedit_fg: fg,
         }
     }
 
     #[inline]
+    #[must_use]
     pub fn resolve(&self, color: Color, default: u32) -> u32 {
         match color {
             Color::Indexed(i) => self.ansi[i as usize],
@@ -122,6 +146,33 @@ mod theme_tests {
             Palette::for_base("no-such-base").bg,
             Palette::forge_dark().bg
         );
+    }
+
+    #[test]
+    fn selection_cursor_and_composition_follow_the_theme() {
+        let (dark, light) = (
+            Palette::for_base("calm-dark"),
+            Palette::for_base("calm-light"),
+        );
+        for (palette, base) in [(&dark, "calm-dark"), (&light, "calm-light")] {
+            let theme = crate::theme::theme(base).expect("built in");
+            let p = &theme.palette;
+            let hex = |value: &str| parse_hex(value).expect("theme colour");
+            assert_eq!(
+                palette.selection,
+                with_alpha(hex(&p.accent), SELECTION_ALPHA),
+                "{base}"
+            );
+            assert_eq!(
+                palette.cursor,
+                with_alpha(hex(&theme.editor.caret), CURSOR_ALPHA),
+                "{base}"
+            );
+            assert_eq!(palette.preedit_bg, hex(&p.surface_hi), "{base}");
+            assert_eq!(palette.preedit_fg, palette.fg, "{base}");
+        }
+        assert_ne!(dark.cursor, light.cursor, "a light theme's caret is dark");
+        assert_ne!(dark.preedit_bg, light.preedit_bg);
     }
 
     #[test]

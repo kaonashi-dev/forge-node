@@ -101,6 +101,24 @@ pub fn modifiers(m: Mods) -> Modifiers {
     }
 }
 
+/// A key for the log: typed text is private, so it shows as a count, never the characters.
+pub fn key_label(key: &Key) -> String {
+    match key {
+        Key::Text(text) => format!("text x{}", text.chars().count()),
+        other => format!("{other:?}"),
+    }
+}
+
+/// An IME event for the log, without its composition or committed text.
+pub fn ime_label(ev: &Ime) -> String {
+    match ev {
+        Ime::Preedit(text, _) => format!("preedit {} bytes", text.len()),
+        Ime::Commit(text) => format!("commit {} bytes", text.len()),
+        Ime::Enabled => "enabled".into(),
+        Ime::Disabled => "disabled".into(),
+    }
+}
+
 pub fn render_bytes(bytes: &[u8]) -> String {
     bytes
         .iter()
@@ -134,8 +152,7 @@ pub fn copy_selection(
     };
     match copy_text(&viewport, &selection) {
         Ok(text) => {
-            out.notes
-                .push(format!("copy {} bytes {:?}", text.len(), text));
+            out.notes.push(format!("copy {} bytes", text.len()));
             fx.copy = Some(text);
         }
         Err(CopyError::Unavailable) => out
@@ -235,7 +252,11 @@ pub fn key(
         }
     };
     snap_to_live(ui);
-    out.emit(idx, bytes, format!("{:?}{}", ev.key, mod_suffix(ev.mods)));
+    out.emit(
+        idx,
+        bytes,
+        format!("{}{}", key_label(&ev.key), mod_suffix(ev.mods)),
+    );
     true
 }
 
@@ -737,6 +758,37 @@ mod tests {
         let shared = SharedTerminal::new();
         let ui = TerminalUi::new(shared, true);
         (ui, grid)
+    }
+
+    #[test]
+    fn the_log_never_carries_typed_pasted_or_composed_text() {
+        let (mut ui, grid) = surface(ModeSet::Plain);
+        let mut out = Outbox::default();
+        let mut fx = Effects::default();
+        key_(
+            Key::Text("hunter2".into()),
+            Mods::default(),
+            &mut ui,
+            &grid,
+            &mut out,
+            &mut fx,
+        );
+        paste_text(0, &mut ui, &grid, "s3cret-token", &mut out);
+        let logged: Vec<String> = out
+            .entries
+            .iter()
+            .map(|e| e.label.clone())
+            .chain(out.notes.iter().cloned())
+            .chain([
+                ime_label(&Ime::Commit("passé".into())),
+                ime_label(&Ime::Preedit("かな".into(), None)),
+            ])
+            .collect();
+        for line in &logged {
+            for secret in ["hunter2", "s3cret", "passé", "かな"] {
+                assert!(!line.contains(secret), "{line:?} leaks {secret:?}");
+            }
+        }
     }
 
     fn press(key: Key, mods: Mods, ui: &mut TerminalUi, grid: &client::CellGrid) -> Vec<u8> {

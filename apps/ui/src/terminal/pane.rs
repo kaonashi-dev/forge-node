@@ -54,23 +54,28 @@ pub struct Viewport<'a> {
 }
 
 impl<'a> Viewport<'a> {
+    #[must_use]
     pub fn rows(&self) -> usize {
         self.grid.visible.len()
     }
 
+    #[must_use]
     pub fn cols(&self) -> usize {
         self.grid.visible.first().map_or(0, |row| row.cells.len())
     }
 
     /// Absolute line (0 = oldest history) of the live screen's first row.
+    #[must_use]
     pub fn base(&self) -> i64 {
         self.grid.scrollback_len as i64
     }
 
+    #[must_use]
     pub fn top_abs(&self) -> i64 {
         self.base() - self.scroll as i64
     }
 
+    #[must_use]
     pub fn row_at_abs(&self, abs: i64) -> Option<&Row> {
         let base = self.base();
         if abs < 0 {
@@ -82,10 +87,12 @@ impl<'a> Viewport<'a> {
         }
     }
 
+    #[must_use]
     pub fn viewport_row(&self, v: usize) -> Option<&Row> {
         self.row_at_abs(self.top_abs() + v as i64)
     }
 
+    #[must_use]
     pub fn max_scroll(&self) -> usize {
         self.grid.scrollback_len as usize
     }
@@ -191,10 +198,12 @@ impl TerminalUi {
         ui
     }
 
+    #[must_use]
     pub fn is_fixture(&self) -> bool {
         self.fixture.is_some()
     }
 
+    #[must_use]
     pub fn is_live(&self) -> bool {
         self.attach.is_live()
     }
