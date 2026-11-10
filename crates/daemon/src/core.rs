@@ -203,7 +203,7 @@ pub struct Daemon {
     pub instance_id: String,
     pub version: String,
     pub started_at: Timestamp,
-    shutdown: AtomicBool,
+    shutdown: crate::shutdown::Shutdown,
     pub(crate) resetting: AtomicBool,
     /// Ids for the control requests the daemon mints, off the core lock: a
     /// reveal must not take the lock just to number itself.
@@ -451,7 +451,7 @@ impl Daemon {
             instance_id,
             version,
             started_at: Timestamp::now(),
-            shutdown: AtomicBool::new(false),
+            shutdown: crate::shutdown::Shutdown::default(),
             resetting: AtomicBool::new(false),
             // Past the handshake's 1 and the editor's own 1_000 block.
             editor_requests: std::sync::atomic::AtomicU64::new(2_000),
@@ -484,12 +484,17 @@ impl Daemon {
     }
 
     pub fn is_shutting_down(&self) -> bool {
-        self.shutdown.load(Ordering::SeqCst)
+        self.shutdown.is_set()
     }
 
     /// Signal-path shutdown: the accept loop stops and unlinks its socket.
     pub fn request_shutdown(&self) {
-        self.shutdown.store(true, Ordering::SeqCst);
+        self.shutdown.trigger();
+    }
+
+    /// Resolves once shutdown is requested, without polling.
+    pub async fn shutdown_requested(&self) {
+        self.shutdown.wait().await;
     }
 
     // --- Notices ---
@@ -1484,7 +1489,7 @@ impl Daemon {
         for id in live {
             let _ = self.kill_session(id);
         }
-        self.shutdown.store(true, Ordering::SeqCst);
+        self.shutdown.trigger();
         self.registry
             .broadcast_domain(DaemonEvent::DaemonShuttingDown {
                 reason: "StopDaemon requested".into(),
@@ -7099,33 +7104,16 @@ impl Daemon {
 
             let jitter =
                 Duration::from_millis((Timestamp::now().as_offset().nanosecond() % 30_000).into());
-            let deadline = PERIOD + jitter;
-            let step = Duration::from_secs(5);
-            let mut slept = Duration::ZERO;
-            while slept < deadline {
-                if self.is_shutting_down() {
-                    return;
-                }
-                std::thread::sleep(step.min(deadline - slept));
-                slept += step;
+            if self.shutdown.sleep(PERIOD + jitter) {
+                return;
             }
         }
     }
 
     fn run_pull_request_sweeper(self: &Arc<Self>) {
         let period = Duration::from_secs(self.config.github.refresh_secs);
-        let step = Duration::from_secs(1);
         loop {
-            let mut slept = Duration::ZERO;
-            while slept < period {
-                if self.is_shutting_down() {
-                    return;
-                }
-                let sleep = step.min(period - slept);
-                std::thread::sleep(sleep);
-                slept += sleep;
-            }
-            if self.is_shutting_down() {
+            if self.shutdown.sleep(period) {
                 return;
             }
             if let Err(error) = self.refresh_pull_requests() {
@@ -7242,14 +7230,8 @@ impl Daemon {
             }
             self.sweep_idle_sessions();
             self.lsp.sweep(Instant::now());
-            let step = Duration::from_secs(5);
-            let mut slept = Duration::ZERO;
-            while slept < PERIOD {
-                if self.is_shutting_down() {
-                    return;
-                }
-                std::thread::sleep(step.min(PERIOD - slept));
-                slept += step;
+            if self.shutdown.sleep(PERIOD) {
+                return;
             }
         }
     }

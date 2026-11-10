@@ -86,14 +86,8 @@ fn accept_error_is_transient(error: &std::io::Error) -> bool {
     )
 }
 
-/// Poll the shutdown flag so the accept loop can exit promptly after StopDaemon.
 async fn wait_for_shutdown(daemon: &Arc<Daemon>) {
-    loop {
-        if daemon.is_shutting_down() {
-            return;
-        }
-        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
-    }
+    daemon.shutdown_requested().await;
 }
 
 /// Read one length-prefixed frame payload (ADR-004) from `reader`.
