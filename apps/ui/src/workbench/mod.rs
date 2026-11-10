@@ -219,8 +219,9 @@ struct Watch {
     /// is armed: a change in between was seen by no one.
     rescan: Vec<String>,
     armed: bool,
-    /// The checkout and whether Files showed when the set was last built.
-    shown: Option<(Option<WorkspaceId>, bool)>,
+    /// The checkout, whether Files showed and the shown preview's folder
+    /// when the set was last built.
+    shown: Option<(Option<WorkspaceId>, bool, Option<String>)>,
     /// Ask again even for an unchanged set: a refresh re-arms it.
     stale: bool,
 }
@@ -613,6 +614,7 @@ impl Workbench {
         }
         if self.mode == CenterMode::Files {
             self.reread_preview();
+            self.watch.stale = true;
         }
     }
 
@@ -682,9 +684,10 @@ impl Workbench {
     }
 
     /// The folders to watch now, when they differ from what this connection
-    /// last asked for: the root and every open folder while Files shows,
-    /// nothing otherwise. Sent before the listings `take_reads` returned, so
-    /// a folder is watched before it is read and no change falls between.
+    /// last asked for: the root and every open folder while Files shows, and
+    /// the shown preview's folder whatever the sidebar shows. Sent before the
+    /// reads `take_reads` returned, so a folder is watched before it is read
+    /// and no change falls between.
     pub fn take_watch(&mut self, generation: u64) -> Option<(WorkspaceId, WatchSet)> {
         if self.watch.generation != generation {
             self.watch = Watch {
@@ -692,27 +695,32 @@ impl Workbench {
                 ..Watch::default()
             };
         }
-        let shown = (self.workspace, self.panel == Panel::Files);
+        let preview_dir = (self.mode == CenterMode::Files)
+            .then(|| self.files.previewing.as_deref().map(parent_of))
+            .flatten()
+            .map(str::to_string);
+        let shown = (self.workspace, self.panel == Panel::Files, preview_dir);
         let open_changed = std::mem::take(&mut self.files.open_changed);
         let stale = std::mem::take(&mut self.watch.stale);
-        if !open_changed && !stale && self.watch.shown == Some(shown) {
+        if !open_changed && !stale && self.watch.shown.as_ref() == Some(&shown) {
             return None;
         }
+        let (_, tree, preview_dir) = &shown;
+        let wanted = self.workspace.and_then(|workspace| {
+            let mut dirs: Vec<String> = Vec::new();
+            if *tree {
+                dirs.push(String::new());
+                dirs.extend(self.files.open.iter().cloned());
+            }
+            dirs.extend(preview_dir.iter().cloned());
+            dirs.sort();
+            dirs.dedup();
+            (!dirs.is_empty()).then_some((workspace, dirs))
+        });
         self.watch.shown = Some(shown);
         if stale {
             self.watch.sent = None;
         }
-        let wanted = match self.workspace {
-            Some(workspace) if self.panel == Panel::Files => {
-                let mut dirs: Vec<String> = std::iter::once(String::new())
-                    .chain(self.files.open.iter().cloned())
-                    .collect();
-                dirs.sort();
-                dirs.dedup();
-                Some((workspace, dirs))
-            }
-            _ => None,
-        };
         let (workspace, mut dirs) = match wanted {
             Some(wanted) => wanted,
             None => (self.watch.sent.as_ref()?.0, Vec::new()),
@@ -1538,6 +1546,34 @@ mod tests {
         );
         bench.take_reads(Instant::now());
         (bench, workspace, scope)
+    }
+
+    #[test]
+    fn a_shown_preview_keeps_its_folder_watched_whatever_the_sidebar_shows() {
+        let (mut bench, workspace) = bench();
+        bench.preview("docs/guide/intro.md");
+        bench.take_reads(Instant::now());
+        let (to, set) = bench
+            .take_watch(1)
+            .expect("the preview's folder is watched");
+        assert_eq!(to, workspace);
+        assert_eq!(set.directories, vec!["docs/guide".to_string()]);
+        bench.show_panel(Panel::Files);
+        bench.take_reads(Instant::now());
+        let (_, both) = bench.take_watch(1).expect("the tree joins the preview");
+        assert_eq!(both.directories, vec![String::new(), "docs/guide".into()]);
+        bench.show_panel(Panel::Projects);
+        bench.take_reads(Instant::now());
+        let (_, kept) = bench
+            .take_watch(1)
+            .expect("leaving Files keeps the preview");
+        assert_eq!(kept.directories, vec!["docs/guide".to_string()]);
+        bench.show(CenterMode::Session);
+        bench.take_reads(Instant::now());
+        let (_, cleared) = bench
+            .take_watch(1)
+            .expect("a closed preview stops watching");
+        assert!(cleared.directories.is_empty());
     }
 
     #[test]
