@@ -35,6 +35,7 @@ mod session_changes;
 mod session_label;
 mod settings;
 mod shares;
+mod spec_run;
 mod storage;
 mod sync;
 mod tabs;

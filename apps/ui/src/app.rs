@@ -149,6 +149,7 @@ pub struct AppState {
     pub commit: crate::commit::CommitBox,
     pub review: Option<crate::pr_review::ReviewDialog>,
     pub open_pr: crate::open_pr::OpenPr,
+    pub spec_dialog: Option<crate::spec_run::SpecDialog>,
     /// A Refresh the person pressed is in flight; cleared by the update.
     pub pr_refreshing: bool,
     /// The connection generation the Pull Requests view read on its own.
@@ -263,6 +264,7 @@ impl AppState {
             commit: crate::commit::CommitBox::default(),
             review: None,
             open_pr: crate::open_pr::OpenPr::default(),
+            spec_dialog: None,
             pr_refreshing: false,
             pr_auto_read: None,
             pr_query: rune::TextEdit::new(""),
@@ -569,6 +571,7 @@ impl AppState {
         self.palette.open
             || self.about
             || self.review.is_some()
+            || self.spec_dialog.is_some()
             || self.rename.is_some()
             || self.confirm_close.is_some()
             || self.settings.confirm_reset
@@ -1110,6 +1113,7 @@ impl AppState {
                 Command::Panel(panel) => self.show_panel(panel),
                 Command::ToggleSidebar => self.sidebar.toggle(),
                 Command::NewWorktree => self.new_worktree_here(),
+                Command::RunSpec => self.open_run_spec(),
                 Command::Theme(base) => self.choose_theme(base),
                 Command::FindInFiles => self.find_in_files(),
                 Command::SplitPane => {
@@ -2243,6 +2247,9 @@ impl AppState {
                     } else {
                         self.commit.error = Some(message.clone());
                     }
+                }
+                if label == "RunSpec" {
+                    self.spec_run_result(ok, &message);
                 }
                 if label == "RefreshPullRequests" && !ok && self.pr_refreshing {
                     self.pr_refreshing = false;

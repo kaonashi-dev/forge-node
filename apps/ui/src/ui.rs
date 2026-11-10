@@ -160,6 +160,7 @@ pub fn view(s: &AppState, cx: &mut Cx<AppState>) -> El {
     crate::projects::dialogs(s, &k, &mut overlays);
     rename_dialog(s, &k, &mut overlays);
     crate::pr_review::dialog(s, &k, &mut overlays);
+    crate::spec_run::dialog(s, &k, &mut overlays);
     crate::agent_ops::dialogs(s, &k, &mut overlays);
     close_dialog(s, &k, &mut overlays);
     crate::history::delete_dialog(s, &k, &mut overlays);

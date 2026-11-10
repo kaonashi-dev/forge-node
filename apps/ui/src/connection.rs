@@ -126,6 +126,14 @@ pub enum Command {
     Fetch {
         project_id: domain::ProjectId,
     },
+    /// Start a spec run's planner. The spec path is checked here, off the UI
+    /// thread, through the daemon when it is in the checkout.
+    RunSpec {
+        workspace_id: WorkspaceId,
+        checkout: std::path::PathBuf,
+        providers: Vec<domain::AgentDescriptor>,
+        request: crate::spec_run::SpecRequest,
+    },
     /// A background agent drafts the pull request; the daemon opens it.
     OpenPullRequestWithAgent {
         workspace_id: WorkspaceId,
@@ -909,6 +917,21 @@ impl ConnectionHandle {
             provider_id,
             profile_id,
             draft,
+        })
+    }
+
+    pub fn run_spec(
+        &self,
+        workspace_id: WorkspaceId,
+        checkout: std::path::PathBuf,
+        providers: Vec<domain::AgentDescriptor>,
+        request: crate::spec_run::SpecRequest,
+    ) -> Result<(), String> {
+        self.send(Command::RunSpec {
+            workspace_id,
+            checkout,
+            providers,
+            request,
         })
     }
 
@@ -1902,6 +1925,16 @@ fn handle_fixture_command(
                 metrics,
                 started,
             );
+        }
+        Command::RunSpec { .. } => {
+            metrics.commands_completed.fetch_add(1, Ordering::Relaxed);
+            sink(vec![UiEvent::CommandResult {
+                generation,
+                label: "RunSpec",
+                ok: false,
+                message: "a spec run needs a running daemon".to_string(),
+                took_us: started.elapsed().as_micros() as u64,
+            }]);
         }
         Command::Config {
             generation: command_generation,
@@ -3250,6 +3283,59 @@ fn handle_live_command(
                 .map_err(|error| error.to_string());
             live_result(generation, "FetchRemote", result, sink, metrics, started);
         }
+        Command::RunSpec {
+            workspace_id,
+            checkout,
+            providers,
+            request,
+        } => {
+            metrics.note_socket_op();
+            let in_checkout = |relative: &std::path::Path| {
+                match client.read_file(workspace_id, relative.to_string_lossy()) {
+                    Ok(_) => true,
+                    // Too large or binary is still a file; only absence is not.
+                    Err(client::ClientError::Protocol(error)) => {
+                        error.code != client::ErrorCode::NotFound
+                    }
+                    Err(_) => false,
+                }
+            };
+            let is_file = |path: crate::spec_run::SpecPath<'_>| match path {
+                crate::spec_run::SpecPath::InCheckout(relative) => in_checkout(relative),
+                crate::spec_run::SpecPath::Elsewhere(path) => match path.strip_prefix(&checkout) {
+                    Ok(relative) => in_checkout(relative),
+                    Err(_) => path.is_file(),
+                },
+            };
+            let home = std::env::var_os("HOME").map(std::path::PathBuf::from);
+            let result = crate::spec_run::planner_launch(
+                &providers,
+                &checkout,
+                &request,
+                home.as_deref(),
+                crate::spec_run::forgectl(),
+                is_file,
+            )
+            .and_then(|launch| {
+                client
+                    .create_planner_session(
+                        workspace_id,
+                        launch.provider,
+                        launch.effort,
+                        launch.title.clone(),
+                        launch.brief,
+                    )
+                    .map(|(session_id, _)| {
+                        sink(vec![UiEvent::SessionOpened {
+                            generation,
+                            session_id,
+                        }]);
+                        format!("started {}", launch.title)
+                    })
+                    .map_err(|error| error.to_string())
+            });
+            live_result(generation, "RunSpec", result, sink, metrics, started);
+        }
         Command::OpenPullRequestWithAgent {
             workspace_id,
             provider_id,
@@ -4045,6 +4131,7 @@ fn command_label(command: &Command) -> &'static str {
         Command::RunAction { .. } => "RunAction",
         Command::Fetch { .. } => "FetchRemote",
         Command::OpenPullRequestWithAgent { .. } => "OpenPullRequestWithAgent",
+        Command::RunSpec { .. } => "RunSpec",
         Command::RefreshPullRequests { .. } => "RefreshPullRequests",
         Command::DraftCommit { .. } => "DraftWithJuva",
         Command::Commit { .. } => "CreateCommit",

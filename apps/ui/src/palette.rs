@@ -20,6 +20,8 @@ pub enum Command {
     Panel(Panel),
     ToggleSidebar,
     NewWorktree,
+    /// The planner of a spec run, in the window's checkout.
+    RunSpec,
     /// A base, or `"system"`.
     Theme(String),
     NewAgent(domain::AgentProviderId, Option<domain::AgentProfileId>),
@@ -58,6 +60,7 @@ impl Command {
                 .map_or(&glyphs::PANEL_LEFT_OPEN, |(.., glyph)| *glyph),
             Command::ToggleSidebar => &glyphs::PANEL_LEFT_OPEN,
             Command::NewWorktree => &glyphs::WORKTREE,
+            Command::RunSpec => &glyphs::SPAWN_CHILD,
             Command::Theme(_) => &glyphs::APPEARANCE,
             Command::RunAction(_) => &glyphs::PLAY,
             Command::Settings(section) => section.icon(),
@@ -301,6 +304,7 @@ fn commands() -> Vec<(String, Command)> {
     let out = vec![
         ("New Terminal".to_string(), Command::NewShell),
         ("New Worktree".to_string(), Command::NewWorktree),
+        ("Run Spec…".to_string(), Command::RunSpec),
         ("Projects".to_string(), Command::Panel(Panel::Projects)),
         ("Files".to_string(), Command::Panel(Panel::Files)),
         ("Find in Files".to_string(), Command::FindInFiles),
@@ -535,7 +539,7 @@ impl Palette {
                     || matches!(
                         entry,
                         Entry::Command {
-                            command: Command::NewShell | Command::NewAgent(..),
+                            command: Command::NewShell | Command::NewAgent(..) | Command::RunSpec,
                             ..
                         }
                     )
@@ -1122,9 +1126,10 @@ mod tests {
             vec![
                 "New Claude Code".to_string(),
                 "New Claude Work".to_string(),
-                "New Terminal".to_string()
+                "New Terminal".to_string(),
+                "Run Spec…".to_string()
             ],
-            "a profile is launchable by name"
+            "a profile is launchable by name, and a spec run starts agents too"
         );
         assert_eq!(palette.placeholder(), "Start a terminal or an agent…");
     }
