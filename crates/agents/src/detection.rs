@@ -303,16 +303,31 @@ pub(crate) fn kill_grouped_child(mut child: Child) {
         }
     }
     let _ = child.kill();
-    // SIGKILL cannot be ignored, but a process in uninterruptible sleep dies
-    // only when that sleep ends, so the reap never blocks the prober.
-    if thread::Builder::new()
+    // SIGKILL lands at once for almost every process; one in uninterruptible
+    // sleep dies only when that sleep ends, and is reaped on its own thread so
+    // the prober does not wait with it.
+    if wait_until(&mut child, Instant::now()).is_some() {
+        return;
+    }
+    let slot = std::sync::Arc::new(std::sync::Mutex::new(Some(child)));
+    let theirs = std::sync::Arc::clone(&slot);
+    let spawned = thread::Builder::new()
         .name("probe-reap".into())
-        .spawn(move || {
-            let _ = child.wait();
-        })
-        .is_err()
-    {
-        tracing::warn!("could not start a thread to reap a killed version probe");
+        .spawn(move || reap(&theirs));
+    if spawned.is_err() {
+        // No thread to hand it to: an unreaped child is a zombie for the
+        // daemon's lifetime, so this caller waits instead.
+        reap(&slot);
+    }
+}
+
+fn reap(slot: &std::sync::Mutex<Option<Child>>) {
+    let child = slot
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .take();
+    if let Some(mut child) = child {
+        let _ = child.wait();
     }
 }
 
