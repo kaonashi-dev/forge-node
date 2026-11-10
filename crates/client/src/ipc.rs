@@ -167,9 +167,12 @@ impl Shared {
     fn disconnect(&self) {
         self.connected.store(false, Ordering::SeqCst);
         let _ = self.shutdown.shutdown(std::net::Shutdown::Both);
-        if let Ok(mut pending) = self.pending.lock() {
-            pending.clear();
-        }
+        // Dropping every reply sender is what wakes a waiting `request`, so a
+        // poisoned map is recovered here as everywhere else.
+        self.pending
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clear();
     }
 }
 
