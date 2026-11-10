@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# W7 perf harness: one command, one machine-readable report.
+# Perf harness: one command, one machine-readable report.
 #
 #   apps/ui/scripts/perf.sh
 #

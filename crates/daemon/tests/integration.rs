@@ -767,7 +767,7 @@ fn a_killed_shell_is_reaped_and_reports_its_signal() {
     assert_eq!(
         signal,
         Some(nix::sys::signal::Signal::SIGHUP as i32),
-        "a Shell session is killed with SIGHUP (§11.3), so the exit must report \
+        "a Shell session is killed with SIGHUP, so the exit must report \
          that signal; got code={code:?} signal={signal:?}"
     );
 
@@ -854,20 +854,14 @@ fn terminal_content_never_reaches_the_log() {
     let logged = capture.contents();
     assert!(
         logged.contains("ipc.request"),
-        "§22 requires an ipc.request span per request; log was:\n{logged}"
+        "every request needs an ipc.request span per request; log was:\n{logged}"
     );
     assert!(
         logged.contains("WriteTerminalInput"),
         "the span must record the request variant; log was:\n{logged}"
     );
-    assert!(
-        !logged.contains(TYPED),
-        "keystrokes leaked into the log (§22/§23)"
-    );
-    assert!(
-        !logged.contains(PRINTED),
-        "PTY output leaked into the log (§22/§23)"
-    );
+    assert!(!logged.contains(TYPED), "keystrokes leaked into the log");
+    assert!(!logged.contains(PRINTED), "PTY output leaked into the log");
 
     stop_daemon(&client);
 }
@@ -904,7 +898,7 @@ fn shutdown_kills_a_session_that_ignores_the_first_signal() {
 
     assert!(
         poll_until(Duration::from_secs(30), || !pid_alive(shell)),
-        "a session ignoring SIGHUP must still be SIGKILLed on shutdown (§9.1)"
+        "a session ignoring SIGHUP must still be SIGKILLed on shutdown"
     );
 }
 
@@ -974,7 +968,7 @@ fn reconnect_with_a_new_client_preserves_the_grid() {
     assert_eq!(
         session.state,
         SessionState::Running,
-        "the PTY outlives the client (§9.1)"
+        "the PTY outlives the client"
     );
     assert_eq!(session.terminal_id, Some(terminal_id));
 
@@ -1494,7 +1488,7 @@ fn slow_subscriber_gets_a_resync_instead_of_an_unbounded_backlog() {
 
     let Some(resync_seq) = resync_seq else {
         panic!(
-            "a slow subscriber must receive a TerminalResync (§10.5); \
+            "a slow subscriber must receive a TerminalResync; \
              read {messages} message(s) without one (last delta seq {last_delta_seq})"
         );
     };

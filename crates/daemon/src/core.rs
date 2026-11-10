@@ -10665,7 +10665,7 @@ mod tests {
 
         let ws = &inner.workspaces[&child.workspace_id];
         assert_eq!(ws.kind, WorkspaceKind::GitWorktree);
-        assert!(ws.managed_by_app, "created by Forge (§14.3)");
+        assert!(ws.managed_by_app, "created by Forge");
         assert_eq!(ws.branch.as_deref(), Some("feature/child"));
         assert!(ws.path.join(".git").exists(), "the worktree is on disk");
         assert_eq!(
@@ -10806,7 +10806,7 @@ mod tests {
 
         let err = daemon
             .close_session(session)
-            .expect_err("Running sessions must be killed first (§7.3)");
+            .expect_err("Running sessions must be killed first");
         assert_eq!(err.code, ErrorCode::PreconditionFailed);
         assert!(daemon.lock().sessions.contains_key(&session));
     }
@@ -11243,7 +11243,7 @@ mod tests {
 
         daemon
             .add_project(&nested)
-            .expect("§7.1: nesting is allowed, only warned about");
+            .expect("nesting is allowed, only warned about");
         let notices = daemon.take_pending_notices();
         assert!(warning_containing(&notices, "nested"), "{notices:?}");
         assert_eq!(daemon.lock().projects.len(), 2);
@@ -11262,7 +11262,7 @@ mod tests {
 
         daemon
             .add_project(&root)
-            .expect("§23: the path is accepted, not rejected");
+            .expect("the path is accepted, not rejected");
         let notices = daemon.take_pending_notices();
         assert!(warning_containing(&notices, "outside"), "{notices:?}");
     }

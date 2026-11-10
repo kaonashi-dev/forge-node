@@ -72,11 +72,7 @@ fn a_daemon_restart_orphans_every_previously_running_session() {
         panic!("expected Snapshot");
     };
 
-    assert_eq!(
-        projects.len(),
-        1,
-        "the project survives the restart (§15.2)"
-    );
+    assert_eq!(projects.len(), 1, "the project survives the restart");
     assert!(
         workspaces.iter().any(|w| w.id == workspace_id),
         "so does its Main workspace"
@@ -91,11 +87,11 @@ fn a_daemon_restart_orphans_every_previously_running_session() {
         assert_eq!(
             session.state,
             SessionState::Orphaned,
-            "a PTY never survives the daemon, so its session is Orphaned (§3.3, §15.3)"
+            "a PTY never survives the daemon, so its session is Orphaned"
         );
         assert!(
             session.terminal_id.is_none(),
-            "terminal ids are runtime-only and are never persisted (§15.2)"
+            "terminal ids are runtime-only and are never persisted"
         );
         assert!(
             session.ended_at.is_some(),
@@ -104,7 +100,7 @@ fn a_daemon_restart_orphans_every_previously_running_session() {
     }
     assert!(
         !sessions.iter().any(|s| s.state.is_active()),
-        "no session comes back Running or Starting (§19 G)"
+        "no session comes back Running or Starting"
     );
 
     // The PTYs of the crashed daemon are still out there; only the core that
@@ -169,7 +165,7 @@ fn a_fresh_start_drops_the_session_history_by_default() {
         "the session history is dropped on startup, not kept as Orphaned rows: {:?}",
         sessions.iter().map(|s| &s.state).collect::<Vec<_>>()
     );
-    assert_eq!(projects.len(), 1, "the project still survives (§15.2)");
+    assert_eq!(projects.len(), 1, "the project still survives");
     assert!(
         workspaces.iter().any(|w| w.id == workspace_id),
         "and so does its Main workspace, so the tree reopens where it was"
@@ -215,7 +211,7 @@ fn a_child_session_stays_nested_across_a_daemon_restart_and_keeps_its_parent() {
         assert_eq!(child.role, SessionRole::Planner);
         assert_eq!(
             child.workspace_id, workspace_id,
-            "the SameWorkspace policy keeps B where A runs (§8.2)"
+            "the SameWorkspace policy keeps B where A runs"
         );
         (parent_id, child_id, workspace_id)
     };
@@ -228,12 +224,8 @@ fn a_child_session_stays_nested_across_a_daemon_restart_and_keeps_its_parent() {
 
     let parent = common::session(&client, parent_id).expect("A survived the restart");
     let child = common::session(&client, child_id).expect("B survived the restart");
-    assert_eq!(
-        parent.state,
-        SessionState::Orphaned,
-        "A is Orphaned (§19 E)"
-    );
-    assert_eq!(child.state, SessionState::Orphaned, "B is Orphaned (§19 E)");
+    assert_eq!(parent.state, SessionState::Orphaned, "A is Orphaned");
+    assert_eq!(child.state, SessionState::Orphaned, "B is Orphaned");
     assert_eq!(
         child.parent_session_id,
         Some(parent_id),
@@ -246,7 +238,7 @@ fn a_child_session_stays_nested_across_a_daemon_restart_and_keeps_its_parent() {
     assert_eq!(
         child.role,
         SessionRole::Planner,
-        "the role tag is persisted, not runtime state (§15.2)"
+        "the role tag is persisted, not runtime state"
     );
     assert_eq!(child.workspace_id, workspace_id);
 
@@ -267,7 +259,7 @@ fn a_child_session_stays_nested_across_a_daemon_restart_and_keeps_its_parent() {
     assert_eq!(
         child.parent_session_id,
         Some(parent_id),
-        "RestartSession preserves the parent (§19 E)"
+        "RestartSession preserves the parent"
     );
     assert_eq!(child.root_session_id, parent_id);
     assert_eq!(child.role, SessionRole::Planner, "and the role");

@@ -831,7 +831,7 @@ fn session_roundtrip_custom_role_states_and_graph() {
     let loaded_failed = db.sessions().get(failed.id).unwrap().unwrap();
     assert!(matches!(loaded_failed.state, SessionState::Failed { .. }));
     if let SessionState::Failed { reason } = loaded_failed.state {
-        assert_ne!(reason, "boom", "reason is not persisted (§15.2)");
+        assert_ne!(reason, "boom", "reason is not persisted");
         assert!(!reason.is_empty());
     }
 

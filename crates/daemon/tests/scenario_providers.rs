@@ -108,7 +108,7 @@ fn set_provider_executable_installs_a_provider_without_restarting_the_daemon() {
             DaemonEvent::AgentDetectionChanged { .. }
         ))
         .is_some(),
-        "setting an override re-runs detection and broadcasts the result (§13.1)"
+        "setting an override re-runs detection and broadcasts the result"
     );
     match common::provider(&client, "cursor").detection.status {
         DetectionStatus::Installed {
@@ -129,7 +129,7 @@ fn set_provider_executable_installs_a_provider_without_restarting_the_daemon() {
             .expect("the earlier session")
             .state,
         SessionState::Running,
-        "and the sessions started before the override are untouched (§19 F)"
+        "and the sessions started before the override are untouched"
     );
 
     // The override is what actually runs: the foreign `agent` is still first on
@@ -285,7 +285,7 @@ fn launching_a_provider_whose_only_candidate_was_rejected_is_refused() {
     common::stop_daemon(&client);
     assert!(
         outcome.is_err(),
-        "the only `cursor` candidate on PATH failed its version probe (§13.1), \
+        "the only `cursor` candidate on PATH failed its version probe, \
          so launching the provider must fail instead of spawning it; \
          the foreign binary answered the session: {launched:?}"
     );
