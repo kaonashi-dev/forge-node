@@ -7602,6 +7602,15 @@ impl Daemon {
 
     /// Cached login-shell env. Fallback notice once per daemon.
     fn resolved_env(&self, inner: &mut Inner) -> ResolvedEnvironment {
+        // Every caller runs `ensure_env` first, which captures off the lock;
+        // reaching here unresolved would run `$SHELL -l -i` under it.
+        debug_assert!(
+            inner.env.is_resolved(),
+            "resolved_env before ensure_env: a login-shell capture under the core lock"
+        );
+        if !inner.env.is_resolved() {
+            tracing::warn!("capturing the login-shell environment under the core lock");
+        }
         let env = inner.env.get().clone();
         if env.source == EnvSource::ProcessFallback && !inner.env_fallback_noticed {
             inner.env_fallback_noticed = true;
