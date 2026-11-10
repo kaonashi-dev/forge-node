@@ -78,12 +78,15 @@ fn credentials_path(
     )
 }
 
+/// A credentials file is a few hundred bytes; anything far past that is not one.
+const MAX_CREDENTIALS_BYTES: u64 = 64 * 1024;
+
 fn read_access_token(
     env: &ResolvedEnvironment,
     account: &super::UsageAccount<'_>,
 ) -> Option<String> {
     if let Some(path) = credentials_path(env, account) {
-        if let Ok(raw) = std::fs::read(&path) {
+        if let Ok(raw) = crate::capped::read(&path, MAX_CREDENTIALS_BYTES) {
             if let Some(token) = parse_credentials(&raw) {
                 return Some(token);
             }

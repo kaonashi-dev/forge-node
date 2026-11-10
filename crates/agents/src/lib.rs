@@ -6,6 +6,7 @@
 
 pub mod attention;
 pub mod builtins;
+pub mod capped;
 pub mod descriptor;
 pub mod detection;
 pub mod history;

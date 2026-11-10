@@ -54,7 +54,8 @@ pub fn file_marks(repo: &Path, relative: &str, line_count: u32) -> Result<Vec<Ma
             "--",
             relative,
         ],
-    )?;
+    )?
+    .complete()?;
     Ok(marks_from_hunks(&out.stdout, line_count))
 }
 
@@ -144,7 +145,8 @@ pub fn file_hunk(repo: &Path, relative: &str, line: u32) -> Result<Option<Hunk>,
             "--",
             relative,
         ],
-    )?;
+    )?
+    .complete()?;
     Ok(hunk_at(&out.stdout, line))
 }
 

@@ -182,7 +182,8 @@ fn ensure_cursor_hooks(home: &Path, ring_bell: &Path, activity: &Path) -> std::i
     let invalid =
         |reason: &str| std::io::Error::new(std::io::ErrorKind::InvalidData, reason.to_owned());
     let existing = if path.is_file() {
-        std::fs::read_to_string(&path)?
+        String::from_utf8(crate::capped::read(&path, MAX_CURSOR_HOOKS_BYTES)?)
+            .map_err(|error| invalid(&error.to_string()))?
     } else {
         String::new()
     };
@@ -321,8 +322,12 @@ fn ensure_private_dir(dir: &Path) -> std::io::Result<()> {
     Ok(())
 }
 
+/// Largest `~/.cursor/hooks.json` merged into; a bigger one is left alone.
+const MAX_CURSOR_HOOKS_BYTES: u64 = 1024 * 1024;
+
 fn write_if_changed(path: PathBuf, source: &[u8]) -> std::io::Result<PathBuf> {
-    match std::fs::read(&path) {
+    // One byte past the asset is enough to know it differs.
+    match crate::capped::read(&path, source.len() as u64) {
         Ok(existing) if existing == source => return Ok(path),
         _ => {}
     }

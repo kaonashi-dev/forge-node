@@ -7772,6 +7772,8 @@ const SNAPSHOT_PS_TIMEOUT: Duration = Duration::from_secs(2);
 const MAX_COMMAND_BYTES: usize = 4096;
 /// Largest `ps` dump parsed; the table is consumed per line and dropped.
 const MAX_PS_LINES: usize = 16_384;
+/// Largest `ps` dump read; the rest of the pipe is discarded.
+const MAX_PS_BYTES: usize = 8 * 1024 * 1024;
 
 /// Foreground command of each `(session, shell pid)` pair.
 ///
@@ -7795,10 +7797,11 @@ fn foreground_commands(shells: &[(SessionId, u32)]) -> HashMap<SessionId, String
 /// Same spawn discipline as `shares::apply`'s runner: own process group, bounded
 /// wait, negative-pgid kill. This runs once per shutdown, never per frame.
 fn run_ps_table() -> Option<String> {
+    use std::io::Read as _;
     use std::os::unix::process::CommandExt as _;
     use std::process::{Command, Stdio};
 
-    let child = Command::new("ps")
+    let mut child = Command::new("ps")
         .args(["-eo", "pid,ppid,args"])
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
@@ -7809,11 +7812,25 @@ fn run_ps_table() -> Option<String> {
     let pid = child.id();
     let (tx, rx) = std::sync::mpsc::channel();
     std::thread::spawn(move || {
-        let _ = tx.send(child.wait_with_output());
+        let mut out = Vec::new();
+        if let Some(mut stdout) = child.stdout.take() {
+            let _ = (&mut stdout)
+                .take(MAX_PS_BYTES as u64)
+                .read_to_end(&mut out);
+            // Past the cap the rest is drained, not left in the pipe, so `ps`
+            // can finish and be reaped.
+            let _ = std::io::copy(&mut stdout, &mut std::io::sink());
+        }
+        let _ = tx.send(child.wait().map(|status| (status, out)));
     });
     match rx.recv_timeout(SNAPSHOT_PS_TIMEOUT) {
-        Ok(Ok(output)) if output.status.success() => {
-            let text = String::from_utf8_lossy(&output.stdout);
+        Ok(Ok((status, mut out))) if status.success() => {
+            // A cut final line would resurrect a truncated command.
+            if out.len() >= MAX_PS_BYTES {
+                let end = out.iter().rposition(|byte| *byte == b'\n').unwrap_or(0);
+                out.truncate(end);
+            }
+            let text = String::from_utf8_lossy(&out);
             Some(
                 text.lines()
                     .take(MAX_PS_LINES)
@@ -7821,8 +7838,10 @@ fn run_ps_table() -> Option<String> {
                     .join("\n"),
             )
         }
-        // Stalled or failed: kill the group so no `ps` outlives the daemon.
-        _ => {
+        // Stalled: kill the group so no `ps` outlives the daemon. Only here:
+        // on any other answer the child is already reaped and its pgid may
+        // belong to someone else by now.
+        Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
             if let Ok(raw) = i32::try_from(pid) {
                 let _ = nix::sys::signal::kill(
                     nix::unistd::Pid::from_raw(-raw),
@@ -7831,6 +7850,7 @@ fn run_ps_table() -> Option<String> {
             }
             None
         }
+        _ => None,
     }
 }
 

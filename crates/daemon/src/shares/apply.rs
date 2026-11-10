@@ -639,7 +639,8 @@ fn diverged(source: &Path, target: &Path) -> bool {
     if a.len() > CONTENT_COMPARE_MAX {
         return false;
     }
-    match (std::fs::read(source), std::fs::read(target)) {
+    let read = |path: &Path| agents::capped::read(path, CONTENT_COMPARE_MAX);
+    match (read(source), read(target)) {
         (Ok(a), Ok(b)) => a != b,
         _ => false,
     }

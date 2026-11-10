@@ -281,8 +281,13 @@ fn unmerged(path: &Path) -> Result<(Vec<Conflict>, bool), GitError> {
     let out = run_git(Some(path), &ARGS)?.ok(&ARGS)?;
 
     let mut conflicts = Vec::new();
-    let mut truncated = false;
-    for record in out.stdout.split('\0') {
+    let mut truncated = out.truncated;
+    let mut records: Vec<&str> = out.stdout.split('\0').collect();
+    // A cut capture ends mid-record; that tail is not a path.
+    if out.truncated {
+        records.pop();
+    }
+    for record in records {
         // `XY <path>`: two status columns, a space, then the path.
         if record.len() < 4 {
             continue;
@@ -343,11 +348,16 @@ fn read_rebase_progress(path: &Path, state: &mut SequencerState) {
 /// `metadata()` before the read is the rule the whole repository follows: a
 /// budget consulted after the allocation bounds the answer, not the peak.
 fn read_state_file(path: &Path) -> Option<String> {
-    let size = std::fs::metadata(path).ok()?.len();
+    use std::io::Read as _;
+    let file = std::fs::File::open(path).ok()?;
+    let size = file.metadata().ok()?.len();
     if size == 0 || size > MAX_STATE_FILE_BYTES {
         return None;
     }
-    let text = std::fs::read_to_string(path).ok()?;
+    let mut text = String::new();
+    file.take(MAX_STATE_FILE_BYTES)
+        .read_to_string(&mut text)
+        .ok()?;
     let line = text.lines().next()?.trim().to_string();
     (!line.is_empty()).then_some(line)
 }

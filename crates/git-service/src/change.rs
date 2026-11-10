@@ -125,7 +125,7 @@ fn tip_sha(repo: &Path) -> Result<String, GitError> {
 
 fn list_changed_files(repo: &Path) -> Result<Vec<(String, String)>, GitError> {
     const ARGS: [&str; 2] = ["status", "--porcelain"];
-    let out = run_git(Some(repo), &ARGS)?.ok(&ARGS)?;
+    let out = run_git(Some(repo), &ARGS)?.ok(&ARGS)?.complete()?;
     let mut files = Vec::new();
     for line in out.stdout.lines() {
         if line.len() < 4 {
