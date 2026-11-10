@@ -93,6 +93,15 @@ pub fn opens_rendered(path: &str) -> bool {
 
 /// The folder `path` is listed in; `""` is the root.
 #[must_use]
+/// `path` after `from` moved to `to`, when it is `from` or lies under it.
+fn moved_path(path: &str, from: &str, to: &str) -> Option<String> {
+    if path == from {
+        return Some(to.to_string());
+    }
+    let rest = path.strip_prefix(from)?.strip_prefix('/')?;
+    Some(format!("{to}/{rest}"))
+}
+
 pub fn parent_of(path: &str) -> &str {
     path.rfind('/').map_or("", |slash| &path[..slash])
 }
@@ -1027,6 +1036,31 @@ impl Workbench {
         }
     }
 
+    /// Follows a confirmed rename of the previewed file or a folder above it,
+    /// and reads it at its new path. Whether anything changed on screen.
+    pub fn path_moved(&mut self, workspace: WorkspaceId, from: &str, to: &str) -> bool {
+        if self.workspace != Some(workspace) {
+            return false;
+        }
+        let Some(moved) = self
+            .files
+            .previewing
+            .as_deref()
+            .and_then(|shown| moved_path(shown, from, to))
+        else {
+            return false;
+        };
+        match &mut self.files.preview {
+            Some(preview) if preview_kind(&moved) == preview.kind => {
+                preview.path.clone_from(&moved)
+            }
+            _ => self.files.preview = None,
+        }
+        self.files.previewing = Some(moved);
+        self.reread_preview();
+        true
+    }
+
     /// An image for the preview, already handed to the decoder.
     pub fn apply_image(&mut self, scope: Scope, path: &str, image: Result<rune::Image, String>) {
         if self.scope() != Some(scope) || self.files.previewing.as_deref() != Some(path) {
@@ -1546,6 +1580,23 @@ mod tests {
         );
         bench.take_reads(Instant::now());
         (bench, workspace, scope)
+    }
+
+    #[test]
+    fn a_confirmed_rename_retargets_the_preview_it_moved() {
+        let (mut bench, workspace) = bench();
+        bench.preview("docs/guide.md");
+        bench.take_reads(Instant::now());
+        assert!(!bench.path_moved(workspace, "docs/guide.mdx", "x.md"));
+        assert!(!bench.path_moved(WorkspaceId::new(), "docs/guide.md", "x.md"));
+        assert!(bench.path_moved(workspace, "docs/guide.md", "docs/intro.md"));
+        assert_eq!(bench.files.previewing.as_deref(), Some("docs/intro.md"));
+        assert_eq!(
+            bench.take_reads(Instant::now()),
+            vec![Read::File("docs/intro.md".into())]
+        );
+        assert!(bench.path_moved(workspace, "docs", "manual"));
+        assert_eq!(bench.files.previewing.as_deref(), Some("manual/intro.md"));
     }
 
     #[test]

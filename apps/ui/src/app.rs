@@ -1940,6 +1940,17 @@ impl AppState {
                     .apply(scope, &query, result.map(|results| *results));
                 true
             }
+            UiEvent::PathMoved {
+                generation,
+                workspace_id,
+                from,
+                to,
+            } => {
+                if !self.accept_generation(generation) {
+                    return false;
+                }
+                self.workbench.path_moved(workspace_id, &from, &to)
+            }
             UiEvent::Watched {
                 generation,
                 ticket,
