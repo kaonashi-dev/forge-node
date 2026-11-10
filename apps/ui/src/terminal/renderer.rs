@@ -2,7 +2,7 @@ use std::sync::Arc;
 use std::time::Instant;
 
 use bytemuck::{Pod, Zeroable};
-use domain::{Cell, CellFlags, Cursor, CursorShape};
+use domain::{Cell, CellFlags, CursorShape};
 use rune::compose::{Compositor, Frame};
 use rune::render::EffectSite;
 
@@ -913,11 +913,6 @@ impl Drop for Terminal {
             eprintln!("{}", st.report());
         }
     }
-}
-
-#[allow(dead_code)]
-fn _cursor_shape(cursor: Cursor) -> CursorShape {
-    cursor.shape
 }
 
 /// Whole cells a pane of `width` × `height` holds, as the original client's `gridSize`
