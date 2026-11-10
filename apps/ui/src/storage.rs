@@ -341,6 +341,37 @@ pub fn section(s: &AppState, k: &Kit) -> El {
     view
 }
 
+/// The move buttons: data alone leaves worktrees where they are, because
+/// moving one changes its path and the transcripts recorded under it.
+fn move_choices(layout: Layout, left: usize) -> Vec<(&'static str, &'static str, MigrationAction)> {
+    if layout != Layout::Legacy {
+        return vec![(
+            "Move worktrees…",
+            "storage-migration-move",
+            MigrationAction::Run {
+                move_worktrees: true,
+            },
+        )];
+    }
+    let mut choices = vec![(
+        "Move data…",
+        "storage-migration-move",
+        MigrationAction::Run {
+            move_worktrees: false,
+        },
+    )];
+    if left > 0 {
+        choices.push((
+            "Move data and worktrees…",
+            "storage-migration-move-all",
+            MigrationAction::Run {
+                move_worktrees: true,
+            },
+        ));
+    }
+    choices
+}
+
 fn migration_group(s: &AppState, k: &Kit, paths: &ForgePaths, left: usize) -> Option<El> {
     let migration = &s.storage.migration;
     let needs_move = paths.layout == Layout::Legacy || left > 0;
@@ -423,24 +454,8 @@ fn migration_group(s: &AppState, k: &Kit, paths: &ForgePaths, left: usize) -> Op
     };
     let mut actions = row().gap(8.0).items_center();
     if needs_move {
-        let move_worktrees = paths.layout != Layout::Legacy || left > 0;
-        actions = actions.child(button(
-            if paths.layout == Layout::Legacy {
-                "Move data…"
-            } else {
-                "Move worktrees…"
-            },
-            "storage-migration-move",
-            MigrationAction::Run { move_worktrees },
-        ));
-        if paths.layout == Layout::Legacy && left > 0 {
-            actions = actions.child(button(
-                "Move data and worktrees…",
-                "storage-migration-move-all",
-                MigrationAction::Run {
-                    move_worktrees: true,
-                },
-            ));
+        for (label, key, action) in move_choices(paths.layout, left) {
+            actions = actions.child(button(label, key, action));
         }
     }
     if needs_remove {
@@ -748,6 +763,39 @@ mod tests {
             created_at: domain::Timestamp::now(),
             status: domain::WorkspaceStatus::default(),
         }
+    }
+
+    #[test]
+    fn moving_legacy_data_alone_leaves_the_worktrees_in_place() {
+        let actions = |layout, left| -> Vec<MigrationAction> {
+            move_choices(layout, left)
+                .into_iter()
+                .map(|(_, _, action)| action)
+                .collect()
+        };
+        assert_eq!(
+            actions(Layout::Legacy, 2),
+            [
+                MigrationAction::Run {
+                    move_worktrees: false
+                },
+                MigrationAction::Run {
+                    move_worktrees: true
+                },
+            ]
+        );
+        assert_eq!(
+            actions(Layout::Legacy, 0),
+            [MigrationAction::Run {
+                move_worktrees: false
+            }]
+        );
+        assert_eq!(
+            actions(Layout::Home, 3),
+            [MigrationAction::Run {
+                move_worktrees: true
+            }]
+        );
     }
 
     #[test]
