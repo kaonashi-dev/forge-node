@@ -2600,7 +2600,7 @@ fn connect_live(
                     && daemon_absent(&error)
                     && let Some(bin) = daemon
                 {
-                    spawn_daemon(bin, metrics)?;
+                    spawn_daemon(bin, socket, metrics)?;
                     spawned = true;
                 }
                 thread::sleep(RETRY);
@@ -2621,12 +2621,17 @@ fn daemon_absent(error: &client::ClientError) -> bool {
     )
 }
 
-fn spawn_daemon(bin: &std::path::Path, metrics: &Metrics) -> Result<(), String> {
+fn spawn_daemon(
+    bin: &std::path::Path,
+    socket: &std::path::Path,
+    metrics: &Metrics,
+) -> Result<(), String> {
     use std::os::unix::process::CommandExt;
     use std::process::{Command as Process, Stdio};
     metrics.note_subprocess_op();
     Process::new(bin)
         .arg("run")
+        .env("FORGE_SOCKET", socket)
         .process_group(0)
         .stdin(Stdio::null())
         .stdout(Stdio::null())
@@ -4109,6 +4114,46 @@ mod tests {
     use std::path::Path;
     use std::sync::Arc;
     use std::time::Duration;
+
+    fn fake_daemon(name: &str) -> (std::path::PathBuf, std::path::PathBuf) {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = std::env::temp_dir().join(format!("forge-ui-{name}-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).expect("temp dir");
+        let bin = dir.join("forge-daemon");
+        let out = dir.join("socket.txt");
+        std::fs::write(
+            &bin,
+            format!(
+                "#!/bin/sh\nprintf %s \"$FORGE_SOCKET\" > '{}'\n",
+                out.display()
+            ),
+        )
+        .expect("write fake daemon");
+        std::fs::set_permissions(&bin, std::fs::Permissions::from_mode(0o755)).expect("chmod");
+        (bin, out)
+    }
+
+    fn read_when_written(path: &Path) -> String {
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while Instant::now() < deadline {
+            if let Ok(text) = std::fs::read_to_string(path)
+                && !text.is_empty()
+            {
+                return text;
+            }
+            thread::sleep(Duration::from_millis(10));
+        }
+        panic!("{} was never written", path.display());
+    }
+
+    #[test]
+    fn a_spawned_daemon_listens_on_the_socket_the_client_dials() {
+        let (bin, out) = fake_daemon("socket");
+        let socket = Path::new("/tmp/forge-ui-chosen.sock");
+        spawn_daemon(&bin, socket, &Metrics::default()).expect("fake daemon starts");
+        assert_eq!(read_when_written(&out), socket.display().to_string());
+        let _ = std::fs::remove_dir_all(bin.parent().expect("temp dir"));
+    }
 
     fn fixture() -> Store {
         fixture_store(&Path::new(env!("CARGO_MANIFEST_DIR")).join("fixtures/snapshot.json"))
