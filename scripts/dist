@@ -329,20 +329,45 @@ default_macos_destination() {
   fi
 }
 
+installed_gui_pids() {
+  # `open` launches the bundle's launcher (Forge), which execs forge-ui; a
+  # running app is usually only visible under the latter name.
+  pgrep -f "Forge Node.app/Contents/MacOS/forge-ui" 2>/dev/null || true
+  pgrep -f "Forge Node.app/Contents/MacOS/Forge" 2>/dev/null || true
+}
+
 quit_running_gui() {
-  # CFBundleExecutable is Forge, not the display-name folder with a space.
-  if ! pgrep -x Forge >/dev/null 2>&1; then
-    return
-  fi
+  [ -n "$(installed_gui_pids)" ] || return
 
   require_cmd osascript
   local bundle_id="${FORGE_BUNDLE_ID:-dev.forgenode.forge}"
   note "closing the running Forge Node application"
-  osascript - "$bundle_id" <<'APPLESCRIPT'
+  osascript - "$bundle_id" <<'APPLESCRIPT' || true
 on run argv
   tell application id (item 1 of argv) to quit
 end run
 APPLESCRIPT
+
+  # `quit` is asynchronous, and replacing the bundle under a live process then
+  # calling open() only activates that old instance: the new build never starts.
+  local tries=0
+  while [ -n "$(installed_gui_pids)" ] && [ "$tries" -lt 50 ]; do
+    sleep 0.2
+    tries=$((tries + 1))
+  done
+  if [ -n "$(installed_gui_pids)" ]; then
+    note "Forge Node did not quit — sending SIGTERM"
+    installed_gui_pids | while read -r pid; do
+      kill -TERM "$pid" 2>/dev/null || true
+    done
+    tries=0
+    while [ -n "$(installed_gui_pids)" ] && [ "$tries" -lt 25 ]; do
+      sleep 0.2
+      tries=$((tries + 1))
+    done
+  fi
+  [ -z "$(installed_gui_pids)" ] \
+    || die "Forge Node is still running — quit it and rerun make install-local"
 }
 
 cmd_local() {
