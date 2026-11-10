@@ -428,16 +428,14 @@ fn select_all_occurrences(document: &mut Document) -> Outcome {
     if word {
         query = query.whole_word();
     }
-    let found = search::find_all(text, &query).found;
-    // `find_all` stops at its budget; past it the caret's own hit may be
-    // missing, and the cap must still keep the carets nearest it.
+    let found = search::around(text, &query, start, crate::limits::MAX_CURSORS);
     let at = found
         .iter()
-        .position(|hit| hit.range.start >= start)
+        .position(|hit| hit.start >= start)
         .unwrap_or(found.len().saturating_sub(1));
     let cursors = found
         .iter()
-        .map(|hit| crate::Cursor::new(hit.range.start, hit.range.end))
+        .map(|hit| crate::Cursor::new(hit.start, hit.end))
         .collect();
     document.set_selection(Selection::many(cursors, at));
     Outcome::default()
@@ -1069,6 +1067,24 @@ mod tests {
         assert_eq!(doc.selection().count(), 3);
         run(&mut doc, Command::InsertText("n".to_string()));
         assert_eq!(doc.as_str(), "n = n + n\nother\n");
+    }
+
+    #[test]
+    fn a_caret_past_thousands_of_matches_keeps_its_own_occurrence() {
+        let mut doc = document(&"total\n".repeat(6_000));
+        let last = doc.as_str().len() - "total\n".len();
+        doc.set_selection(crate::Selection::caret(last));
+        run(&mut doc, Command::SelectAllOccurrences);
+        assert_eq!(doc.selection().count(), crate::limits::MAX_CURSORS);
+        run(&mut doc, Command::InsertText("x".to_string()));
+        assert!(
+            doc.as_str().ends_with("x\n"),
+            "the caret's own line changed"
+        );
+        assert!(
+            doc.as_str().starts_with("total\n"),
+            "the top was left alone"
+        );
     }
 
     #[test]
