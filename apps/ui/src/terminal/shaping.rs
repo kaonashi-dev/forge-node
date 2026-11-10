@@ -345,16 +345,19 @@ impl Shaper {
         }
     }
 
+    #[must_use]
     pub fn fallback_faces(&self) -> usize {
         FALLBACK
             .get()
             .map_or(0, |f| f.lock().map_or(0, |f| f.faces.len()))
     }
 
+    #[must_use]
     pub fn run_at(&self, id: u32) -> Run {
         self.runs[id as usize]
     }
 
+    #[must_use]
     pub fn placed(&self, run: &Run, k: usize) -> Placed {
         self.arena[run.start as usize + k]
     }

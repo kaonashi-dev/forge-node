@@ -106,6 +106,7 @@ impl Palette {
     }
 
     #[inline]
+    #[must_use]
     pub fn resolve(&self, color: Color, default: u32) -> u32 {
         match color {
             Color::Indexed(i) => self.ansi[i as usize],
