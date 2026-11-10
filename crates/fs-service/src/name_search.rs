@@ -168,7 +168,7 @@ mod tests {
 
     #[test]
     fn still_matches_a_camel_hump_and_a_missing_underscore() {
-        let hits = search_names(&tree(&["apps/tauri/src/app_shell.rs"]), "appshell", 10);
+        let hits = search_names(&tree(&["web/src/app_shell.rs"]), "appshell", 10);
         assert_eq!(hits.matches.len(), 1);
     }
 

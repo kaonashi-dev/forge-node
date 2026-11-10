@@ -1,0 +1,4375 @@
+//! The only owner of `client::Client`: a dedicated thread, a bounded command
+//! queue in, and shell `AppHandle::update` batches out. Terminal deltas never
+//! take that path: they are applied in order to `SharedTerminal` and wake the
+//! compositor, which redraws the terminal without rebuilding the shell.
+
+use std::path::PathBuf;
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::{Arc, Mutex, OnceLock};
+use std::thread::{self, ThreadId};
+use std::time::{Duration, Instant};
+
+use client::{Client, DaemonEvent, Request, Store};
+use domain::{
+    AgentActivity, BranchCompare, BranchRef, CommitLine, DiffFile, DiffStatus, PullRequestDraft,
+    RefScope, Remote, Session, SessionId, SessionKind, SessionRole, SessionState, SessionTitle,
+    TerminalId, Timestamp, WorkspaceDiff, WorkspaceId,
+};
+use flume::{Receiver, Selector, Sender};
+
+use crate::terminal::SharedTerminal;
+use crate::terminal::fixture::{self, Feed};
+
+pub const CLIENT_VERSION: &str = env!("CARGO_PKG_VERSION");
+const RETRY: Duration = Duration::from_millis(400);
+const CONNECT_ATTEMPTS: usize = 8;
+const FIXTURE_CONNECT: Duration = Duration::from_millis(1);
+const FIXTURE_TICK: Duration = Duration::from_millis(50);
+
+#[derive(Clone, Debug)]
+pub enum Mode {
+    Live {
+        socket: PathBuf,
+        daemon: Option<PathBuf>,
+        spawn: bool,
+    },
+    Fixture {
+        snapshot: Arc<Store>,
+        reconnect_after: Option<Duration>,
+    },
+}
+
+#[derive(Clone)]
+pub struct Boot {
+    pub mode: Mode,
+    pub metrics: Arc<Metrics>,
+    pub terminal: Arc<SharedTerminal>,
+}
+
+#[derive(Debug)]
+pub enum Command {
+    Activate {
+        generation: u64,
+        session: Option<SessionId>,
+        terminal: Option<TerminalId>,
+        size: Option<(u16, u16)>,
+    },
+    ResizeAndAttach {
+        generation: u64,
+        terminal: TerminalId,
+        size: domain::PtySize,
+    },
+    Input {
+        generation: u64,
+        terminal: TerminalId,
+        bytes: Vec<u8>,
+    },
+    FetchScrollback {
+        generation: u64,
+        terminal: TerminalId,
+        from_line: i64,
+        count: u32,
+    },
+    CreateShellSession {
+        workspace_id: WorkspaceId,
+    },
+    RenameSession {
+        session_id: SessionId,
+        title: String,
+    },
+    OpenEditor {
+        workspace_id: WorkspaceId,
+        path: String,
+    },
+    EditorView {
+        generation: u64,
+        session_id: SessionId,
+        first_line: u32,
+        line_count: u32,
+    },
+    EditorInput {
+        generation: u64,
+        session_id: SessionId,
+        events: Vec<domain::EditorInputEvent>,
+    },
+    Read {
+        generation: u64,
+        scope: crate::workbench::Scope,
+        read: crate::workbench::Read,
+    },
+    /// A preference shared with every client, in the daemon's `app_state`.
+    SetAppState {
+        key: String,
+        value: String,
+    },
+    AddProject(std::path::PathBuf),
+    Usage {
+        generation: u64,
+        window_days: u16,
+    },
+    Paths {
+        generation: u64,
+    },
+    KillSession(SessionId),
+    CloseSession(SessionId),
+    RebaseStep {
+        scope: crate::workbench::Scope,
+        step: crate::workbench::RebaseStep,
+    },
+    RunAction {
+        workspace_id: WorkspaceId,
+        action_id: domain::ProjectActionId,
+    },
+    Fetch {
+        project_id: domain::ProjectId,
+    },
+    OpenPullRequest {
+        workspace_id: WorkspaceId,
+        title: String,
+        body: String,
+        /// Commit everything uncommitted with this message first.
+        commit: Option<String>,
+    },
+    /// Commit everything once, on `branch` when the checkout is on its default,
+    /// then push and open. The compose view's submit.
+    CommitAndOpenPullRequest {
+        workspace_id: WorkspaceId,
+        title: String,
+        body: String,
+        message: String,
+        branch: Option<String>,
+    },
+    RefreshPullRequests,
+    DraftCommit {
+        workspace_id: WorkspaceId,
+    },
+    Commit {
+        workspace_id: WorkspaceId,
+        message: String,
+    },
+    CreateAgent {
+        workspace_id: WorkspaceId,
+        provider_id: domain::AgentProviderId,
+        profile_id: Option<domain::AgentProfileId>,
+        /// The session this agent continues, when one is named.
+        parent: Option<SessionId>,
+        role: SessionRole,
+        initial_prompt: Option<String>,
+        /// In the provider's own review mode: a launch that may not write.
+        read_only: bool,
+        /// The provider's own id of a conversation to re-enter.
+        resume: Option<String>,
+    },
+    /// A child agent under a parent, in the checkout or a managed worktree.
+    CreateChild {
+        parent_session_id: SessionId,
+        provider_id: domain::AgentProviderId,
+        profile_id: Option<domain::AgentProfileId>,
+        role: SessionRole,
+        workspace_policy: domain::ChildWorkspacePolicy,
+        initial_prompt: Option<String>,
+    },
+    /// A recorded run's conversation, or a live terminal's tail, as plain text.
+    SessionTranscript {
+        generation: u64,
+        session_id: SessionId,
+        max_lines: Option<u32>,
+        max_bytes: Option<u32>,
+    },
+    /// One session's changes since its own baseline.
+    SessionChanges {
+        generation: u64,
+        session_id: SessionId,
+    },
+    /// Persist and deliver a context envelope, or spawn a child with it.
+    SendContext {
+        source_session_id: SessionId,
+        target_session_id: Option<SessionId>,
+        spawn: Option<client::SendContextSpawn>,
+        summary: Option<String>,
+        instructions: Option<String>,
+        include_transcript: bool,
+        max_transcript_bytes: Option<u32>,
+    },
+    StartReview {
+        generation: u64,
+        workspace_id: WorkspaceId,
+        preset: Option<String>,
+        tier: Option<domain::Tier>,
+        provider: Option<String>,
+        instructions: Option<String>,
+    },
+    ReviewConfig {
+        generation: u64,
+        workspace_id: WorkspaceId,
+    },
+    ListReviews {
+        generation: u64,
+        workspace_id: WorkspaceId,
+    },
+    GetReview {
+        generation: u64,
+        workspace_id: WorkspaceId,
+        review_id: domain::ReviewId,
+    },
+    CancelReview(domain::ReviewId),
+    RestartSession(SessionId),
+    /// Deletes a recorded run's transcript from disk, then re-reads the
+    /// snapshot: history reaches the client only on a snapshot.
+    DeleteTranscript {
+        session_id: String,
+        provider: String,
+        profile_id: Option<domain::AgentProfileId>,
+    },
+    /// The daemon exits; the worker then reconnects and finds nothing.
+    StopDaemon {
+        kill_sessions: bool,
+    },
+    FactoryReset,
+    RefreshAgentDetection,
+    SetProviderExecutable {
+        provider_id: domain::AgentProviderId,
+        path: Option<std::path::PathBuf>,
+    },
+    SaveAgentProfile(Box<domain::AgentProfile>),
+    RemoveAgentProfile(domain::AgentProfileId),
+    RefreshProject(domain::ProjectId),
+    RefreshWorkspaceStatus(WorkspaceId),
+    RenameWorkspace {
+        workspace_id: WorkspaceId,
+        display_name: Option<String>,
+    },
+    SetProjectIcon {
+        project_id: domain::ProjectId,
+        icon: Option<String>,
+    },
+    RemoveProject {
+        project_id: domain::ProjectId,
+        policy: client::RemoveProjectPolicy,
+    },
+    /// A project's whole rule set, which replaces the one it had.
+    SetWorktreeIgnores {
+        project_id: domain::ProjectId,
+        rules: Vec<domain::WorktreeIgnore>,
+    },
+    CreatePath {
+        workspace_id: WorkspaceId,
+        path: String,
+        directory: bool,
+    },
+    RenamePath {
+        workspace_id: WorkspaceId,
+        from: String,
+        to: String,
+    },
+    CopyPath {
+        workspace_id: WorkspaceId,
+        from: String,
+        to: String,
+    },
+    DeletePath {
+        workspace_id: WorkspaceId,
+        path: String,
+    },
+    RefreshSnapshot,
+    ForceReconnect,
+    Shutdown,
+    /// Replaces this connection's watched folders; an empty list stops watching.
+    WatchFiles {
+        generation: u64,
+        workspace_id: WorkspaceId,
+        directories: Vec<String>,
+        ticket: u64,
+    },
+    /// Opens `path` in an editor with the caret on `line` (1-based).
+    OpenEditorAt {
+        workspace_id: WorkspaceId,
+        path: String,
+        line: u32,
+    },
+    /// A project, share, worktree or action request; see `project_ops`.
+    Project(crate::project_ops::Op),
+    /// `forge-daemon migrate-home`, on the worker because it stops the daemon.
+    MigrateStorage {
+        generation: u64,
+        action: crate::storage::MigrationAction,
+    },
+    /// A new shell attached into the split column's replica.
+    SplitShell {
+        generation: u64,
+        workspace_id: WorkspaceId,
+        size: (u16, u16),
+    },
+    /// The split column's terminal, attached again after a reconnect.
+    AttachSplit {
+        generation: u64,
+        session: SessionId,
+        terminal: TerminalId,
+        size: (u16, u16),
+    },
+    /// The split column closes; its session keeps running.
+    DetachSplit {
+        generation: u64,
+        terminal: TerminalId,
+    },
+    /// A file a terminal line named, opened at the line it named.
+    OpenReference {
+        workspace_id: WorkspaceId,
+        path: String,
+        line: Option<u32>,
+    },
+    EditorFind {
+        session_id: SessionId,
+        command: domain::EditorFindCommand,
+    },
+    SetEditorAutosave {
+        session_id: SessionId,
+        autosave: bool,
+    },
+    /// The two sides of a refused save, answered as `UiEvent::EditorConflict`.
+    EditorConflict {
+        generation: u64,
+        session_id: SessionId,
+    },
+    ReloadEditorBuffer(SessionId),
+    OverwriteEditorBuffer(SessionId),
+}
+
+/// The largest image the daemon's `ReadImage` sends (`fs_service::MAX_IMAGE_BYTES`),
+/// checked on the base64 text before decoding allocates.
+const MAX_IMAGE_BYTES: usize = 8 * 1024 * 1024;
+
+#[derive(Debug)]
+pub enum UiEvent {
+    Connecting {
+        generation: u64,
+        detail: String,
+    },
+    Connected {
+        generation: u64,
+        detail: String,
+        editor_surface: client::EditorSurface,
+    },
+    Disconnected {
+        generation: u64,
+        reason: String,
+    },
+    Snapshot {
+        generation: u64,
+        store: Box<Store>,
+        took_us: u64,
+    },
+    Daemon {
+        generation: u64,
+        event: Box<DaemonEvent>,
+    },
+    SessionOpened {
+        generation: u64,
+        session_id: SessionId,
+    },
+    Diff {
+        generation: u64,
+        scope: crate::workbench::Scope,
+        result: Result<Box<domain::WorkspaceDiff>, String>,
+    },
+    Compare {
+        generation: u64,
+        scope: crate::workbench::Scope,
+        requested: Option<String>,
+        result: Result<Box<domain::BranchCompare>, String>,
+    },
+    Directory {
+        generation: u64,
+        scope: crate::workbench::Scope,
+        path: String,
+        result: Result<domain::DirectoryListing, String>,
+    },
+    File {
+        generation: u64,
+        scope: crate::workbench::Scope,
+        result: Result<Box<domain::FileContents>, String>,
+    },
+    Search {
+        generation: u64,
+        scope: crate::workbench::Scope,
+        query: String,
+        result: Result<Vec<String>, String>,
+    },
+    Symbols {
+        generation: u64,
+        scope: crate::workbench::Scope,
+        query: String,
+        result: Result<Box<domain::SearchResults>, String>,
+    },
+    Usage {
+        generation: u64,
+        window_days: u16,
+        result: Result<Box<domain::UsageAnalytics>, String>,
+    },
+    Paths {
+        generation: u64,
+        result: Result<Box<(client::ForgePaths, std::path::PathBuf)>, String>,
+    },
+    PreferenceFailed {
+        generation: u64,
+        key: String,
+        error: String,
+    },
+    Rebase {
+        generation: u64,
+        scope: crate::workbench::Scope,
+        result: Result<Box<domain::RebaseState>, String>,
+    },
+    CommandResult {
+        generation: u64,
+        label: &'static str,
+        ok: bool,
+        message: String,
+        took_us: u64,
+    },
+    /// An image's bytes and media type, decoded from base64 on the worker.
+    Image {
+        generation: u64,
+        scope: crate::workbench::Scope,
+        path: String,
+        result: Result<(String, Arc<[u8]>), String>,
+    },
+    ContentSearch {
+        generation: u64,
+        scope: crate::workbench::Scope,
+        query: String,
+        result: Result<Box<domain::SearchResults>, String>,
+    },
+    Watched {
+        generation: u64,
+        ticket: u64,
+        result: Result<(), String>,
+    },
+    /// A `RenamePath` the daemon confirmed.
+    PathMoved {
+        generation: u64,
+        workspace_id: WorkspaceId,
+        from: String,
+        to: String,
+    },
+    Project {
+        generation: u64,
+        reply: Box<crate::project_ops::Reply>,
+    },
+    /// `(disk, mine)`, the two sides of a refused editor save.
+    EditorConflict {
+        generation: u64,
+        session_id: SessionId,
+        result: Result<Box<(String, String)>, String>,
+    },
+    SessionTranscript {
+        generation: u64,
+        session_id: SessionId,
+        result: Result<domain::SessionTranscript, String>,
+    },
+    SessionChanges {
+        generation: u64,
+        session_id: SessionId,
+        result: Result<domain::SessionChanges, String>,
+    },
+    ReviewStarted {
+        generation: u64,
+        workspace_id: WorkspaceId,
+        result: Result<domain::ReviewId, String>,
+    },
+    ReviewConfig {
+        generation: u64,
+        workspace_id: WorkspaceId,
+        result: Result<domain::ReviewSettings, String>,
+    },
+    Reviews {
+        generation: u64,
+        workspace_id: WorkspaceId,
+        result: Result<Vec<domain::ReviewRun>, String>,
+    },
+    Review {
+        generation: u64,
+        workspace_id: WorkspaceId,
+        result: Result<Box<(domain::ReviewRun, Vec<domain::Finding>)>, String>,
+    },
+    StorageMigration {
+        generation: u64,
+        action: crate::storage::MigrationAction,
+        result: Result<crate::storage::MigrationReport, String>,
+    },
+}
+
+pub type EventSink = Arc<dyn Fn(Vec<UiEvent>) + Send + Sync>;
+pub type WakeSink = Arc<dyn Fn() + Send + Sync>;
+
+#[derive(Debug, Default)]
+pub struct Metrics {
+    ui_thread: OnceLock<ThreadId>,
+    pub socket_ops: AtomicU64,
+    pub ui_socket_ops: AtomicU64,
+    pub subprocess_ops: AtomicU64,
+    pub ui_subprocess_ops: AtomicU64,
+    pub commands_sent: AtomicU64,
+    pub commands_completed: AtomicU64,
+    pub reconnects: AtomicU64,
+    pub stale_events: AtomicU64,
+    pub terminal_deltas: AtomicU64,
+    /// Recent terminal frame CPU, p95, in microseconds; 0 until measured.
+    pub frame_p95_us: AtomicU64,
+    pub last_snapshot_us: Mutex<Option<u64>>,
+    pub last_command_us: Mutex<Option<u64>>,
+    pub last_socket_thread: Mutex<Option<String>>,
+}
+
+impl Metrics {
+    pub fn note_ui_thread(&self) {
+        let _ = self.ui_thread.set(thread::current().id());
+    }
+
+    pub fn note_socket_op(&self) {
+        self.socket_ops.fetch_add(1, Ordering::Relaxed);
+        if self.is_ui_thread() {
+            self.ui_socket_ops.fetch_add(1, Ordering::Relaxed);
+        }
+        if let Ok(mut thread) = self.last_socket_thread.lock() {
+            *thread = Some(format!("{:?}", thread::current().id()));
+        }
+    }
+
+    pub fn note_subprocess_op(&self) {
+        self.subprocess_ops.fetch_add(1, Ordering::Relaxed);
+        if self.is_ui_thread() {
+            self.ui_subprocess_ops.fetch_add(1, Ordering::Relaxed);
+        }
+    }
+
+    fn is_ui_thread(&self) -> bool {
+        self.ui_thread.get() == Some(&thread::current().id())
+    }
+
+    pub fn command_us(&self) -> Option<u64> {
+        self.last_command_us.lock().ok().and_then(|value| *value)
+    }
+
+    pub fn note_frame_p95(&self, us: u64) {
+        self.frame_p95_us.store(us, Ordering::Relaxed);
+    }
+
+    #[must_use]
+    pub fn frame_p95(&self) -> Option<f64> {
+        match self.frame_p95_us.load(Ordering::Relaxed) {
+            0 => None,
+            us => Some(us as f64 / 1000.0),
+        }
+    }
+
+    pub fn socket_thread(&self) -> String {
+        self.last_socket_thread
+            .lock()
+            .ok()
+            .and_then(|value| value.clone())
+            .unwrap_or_else(|| "none".to_string())
+    }
+}
+
+pub struct ConnectionHandle {
+    tx: Sender<Command>,
+    stop: Arc<AtomicBool>,
+    pub metrics: Arc<Metrics>,
+}
+
+impl ConnectionHandle {
+    #[cfg(test)]
+    pub fn test_handle(metrics: Arc<Metrics>) -> (Self, Receiver<Command>) {
+        let (tx, rx) = flume::bounded(16);
+        (
+            ConnectionHandle {
+                tx,
+                stop: Arc::new(AtomicBool::new(false)),
+                metrics,
+            },
+            rx,
+        )
+    }
+
+    pub fn create_shell_session(&self, workspace_id: WorkspaceId) -> Result<(), String> {
+        self.send(Command::CreateShellSession { workspace_id })
+    }
+
+    pub fn rename_session(&self, session_id: SessionId, title: String) -> Result<(), String> {
+        self.send(Command::RenameSession { session_id, title })
+    }
+
+    pub fn open_editor(&self, workspace_id: WorkspaceId, path: String) -> Result<(), String> {
+        self.send(Command::OpenEditor { workspace_id, path })
+    }
+
+    pub fn open_editor_at(
+        &self,
+        workspace_id: WorkspaceId,
+        path: String,
+        line: u32,
+    ) -> Result<(), String> {
+        self.send(Command::OpenEditorAt {
+            workspace_id,
+            path,
+            line,
+        })
+    }
+
+    pub fn watch_files(
+        &self,
+        generation: u64,
+        workspace_id: WorkspaceId,
+        watch: crate::workbench::WatchSet,
+    ) -> Result<(), String> {
+        self.send(Command::WatchFiles {
+            generation,
+            workspace_id,
+            directories: watch.directories,
+            ticket: watch.ticket,
+        })
+    }
+
+    pub fn editor_view(
+        &self,
+        generation: u64,
+        session_id: SessionId,
+        first_line: u32,
+        line_count: u32,
+    ) -> Result<(), String> {
+        self.send(Command::EditorView {
+            generation,
+            session_id,
+            first_line,
+            line_count,
+        })
+    }
+
+    pub fn editor_input(
+        &self,
+        generation: u64,
+        session_id: SessionId,
+        events: Vec<domain::EditorInputEvent>,
+    ) -> Result<(), String> {
+        self.send(Command::EditorInput {
+            generation,
+            session_id,
+            events,
+        })
+    }
+
+    pub fn read(
+        &self,
+        generation: u64,
+        scope: crate::workbench::Scope,
+        read: crate::workbench::Read,
+    ) -> Result<(), String> {
+        self.send(Command::Read {
+            generation,
+            scope,
+            read,
+        })
+    }
+
+    pub fn create_agent(
+        &self,
+        workspace_id: WorkspaceId,
+        provider_id: domain::AgentProviderId,
+        profile_id: Option<domain::AgentProfileId>,
+        initial_prompt: Option<String>,
+        read_only: bool,
+    ) -> Result<(), String> {
+        self.send(Command::CreateAgent {
+            workspace_id,
+            provider_id,
+            profile_id,
+            parent: None,
+            role: SessionRole::Generic,
+            initial_prompt,
+            read_only,
+            resume: None,
+        })
+    }
+
+    /// A handoff: the new agent is a child of the session it continues.
+    pub fn continue_agent(
+        &self,
+        workspace_id: WorkspaceId,
+        provider_id: domain::AgentProviderId,
+        profile_id: Option<domain::AgentProfileId>,
+        parent: SessionId,
+        initial_prompt: String,
+    ) -> Result<(), String> {
+        self.send(Command::CreateAgent {
+            workspace_id,
+            provider_id,
+            profile_id,
+            parent: Some(parent),
+            role: SessionRole::Generic,
+            initial_prompt: Some(initial_prompt),
+            read_only: false,
+            resume: None,
+        })
+    }
+
+    pub fn create_child(
+        &self,
+        parent_session_id: SessionId,
+        provider_id: domain::AgentProviderId,
+        profile_id: Option<domain::AgentProfileId>,
+        role: SessionRole,
+        workspace_policy: domain::ChildWorkspacePolicy,
+        initial_prompt: Option<String>,
+    ) -> Result<(), String> {
+        self.send(Command::CreateChild {
+            parent_session_id,
+            provider_id,
+            profile_id,
+            role,
+            workspace_policy,
+            initial_prompt,
+        })
+    }
+
+    pub fn session_transcript(
+        &self,
+        generation: u64,
+        session_id: SessionId,
+        max_lines: Option<u32>,
+        max_bytes: Option<u32>,
+    ) -> Result<(), String> {
+        self.send(Command::SessionTranscript {
+            generation,
+            session_id,
+            max_lines,
+            max_bytes,
+        })
+    }
+
+    pub fn session_changes(&self, generation: u64, session_id: SessionId) -> Result<(), String> {
+        self.send(Command::SessionChanges {
+            generation,
+            session_id,
+        })
+    }
+
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "the target and envelope fields are independent request fields"
+    )]
+    pub fn send_context(
+        &self,
+        source_session_id: SessionId,
+        target_session_id: Option<SessionId>,
+        spawn: Option<client::SendContextSpawn>,
+        summary: Option<String>,
+        instructions: Option<String>,
+        include_transcript: bool,
+        max_transcript_bytes: Option<u32>,
+    ) -> Result<(), String> {
+        self.send(Command::SendContext {
+            source_session_id,
+            target_session_id,
+            spawn,
+            summary,
+            instructions,
+            include_transcript,
+            max_transcript_bytes,
+        })
+    }
+
+    pub fn start_review(
+        &self,
+        generation: u64,
+        workspace_id: WorkspaceId,
+        preset: Option<String>,
+        tier: Option<domain::Tier>,
+        provider: Option<String>,
+        instructions: Option<String>,
+    ) -> Result<(), String> {
+        self.send(Command::StartReview {
+            generation,
+            workspace_id,
+            preset,
+            tier,
+            provider,
+            instructions,
+        })
+    }
+
+    pub fn review_config(&self, generation: u64, workspace_id: WorkspaceId) -> Result<(), String> {
+        self.send(Command::ReviewConfig {
+            generation,
+            workspace_id,
+        })
+    }
+
+    pub fn list_reviews(&self, generation: u64, workspace_id: WorkspaceId) -> Result<(), String> {
+        self.send(Command::ListReviews {
+            generation,
+            workspace_id,
+        })
+    }
+
+    pub fn get_review(
+        &self,
+        generation: u64,
+        workspace_id: WorkspaceId,
+        review_id: domain::ReviewId,
+    ) -> Result<(), String> {
+        self.send(Command::GetReview {
+            generation,
+            workspace_id,
+            review_id,
+        })
+    }
+
+    pub fn cancel_review(&self, review_id: domain::ReviewId) -> Result<(), String> {
+        self.send(Command::CancelReview(review_id))
+    }
+
+    /// Re-enters a recorded conversation: the ordinary agent launch, told
+    /// which one, under the account that recorded it.
+    pub fn resume_agent(
+        &self,
+        workspace_id: WorkspaceId,
+        provider_id: domain::AgentProviderId,
+        profile_id: Option<domain::AgentProfileId>,
+        resume: String,
+    ) -> Result<(), String> {
+        self.send(Command::CreateAgent {
+            workspace_id,
+            provider_id,
+            profile_id,
+            parent: None,
+            role: SessionRole::Generic,
+            initial_prompt: None,
+            read_only: false,
+            resume: Some(resume),
+        })
+    }
+
+    pub fn delete_transcript(
+        &self,
+        session_id: String,
+        provider: String,
+        profile_id: Option<domain::AgentProfileId>,
+    ) -> Result<(), String> {
+        self.send(Command::DeleteTranscript {
+            session_id,
+            provider,
+            profile_id,
+        })
+    }
+
+    pub fn restart_session(&self, session_id: SessionId) -> Result<(), String> {
+        self.send(Command::RestartSession(session_id))
+    }
+
+    pub fn draft_commit(&self, workspace_id: WorkspaceId) -> Result<(), String> {
+        self.send(Command::DraftCommit { workspace_id })
+    }
+
+    pub fn commit(&self, workspace_id: WorkspaceId, message: String) -> Result<(), String> {
+        self.send(Command::Commit {
+            workspace_id,
+            message,
+        })
+    }
+
+    pub fn fetch(&self, project_id: domain::ProjectId) -> Result<(), String> {
+        self.send(Command::Fetch { project_id })
+    }
+
+    pub fn open_pull_request(
+        &self,
+        workspace_id: WorkspaceId,
+        title: String,
+        body: String,
+        commit: Option<String>,
+    ) -> Result<(), String> {
+        self.send(Command::OpenPullRequest {
+            workspace_id,
+            title,
+            body,
+            commit,
+        })
+    }
+
+    pub fn commit_and_open_pull_request(
+        &self,
+        workspace_id: WorkspaceId,
+        title: String,
+        body: String,
+        message: String,
+        branch: Option<String>,
+    ) -> Result<(), String> {
+        self.send(Command::CommitAndOpenPullRequest {
+            workspace_id,
+            title,
+            body,
+            message,
+            branch,
+        })
+    }
+
+    pub fn refresh_pull_requests(&self) -> Result<(), String> {
+        self.send(Command::RefreshPullRequests)
+    }
+
+    pub fn run_action(
+        &self,
+        workspace_id: WorkspaceId,
+        action_id: domain::ProjectActionId,
+    ) -> Result<(), String> {
+        self.send(Command::RunAction {
+            workspace_id,
+            action_id,
+        })
+    }
+
+    pub fn rebase_step(
+        &self,
+        scope: crate::workbench::Scope,
+        step: crate::workbench::RebaseStep,
+    ) -> Result<(), String> {
+        self.send(Command::RebaseStep { scope, step })
+    }
+
+    pub fn kill_session(&self, session_id: SessionId) -> Result<(), String> {
+        self.send(Command::KillSession(session_id))
+    }
+
+    pub fn close_session(&self, session_id: SessionId) -> Result<(), String> {
+        self.send(Command::CloseSession(session_id))
+    }
+
+    pub fn usage(&self, generation: u64, window_days: u16) -> Result<(), String> {
+        self.send(Command::Usage {
+            generation,
+            window_days,
+        })
+    }
+
+    pub fn paths(&self, generation: u64) -> Result<(), String> {
+        self.send(Command::Paths { generation })
+    }
+
+    pub fn migrate_storage(
+        &self,
+        generation: u64,
+        action: crate::storage::MigrationAction,
+    ) -> Result<(), String> {
+        self.send(Command::MigrateStorage { generation, action })
+    }
+
+    pub fn add_project(&self, path: std::path::PathBuf) -> Result<(), String> {
+        self.send(Command::AddProject(path))
+    }
+
+    pub fn project(&self, op: crate::project_ops::Op) -> Result<(), String> {
+        self.send(Command::Project(op))
+    }
+
+    pub fn refresh_project(&self, project_id: domain::ProjectId) -> Result<(), String> {
+        self.send(Command::RefreshProject(project_id))
+    }
+
+    pub fn refresh_workspace_status(&self, workspace_id: WorkspaceId) -> Result<(), String> {
+        self.send(Command::RefreshWorkspaceStatus(workspace_id))
+    }
+
+    pub fn rename_workspace(
+        &self,
+        workspace_id: WorkspaceId,
+        display_name: Option<String>,
+    ) -> Result<(), String> {
+        self.send(Command::RenameWorkspace {
+            workspace_id,
+            display_name,
+        })
+    }
+
+    pub fn set_project_icon(
+        &self,
+        project_id: domain::ProjectId,
+        icon: Option<String>,
+    ) -> Result<(), String> {
+        self.send(Command::SetProjectIcon { project_id, icon })
+    }
+
+    pub fn remove_project(
+        &self,
+        project_id: domain::ProjectId,
+        policy: client::RemoveProjectPolicy,
+    ) -> Result<(), String> {
+        self.send(Command::RemoveProject { project_id, policy })
+    }
+
+    pub fn set_worktree_ignores(
+        &self,
+        project_id: domain::ProjectId,
+        rules: Vec<domain::WorktreeIgnore>,
+    ) -> Result<(), String> {
+        self.send(Command::SetWorktreeIgnores { project_id, rules })
+    }
+
+    pub fn create_path(
+        &self,
+        workspace_id: WorkspaceId,
+        path: String,
+        directory: bool,
+    ) -> Result<(), String> {
+        self.send(Command::CreatePath {
+            workspace_id,
+            path,
+            directory,
+        })
+    }
+
+    pub fn rename_path(
+        &self,
+        workspace_id: WorkspaceId,
+        from: String,
+        to: String,
+    ) -> Result<(), String> {
+        self.send(Command::RenamePath {
+            workspace_id,
+            from,
+            to,
+        })
+    }
+
+    pub fn copy_path(
+        &self,
+        workspace_id: WorkspaceId,
+        from: String,
+        to: String,
+    ) -> Result<(), String> {
+        self.send(Command::CopyPath {
+            workspace_id,
+            from,
+            to,
+        })
+    }
+
+    pub fn delete_path(&self, workspace_id: WorkspaceId, path: String) -> Result<(), String> {
+        self.send(Command::DeletePath { workspace_id, path })
+    }
+
+    pub fn set_app_state(&self, key: &str, value: &str) -> Result<(), String> {
+        self.send(Command::SetAppState {
+            key: key.to_string(),
+            value: value.to_string(),
+        })
+    }
+
+    pub fn stop_daemon(&self, kill_sessions: bool) -> Result<(), String> {
+        self.send(Command::StopDaemon { kill_sessions })
+    }
+
+    pub fn factory_reset(&self) -> Result<(), String> {
+        self.send(Command::FactoryReset)
+    }
+
+    pub fn refresh_agent_detection(&self) -> Result<(), String> {
+        self.send(Command::RefreshAgentDetection)
+    }
+
+    /// `None` clears the override.
+    pub fn set_provider_executable(
+        &self,
+        provider_id: domain::AgentProviderId,
+        path: Option<std::path::PathBuf>,
+    ) -> Result<(), String> {
+        self.send(Command::SetProviderExecutable { provider_id, path })
+    }
+
+    pub fn save_agent_profile(&self, profile: domain::AgentProfile) -> Result<(), String> {
+        self.send(Command::SaveAgentProfile(Box::new(profile)))
+    }
+
+    pub fn remove_agent_profile(&self, profile_id: domain::AgentProfileId) -> Result<(), String> {
+        self.send(Command::RemoveAgentProfile(profile_id))
+    }
+
+    pub fn refresh_snapshot(&self) -> Result<(), String> {
+        self.send(Command::RefreshSnapshot)
+    }
+
+    pub fn force_reconnect(&self) -> Result<(), String> {
+        self.send(Command::ForceReconnect)
+    }
+
+    pub fn editor_find(
+        &self,
+        session_id: SessionId,
+        command: domain::EditorFindCommand,
+    ) -> Result<(), String> {
+        self.send(Command::EditorFind {
+            session_id,
+            command,
+        })
+    }
+
+    pub fn set_editor_autosave(&self, session_id: SessionId, autosave: bool) -> Result<(), String> {
+        self.send(Command::SetEditorAutosave {
+            session_id,
+            autosave,
+        })
+    }
+
+    pub fn editor_conflict(&self, generation: u64, session_id: SessionId) -> Result<(), String> {
+        self.send(Command::EditorConflict {
+            generation,
+            session_id,
+        })
+    }
+
+    pub fn reload_editor_buffer(&self, session_id: SessionId) -> Result<(), String> {
+        self.send(Command::ReloadEditorBuffer(session_id))
+    }
+
+    pub fn overwrite_editor_buffer(&self, session_id: SessionId) -> Result<(), String> {
+        self.send(Command::OverwriteEditorBuffer(session_id))
+    }
+
+    pub fn activate(
+        &self,
+        generation: u64,
+        session: Option<SessionId>,
+        terminal: Option<TerminalId>,
+        size: Option<(u16, u16)>,
+    ) -> Result<(), String> {
+        self.send(Command::Activate {
+            generation,
+            session,
+            terminal,
+            size,
+        })
+    }
+
+    pub fn resize_and_attach(
+        &self,
+        generation: u64,
+        terminal: TerminalId,
+        size: domain::PtySize,
+    ) -> Result<(), String> {
+        self.send(Command::ResizeAndAttach {
+            generation,
+            terminal,
+            size,
+        })
+    }
+
+    pub fn input(
+        &self,
+        generation: u64,
+        terminal: TerminalId,
+        bytes: Vec<u8>,
+    ) -> Result<(), String> {
+        self.send(Command::Input {
+            generation,
+            terminal,
+            bytes,
+        })
+    }
+
+    pub fn fetch_scrollback(
+        &self,
+        generation: u64,
+        terminal: TerminalId,
+        from_line: i64,
+        count: u32,
+    ) -> Result<(), String> {
+        self.send(Command::FetchScrollback {
+            generation,
+            terminal,
+            from_line,
+            count,
+        })
+    }
+
+    pub fn split_shell(
+        &self,
+        generation: u64,
+        workspace_id: WorkspaceId,
+        size: (u16, u16),
+    ) -> Result<(), String> {
+        self.send(Command::SplitShell {
+            generation,
+            workspace_id,
+            size,
+        })
+    }
+
+    pub fn attach_split(
+        &self,
+        generation: u64,
+        session: SessionId,
+        terminal: TerminalId,
+        size: (u16, u16),
+    ) -> Result<(), String> {
+        self.send(Command::AttachSplit {
+            generation,
+            session,
+            terminal,
+            size,
+        })
+    }
+
+    pub fn detach_split(&self, generation: u64, terminal: TerminalId) -> Result<(), String> {
+        self.send(Command::DetachSplit {
+            generation,
+            terminal,
+        })
+    }
+
+    pub fn open_reference(
+        &self,
+        workspace_id: WorkspaceId,
+        path: String,
+        line: Option<u32>,
+    ) -> Result<(), String> {
+        self.send(Command::OpenReference {
+            workspace_id,
+            path,
+            line,
+        })
+    }
+
+    fn send(&self, command: Command) -> Result<(), String> {
+        self.metrics.commands_sent.fetch_add(1, Ordering::Relaxed);
+        self.tx
+            .try_send(command)
+            .map_err(|error| format!("command queue: {error}"))
+    }
+}
+
+impl Drop for ConnectionHandle {
+    fn drop(&mut self) {
+        self.stop.store(true, Ordering::Release);
+        let _ = self.tx.try_send(Command::Shutdown);
+    }
+}
+
+pub fn spawn(boot: Arc<Boot>, sink: EventSink, wake: WakeSink) -> ConnectionHandle {
+    let (tx, rx) = flume::bounded(1024);
+    let stop = Arc::new(AtomicBool::new(false));
+    let worker_stop = Arc::clone(&stop);
+    let metrics = Arc::clone(&boot.metrics);
+    let builder = thread::Builder::new().name("forge-rune-client".to_string());
+    if let Err(error) = builder.spawn(move || worker(boot, sink, wake, rx, worker_stop)) {
+        eprintln!("forge-ui: could not start client worker: {error}");
+    }
+    ConnectionHandle { tx, stop, metrics }
+}
+
+fn worker(
+    boot: Arc<Boot>,
+    sink: EventSink,
+    wake: WakeSink,
+    rx: Receiver<Command>,
+    stop: Arc<AtomicBool>,
+) {
+    let mut generation = 0u64;
+    loop {
+        if stop.load(Ordering::Acquire) {
+            break;
+        }
+        generation = generation.saturating_add(1);
+        boot.metrics.reconnects.fetch_add(1, Ordering::Relaxed);
+        let outcome = match &boot.mode {
+            Mode::Fixture {
+                snapshot,
+                reconnect_after,
+            } => run_fixture(FixtureCtx {
+                generation,
+                snapshot,
+                reconnect_after: *reconnect_after,
+                sink: &sink,
+                wake: &wake,
+                rx: &rx,
+                stop: &stop,
+                metrics: &boot.metrics,
+                terminal: &boot.terminal,
+            }),
+            Mode::Live {
+                socket,
+                daemon,
+                spawn,
+            } => run_live(LiveCtx {
+                generation,
+                socket,
+                daemon: daemon.as_deref(),
+                spawn: *spawn,
+                sink: &sink,
+                wake: &wake,
+                rx: &rx,
+                stop: &stop,
+                metrics: &boot.metrics,
+                terminal: &boot.terminal,
+            }),
+        };
+        if stop.load(Ordering::Acquire) {
+            break;
+        }
+        if let Err(reason) = outcome {
+            sink(vec![UiEvent::Disconnected { generation, reason }]);
+            boot.terminal.clear(generation, None);
+            if let Some(split) = boot.terminal.beside() {
+                split.clear(generation, None);
+            }
+        }
+        if matches!(boot.mode, Mode::Fixture { .. }) {
+            continue;
+        }
+        wait_offline(generation, &sink, &rx, &stop, &boot.metrics);
+    }
+}
+
+fn wait_offline(
+    generation: u64,
+    sink: &EventSink,
+    rx: &Receiver<Command>,
+    stop: &AtomicBool,
+    metrics: &Metrics,
+) {
+    let deadline = Instant::now() + RETRY;
+    loop {
+        let left = deadline.saturating_duration_since(Instant::now());
+        if left.is_zero() {
+            break;
+        }
+        match rx.recv_timeout(left) {
+            Ok(Command::Shutdown) => {
+                stop.store(true, Ordering::Release);
+                break;
+            }
+            Ok(command) => {
+                let label = command_label(&command);
+                metrics.commands_completed.fetch_add(1, Ordering::Relaxed);
+                sink(vec![UiEvent::CommandResult {
+                    generation,
+                    label,
+                    ok: false,
+                    message: "not connected; command rejected".to_string(),
+                    took_us: 0,
+                }]);
+            }
+            Err(flume::RecvTimeoutError::Timeout) => break,
+            Err(flume::RecvTimeoutError::Disconnected) => {
+                stop.store(true, Ordering::Release);
+                break;
+            }
+        }
+    }
+}
+
+struct FixtureCtx<'a> {
+    generation: u64,
+    snapshot: &'a Store,
+    reconnect_after: Option<Duration>,
+    sink: &'a EventSink,
+    wake: &'a WakeSink,
+    rx: &'a Receiver<Command>,
+    stop: &'a AtomicBool,
+    metrics: &'a Metrics,
+    terminal: &'a SharedTerminal,
+}
+
+fn run_fixture(ctx: FixtureCtx<'_>) -> Result<(), String> {
+    let FixtureCtx {
+        generation,
+        snapshot,
+        reconnect_after,
+        sink,
+        wake,
+        rx,
+        stop,
+        metrics,
+        terminal,
+    } = ctx;
+    sink(vec![UiEvent::Connecting {
+        generation,
+        detail: "fixture: simulated socket".to_string(),
+    }]);
+    thread::sleep(FIXTURE_CONNECT);
+    sink(vec![UiEvent::Connected {
+        generation,
+        detail: format!("fixture daemon, protocol {}", client::PROTOCOL_VERSION),
+        editor_surface: client::EditorSurface::Cells,
+    }]);
+
+    let mut link = FixtureLink {
+        store: snapshot.clone(),
+        feed: Feed::new(false, false),
+        echo: String::new(),
+    };
+    emit_snapshot(generation, &link.store, 0, sink, metrics);
+
+    let started = Instant::now();
+    let mut next_tick = started + FIXTURE_TICK;
+    let disconnect_at = reconnect_after.map(|after| started + after);
+    loop {
+        if stop.load(Ordering::Acquire) {
+            return Ok(());
+        }
+        if let Some(at) = disconnect_at
+            && Instant::now() >= at
+        {
+            return Err("fixture: simulated connection loss".to_string());
+        }
+        let now = Instant::now();
+        if now >= next_tick {
+            fixture_tick(generation, &mut link, terminal, metrics);
+            wake();
+            next_tick = now + FIXTURE_TICK;
+        }
+        let wait = next_tick
+            .saturating_duration_since(Instant::now())
+            .max(Duration::from_millis(1));
+        match rx.recv_timeout(wait) {
+            Ok(Command::Shutdown) => {
+                stop.store(true, Ordering::Release);
+                return Ok(());
+            }
+            Ok(Command::ForceReconnect) => {
+                return Err("fixture: reconnect requested".to_string());
+            }
+            Ok(Command::RefreshSnapshot) => {
+                emit_snapshot(generation, &link.store, 0, sink, metrics);
+            }
+            Ok(command) => handle_fixture_command(
+                generation, &mut link, command, sink, wake, metrics, terminal,
+            ),
+            Err(flume::RecvTimeoutError::Timeout) => {}
+            Err(flume::RecvTimeoutError::Disconnected) => {
+                stop.store(true, Ordering::Release);
+                return Ok(());
+            }
+        }
+    }
+}
+
+struct FixtureLink {
+    store: Store,
+    feed: Feed,
+    echo: String,
+}
+
+fn fixture_tick(
+    generation: u64,
+    link: &mut FixtureLink,
+    terminal: &SharedTerminal,
+    metrics: &Metrics,
+) {
+    let delta = {
+        let slot = terminal.lock();
+        let Some(grid) = slot.grid.as_ref() else {
+            return;
+        };
+        let Some(terminal_id) = slot.terminal_id else {
+            return;
+        };
+        (terminal_id, link.feed.delta(grid))
+    };
+    let (terminal_id, delta) = delta;
+    let _ = terminal.apply_delta(generation, terminal_id, &delta);
+    metrics.terminal_deltas.fetch_add(1, Ordering::Relaxed);
+}
+
+fn handle_fixture_command(
+    generation: u64,
+    link: &mut FixtureLink,
+    command: Command,
+    sink: &EventSink,
+    wake: &WakeSink,
+    metrics: &Metrics,
+    terminal: &SharedTerminal,
+) {
+    let started = Instant::now();
+    match command {
+        Command::Activate {
+            generation: command_generation,
+            session,
+            terminal: terminal_id,
+            size,
+        } => {
+            if command_generation < generation {
+                return;
+            }
+            if let Some(terminal_id) = terminal_id {
+                let size = size.unwrap_or((80, 24));
+                let already = {
+                    let slot = terminal.lock();
+                    slot.generation == generation
+                        && slot.terminal_id == Some(terminal_id)
+                        && slot
+                            .size
+                            .is_some_and(|pty| pty.cols == size.0 && pty.rows == size.1)
+                };
+                if already {
+                    return;
+                }
+                let title = session
+                    .and_then(|session| {
+                        link.store
+                            .sessions
+                            .iter()
+                            .find(|row| row.id == session)
+                            .map(|row| row.title.resolve("fixture shell").to_string())
+                    })
+                    .unwrap_or_else(|| "fixture shell".to_string());
+                let grid = fixture::titled_grid(size.0, size.1, &title);
+                let pty = grid.size;
+                if let Some(session) = session {
+                    terminal.publish_grid(generation, session, terminal_id, grid, pty);
+                }
+                wake();
+            } else {
+                terminal.clear(generation, session);
+                wake();
+            }
+        }
+        Command::ResizeAndAttach {
+            terminal: terminal_id,
+            size,
+            ..
+        } => {
+            let size = size.sanitized();
+            let terminal = terminal.holding(terminal_id).unwrap_or(terminal);
+            let session = {
+                let slot = terminal.lock();
+                slot.session_id
+            };
+            if let Some(session) = session {
+                let grid = fixture::titled_grid(size.cols, size.rows, "fixture shell");
+                terminal.publish_grid(generation, session, terminal_id, grid, size);
+                wake();
+            }
+            metrics.commands_completed.fetch_add(1, Ordering::Relaxed);
+            sink(vec![UiEvent::CommandResult {
+                generation,
+                label: "ResizeTerminal",
+                ok: true,
+                message: format!("{}x{}", size.cols, size.rows),
+                took_us: started.elapsed().as_micros() as u64,
+            }]);
+        }
+        Command::Input {
+            terminal: terminal_id,
+            bytes,
+            ..
+        } => {
+            let Some(terminal) = terminal.holding(terminal_id) else {
+                return;
+            };
+            let delta = {
+                let slot = terminal.lock();
+                let Some(grid) = slot.grid.as_ref() else {
+                    return;
+                };
+                if slot.terminal_id != Some(terminal_id) {
+                    return;
+                }
+                for byte in bytes {
+                    match byte {
+                        b'\r' | b'\n' => link.echo.clear(),
+                        0x20..=0x7e if link.echo.len() < 120 => {
+                            link.echo.push(byte as char);
+                        }
+                        _ => {}
+                    }
+                }
+                fixture::echo_delta(grid, &link.echo, grid.last_seq + 1)
+            };
+            let _ = terminal.apply_delta(generation, terminal_id, &delta);
+            metrics.terminal_deltas.fetch_add(1, Ordering::Relaxed);
+            wake();
+        }
+        Command::FetchScrollback {
+            terminal: terminal_id,
+            from_line,
+            count,
+            ..
+        } => {
+            let Some(terminal) = terminal.holding(terminal_id) else {
+                return;
+            };
+            let block = {
+                let slot = terminal.lock();
+                let Some(grid) = slot.grid.as_ref() else {
+                    return;
+                };
+                fixture::scrollback_rows(
+                    grid.visible.first().map_or(0, |row| row.cells.len()),
+                    from_line,
+                    count,
+                    grid.scrollback_generation,
+                )
+            };
+            let _ = terminal.merge_scrollback(generation, terminal_id, &block);
+            wake();
+        }
+        Command::CreateShellSession { workspace_id } => {
+            let (label, result) = (
+                "CreateShellSession",
+                fixture_create(&mut link.store, workspace_id),
+            );
+            fixture_result(generation, label, result, sink, metrics, started);
+        }
+        Command::RenameSession { session_id, title } => {
+            let (label, result) = (
+                "RenameSession",
+                fixture_rename(&mut link.store, session_id, &title),
+            );
+            fixture_result(generation, label, result, sink, metrics, started);
+        }
+        Command::Read { scope, read, .. } => {
+            let event = match read {
+                crate::workbench::Read::Diff => Some(UiEvent::Diff {
+                    generation,
+                    scope,
+                    result: Ok(Box::new(fixture_diff(scope.workspace))),
+                }),
+                crate::workbench::Read::Compare(base) => Some(UiEvent::Compare {
+                    generation,
+                    scope,
+                    requested: base.clone(),
+                    result: Ok(Box::new(fixture_compare(scope.workspace, base))),
+                }),
+                crate::workbench::Read::Rebase => Some(UiEvent::Rebase {
+                    generation,
+                    scope,
+                    result: Ok(Box::new(domain::RebaseState::idle(scope.workspace))),
+                }),
+                _ => None,
+            };
+            if let Some(event) = event {
+                sink(vec![event]);
+            }
+        }
+        Command::CreateAgent {
+            workspace_id,
+            initial_prompt: Some(prompt),
+            ..
+        } if prompt.contains("`pr_draft`") => {
+            let session = link
+                .store
+                .sessions
+                .first()
+                .map(|session| session.id)
+                .unwrap_or_default();
+            metrics.commands_completed.fetch_add(1, Ordering::Relaxed);
+            sink(vec![
+                UiEvent::CommandResult {
+                    generation,
+                    label: "CreateAgentSession",
+                    ok: true,
+                    message: "started fixture agent".to_string(),
+                    took_us: started.elapsed().as_micros() as u64,
+                },
+                UiEvent::Daemon {
+                    generation,
+                    event: Box::new(DaemonEvent::PullRequestDraftReady {
+                        workspace_id,
+                        session_id: session,
+                        draft: PullRequestDraft {
+                            title: "Compare branches before opening a pull request".into(),
+                            body: "Drafts the compare view, a split patch layout and the pull-request panel.\n\n## Test plan\n\n- Compare two branches\n- Open the draft on another view".into(),
+                            branch: "fixture/compare-view".into(),
+                            commit_message: "Add branch compare and pull-request depth".into(),
+                        },
+                    }),
+                },
+            ]);
+        }
+        Command::CommitAndOpenPullRequest { workspace_id, .. } => {
+            metrics.commands_completed.fetch_add(1, Ordering::Relaxed);
+            sink(vec![
+                UiEvent::CommandResult {
+                    generation,
+                    label: "CommitAndOpenPullRequest",
+                    ok: true,
+                    message: "pushing".to_string(),
+                    took_us: started.elapsed().as_micros() as u64,
+                },
+                UiEvent::Daemon {
+                    generation,
+                    event: Box::new(DaemonEvent::PullRequestOpened {
+                        workspace_id,
+                        url: Some("https://github.com/forge/forge/pull/42".into()),
+                        error: None,
+                    }),
+                },
+            ]);
+        }
+        Command::CreateAgent {
+            workspace_id,
+            provider_id,
+            profile_id,
+            parent,
+            role,
+            initial_prompt,
+            ..
+        } => {
+            let result = fixture_create_agent(
+                &mut link.store,
+                workspace_id,
+                provider_id.clone(),
+                profile_id,
+                parent,
+                role,
+                initial_prompt,
+            );
+            if let Ok((_, Some(DaemonEvent::SessionCreated(session)))) = &result {
+                sink(vec![UiEvent::SessionOpened {
+                    generation,
+                    session_id: session.id,
+                }]);
+            }
+            fixture_result(
+                generation,
+                "CreateAgentSession",
+                result,
+                sink,
+                metrics,
+                started,
+            );
+        }
+        Command::CreateChild {
+            parent_session_id,
+            provider_id,
+            profile_id,
+            role,
+            initial_prompt,
+            ..
+        } => {
+            let workspace_id = link
+                .store
+                .sessions
+                .iter()
+                .find(|session| session.id == parent_session_id)
+                .map(|session| session.workspace_id);
+            let Some(workspace_id) = workspace_id else {
+                fixture_result(
+                    generation,
+                    "CreateChildSession",
+                    Err("fixture: no parent session".into()),
+                    sink,
+                    metrics,
+                    started,
+                );
+                return;
+            };
+            let result = fixture_create_agent(
+                &mut link.store,
+                workspace_id,
+                provider_id,
+                profile_id,
+                Some(parent_session_id),
+                role,
+                initial_prompt,
+            );
+            if let Ok((_, Some(DaemonEvent::SessionCreated(session)))) = &result {
+                sink(vec![UiEvent::SessionOpened {
+                    generation,
+                    session_id: session.id,
+                }]);
+            }
+            fixture_result(
+                generation,
+                "CreateChildSession",
+                result,
+                sink,
+                metrics,
+                started,
+            );
+        }
+        Command::SessionTranscript {
+            generation: command_generation,
+            session_id,
+            max_lines,
+            max_bytes,
+        } => {
+            if command_generation != generation {
+                return;
+            }
+            let result = fixture_transcript(&link.store, session_id, max_lines, max_bytes);
+            sink(vec![UiEvent::SessionTranscript {
+                generation,
+                session_id,
+                result,
+            }]);
+        }
+        Command::SessionChanges {
+            generation: command_generation,
+            session_id,
+        } => {
+            if command_generation != generation {
+                return;
+            }
+            let result = fixture_session_changes(&link.store, session_id);
+            sink(vec![UiEvent::SessionChanges {
+                generation,
+                session_id,
+                result,
+            }]);
+        }
+        Command::SendContext {
+            source_session_id,
+            target_session_id,
+            spawn,
+            ..
+        } => {
+            let result = if let Some(spawn) = spawn {
+                let workspace_id = link
+                    .store
+                    .sessions
+                    .iter()
+                    .find(|session| session.id == source_session_id)
+                    .map(|session| session.workspace_id);
+                match (workspace_id, spawn.provider_id) {
+                    (Some(workspace_id), Some(provider_id)) => fixture_create_agent(
+                        &mut link.store,
+                        workspace_id,
+                        provider_id,
+                        spawn.profile_id,
+                        Some(source_session_id),
+                        spawn.role,
+                        None,
+                    ),
+                    _ => Err("fixture: the spawn names no provider".into()),
+                }
+            } else if target_session_id.is_some_and(|target| {
+                link.store
+                    .sessions
+                    .iter()
+                    .any(|session| session.id == target)
+            }) {
+                Ok(("sent context".to_string(), None))
+            } else {
+                Err("fixture: no target session".into())
+            };
+            if let Ok((_, Some(DaemonEvent::SessionCreated(session)))) = &result {
+                sink(vec![UiEvent::SessionOpened {
+                    generation,
+                    session_id: session.id,
+                }]);
+            }
+            fixture_result(generation, "SendContext", result, sink, metrics, started);
+        }
+        Command::StartReview {
+            generation: command_generation,
+            workspace_id,
+            ..
+        } => {
+            if command_generation != generation {
+                return;
+            }
+            sink(vec![UiEvent::ReviewStarted {
+                generation,
+                workspace_id,
+                result: Err("the recorded snapshot has no review store".into()),
+            }]);
+        }
+        Command::ReviewConfig {
+            generation: command_generation,
+            workspace_id,
+        } => {
+            if command_generation != generation {
+                return;
+            }
+            sink(vec![UiEvent::ReviewConfig {
+                generation,
+                workspace_id,
+                result: Ok(fixture_review_config()),
+            }]);
+        }
+        Command::ListReviews {
+            generation: command_generation,
+            workspace_id,
+        } => {
+            if command_generation != generation {
+                return;
+            }
+            sink(vec![UiEvent::Reviews {
+                generation,
+                workspace_id,
+                result: Ok(Vec::new()),
+            }]);
+        }
+        Command::GetReview {
+            generation: command_generation,
+            workspace_id,
+            ..
+        } => {
+            if command_generation != generation {
+                return;
+            }
+            sink(vec![UiEvent::Review {
+                generation,
+                workspace_id,
+                result: Err("the recorded snapshot has no review store".into()),
+            }]);
+        }
+        Command::CancelReview(_) => {
+            fixture_result(
+                generation,
+                "CancelReview",
+                Err("the recorded snapshot has no review store".into()),
+                sink,
+                metrics,
+                started,
+            );
+        }
+        Command::OpenEditor { .. }
+        | Command::EditorView { .. }
+        | Command::EditorInput { .. }
+        | Command::SetAppState { .. }
+        | Command::AddProject(_)
+        | Command::Usage { .. }
+        | Command::Paths { .. }
+        | Command::KillSession(_)
+        | Command::RestartSession(_)
+        | Command::DeleteTranscript { .. }
+        | Command::CloseSession(_)
+        | Command::RebaseStep { .. }
+        | Command::RunAction { .. }
+        | Command::Fetch { .. }
+        | Command::OpenPullRequest { .. }
+        | Command::RefreshPullRequests
+        | Command::DraftCommit { .. }
+        | Command::Commit { .. }
+        | Command::StopDaemon { .. }
+        | Command::FactoryReset
+        | Command::RefreshAgentDetection
+        | Command::SetProviderExecutable { .. }
+        | Command::SaveAgentProfile(_)
+        | Command::RemoveAgentProfile(_)
+        | Command::RefreshProject(_)
+        | Command::RefreshWorkspaceStatus(_)
+        | Command::RenameWorkspace { .. }
+        | Command::SetProjectIcon { .. }
+        | Command::RemoveProject { .. }
+        | Command::SetWorktreeIgnores { .. }
+        | Command::CreatePath { .. }
+        | Command::RenamePath { .. }
+        | Command::CopyPath { .. }
+        | Command::DeletePath { .. }
+        | Command::WatchFiles { .. }
+        | Command::OpenEditorAt { .. } => {}
+        Command::RefreshSnapshot | Command::ForceReconnect | Command::Shutdown => {}
+        Command::Project(op) => {
+            let result = match &op {
+                crate::project_ops::Op::ListBranches(_) => {
+                    Ok(crate::project_ops::Answer::Branches(fixture_branches()))
+                }
+                _ => Err("the recorded snapshot has no daemon to ask".to_string()),
+            };
+            let reply = crate::project_ops::Reply { op, result };
+            sink(vec![UiEvent::Project {
+                generation,
+                reply: Box::new(reply),
+            }]);
+        }
+        Command::MigrateStorage {
+            generation: command_generation,
+            action,
+        } => {
+            if command_generation == generation {
+                sink(vec![UiEvent::StorageMigration {
+                    generation,
+                    action,
+                    result: Err("the recorded snapshot has no daemon executable".into()),
+                }]);
+            }
+        }
+        Command::SplitShell {
+            workspace_id, size, ..
+        } => {
+            let result = fixture_create(&mut link.store, workspace_id);
+            if let (Ok((_, Some(DaemonEvent::SessionCreated(session)))), Some(split)) =
+                (&result, terminal.beside())
+                && let Some(terminal_id) = session.terminal_id
+            {
+                let grid = fixture::titled_grid(size.0, size.1, "fixture split");
+                let pty = grid.size;
+                split.publish_grid(generation, session.id, terminal_id, grid, pty);
+                wake();
+            }
+            fixture_result(generation, "SplitShell", result, sink, metrics, started);
+        }
+        Command::AttachSplit {
+            session,
+            terminal: terminal_id,
+            size,
+            ..
+        } => {
+            if let Some(split) = terminal.beside() {
+                let grid = fixture::titled_grid(size.0, size.1, "fixture split");
+                let pty = grid.size;
+                split.publish_grid(generation, session, terminal_id, grid, pty);
+                wake();
+            }
+        }
+        Command::DetachSplit { .. } => {
+            if let Some(split) = terminal.beside() {
+                split.clear(generation, None);
+                wake();
+            }
+        }
+        Command::OpenReference { .. } => {}
+        Command::EditorFind { .. }
+        | Command::SetEditorAutosave { .. }
+        | Command::EditorConflict { .. }
+        | Command::ReloadEditorBuffer(_)
+        | Command::OverwriteEditorBuffer(_) => {}
+    }
+}
+
+fn fixture_result(
+    generation: u64,
+    label: &'static str,
+    result: Result<(String, Option<DaemonEvent>), String>,
+    sink: &EventSink,
+    metrics: &Metrics,
+    started: Instant,
+) {
+    metrics.commands_completed.fetch_add(1, Ordering::Relaxed);
+    match result {
+        Ok((message, event)) => {
+            sink(vec![UiEvent::CommandResult {
+                generation,
+                label,
+                ok: true,
+                message,
+                took_us: started.elapsed().as_micros() as u64,
+            }]);
+            if let Some(event) = event {
+                sink(vec![UiEvent::Daemon {
+                    generation,
+                    event: Box::new(event),
+                }]);
+            }
+        }
+        Err(message) => sink(vec![UiEvent::CommandResult {
+            generation,
+            label,
+            ok: false,
+            message,
+            took_us: started.elapsed().as_micros() as u64,
+        }]),
+    }
+}
+
+fn fixture_create(
+    store: &mut Store,
+    workspace_id: WorkspaceId,
+) -> Result<(String, Option<DaemonEvent>), String> {
+    let workspace = store
+        .workspaces
+        .iter()
+        .find(|workspace| workspace.id == workspace_id)
+        .ok_or_else(|| format!("fixture: no workspace {workspace_id}"))?;
+    let now = Timestamp::now();
+    let id = SessionId::new();
+    let session = Session {
+        id,
+        workspace_id,
+        kind: SessionKind::Shell,
+        role: SessionRole::Generic,
+        parent_session_id: None,
+        root_session_id: id,
+        terminal_id: Some(TerminalId::new()),
+        editor: None,
+        agent_provider_id: None,
+        agent_profile_id: None,
+        title: SessionTitle {
+            user: Some("fixture shell".to_string()),
+            terminal: None,
+        },
+        state: SessionState::Running,
+        created_at: now,
+        launch_command: None,
+        last_activity_at: now,
+        ended_at: None,
+        base_commit: None,
+        activity: AgentActivity::unknown(),
+        action: None,
+    };
+    store.sessions.push(session.clone());
+    Ok((
+        format!("created {} in {}", short_id(&id), workspace.label()),
+        Some(DaemonEvent::SessionCreated(session)),
+    ))
+}
+
+fn fixture_rename(
+    store: &mut Store,
+    session_id: SessionId,
+    title: &str,
+) -> Result<(String, Option<DaemonEvent>), String> {
+    let session = store
+        .sessions
+        .iter_mut()
+        .find(|session| session.id == session_id)
+        .ok_or_else(|| format!("fixture: no session {session_id}"))?;
+    session.title.user = Some(title.to_string());
+    Ok((
+        format!("renamed {} to “{title}”", short_id(&session_id)),
+        Some(DaemonEvent::SessionUpdated(session.clone())),
+    ))
+}
+
+#[allow(
+    clippy::too_many_arguments,
+    reason = "the launch fields mirror CreateAgentSession"
+)]
+fn fixture_create_agent(
+    store: &mut Store,
+    workspace_id: WorkspaceId,
+    provider_id: domain::AgentProviderId,
+    profile_id: Option<domain::AgentProfileId>,
+    parent: Option<SessionId>,
+    role: SessionRole,
+    initial_prompt: Option<String>,
+) -> Result<(String, Option<DaemonEvent>), String> {
+    if !store
+        .workspaces
+        .iter()
+        .any(|workspace| workspace.id == workspace_id)
+    {
+        return Err(format!("fixture: no workspace {workspace_id}"));
+    }
+    let now = Timestamp::now();
+    let id = SessionId::new();
+    let root_session_id = parent
+        .and_then(|parent| {
+            store
+                .sessions
+                .iter()
+                .find(|session| session.id == parent)
+                .map(|session| session.root_session_id)
+        })
+        .unwrap_or(id);
+    let title = initial_prompt
+        .as_deref()
+        .and_then(|prompt| prompt.lines().next())
+        .map(str::trim)
+        .filter(|line| !line.is_empty())
+        .map_or_else(
+            || format!("fixture {provider_id}"),
+            |line| line.chars().take(60).collect(),
+        );
+    let session = Session {
+        id,
+        workspace_id,
+        kind: SessionKind::Agent,
+        role,
+        parent_session_id: parent,
+        root_session_id,
+        terminal_id: Some(TerminalId::new()),
+        editor: None,
+        agent_provider_id: Some(provider_id.clone()),
+        agent_profile_id: profile_id,
+        title: SessionTitle {
+            user: Some(title),
+            terminal: None,
+        },
+        state: SessionState::Running,
+        created_at: now,
+        launch_command: None,
+        last_activity_at: now,
+        ended_at: None,
+        base_commit: None,
+        activity: AgentActivity::unknown(),
+        action: None,
+    };
+    store.sessions.push(session.clone());
+    Ok((
+        format!(
+            "started {provider_id} in {}",
+            short_id(&session.workspace_id)
+        ),
+        Some(DaemonEvent::SessionCreated(session)),
+    ))
+}
+
+fn fixture_transcript(
+    store: &Store,
+    session_id: SessionId,
+    max_lines: Option<u32>,
+    max_bytes: Option<u32>,
+) -> Result<domain::SessionTranscript, String> {
+    let Some(session) = store
+        .sessions
+        .iter()
+        .find(|session| session.id == session_id)
+    else {
+        return Err(format!("fixture: no session {session_id}"));
+    };
+    let title = session.title.resolve("session");
+    let mut rows: Vec<String> = (0..24)
+        .map(|index| match index {
+            0 => format!("$ {title}"),
+            23 => "$ build finished".to_string(),
+            _ => format!("fixture transcript line {index}"),
+        })
+        .collect();
+    let line_cap = max_lines.unwrap_or(800).min(4_096) as usize;
+    let byte_cap = max_bytes.unwrap_or(36_000).min(96_000) as usize;
+    let mut truncated = rows.len() > line_cap;
+    if truncated {
+        rows = rows.split_off(rows.len() - line_cap);
+    }
+    let mut text = rows.join("\n");
+    if text.len() > byte_cap {
+        let mut start = text.len() - byte_cap;
+        while start < text.len() && !text.is_char_boundary(start) {
+            start += 1;
+        }
+        text = text[start..].to_string();
+        truncated = true;
+    }
+    Ok(domain::SessionTranscript {
+        session_id,
+        lines: u32::try_from(text.lines().count()).unwrap_or(u32::MAX),
+        text,
+        truncated,
+    })
+}
+
+fn fixture_session_changes(
+    store: &Store,
+    session_id: SessionId,
+) -> Result<domain::SessionChanges, String> {
+    let Some(session) = store
+        .sessions
+        .iter()
+        .find(|session| session.id == session_id)
+    else {
+        return Err(format!("fixture: no session {session_id}"));
+    };
+    let branch = store
+        .workspaces
+        .iter()
+        .find(|workspace| workspace.id == session.workspace_id)
+        .and_then(|workspace| workspace.branch.clone());
+    let sharing_sessions = store
+        .sessions
+        .iter()
+        .filter(|candidate| {
+            candidate.id != session_id
+                && candidate.workspace_id == session.workspace_id
+                && candidate.state.is_active()
+        })
+        .count();
+    Ok(domain::SessionChanges {
+        session_id,
+        origin: domain::BaseOrigin::Missing,
+        summary: domain::ChangeSummary {
+            branch,
+            ..domain::ChangeSummary::default()
+        },
+        sharing_sessions: u32::try_from(sharing_sessions).unwrap_or(u32::MAX),
+    })
+}
+
+pub(crate) fn fixture_review_config() -> domain::ReviewSettings {
+    domain::ReviewSettings {
+        default_preset: "standard".into(),
+        presets: vec![
+            domain::ReviewPreset {
+                id: "standard".into(),
+                name: "Review the change".into(),
+                detail: "Correctness, missing tests, and anything that would block a merge.".into(),
+                tier: None,
+            },
+            domain::ReviewPreset {
+                id: "security".into(),
+                name: "Security review".into(),
+                detail: "Input handling, secrets, authorization, injection, resource limits."
+                    .into(),
+                tier: None,
+            },
+            domain::ReviewPreset {
+                id: crate::code_review::CUSTOM_PRESET.into(),
+                name: "Custom".into(),
+                detail: "Your own wording, remembered for next time.".into(),
+                tier: None,
+            },
+        ],
+        rules: Vec::new(),
+        errors: Vec::new(),
+    }
+}
+
+/// The fixture's branches: enough for the compare picker and a worktree to
+/// exercise without a repository on disk.
+fn fixture_branches() -> client::Branches {
+    client::Branches {
+        branches: vec![
+            BranchRef {
+                name: "main".into(),
+                scope: RefScope::Local,
+                upstream: Some("origin/main".into()),
+                committed_at: None,
+                subject: Some("Merge the Rune editor chrome".into()),
+                checked_out_in: None,
+            },
+            BranchRef {
+                name: "compare-view".into(),
+                scope: RefScope::Local,
+                upstream: None,
+                committed_at: None,
+                subject: Some("Add branch compare".into()),
+                checked_out_in: None,
+            },
+            BranchRef {
+                name: "main".into(),
+                scope: RefScope::Remote {
+                    remote: "origin".into(),
+                },
+                upstream: None,
+                committed_at: None,
+                subject: None,
+                checked_out_in: None,
+            },
+            BranchRef {
+                name: "release".into(),
+                scope: RefScope::Remote {
+                    remote: "origin".into(),
+                },
+                upstream: None,
+                committed_at: None,
+                subject: None,
+                checked_out_in: None,
+            },
+        ],
+        remotes: vec![Remote {
+            name: "origin".into(),
+            url: "git@github.com:forge/forge.git".into(),
+        }],
+        default_branch: Some("main".into()),
+    }
+}
+
+fn fixture_patch() -> String {
+    concat!(
+        "diff --git a/src/main.rs b/src/main.rs\n",
+        "index 1111111..2222222 100644\n",
+        "--- a/src/main.rs\n",
+        "+++ b/src/main.rs\n",
+        "@@ -1,4 +1,5 @@\n",
+        " fn main() {\n",
+        "-    println!(\"hello\");\n",
+        "+    println!(\"hello, forge\");\n",
+        "+    println!(\"compare\");\n",
+        " }\n",
+    )
+    .to_string()
+}
+
+/// A working tree with two changes, so Changes, the compose summary and the
+/// split layout all have something to draw.
+fn fixture_diff(workspace_id: WorkspaceId) -> WorkspaceDiff {
+    WorkspaceDiff {
+        workspace_id,
+        branch: Some("main".into()),
+        files: vec![
+            DiffFile {
+                path: "src/main.rs".into(),
+                status: DiffStatus::Modified,
+                additions: 2,
+                deletions: 1,
+                patch: fixture_patch(),
+                binary: false,
+                truncated: false,
+            },
+            DiffFile {
+                path: "README.md".into(),
+                status: DiffStatus::Added,
+                additions: 3,
+                deletions: 0,
+                patch: concat!(
+                    "diff --git a/README.md b/README.md\n",
+                    "new file mode 100644\n",
+                    "--- /dev/null\n",
+                    "+++ b/README.md\n",
+                    "@@ -0,0 +1,3 @@\n",
+                    "+Forge Node\n",
+                    "+\n",
+                    "+The Rune client.\n",
+                )
+                .into(),
+                binary: false,
+                truncated: false,
+            },
+        ],
+        truncated: false,
+    }
+}
+
+fn fixture_compare(workspace_id: WorkspaceId, base: Option<String>) -> BranchCompare {
+    let diff = fixture_diff(workspace_id);
+    BranchCompare {
+        workspace_id,
+        base_ref: Some(base.unwrap_or_else(|| "origin/main".into())),
+        merge_base: Some("4f2b1ac".into()),
+        commits: vec![
+            CommitLine {
+                short_id: "a92e268".into(),
+                subject: "Merge the Rune editor chrome into rune-ui".into(),
+            },
+            CommitLine {
+                short_id: "f704783".into(),
+                subject: "Merge the terminal splits, links and gestures".into(),
+            },
+        ],
+        commit_count: 2,
+        diff,
+    }
+}
+
+struct LiveCtx<'a> {
+    generation: u64,
+    socket: &'a std::path::Path,
+    daemon: Option<&'a std::path::Path>,
+    spawn: bool,
+    sink: &'a EventSink,
+    wake: &'a WakeSink,
+    rx: &'a Receiver<Command>,
+    stop: &'a AtomicBool,
+    metrics: &'a Metrics,
+    terminal: &'a SharedTerminal,
+}
+
+struct LiveLink {
+    client: Client,
+    events: Receiver<DaemonEvent>,
+}
+
+fn run_live(ctx: LiveCtx<'_>) -> Result<(), String> {
+    let LiveCtx {
+        generation,
+        socket,
+        daemon,
+        spawn,
+        sink,
+        wake,
+        rx,
+        stop,
+        metrics,
+        terminal,
+    } = ctx;
+    sink(vec![UiEvent::Connecting {
+        generation,
+        detail: format!("socket {}", socket.display()),
+    }]);
+    let link = connect_live(socket, daemon, spawn, metrics)?;
+    let info = link.client.daemon_info();
+    sink(vec![UiEvent::Connected {
+        generation,
+        detail: format!(
+            "forge-daemon v{}, protocol {}, {}",
+            info.daemon_version,
+            info.protocol_version,
+            short_id_str(&info.instance_id)
+        ),
+        editor_surface: info.editor_surface,
+    }]);
+
+    let (store, took_us) = bootstrap(&link.client, metrics)?;
+    emit_snapshot(generation, &store, took_us, sink, metrics);
+
+    loop {
+        if stop.load(Ordering::Acquire) {
+            return Ok(());
+        }
+        let events = link.events.clone();
+        let selected = Selector::new()
+            .recv(&events, |message| Msg::Event(message.ok().map(Box::new)))
+            .recv(rx, |message| Msg::Command(message.ok().map(Box::new)))
+            .wait_timeout(Duration::from_millis(250));
+        match selected {
+            Ok(Msg::Event(Some(event))) => match event.as_ref() {
+                DaemonEvent::TerminalDelta { terminal_id, delta } => {
+                    metrics.terminal_deltas.fetch_add(1, Ordering::Relaxed);
+                    let mut target = terminal;
+                    let mut outcome = terminal.apply_delta(generation, *terminal_id, delta);
+                    if outcome == client::DeltaOutcome::Stale
+                        && let Some(split) = terminal.beside()
+                    {
+                        target = split;
+                        outcome = split.apply_delta(generation, *terminal_id, delta);
+                    }
+                    if outcome == client::DeltaOutcome::NeedsResync {
+                        let _ =
+                            resync_live(generation, &link.client, target, *terminal_id, metrics);
+                    }
+                    wake();
+                }
+                DaemonEvent::TerminalResync {
+                    terminal_id,
+                    snapshot,
+                } => {
+                    terminal.resync(generation, *terminal_id, snapshot);
+                    if let Some(split) = terminal.beside() {
+                        split.resync(generation, *terminal_id, snapshot);
+                    }
+                    wake();
+                }
+                _ => sink(vec![UiEvent::Daemon { generation, event }]),
+            },
+            Ok(Msg::Event(None)) => {
+                return Err("daemon closed the connection".to_string());
+            }
+            Ok(Msg::Command(Some(command))) => match *command {
+                Command::Shutdown => {
+                    stop.store(true, Ordering::Release);
+                    return Ok(());
+                }
+                Command::ForceReconnect => {
+                    return Err("reconnect requested".to_string());
+                }
+                Command::MigrateStorage {
+                    generation: command_generation,
+                    action,
+                } => {
+                    if command_generation != generation {
+                        return Err("the connection changed before the migration".to_string());
+                    }
+                    let result =
+                        crate::storage::migrate_home(daemon, &link.client, action, metrics);
+                    sink(vec![UiEvent::StorageMigration {
+                        generation,
+                        action,
+                        result,
+                    }]);
+                    if action.stops_daemon() {
+                        return Err("reconnect after moving the Forge home".to_string());
+                    }
+                }
+                command => handle_live_command(
+                    generation,
+                    &link.client,
+                    command,
+                    sink,
+                    wake,
+                    metrics,
+                    terminal,
+                ),
+            },
+            Ok(Msg::Command(None)) => {
+                stop.store(true, Ordering::Release);
+                return Ok(());
+            }
+            Err(_) => {
+                if !link.client.is_connected() {
+                    return Err("daemon disconnected".to_string());
+                }
+            }
+        }
+    }
+}
+
+enum Msg {
+    Event(Option<Box<DaemonEvent>>),
+    Command(Option<Box<Command>>),
+}
+
+fn connect_live(
+    socket: &std::path::Path,
+    daemon: Option<&std::path::Path>,
+    spawn: bool,
+    metrics: &Metrics,
+) -> Result<LiveLink, String> {
+    let mut spawned = false;
+    let mut last = String::new();
+    for attempt in 1..=CONNECT_ATTEMPTS {
+        metrics.note_socket_op();
+        match Client::connect(socket, CLIENT_VERSION) {
+            Ok(client) => {
+                let events = client.events();
+                return Ok(LiveLink { client, events });
+            }
+            Err(error) => {
+                last = error.to_string();
+                if attempt == CONNECT_ATTEMPTS {
+                    break;
+                }
+                if !spawned
+                    && spawn
+                    && daemon_absent(&error)
+                    && let Some(bin) = daemon
+                {
+                    spawn_daemon(bin, socket, metrics)?;
+                    spawned = true;
+                }
+                thread::sleep(RETRY);
+            }
+        }
+    }
+    Err(format!("could not connect to {}: {last}", socket.display()))
+}
+
+fn daemon_absent(error: &client::ClientError) -> bool {
+    matches!(
+        error,
+        client::ClientError::Io(io)
+            if matches!(
+                io.kind(),
+                std::io::ErrorKind::NotFound | std::io::ErrorKind::ConnectionRefused
+            )
+    )
+}
+
+fn spawn_daemon(
+    bin: &std::path::Path,
+    socket: &std::path::Path,
+    metrics: &Metrics,
+) -> Result<u32, String> {
+    use std::os::unix::process::CommandExt;
+    use std::process::{Command as Process, Stdio};
+    metrics.note_subprocess_op();
+    let mut child = Process::new(bin)
+        .arg("run")
+        .env("FORGE_SOCKET", socket)
+        .process_group(0)
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .map_err(|error| format!("failed to start {}: {error}", bin.display()))?;
+    let pid = child.id();
+    // The daemon outlives most GUI sessions, so its exit is awaited on a thread of its own.
+    thread::Builder::new()
+        .name("forge-daemon-reaper".into())
+        .spawn(move || {
+            let _ = child.wait();
+        })
+        .map_err(|error| format!("failed to watch {}: {error}", bin.display()))?;
+    Ok(pid)
+}
+
+fn handle_live_command(
+    generation: u64,
+    client: &Client,
+    command: Command,
+    sink: &EventSink,
+    wake: &WakeSink,
+    metrics: &Metrics,
+    terminal: &SharedTerminal,
+) {
+    let started = Instant::now();
+    match command {
+        Command::Activate {
+            generation: command_generation,
+            session,
+            terminal: terminal_id,
+            size,
+        } => {
+            if command_generation < generation {
+                return;
+            }
+            metrics.note_socket_op();
+            let old = {
+                let slot = terminal.lock();
+                slot.terminal_id
+            };
+            let split = terminal.beside().and_then(|split| split.lock().terminal_id);
+            if old != terminal_id
+                && let Some(old) = old
+                && Some(old) != split
+            {
+                metrics.note_socket_op();
+                let _ = client.detach_terminal(old);
+            }
+            match (session, terminal_id) {
+                (Some(session), Some(terminal_id)) => {
+                    let pty = pty_size(size);
+                    metrics.note_socket_op();
+                    match client.attach_terminal(terminal_id, pty) {
+                        Ok(snapshot) => {
+                            terminal.publish_snapshot(generation, session, terminal_id, &snapshot);
+                            wake();
+                        }
+                        Err(error) => sink(vec![UiEvent::CommandResult {
+                            generation,
+                            label: "AttachTerminal",
+                            ok: false,
+                            message: error.to_string(),
+                            took_us: started.elapsed().as_micros() as u64,
+                        }]),
+                    }
+                }
+                (session, None) => {
+                    terminal.clear(generation, session);
+                    wake();
+                }
+                (None, Some(_)) => {}
+            }
+        }
+        Command::ResizeAndAttach {
+            generation: command_generation,
+            terminal: terminal_id,
+            size,
+        } => {
+            if command_generation < generation {
+                return;
+            }
+            metrics.note_socket_op();
+            let terminal = terminal.holding(terminal_id).unwrap_or(terminal);
+            let result = client
+                .resize_terminal(terminal_id, size)
+                .and_then(|()| client.attach_terminal(terminal_id, size));
+            match result {
+                Ok(snapshot) => {
+                    let session = {
+                        let slot = terminal.lock();
+                        slot.session_id
+                    };
+                    if let Some(session) = session {
+                        terminal.publish_snapshot(generation, session, terminal_id, &snapshot);
+                    }
+                    wake();
+                    metrics.commands_completed.fetch_add(1, Ordering::Relaxed);
+                    sink(vec![UiEvent::CommandResult {
+                        generation,
+                        label: "ResizeTerminal",
+                        ok: true,
+                        message: format!("{}x{}", size.cols, size.rows),
+                        took_us: started.elapsed().as_micros() as u64,
+                    }]);
+                }
+                Err(error) => {
+                    metrics.commands_completed.fetch_add(1, Ordering::Relaxed);
+                    sink(vec![UiEvent::CommandResult {
+                        generation,
+                        label: "ResizeTerminal",
+                        ok: false,
+                        message: error.to_string(),
+                        took_us: started.elapsed().as_micros() as u64,
+                    }]);
+                }
+            }
+        }
+        Command::Input {
+            generation: command_generation,
+            terminal: terminal_id,
+            bytes,
+        } => {
+            if command_generation < generation {
+                return;
+            }
+            metrics.note_socket_op();
+            if let Err(error) = client.write_terminal_input(terminal_id, bytes) {
+                sink(vec![UiEvent::CommandResult {
+                    generation,
+                    label: "WriteTerminalInput",
+                    ok: false,
+                    message: error.to_string(),
+                    took_us: started.elapsed().as_micros() as u64,
+                }]);
+            }
+        }
+        Command::FetchScrollback {
+            generation: command_generation,
+            terminal: terminal_id,
+            from_line,
+            count,
+        } => {
+            if command_generation < generation {
+                return;
+            }
+            metrics.note_socket_op();
+            match client.fetch_scrollback(terminal_id, from_line, count) {
+                Ok(block) => {
+                    if !terminal.merge_scrollback(generation, terminal_id, &block)
+                        && let Some(split) = terminal.beside()
+                    {
+                        split.merge_scrollback(generation, terminal_id, &block);
+                    }
+                    wake();
+                }
+                Err(error) => eprintln!("forge-ui: FetchScrollback: {error}"),
+            }
+        }
+        Command::CreateShellSession { workspace_id } => {
+            metrics.note_socket_op();
+            let result = client
+                .create_shell_session(workspace_id)
+                .map(|(session_id, terminal_id)| {
+                    format!(
+                        "created {} on {}",
+                        short_id(&session_id),
+                        short_id(&terminal_id)
+                    )
+                })
+                .map_err(|error| error.to_string());
+            live_result(
+                generation,
+                "CreateShellSession",
+                result,
+                sink,
+                metrics,
+                started,
+            );
+        }
+        Command::RenameSession { session_id, title } => {
+            metrics.note_socket_op();
+            let result = client
+                .rename_session(session_id, Some(title.clone()))
+                .map(|()| format!("renamed {} to “{title}”", short_id(&session_id)))
+                .map_err(|error| error.to_string());
+            live_result(generation, "RenameSession", result, sink, metrics, started);
+        }
+        Command::OpenEditor { workspace_id, path } => {
+            metrics.note_socket_op();
+            let result = client
+                .create_editor_session(workspace_id, &path, None, false, false)
+                .map(|(session_id, _)| {
+                    sink(vec![UiEvent::SessionOpened {
+                        generation,
+                        session_id,
+                    }]);
+                    format!("opened {path} in {}", short_id(&session_id))
+                })
+                .map_err(|error| error.to_string());
+            live_result(
+                generation,
+                "CreateEditorSession",
+                result,
+                sink,
+                metrics,
+                started,
+            );
+        }
+        Command::EditorView {
+            generation: command_generation,
+            session_id,
+            first_line,
+            line_count,
+        } => {
+            if command_generation != generation {
+                return;
+            }
+            metrics.note_socket_op();
+            if let Err(error) = client.set_editor_view(session_id, first_line, line_count) {
+                eprintln!("forge-ui: SetEditorView: {error}");
+            }
+        }
+        Command::EditorInput {
+            generation: command_generation,
+            session_id,
+            events,
+        } => {
+            // Input from an older connection is dropped, never replayed: the
+            // editor it was typed against may have moved on.
+            if command_generation != generation {
+                return;
+            }
+            metrics.note_socket_op();
+            if let Err(error) = client.send_editor_input(session_id, events) {
+                eprintln!("forge-ui: SendEditorInput: {error}");
+            }
+        }
+        Command::Read {
+            generation: command_generation,
+            scope,
+            read,
+        } => {
+            let workspace_id = scope.workspace;
+            if command_generation != generation {
+                return;
+            }
+            metrics.note_socket_op();
+            let event = match read {
+                crate::workbench::Read::Diff => UiEvent::Diff {
+                    generation,
+                    scope,
+                    result: client
+                        .workspace_diff(workspace_id, None)
+                        .map(Box::new)
+                        .map_err(|error| error.to_string()),
+                },
+                crate::workbench::Read::Directory(path) => UiEvent::Directory {
+                    generation,
+                    scope,
+                    result: client
+                        .list_directory(workspace_id, path.clone())
+                        .map_err(|error| error.to_string()),
+                    path,
+                },
+                crate::workbench::Read::Search(query) => UiEvent::Search {
+                    generation,
+                    scope,
+                    result: client
+                        .search_files(
+                            workspace_id,
+                            query.clone(),
+                            domain::SearchKind::Name,
+                            Some(crate::palette::FILE_LIMIT),
+                        )
+                        .map(|results| results.matches.into_iter().map(|hit| hit.path).collect())
+                        .map_err(|error| error.to_string()),
+                    query,
+                },
+                crate::workbench::Read::Definition(query) => UiEvent::Symbols {
+                    generation,
+                    scope,
+                    result: client
+                        .search_files(
+                            workspace_id,
+                            query.clone(),
+                            domain::SearchKind::Definition,
+                            Some(crate::palette::FILE_LIMIT),
+                        )
+                        .map(Box::new)
+                        .map_err(|error| error.to_string()),
+                    query,
+                },
+                crate::workbench::Read::Rebase => UiEvent::Rebase {
+                    generation,
+                    scope,
+                    result: client
+                        .rebase_state(workspace_id)
+                        .map(Box::new)
+                        .map_err(|error| error.to_string()),
+                },
+                crate::workbench::Read::Compare(base) => UiEvent::Compare {
+                    generation,
+                    scope,
+                    requested: base.clone(),
+                    result: client
+                        .branch_compare(workspace_id, base, None)
+                        .map(Box::new)
+                        .map_err(|error| error.to_string()),
+                },
+                crate::workbench::Read::File(path) => UiEvent::File {
+                    generation,
+                    scope,
+                    result: client
+                        .read_file(workspace_id, path)
+                        .map(Box::new)
+                        .map_err(|error| error.to_string()),
+                },
+                crate::workbench::Read::Image(path) => UiEvent::Image {
+                    generation,
+                    scope,
+                    result: client
+                        .read_image(workspace_id, path.clone())
+                        .map_err(|error| error.to_string())
+                        .and_then(decode_image),
+                    path,
+                },
+                crate::workbench::Read::Content(query) => UiEvent::ContentSearch {
+                    generation,
+                    scope,
+                    result: client
+                        .search_files(
+                            workspace_id,
+                            query.clone(),
+                            domain::SearchKind::Content,
+                            None,
+                        )
+                        .map(Box::new)
+                        .map_err(|error| error.to_string()),
+                    query,
+                },
+            };
+            sink(vec![event]);
+        }
+        Command::CreateAgent {
+            workspace_id,
+            provider_id,
+            profile_id,
+            parent,
+            role,
+            initial_prompt,
+            read_only,
+            resume,
+        } => {
+            metrics.note_socket_op();
+            // A provider with no review mode is refused by the daemon, never
+            // downgraded to a launch that could write.
+            let result = client
+                .create_agent_session_with_role(
+                    workspace_id,
+                    provider_id.clone(),
+                    profile_id,
+                    parent,
+                    role,
+                    resume,
+                    initial_prompt,
+                    read_only,
+                )
+                .map(|(session_id, _)| {
+                    sink(vec![UiEvent::SessionOpened {
+                        generation,
+                        session_id,
+                    }]);
+                    format!("started {provider_id} in {}", short_id(&session_id))
+                })
+                .map_err(|error| error.to_string());
+            live_result(
+                generation,
+                "CreateAgentSession",
+                result,
+                sink,
+                metrics,
+                started,
+            );
+        }
+        Command::CreateChild {
+            parent_session_id,
+            provider_id,
+            profile_id,
+            role,
+            workspace_policy,
+            initial_prompt,
+        } => {
+            metrics.note_socket_op();
+            let result = client
+                .create_child_session(
+                    parent_session_id,
+                    SessionKind::Agent,
+                    Some(provider_id.clone()),
+                    profile_id,
+                    role,
+                    workspace_policy,
+                    initial_prompt,
+                )
+                .map(|(session_id, _)| {
+                    sink(vec![UiEvent::SessionOpened {
+                        generation,
+                        session_id,
+                    }]);
+                    format!("spawned {provider_id} in {}", short_id(&session_id))
+                })
+                .map_err(|error| error.to_string());
+            live_result(
+                generation,
+                "CreateChildSession",
+                result,
+                sink,
+                metrics,
+                started,
+            );
+        }
+        Command::SessionTranscript {
+            generation: command_generation,
+            session_id,
+            max_lines,
+            max_bytes,
+        } => {
+            if command_generation != generation {
+                return;
+            }
+            metrics.note_socket_op();
+            let result = client
+                .session_transcript(session_id, max_lines, max_bytes)
+                .map_err(|error| error.to_string());
+            sink(vec![UiEvent::SessionTranscript {
+                generation,
+                session_id,
+                result,
+            }]);
+        }
+        Command::SessionChanges {
+            generation: command_generation,
+            session_id,
+        } => {
+            if command_generation != generation {
+                return;
+            }
+            metrics.note_socket_op();
+            let result = client
+                .session_changes(session_id)
+                .map_err(|error| error.to_string());
+            sink(vec![UiEvent::SessionChanges {
+                generation,
+                session_id,
+                result,
+            }]);
+        }
+        Command::SendContext {
+            source_session_id,
+            target_session_id,
+            spawn,
+            summary,
+            instructions,
+            include_transcript,
+            max_transcript_bytes,
+        } => {
+            metrics.note_socket_op();
+            let result = client
+                .send_context(
+                    source_session_id,
+                    target_session_id,
+                    spawn,
+                    summary,
+                    instructions,
+                    include_transcript,
+                    max_transcript_bytes,
+                )
+                .map(|outcome| match outcome {
+                    client::SendContextResult::Delivered => "sent context".to_string(),
+                    client::SendContextResult::Spawned {
+                        session_id,
+                        terminal_id: _,
+                    } => {
+                        sink(vec![UiEvent::SessionOpened {
+                            generation,
+                            session_id,
+                        }]);
+                        format!("spawned context receiver {}", short_id(&session_id))
+                    }
+                })
+                .map_err(|error| error.to_string());
+            live_result(generation, "SendContext", result, sink, metrics, started);
+        }
+        Command::StartReview {
+            generation: command_generation,
+            workspace_id,
+            preset,
+            tier,
+            provider,
+            instructions,
+        } => {
+            if command_generation != generation {
+                return;
+            }
+            metrics.note_socket_op();
+            let result = client
+                .start_review(
+                    domain::ReviewTarget::Workspace {
+                        workspace_id,
+                        base: None,
+                    },
+                    tier,
+                    provider,
+                    preset,
+                    instructions,
+                    domain::AgentLaunchOptions::default(),
+                )
+                .map_err(|error| error.to_string());
+            sink(vec![UiEvent::ReviewStarted {
+                generation,
+                workspace_id,
+                result,
+            }]);
+        }
+        Command::ReviewConfig {
+            generation: command_generation,
+            workspace_id,
+        } => {
+            if command_generation != generation {
+                return;
+            }
+            metrics.note_socket_op();
+            let result = client
+                .get_review_config(workspace_id)
+                .map_err(|error| error.to_string());
+            sink(vec![UiEvent::ReviewConfig {
+                generation,
+                workspace_id,
+                result,
+            }]);
+        }
+        Command::ListReviews {
+            generation: command_generation,
+            workspace_id,
+        } => {
+            if command_generation != generation {
+                return;
+            }
+            metrics.note_socket_op();
+            let result = client
+                .list_reviews(workspace_id, 20)
+                .map_err(|error| error.to_string());
+            sink(vec![UiEvent::Reviews {
+                generation,
+                workspace_id,
+                result,
+            }]);
+        }
+        Command::GetReview {
+            generation: command_generation,
+            workspace_id,
+            review_id,
+        } => {
+            if command_generation != generation {
+                return;
+            }
+            metrics.note_socket_op();
+            let result = client
+                .get_review(review_id)
+                .map(Box::new)
+                .map_err(|error| error.to_string());
+            sink(vec![UiEvent::Review {
+                generation,
+                workspace_id,
+                result,
+            }]);
+        }
+        Command::CancelReview(review_id) => {
+            metrics.note_socket_op();
+            let result = client
+                .cancel_review(review_id)
+                .map(|()| "cancelling".to_string())
+                .map_err(|error| error.to_string());
+            live_result(generation, "CancelReview", result, sink, metrics, started);
+        }
+        Command::DraftCommit { workspace_id } => {
+            metrics.note_socket_op();
+            // The draft arrives later as `JuvaDraftReady`; this only starts it.
+            let result = client
+                .draft_with_juva(workspace_id, domain::JuvaKind::CommitMessage)
+                .map(|()| "drafting".to_string())
+                .map_err(|error| error.to_string());
+            live_result(generation, "DraftWithJuva", result, sink, metrics, started);
+        }
+        Command::Commit {
+            workspace_id,
+            message,
+        } => {
+            metrics.note_socket_op();
+            let result = client
+                .create_commit(workspace_id, &message)
+                .map(|()| "committed".to_string())
+                .map_err(|error| error.to_string());
+            live_result(generation, "CreateCommit", result, sink, metrics, started);
+        }
+        // The three below ack when the work starts; the outcome is an event.
+        Command::Fetch { project_id } => {
+            metrics.note_socket_op();
+            let result = client
+                .fetch_remote(project_id, None)
+                .map(|()| "fetching".to_string())
+                .map_err(|error| error.to_string());
+            live_result(generation, "FetchRemote", result, sink, metrics, started);
+        }
+        Command::OpenPullRequest {
+            workspace_id,
+            title,
+            body,
+            commit,
+        } => {
+            metrics.note_socket_op();
+            let result = match commit {
+                Some(message) => client.commit_and_open_pull_request(
+                    workspace_id,
+                    domain::CommitPlan {
+                        branch: None,
+                        message,
+                    },
+                    &title,
+                    &body,
+                ),
+                None => client.create_pull_request(workspace_id, &title, &body, None),
+            }
+            .map(|()| "pushing".to_string())
+            .map_err(|error| error.to_string());
+            live_result(
+                generation,
+                "CreatePullRequest",
+                result,
+                sink,
+                metrics,
+                started,
+            );
+        }
+        Command::CommitAndOpenPullRequest {
+            workspace_id,
+            title,
+            body,
+            message,
+            branch,
+        } => {
+            metrics.note_socket_op();
+            let result = client
+                .commit_and_open_pull_request(
+                    workspace_id,
+                    domain::CommitPlan { branch, message },
+                    &title,
+                    &body,
+                )
+                .map(|()| "pushing".to_string())
+                .map_err(|error| error.to_string());
+            live_result(
+                generation,
+                "CommitAndOpenPullRequest",
+                result,
+                sink,
+                metrics,
+                started,
+            );
+        }
+        Command::RefreshPullRequests => {
+            metrics.note_socket_op();
+            let result = client
+                .refresh_pull_requests()
+                .map(|()| "refreshing".to_string())
+                .map_err(|error| error.to_string());
+            live_result(
+                generation,
+                "RefreshPullRequests",
+                result,
+                sink,
+                metrics,
+                started,
+            );
+        }
+        Command::RunAction {
+            workspace_id,
+            action_id,
+        } => {
+            metrics.note_socket_op();
+            let result = client
+                .run_action(workspace_id, action_id)
+                .map(|launch| {
+                    // Started, queued behind a dependency, or already live: each
+                    // names the session to show.
+                    let (session_id, said) = match launch {
+                        client::ActionLaunch::Started { session_id, .. } => (session_id, "started"),
+                        client::ActionLaunch::Queued { session_id } => (session_id, "queued"),
+                        client::ActionLaunch::AlreadyRunning { session_id } => {
+                            (session_id, "already running")
+                        }
+                    };
+                    sink(vec![UiEvent::SessionOpened {
+                        generation,
+                        session_id,
+                    }]);
+                    said.to_string()
+                })
+                .map_err(|error| error.to_string());
+            live_result(generation, "RunAction", result, sink, metrics, started);
+        }
+        Command::RebaseStep { scope, step } => {
+            use crate::workbench::RebaseStep;
+            let workspace_id = scope.workspace;
+            metrics.note_socket_op();
+            let label = match step {
+                RebaseStep::Resolve(_) => "MarkConflictResolved",
+                RebaseStep::Continue => "ContinueRebase",
+                RebaseStep::Abort => "AbortRebase",
+            };
+            // Each step answers with the state git is in now (abort reads it
+            // again), so the panel never keeps a count of its own.
+            let state = match step {
+                RebaseStep::Resolve(paths) => client.mark_conflict_resolved(workspace_id, paths),
+                RebaseStep::Continue => client.continue_rebase(workspace_id),
+                RebaseStep::Abort => client
+                    .abort_rebase(workspace_id)
+                    .and_then(|()| client.rebase_state(workspace_id)),
+            }
+            .map_err(|error| error.to_string());
+            let result = state
+                .as_ref()
+                .map(|_| "done".to_string())
+                .map_err(Clone::clone);
+            sink(vec![UiEvent::Rebase {
+                generation,
+                scope,
+                result: state.map(Box::new),
+            }]);
+            live_result(generation, label, result, sink, metrics, started);
+        }
+        Command::DeleteTranscript {
+            session_id,
+            provider,
+            profile_id,
+        } => {
+            metrics.note_socket_op();
+            let result = client
+                .delete_external_session(session_id, provider, profile_id)
+                .map(|()| "deleted transcript".to_string())
+                .map_err(|error| error.to_string());
+            if result.is_ok()
+                && let Ok((store, took_us)) = load_snapshot(client, metrics)
+            {
+                emit_snapshot(generation, &store, took_us, sink, metrics);
+            }
+            live_result(
+                generation,
+                "DeleteExternalSession",
+                result,
+                sink,
+                metrics,
+                started,
+            );
+        }
+        Command::RestartSession(session_id) => {
+            metrics.note_socket_op();
+            let result = client
+                .restart_session(session_id)
+                .map(|()| "restarting".to_string())
+                .map_err(|error| error.to_string());
+            live_result(generation, "RestartSession", result, sink, metrics, started);
+        }
+        Command::KillSession(session_id) => {
+            metrics.note_socket_op();
+            let result = client
+                .kill_session(session_id)
+                .map(|()| "stopping".to_string())
+                .map_err(|error| error.to_string());
+            live_result(generation, "KillSession", result, sink, metrics, started);
+        }
+        Command::CloseSession(session_id) => {
+            metrics.note_socket_op();
+            let result = client
+                .close_session(session_id)
+                .map(|()| "closed".to_string())
+                .map_err(|error| error.to_string());
+            live_result(generation, "CloseSession", result, sink, metrics, started);
+        }
+        Command::Usage {
+            generation: command_generation,
+            window_days,
+        } => {
+            if command_generation != generation {
+                return;
+            }
+            metrics.note_socket_op();
+            let result = client
+                .usage_analytics(Some(window_days))
+                .map(Box::new)
+                .map_err(|error| error.to_string());
+            sink(vec![UiEvent::Usage {
+                generation,
+                window_days,
+                result,
+            }]);
+        }
+        Command::Paths {
+            generation: command_generation,
+        } => {
+            if command_generation != generation {
+                return;
+            }
+            metrics.note_socket_op();
+            let result = client
+                .paths()
+                .map(Box::new)
+                .map_err(|error| error.to_string());
+            sink(vec![UiEvent::Paths { generation, result }]);
+        }
+        Command::RefreshProject(project_id) => {
+            metrics.note_socket_op();
+            let result = client
+                .refresh_project(project_id)
+                .map(|()| "refreshing project".to_string())
+                .map_err(|error| error.to_string());
+            live_result(generation, "RefreshProject", result, sink, metrics, started);
+        }
+        Command::RefreshWorkspaceStatus(workspace_id) => {
+            metrics.note_socket_op();
+            let result = client
+                .refresh_workspace_status(workspace_id)
+                .map(|()| "refreshing status".to_string())
+                .map_err(|error| error.to_string());
+            live_result(
+                generation,
+                "RefreshWorkspaceStatus",
+                result,
+                sink,
+                metrics,
+                started,
+            );
+        }
+        Command::RenameWorkspace {
+            workspace_id,
+            display_name,
+        } => {
+            metrics.note_socket_op();
+            let result = client
+                .rename_workspace(workspace_id, display_name)
+                .map(|()| "renamed checkout".to_string())
+                .map_err(|error| error.to_string());
+            live_result(
+                generation,
+                "RenameWorkspace",
+                result,
+                sink,
+                metrics,
+                started,
+            );
+        }
+        Command::SetProjectIcon { project_id, icon } => {
+            metrics.note_socket_op();
+            let result = client
+                .set_project_icon(project_id, icon)
+                .map(|()| "set icon".to_string())
+                .map_err(|error| error.to_string());
+            live_result(generation, "SetProjectIcon", result, sink, metrics, started);
+        }
+        Command::RemoveProject { project_id, policy } => {
+            metrics.note_socket_op();
+            let result = client
+                .remove_project(project_id, policy)
+                .map(|()| "removed project".to_string())
+                .map_err(|error| error.to_string());
+            live_result(generation, "RemoveProject", result, sink, metrics, started);
+        }
+        Command::SetWorktreeIgnores { project_id, rules } => {
+            metrics.note_socket_op();
+            let result = client
+                .set_worktree_ignores(project_id, rules)
+                .map(|()| "ignoring worktrees".to_string())
+                .map_err(|error| error.to_string());
+            live_result(
+                generation,
+                "SetWorktreeIgnores",
+                result,
+                sink,
+                metrics,
+                started,
+            );
+        }
+        Command::CreatePath {
+            workspace_id,
+            path,
+            directory,
+        } => {
+            metrics.note_socket_op();
+            let result = client
+                .create_path(workspace_id, path.clone(), directory)
+                .map(|()| format!("created {path}"))
+                .map_err(|error| error.to_string());
+            live_result(generation, "CreatePath", result, sink, metrics, started);
+        }
+        Command::RenamePath {
+            workspace_id,
+            from,
+            to,
+        } => {
+            metrics.note_socket_op();
+            let result = client
+                .rename_path(workspace_id, from.clone(), to.clone())
+                .map(|()| format!("moved to {to}"))
+                .map_err(|error| error.to_string());
+            if result.is_ok() {
+                sink(vec![UiEvent::PathMoved {
+                    generation,
+                    workspace_id,
+                    from,
+                    to,
+                }]);
+            }
+            live_result(generation, "RenamePath", result, sink, metrics, started);
+        }
+        Command::CopyPath {
+            workspace_id,
+            from,
+            to,
+        } => {
+            metrics.note_socket_op();
+            let result = client
+                .copy_path(workspace_id, from, to.clone())
+                .map(|()| format!("copied to {to}"))
+                .map_err(|error| error.to_string());
+            live_result(generation, "CopyPath", result, sink, metrics, started);
+        }
+        Command::DeletePath { workspace_id, path } => {
+            metrics.note_socket_op();
+            let result = client
+                .delete_path(workspace_id, path.clone())
+                .map(|()| format!("deleted {path}"))
+                .map_err(|error| error.to_string());
+            live_result(generation, "DeletePath", result, sink, metrics, started);
+        }
+        Command::AddProject(path) => {
+            metrics.note_socket_op();
+            let result = client
+                .add_project(&path)
+                .map(|()| format!("added {}", path.display()))
+                .map_err(|error| error.to_string());
+            // The new project's recorded runs reach the client only on a
+            // snapshot, so History would miss them until a reconnect.
+            if result.is_ok()
+                && let Ok((store, took_us)) = load_snapshot(client, metrics)
+            {
+                emit_snapshot(generation, &store, took_us, sink, metrics);
+            }
+            live_result(generation, "AddProject", result, sink, metrics, started);
+        }
+        Command::StopDaemon { kill_sessions } => {
+            metrics.note_socket_op();
+            let sessions = if kill_sessions {
+                client::StopSessions::Kill
+            } else {
+                client::StopSessions::Keep
+            };
+            let result = client
+                .stop_daemon(sessions)
+                .map(|()| "stopping the daemon".to_string())
+                .map_err(|error| error.to_string());
+            live_result(generation, "StopDaemon", result, sink, metrics, started);
+        }
+        Command::FactoryReset => {
+            metrics.note_socket_op();
+            let result = client
+                .factory_reset()
+                .map(|()| "reset".to_string())
+                .map_err(|error| error.to_string());
+            live_result(generation, "FactoryReset", result, sink, metrics, started);
+        }
+        Command::RefreshAgentDetection => {
+            metrics.note_socket_op();
+            let result = client
+                .refresh_detection(None)
+                .map(|()| "rescanning".to_string())
+                .map_err(|error| error.to_string());
+            live_result(
+                generation,
+                "RefreshAgentDetection",
+                result,
+                sink,
+                metrics,
+                started,
+            );
+        }
+        Command::SetProviderExecutable { provider_id, path } => {
+            metrics.note_socket_op();
+            let result = client
+                .set_provider_executable(&provider_id, path)
+                .map(|()| format!("{provider_id} command saved"))
+                .map_err(|error| error.to_string());
+            live_result(
+                generation,
+                "SetProviderExecutable",
+                result,
+                sink,
+                metrics,
+                started,
+            );
+        }
+        Command::SaveAgentProfile(profile) => {
+            metrics.note_socket_op();
+            let result = client
+                .save_agent_profile(*profile)
+                .map(|()| "profile saved".to_string())
+                .map_err(|error| error.to_string());
+            live_result(
+                generation,
+                "SaveAgentProfile",
+                result,
+                sink,
+                metrics,
+                started,
+            );
+        }
+        Command::RemoveAgentProfile(profile_id) => {
+            metrics.note_socket_op();
+            let result = client
+                .remove_agent_profile(profile_id)
+                .map(|()| "profile removed".to_string())
+                .map_err(|error| error.to_string());
+            live_result(
+                generation,
+                "RemoveAgentProfile",
+                result,
+                sink,
+                metrics,
+                started,
+            );
+        }
+        Command::SetAppState { key, value } => {
+            metrics.note_socket_op();
+            if let Err(error) = client.set_app_state(&key, &value) {
+                eprintln!("forge-ui: saving {key}: {error}");
+                sink(vec![UiEvent::PreferenceFailed {
+                    generation,
+                    key,
+                    error: error.to_string(),
+                }]);
+            }
+        }
+        Command::RefreshSnapshot => {
+            if let Ok((store, took_us)) = load_snapshot(client, metrics) {
+                emit_snapshot(generation, &store, took_us, sink, metrics);
+            }
+        }
+        Command::ForceReconnect | Command::Shutdown => {}
+        Command::WatchFiles {
+            generation: command_generation,
+            workspace_id,
+            directories,
+            ticket,
+        } => {
+            // A watch belongs to the connection it was asked on; the next
+            // one starts with nothing watched and asks again.
+            if command_generation != generation {
+                return;
+            }
+            metrics.note_socket_op();
+            let result = client
+                .watch_files(workspace_id, directories)
+                .map_err(|error| error.to_string());
+            sink(vec![UiEvent::Watched {
+                generation,
+                ticket,
+                result,
+            }]);
+        }
+        Command::OpenEditorAt {
+            workspace_id,
+            path,
+            line,
+        } => {
+            metrics.note_socket_op();
+            let result = client
+                .create_editor_session(workspace_id, &path, Some(line), false, false)
+                .map(|(session_id, _)| {
+                    sink(vec![UiEvent::SessionOpened {
+                        generation,
+                        session_id,
+                    }]);
+                    format!("opened {path}:{line} in {}", short_id(&session_id))
+                })
+                .map_err(|error| error.to_string());
+            live_result(
+                generation,
+                "CreateEditorSession",
+                result,
+                sink,
+                metrics,
+                started,
+            );
+        }
+        Command::EditorFind {
+            session_id,
+            command,
+        } => {
+            metrics.note_socket_op();
+            if let Err(error) = client.editor_find(session_id, command) {
+                eprintln!("forge-ui: EditorFind: {error}");
+            }
+        }
+        Command::SetEditorAutosave {
+            session_id,
+            autosave,
+        } => {
+            metrics.note_socket_op();
+            let result = client
+                .set_editor_autosave(session_id, autosave)
+                .map(|()| format!("autosave {}", if autosave { "on" } else { "off" }))
+                .map_err(|error| error.to_string());
+            live_result(
+                generation,
+                "SetEditorAutosave",
+                result,
+                sink,
+                metrics,
+                started,
+            );
+        }
+        Command::EditorConflict {
+            generation: command_generation,
+            session_id,
+        } => {
+            if command_generation != generation {
+                return;
+            }
+            metrics.note_socket_op();
+            let result = client
+                .editor_conflict(session_id)
+                .map(|(_, disk, mine)| Box::new((disk, mine)))
+                .map_err(|error| error.to_string());
+            sink(vec![UiEvent::EditorConflict {
+                generation,
+                session_id,
+                result,
+            }]);
+        }
+        Command::ReloadEditorBuffer(session_id) => {
+            metrics.note_socket_op();
+            let result = client
+                .reload_editor_buffer(session_id)
+                .map(|()| "took the disk's copy".to_string())
+                .map_err(|error| error.to_string());
+            live_result(
+                generation,
+                "ReloadEditorBuffer",
+                result,
+                sink,
+                metrics,
+                started,
+            );
+        }
+        Command::OverwriteEditorBuffer(session_id) => {
+            metrics.note_socket_op();
+            let result = client
+                .overwrite_editor_buffer(session_id)
+                .map(|()| "kept this copy".to_string())
+                .map_err(|error| error.to_string());
+            live_result(
+                generation,
+                "OverwriteEditorBuffer",
+                result,
+                sink,
+                metrics,
+                started,
+            );
+        }
+        Command::SplitShell {
+            generation: command_generation,
+            workspace_id,
+            size,
+        } => {
+            if command_generation < generation {
+                return;
+            }
+            let Some(split) = terminal.beside() else {
+                return;
+            };
+            metrics.note_socket_op();
+            let result = client
+                .create_shell_session(workspace_id)
+                .and_then(|(session, terminal_id)| {
+                    let snapshot = client.attach_terminal(terminal_id, pty_size(Some(size)))?;
+                    split.publish_snapshot(generation, session, terminal_id, &snapshot);
+                    Ok(format!("split {}", short_id(&session)))
+                })
+                .map_err(|error| error.to_string());
+            wake();
+            live_result(generation, "SplitShell", result, sink, metrics, started);
+        }
+        Command::AttachSplit {
+            generation: command_generation,
+            session,
+            terminal: terminal_id,
+            size,
+        } => {
+            if command_generation < generation {
+                return;
+            }
+            let Some(split) = terminal.beside() else {
+                return;
+            };
+            metrics.note_socket_op();
+            match client.attach_terminal(terminal_id, pty_size(Some(size))) {
+                Ok(snapshot) => {
+                    split.publish_snapshot(generation, session, terminal_id, &snapshot);
+                    wake();
+                }
+                Err(error) => live_result(
+                    generation,
+                    "AttachTerminal",
+                    Err(error.to_string()),
+                    sink,
+                    metrics,
+                    started,
+                ),
+            }
+        }
+        Command::DetachSplit {
+            generation: command_generation,
+            terminal: terminal_id,
+        } => {
+            let Some(split) = terminal.beside() else {
+                return;
+            };
+            split.clear(generation, None);
+            wake();
+            if command_generation < generation || terminal.lock().terminal_id == Some(terminal_id) {
+                return;
+            }
+            metrics.note_socket_op();
+            let _ = client.detach_terminal(terminal_id);
+        }
+        Command::OpenReference {
+            workspace_id,
+            path,
+            line,
+        } => {
+            metrics.note_socket_op();
+            let result = client
+                .create_editor_session(workspace_id, &path, line, false, false)
+                .map(|(session_id, _)| {
+                    sink(vec![UiEvent::SessionOpened {
+                        generation,
+                        session_id,
+                    }]);
+                    format!("opened {path} in {}", short_id(&session_id))
+                })
+                .map_err(|error| error.to_string());
+            live_result(
+                generation,
+                "CreateEditorSession",
+                result,
+                sink,
+                metrics,
+                started,
+            );
+        }
+        Command::Project(op) => {
+            metrics.note_socket_op();
+            let reply = crate::project_ops::perform(client, op);
+            metric_command(metrics, started);
+            metrics.commands_completed.fetch_add(1, Ordering::Relaxed);
+            sink(vec![UiEvent::Project {
+                generation,
+                reply: Box::new(reply),
+            }]);
+        }
+        Command::MigrateStorage { .. } => {}
+    }
+}
+
+/// The base64 the daemon sends, as bytes for the image decoder. The length
+/// is checked on the text, before decoding allocates.
+fn decode_image(image: domain::ImageContents) -> Result<(String, Arc<[u8]>), String> {
+    use base64::Engine as _;
+    if image.data.len() > MAX_IMAGE_BYTES.div_ceil(3) * 4 {
+        return Err("The image is larger than a preview reads.".into());
+    }
+    base64::engine::general_purpose::STANDARD
+        .decode(image.data.as_bytes())
+        .map(|bytes| (image.mime, Arc::from(bytes)))
+        .map_err(|error| format!("The daemon sent an unreadable image: {error}"))
+}
+
+fn live_result(
+    generation: u64,
+    label: &'static str,
+    result: Result<String, String>,
+    sink: &EventSink,
+    metrics: &Metrics,
+    started: Instant,
+) {
+    metric_command(metrics, started);
+    metrics.commands_completed.fetch_add(1, Ordering::Relaxed);
+    let (ok, message) = match result {
+        Ok(message) => (true, message),
+        Err(error) => (false, error),
+    };
+    sink(vec![UiEvent::CommandResult {
+        generation,
+        label,
+        ok,
+        message,
+        took_us: started.elapsed().as_micros() as u64,
+    }]);
+}
+
+fn resync_live(
+    generation: u64,
+    client: &Client,
+    terminal: &SharedTerminal,
+    terminal_id: TerminalId,
+    metrics: &Metrics,
+) -> Result<(), String> {
+    let (session, size) = {
+        let slot = terminal.lock();
+        (slot.session_id, slot.size)
+    };
+    let Some(_session) = session else {
+        return Ok(());
+    };
+    metrics.note_socket_op();
+    let snapshot = client
+        .attach_terminal(terminal_id, size.unwrap_or_default())
+        .map_err(|error| error.to_string())?;
+    terminal.resync(generation, terminal_id, &snapshot);
+    Ok(())
+}
+
+/// The first read after connecting. It adds no project and starts no
+/// shell: an empty daemon shows the empty centre (New terminal, Add a
+/// project), and a launch from Finder has `/` for its
+/// working directory, which is no one's project.
+fn bootstrap(client: &Client, metrics: &Metrics) -> Result<(Store, u64), String> {
+    load_snapshot(client, metrics)
+}
+
+fn load_snapshot(client: &Client, metrics: &Metrics) -> Result<(Store, u64), String> {
+    let started = Instant::now();
+    metrics.note_socket_op();
+    let response = client
+        .request(Request::GetSnapshot)
+        .map_err(|error| error.to_string())?;
+    let mut store = Store::new();
+    store.apply_snapshot(response);
+    Ok((store, started.elapsed().as_micros() as u64))
+}
+
+fn emit_snapshot(
+    generation: u64,
+    store: &Store,
+    took_us: u64,
+    sink: &EventSink,
+    metrics: &Metrics,
+) {
+    if let Ok(mut value) = metrics.last_snapshot_us.lock() {
+        *value = Some(took_us);
+    }
+    sink(vec![UiEvent::Snapshot {
+        generation,
+        store: Box::new(store.clone()),
+        took_us,
+    }]);
+}
+
+fn pty_size(size: Option<(u16, u16)>) -> domain::PtySize {
+    let (cols, rows) = size.unwrap_or((80, 24));
+    domain::PtySize {
+        cols,
+        rows,
+        pixel_width: 0,
+        pixel_height: 0,
+    }
+    .sanitized()
+}
+
+fn metric_command(metrics: &Metrics, started: Instant) {
+    if let Ok(mut value) = metrics.last_command_us.lock() {
+        *value = Some(started.elapsed().as_micros() as u64);
+    }
+}
+
+fn command_label(command: &Command) -> &'static str {
+    match command {
+        Command::Activate { .. } => "AttachTerminal",
+        Command::ResizeAndAttach { .. } => "ResizeTerminal",
+        Command::Input { .. } => "WriteTerminalInput",
+        Command::FetchScrollback { .. } => "FetchScrollback",
+        Command::CreateShellSession { .. } => "CreateShellSession",
+        Command::RenameSession { .. } => "RenameSession",
+        Command::OpenEditor { .. } => "CreateEditorSession",
+        Command::EditorView { .. } => "SetEditorView",
+        Command::EditorInput { .. } => "SendEditorInput",
+        Command::Read { .. } => "WorkspaceRead",
+        Command::SetAppState { .. } => "SetAppState",
+        Command::AddProject(_) => "AddProject",
+        Command::Usage { .. } => "GetUsageAnalytics",
+        Command::Paths { .. } => "GetPaths",
+        Command::KillSession(_) => "KillSession",
+        Command::RestartSession(_) => "RestartSession",
+        Command::DeleteTranscript { .. } => "DeleteExternalSession",
+        Command::CloseSession(_) => "CloseSession",
+        Command::RebaseStep { .. } => "RebaseStep",
+        Command::RunAction { .. } => "RunAction",
+        Command::Fetch { .. } => "FetchRemote",
+        Command::OpenPullRequest { .. } => "CreatePullRequest",
+        Command::CommitAndOpenPullRequest { .. } => "CommitAndOpenPullRequest",
+        Command::RefreshPullRequests => "RefreshPullRequests",
+        Command::DraftCommit { .. } => "DraftWithJuva",
+        Command::Commit { .. } => "CreateCommit",
+        Command::CreateAgent { .. } => "CreateAgentSession",
+        Command::CreateChild { .. } => "CreateChildSession",
+        Command::SessionTranscript { .. } => "GetSessionTranscript",
+        Command::SessionChanges { .. } => "GetSessionChanges",
+        Command::SendContext { .. } => "SendContext",
+        Command::StartReview { .. } => "StartReview",
+        Command::ReviewConfig { .. } => "GetReviewConfig",
+        Command::ListReviews { .. } => "ListReviews",
+        Command::GetReview { .. } => "GetReview",
+        Command::CancelReview(_) => "CancelReview",
+        Command::StopDaemon { .. } => "StopDaemon",
+        Command::FactoryReset => "FactoryReset",
+        Command::RefreshAgentDetection => "RefreshAgentDetection",
+        Command::SetProviderExecutable { .. } => "SetProviderExecutable",
+        Command::SaveAgentProfile(_) => "SaveAgentProfile",
+        Command::RemoveAgentProfile(_) => "RemoveAgentProfile",
+        Command::RefreshProject(_) => "RefreshProject",
+        Command::RefreshWorkspaceStatus(_) => "RefreshWorkspaceStatus",
+        Command::RenameWorkspace { .. } => "RenameWorkspace",
+        Command::SetProjectIcon { .. } => "SetProjectIcon",
+        Command::RemoveProject { .. } => "RemoveProject",
+        Command::SetWorktreeIgnores { .. } => "SetWorktreeIgnores",
+        Command::CreatePath { .. } => "CreatePath",
+        Command::RenamePath { .. } => "RenamePath",
+        Command::CopyPath { .. } => "CopyPath",
+        Command::DeletePath { .. } => "DeletePath",
+        Command::RefreshSnapshot => "GetSnapshot",
+        Command::ForceReconnect => "Reconnect",
+        Command::Shutdown => "Shutdown",
+        Command::WatchFiles { .. } => "WatchFiles",
+        Command::OpenEditorAt { .. } => "CreateEditorSession",
+        Command::Project(op) => op.label(),
+        Command::SplitShell { .. } => "SplitShell",
+        Command::AttachSplit { .. } => "AttachTerminal",
+        Command::DetachSplit { .. } => "DetachTerminal",
+        Command::OpenReference { .. } => "CreateEditorSession",
+        Command::EditorFind { .. } => "EditorFind",
+        Command::SetEditorAutosave { .. } => "SetEditorAutosave",
+        Command::EditorConflict { .. } => "GetEditorConflict",
+        Command::ReloadEditorBuffer(_) => "ReloadEditorBuffer",
+        Command::OverwriteEditorBuffer(_) => "OverwriteEditorBuffer",
+        Command::MigrateStorage { action, .. } => action.label(),
+    }
+}
+
+fn short_id<T: std::fmt::Display>(id: &T) -> String {
+    short_id_str(&id.to_string())
+}
+
+fn short_id_str(id: &str) -> String {
+    id.chars().take(8).collect()
+}
+
+pub fn fixture_store(path: &std::path::Path) -> Result<Store, String> {
+    let bytes =
+        std::fs::read(path).map_err(|error| format!("read fixture {}: {error}", path.display()))?;
+    let response: client::Response = serde_json::from_slice(&bytes)
+        .map_err(|error| format!("decode fixture {}: {error}", path.display()))?;
+    let mut store = Store::new();
+    store.apply_snapshot(response);
+    if store.workspaces.is_empty() {
+        return Err(format!(
+            "fixture {} has no workspaces; a New shell command needs one",
+            path.display()
+        ));
+    }
+    Ok(store)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::path::Path;
+    use std::sync::Arc;
+    use std::time::Duration;
+
+    fn fake_daemon(name: &str) -> (std::path::PathBuf, std::path::PathBuf) {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = std::env::temp_dir().join(format!("forge-ui-{name}-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).expect("temp dir");
+        let bin = dir.join("forge-daemon");
+        let out = dir.join("socket.txt");
+        std::fs::write(
+            &bin,
+            format!(
+                "#!/bin/sh\nprintf %s \"$FORGE_SOCKET\" > '{}'\n",
+                out.display()
+            ),
+        )
+        .expect("write fake daemon");
+        std::fs::set_permissions(&bin, std::fs::Permissions::from_mode(0o755)).expect("chmod");
+        (bin, out)
+    }
+
+    fn read_when_written(path: &Path) -> String {
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while Instant::now() < deadline {
+            if let Ok(text) = std::fs::read_to_string(path)
+                && !text.is_empty()
+            {
+                return text;
+            }
+            thread::sleep(Duration::from_millis(10));
+        }
+        panic!("{} was never written", path.display());
+    }
+
+    #[test]
+    fn a_spawned_daemon_listens_on_the_socket_the_client_dials() {
+        let (bin, out) = fake_daemon("socket");
+        let socket = Path::new("/tmp/forge-ui-chosen.sock");
+        spawn_daemon(&bin, socket, &Metrics::default()).expect("fake daemon starts");
+        assert_eq!(read_when_written(&out), socket.display().to_string());
+        let _ = std::fs::remove_dir_all(bin.parent().expect("temp dir"));
+    }
+
+    #[test]
+    fn a_daemon_that_exits_is_reaped_not_left_a_zombie() {
+        let (bin, out) = fake_daemon("reap");
+        let pid = spawn_daemon(
+            &bin,
+            Path::new("/tmp/forge-ui-reap.sock"),
+            &Metrics::default(),
+        )
+        .expect("fake daemon starts") as libc::pid_t;
+        read_when_written(&out);
+        let deadline = Instant::now() + Duration::from_secs(5);
+        // A zombie still answers signal 0; only a reaped pid is gone.
+        while unsafe { libc::kill(pid, 0) } == 0 {
+            assert!(Instant::now() < deadline, "pid {pid} was never reaped");
+            thread::sleep(Duration::from_millis(10));
+        }
+        let _ = std::fs::remove_dir_all(bin.parent().expect("temp dir"));
+    }
+
+    fn fixture() -> Store {
+        fixture_store(&Path::new(env!("CARGO_MANIFEST_DIR")).join("fixtures/snapshot.json"))
+            .expect("fixture snapshot decodes")
+    }
+
+    fn collect(
+        rx: &flume::Receiver<Vec<UiEvent>>,
+        deadline: Instant,
+        mut done: impl FnMut(&UiEvent) -> bool,
+    ) -> Vec<UiEvent> {
+        let mut seen = Vec::new();
+        while Instant::now() < deadline {
+            let left = deadline.saturating_duration_since(Instant::now());
+            let Ok(batch) = rx.recv_timeout(left) else {
+                break;
+            };
+            for event in batch {
+                let stop = done(&event);
+                seen.push(event);
+                if stop {
+                    return seen;
+                }
+            }
+        }
+        seen
+    }
+
+    #[test]
+    fn fixture_worker_round_trips_a_rename_and_reconnects_with_a_new_generation() {
+        let store = fixture();
+        let session_id = store.sessions[0].id;
+        let metrics = Arc::new(Metrics::default());
+        metrics.note_ui_thread();
+        let boot = Arc::new(Boot {
+            mode: Mode::Fixture {
+                snapshot: Arc::new(store),
+                reconnect_after: Some(Duration::from_millis(400)),
+            },
+            metrics: Arc::clone(&metrics),
+            terminal: SharedTerminal::new(),
+        });
+        let (tx, rx) = flume::unbounded();
+        let sink: EventSink = Arc::new(move |events| {
+            let _ = tx.send(events);
+        });
+        let handle = spawn(boot, sink, Arc::new(|| {}));
+
+        let events = collect(&rx, Instant::now() + Duration::from_secs(2), |event| {
+            matches!(event, UiEvent::Snapshot { generation: 1, .. })
+        });
+        assert!(
+            events
+                .iter()
+                .any(|event| matches!(event, UiEvent::Snapshot { generation: 1, .. })),
+            "first snapshot missing: {events:?}"
+        );
+
+        handle
+            .rename_session(session_id, "renamed by the worker".to_string())
+            .expect("command queued");
+        let events = collect(&rx, Instant::now() + Duration::from_secs(2), |event| {
+            matches!(event, UiEvent::CommandResult { ok: true, .. })
+        });
+        assert!(
+            events.iter().any(|event| matches!(
+                event,
+                UiEvent::CommandResult {
+                    label: "RenameSession",
+                    ok: true,
+                    ..
+                }
+            )),
+            "rename result missing: {events:?}"
+        );
+
+        let events = collect(&rx, Instant::now() + Duration::from_secs(3), |event| {
+            matches!(event, UiEvent::Snapshot { generation: 2, .. })
+        });
+        assert!(
+            events
+                .iter()
+                .any(|event| matches!(event, UiEvent::Disconnected { generation: 1, .. })),
+            "disconnect missing: {events:?}"
+        );
+        assert!(
+            events
+                .iter()
+                .any(|event| matches!(event, UiEvent::Snapshot { generation: 2, .. })),
+            "second-generation snapshot missing: {events:?}"
+        );
+    }
+
+    #[test]
+    fn socket_work_only_happens_on_the_worker_thread() {
+        let metrics = Arc::new(Metrics::default());
+        metrics.note_ui_thread();
+        let boot = Arc::new(Boot {
+            mode: Mode::Live {
+                socket: PathBuf::from("/tmp/forge-ui-no-such-daemon.sock"),
+                daemon: None,
+                spawn: false,
+            },
+            metrics: Arc::clone(&metrics),
+            terminal: SharedTerminal::new(),
+        });
+        let sink: EventSink = Arc::new(|_| {});
+        let handle = spawn(boot, sink, Arc::new(|| {}));
+        std::thread::sleep(Duration::from_millis(150));
+        assert!(
+            metrics.socket_ops.load(Ordering::Relaxed) > 0,
+            "the worker should have attempted a socket connect"
+        );
+        assert_eq!(
+            metrics.ui_socket_ops.load(Ordering::Relaxed),
+            0,
+            "the calling (UI) thread must never open the daemon socket"
+        );
+        assert_ne!(
+            metrics.socket_thread(),
+            format!("{:?}", thread::current().id()),
+            "socket work ran on the test's main thread"
+        );
+        drop(handle);
+    }
+
+    #[test]
+    fn fixture_input_echoes_through_a_delta() {
+        let store = fixture();
+        let metrics = Arc::new(Metrics::default());
+        metrics.note_ui_thread();
+        let terminal = SharedTerminal::new();
+        let boot = Arc::new(Boot {
+            mode: Mode::Fixture {
+                snapshot: Arc::new(store.clone()),
+                reconnect_after: None,
+            },
+            metrics: Arc::clone(&metrics),
+            terminal: Arc::clone(&terminal),
+        });
+        let (tx, rx) = flume::unbounded();
+        let sink: EventSink = Arc::new(move |events| {
+            let _ = tx.send(events);
+        });
+        let handle = spawn(boot, sink, Arc::new(|| {}));
+        let events = collect(&rx, Instant::now() + Duration::from_secs(2), |event| {
+            matches!(event, UiEvent::Snapshot { .. })
+        });
+        assert!(!events.is_empty());
+        let session = store.sessions[0].id;
+        let terminal_id = store.sessions[0].terminal_id.unwrap();
+        handle
+            .activate(1, Some(session), Some(terminal_id), Some((80, 24)))
+            .unwrap();
+        let deadline = Instant::now() + Duration::from_secs(2);
+        while terminal.meta().terminal_id != Some(terminal_id) && Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        handle.input(1, terminal_id, b"echo hi\r".to_vec()).unwrap();
+        let deadline = Instant::now() + Duration::from_secs(2);
+        let mut echoed = false;
+        while Instant::now() < deadline {
+            let slot = terminal.lock();
+            if let Some(grid) = slot.grid.as_ref() {
+                let last = grid.visible.last().unwrap();
+                let text: String = last.cells.iter().map(|cell| cell.text.as_str()).collect();
+                if text.contains("fixture>") {
+                    echoed = true;
+                    break;
+                }
+            }
+            drop(slot);
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        assert!(echoed, "fixture did not echo the input bytes");
+        drop(handle);
+    }
+}

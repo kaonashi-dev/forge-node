@@ -251,7 +251,7 @@ history, and `RestartSession` starts a fresh terminal.
 ## Invariants to preserve
 
 - Exactly one VT engine exists, in the daemon. Never add `terminal-core` or a
-  second emulator to `client`/`apps/tauri`.
+  second emulator to `client`/`apps/ui`.
 - `emit_seq` increments per emitted delta only.
 - The core lock is taken once per processed PTY batch and released before any
   blocking I/O; lock order is `inner → registry`.

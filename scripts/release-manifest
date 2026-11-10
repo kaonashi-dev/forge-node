@@ -1,15 +1,15 @@
 #!/usr/bin/env bash
 #
-# Write the `latest.json` that `tauri-plugin-updater` polls.
+# Write the `latest-rune.json` the Rune updater polls.
 #
 #   scripts/release-manifest <version> <tag> <artifact.app.tar.gz> [notes-file]
 #
 # The manifest is the only channel between a release and a running app, and the
-# plugin surfaces exactly one field we control — `notes`. So the protocol
+# updater surfaces exactly one field we control — `notes`. So the protocol
 # version rides in its first line as `protocol: <n>`: the app compares it with
 # its own and refuses to swap a bundle whose daemon it could not talk to
-# (apps/tauri/src-tauri/src/updates.rs). Omitting it is read as "unknown",
-# which is treated as protocol-breaking rather than assumed compatible.
+# (apps/ui/src/updates.rs). Omitting it is read as "unknown", which is treated
+# as protocol-breaking rather than assumed compatible.
 set -euo pipefail
 
 die() { printf 'release-manifest: %s\n' "$*" >&2; exit 1; }

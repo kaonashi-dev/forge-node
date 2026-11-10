@@ -1,0 +1,112 @@
+[
+  {
+    "t": 0.4,
+    "type": "key",
+    "name": "k",
+    "cmd": true
+  },
+  {
+    "t": 0.7,
+    "type": "type",
+    "text": ">settings",
+    "every": 0.02
+  },
+  {
+    "t": 1.1,
+    "type": "mark",
+    "name": "commands"
+  },
+  {
+    "t": 1.2,
+    "type": "key",
+    "name": "Escape"
+  },
+  {
+    "t": 1.5,
+    "type": "key",
+    "name": "p",
+    "cmd": true
+  },
+  {
+    "t": 1.8,
+    "type": "type",
+    "text": "/src",
+    "every": 0.02
+  },
+  {
+    "t": 2.2,
+    "type": "mark",
+    "name": "files"
+  },
+  {
+    "t": 2.3,
+    "type": "key",
+    "name": "Escape"
+  },
+  {
+    "t": 2.6,
+    "type": "key",
+    "name": "o",
+    "cmd": true,
+    "shift": true
+  },
+  {
+    "t": 2.9,
+    "type": "type",
+    "text": "@forge",
+    "every": 0.02
+  },
+  {
+    "t": 3.2,
+    "type": "mark",
+    "name": "places"
+  },
+  {
+    "t": 3.3,
+    "type": "key",
+    "name": "Escape"
+  },
+  {
+    "t": 3.6,
+    "type": "key",
+    "name": "k",
+    "cmd": true
+  },
+  {
+    "t": 3.9,
+    "type": "type",
+    "text": "#main",
+    "every": 0.02
+  },
+  {
+    "t": 4.2,
+    "type": "mark",
+    "name": "symbols"
+  },
+  {
+    "t": 4.3,
+    "type": "key",
+    "name": "Escape"
+  },
+  {
+    "t": 4.6,
+    "hold": "ctrl"
+  },
+  {
+    "t": 4.7,
+    "type": "key",
+    "name": "Tab",
+    "ctrl": true
+  },
+  {
+    "t": 4.9,
+    "type": "key",
+    "name": "Tab",
+    "ctrl": true
+  },
+  {
+    "t": 5.1,
+    "type": "mark",
+    "name": "switcher"
+  }
+]

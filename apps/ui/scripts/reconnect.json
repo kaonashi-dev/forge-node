@@ -1,0 +1,7 @@
+[
+  { "t": 0.5, "key": "session-row-3" },
+  { "t": 1.0, "key": "force-reconnect" },
+  { "t": 6.0, "type": "tap", "x": 700, "y": 400 },
+  { "t": 6.2, "type": "type", "text": "echo after-reconnect", "every": 0.01 },
+  { "t": 6.8, "type": "key", "name": "Enter" }
+]

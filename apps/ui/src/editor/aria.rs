@@ -1,0 +1,241 @@
+//! What a screen reader is told about the editor, from `Session.editor` alone.
+//!
+//! Nothing here reads the rows: the caret's line
+//! is the one piece of document text the editor publishes for this purpose.
+
+use domain::EditorState;
+
+/// Said instead of a position before the first state arrives.
+pub const NO_STATE: &str = "The editor has not reported its state yet.";
+
+#[derive(Debug, PartialEq)]
+pub struct EditorAria {
+    /// The caret's line and what is on it, read on every move.
+    pub line: String,
+    /// Position, flags and selection, as one announceable sentence.
+    pub status: String,
+    pub read_only: bool,
+}
+
+/// Describes the buffer. `None` is not an empty buffer: until the editor
+/// reports, inventing `1:1` would be indistinguishable from a real caret.
+#[must_use]
+pub fn editor_aria(state: Option<&EditorState>) -> EditorAria {
+    let Some(state) = state else {
+        return EditorAria {
+            line: NO_STATE.to_string(),
+            status: NO_STATE.to_string(),
+            read_only: false,
+        };
+    };
+    let mut flags: Vec<String> = Vec::new();
+    if state.read_only {
+        flags.push("read only".into());
+    }
+    flags.push(
+        if state.dirty {
+            "unsaved changes"
+        } else {
+            "saved"
+        }
+        .into(),
+    );
+    if state.cursor_count > 1 {
+        flags.push(format!("{} cursors", state.cursor_count));
+    }
+    if state.selection_length > 0 {
+        let unit = if state.selection_length == 1 {
+            "byte"
+        } else {
+            "bytes"
+        };
+        flags.push(format!("{} {unit} selected", state.selection_length));
+    }
+    EditorAria {
+        // A reader that said nothing for an empty line would sound like one
+        // that failed to announce.
+        line: if state.caret_line.trim().is_empty() {
+            "blank line".to_string()
+        } else {
+            state.caret_line.clone()
+        },
+        status: format!(
+            "Line {} of {}, column {}. {}.",
+            state.line,
+            state.total_lines,
+            state.column,
+            flags.join(", ")
+        ),
+        read_only: state.read_only,
+    }
+}
+
+/// What the live region says, or `""` for silence: the editor's answer to the
+/// gesture just made, or a conflict, which the daemon saw and the editor did not.
+#[must_use]
+pub fn editor_announcement(state: Option<&EditorState>) -> String {
+    match state {
+        None => String::new(),
+        Some(state) if state.conflict => {
+            "This file changed on disk while you were editing it. Keep mine, take disk, or compare."
+                .to_string()
+        }
+        Some(state) => state.status.trim().to_string(),
+    }
+}
+
+/// The header's mark.
+#[must_use]
+pub fn editor_mark(state: Option<&EditorState>) -> String {
+    let Some(state) = state else {
+        return "state unknown".to_string();
+    };
+    let flags: Vec<&str> = [
+        state.dirty.then_some("unsaved"),
+        state.read_only.then_some("read-only"),
+    ]
+    .into_iter()
+    .flatten()
+    .collect();
+    if flags.is_empty() {
+        "clean".to_string()
+    } else {
+        flags.join(" · ")
+    }
+}
+
+/// The file's extension as a label; the editor reports no language, so none
+/// is guessed from contents.
+fn language_label(path: &str) -> Option<String> {
+    let name = path.rsplit('/').next().unwrap_or(path);
+    let dot = name.rfind('.')?;
+    (dot > 0 && dot + 1 < name.len()).then(|| name[dot + 1..].to_uppercase())
+}
+
+/// The header's details line: lines, cursors, selection and language.
+#[must_use]
+pub fn editor_details(state: Option<&EditorState>, path: &str) -> String {
+    let mut facts = Vec::new();
+    if let Some(state) = state {
+        if state.total_lines > 0 {
+            let unit = if state.total_lines == 1 {
+                "line"
+            } else {
+                "lines"
+            };
+            facts.push(format!("{} {unit}", state.total_lines));
+        }
+        if state.cursor_count > 1 {
+            facts.push(format!("{} cursors", state.cursor_count));
+        }
+        if state.selection_length > 0 {
+            facts.push(format!("{} selected", state.selection_length));
+        }
+    }
+    facts.extend(language_label(path));
+    facts.join(" · ")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn state() -> EditorState {
+        EditorState {
+            path: "src/main.rs".into(),
+            line: 12,
+            column: 4,
+            total_lines: 120,
+            caret_line: "    let total = 1;".into(),
+            cursor_count: 1,
+            ..EditorState::default()
+        }
+    }
+
+    #[test]
+    fn names_the_position_and_the_line() {
+        let aria = editor_aria(Some(&state()));
+        assert!(aria.status.contains("Line 12 of 120"));
+        assert!(aria.status.contains("column 4"));
+        assert!(aria.status.contains("saved"));
+        assert_eq!(aria.line, "    let total = 1;");
+        assert!(!aria.read_only);
+    }
+
+    #[test]
+    fn says_a_blank_line_is_blank() {
+        let blank = EditorState {
+            caret_line: "   ".into(),
+            ..state()
+        };
+        assert_eq!(editor_aria(Some(&blank)).line, "blank line");
+    }
+
+    #[test]
+    fn announces_the_flags_a_person_cannot_see() {
+        let busy = EditorState {
+            dirty: true,
+            read_only: true,
+            cursor_count: 3,
+            selection_length: 7,
+            ..state()
+        };
+        let aria = editor_aria(Some(&busy));
+        for flag in [
+            "read only",
+            "unsaved changes",
+            "3 cursors",
+            "7 bytes selected",
+        ] {
+            assert!(aria.status.contains(flag), "{flag}: {}", aria.status);
+        }
+        assert!(aria.read_only);
+        let one = EditorState {
+            selection_length: 1,
+            ..state()
+        };
+        assert!(editor_aria(Some(&one)).status.contains("1 byte selected"));
+    }
+
+    #[test]
+    fn says_the_state_is_unknown_rather_than_inventing_a_position() {
+        let aria = editor_aria(None);
+        assert_eq!(aria.line, NO_STATE);
+        assert_eq!(aria.status, NO_STATE);
+    }
+
+    #[test]
+    fn a_conflict_outranks_the_editors_own_message() {
+        let quiet = state();
+        assert_eq!(editor_announcement(Some(&quiet)), "");
+        let found = EditorState {
+            status: " 3 of 9 ".into(),
+            ..state()
+        };
+        assert_eq!(editor_announcement(Some(&found)), "3 of 9");
+        let moved = EditorState {
+            conflict: true,
+            ..found
+        };
+        assert!(editor_announcement(Some(&moved)).starts_with("This file changed on disk"));
+    }
+
+    #[test]
+    fn the_header_says_what_editor_chrome_says() {
+        assert_eq!(editor_mark(None), "state unknown");
+        assert_eq!(editor_mark(Some(&state())), "clean");
+        let busy = EditorState {
+            dirty: true,
+            read_only: true,
+            cursor_count: 2,
+            selection_length: 5,
+            ..state()
+        };
+        assert_eq!(editor_mark(Some(&busy)), "unsaved · read-only");
+        assert_eq!(
+            editor_details(Some(&busy), "src/main.rs"),
+            "120 lines · 2 cursors · 5 selected · RS"
+        );
+        assert_eq!(editor_details(None, ".gitignore"), "");
+    }
+}

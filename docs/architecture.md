@@ -5,7 +5,7 @@ across Git repos and worktrees. This document is the system map and reflects
 what is implemented; see the per-topic pages in [README.md](./README.md) for
 details (domain, protocol, terminal, agents, worktrees, persistence) and
 [`AGENTS.md`](../AGENTS.md) for invariants. Cost model before touching the
-delta path, the Tauri render path, the core lock, or anything that spawns a
+delta path, the Rune render path, the core lock, or anything that spawns a
 process: [performance.md](./performance.md). ADR numbers: [decisions.md](./decisions.md).
 
 ## Principles
@@ -27,13 +27,13 @@ process: [performance.md](./performance.md). ADR numbers: [decisions.md](./decis
   [session-context.md](./session-context.md).
 - **P6 Simplicity over speculative abstraction.** Git CLI, standard PTYs,
   descriptors, a Unix socket, one window.
-- **P7 Native where it matters.** The GUI is Tauri + Solid (`apps/tauri`); the
-  daemon owns every PTY and the only VT engine.
+- **P7 Native where it matters.** The GUI is the native Rune client
+  (`apps/ui`); the daemon owns every PTY and the only VT engine.
 
 ## Two processes (ADR-003)
 
 ```
-forge-tauri   GUI (Tauri + Solid) — terminal and controls
+forge-ui      GUI (Rune)          — terminal and controls
 forge-daemon  runtime             — PTYs, sessions, git, persistence
 ```
 
@@ -71,19 +71,16 @@ daemon           the runtime: core dispatcher, server, registry, terminal loop,
                  shell env, services  → binary forge-daemon
 forge-ctl        MCP-first client for runs, tasks, context and session dispatch
                  → binary forgectl. Depends only on client → protocol → domain.
-forge-tauri      Tauri host: runtime thread, workbench worker, cells encoder,
-                 daemon locator                       → binary forge-tauri
 test-support     FakePtyBackend, fake agents, temp git repos
 ```
 
-`forge-tauri` lives outside `crates/` — at `apps/tauri/src-tauri` — because it
-is a *host*, not a library: it owns a frontend build, a bundle configuration
-and platform resources alongside its Rust. It is a workspace member like any
-other and sits on the same spine (`forge-tauri → client → {protocol,
-terminal-input} → domain`).
+`forge-ui` lives outside `crates/` — at `apps/ui` — because it is the GUI, not
+a library: it owns a window, platform resources and its own Cargo workspace on
+Rust 1.99.1 (Rune needs edition 2024). It sits on the same spine
+(`forge-ui → client → {protocol, terminal-input} → domain`).
 
 Dependency direction is one-way and enforced by `Cargo.toml`:
-`forge-tauri → {client, domain}`, `client → {protocol, terminal-input, domain}`,
+`forge-ui → {client, domain}`, `client → {protocol, terminal-input, domain}`,
 `daemon → {agents, client, editor-control, fs-service, git-service, languages,
 syntax-index, external-index, lsp-client, persistence, protocol, terminal-core,
 terminal-input, domain}`, `fs-service → {git-service, languages}`,
@@ -97,44 +94,30 @@ Every other crate depends on `domain` alone or on nothing (`editor-core`,
 `protocol` nor `terminal-core` directly. The GUI renders `domain::terminal` wire types, it does
 not emulate. ADR numbers cited in code are indexed in [decisions.md](./decisions.md).
 
-The Tauri host runs blocking `client::Client` calls on a dedicated runtime thread. A
-flume command channel carries input, resize and session actions away from the
-render thread; store snapshots and connection updates return the other way —
-Tauri emits `runtime:state` and `runtime:cells` as
-separate events so a frame of terminal output never drags the session tree
-through `serde_json` with it. On startup the bridge connects to the per-user
-socket or starts the adjacent `forge-daemon`, adds the current directory when
-no project exists, and creates or reuses a live shell. On disconnect it
-reconnects and attaches a fresh authoritative snapshot.
+The Rune client runs blocking `client::Client` calls on a dedicated worker
+thread. A flume command channel carries input, resize, migration and session
+actions away from the UI thread; snapshots and connection updates return the
+other way. Terminal deltas stay out of the shell's update path: the worker
+applies every delta to the passive `Arc` grid, merges damage and wakes only the
+terminal surface, so a frame of output never rebuilds the sidebar.
 
-The Tauri host also has a *workbench worker* sharing the same `Client`. The command
-channel carries keystrokes, and the local reads that answer inline — `git diff`, a
-file tree, a search — are seconds of subprocess, so
-running them there would freeze typing. Its bounded queue and dispatcher live in
-`apps/tauri/src-tauri/src/runtime/workbench/mod.rs`; sibling modules group command
-definitions and capability handlers within that same worker.
+On startup the client connects to the per-user socket or starts the adjacent
+`forge-daemon` (`--spawn-daemon`), adds the current directory when no project
+exists, and creates or reuses a live shell. On disconnect it reconnects and
+attaches a fresh authoritative snapshot. The workbench reads that answer inline
+— `git diff`, a directory listing, a file read, a search — share the same
+worker, because a subprocess or disk walk on the UI thread is a frozen window.
 
-The host owns the system clipboard on its own thread, for that same reason: a
-pasteboard read or write can wait on the application that owns it.
-`apps/tauri/src-tauri/src/clipboard.rs` reads `NSPasteboard` for the Code pane's
-**Paste** (answering `false` where the host has no reader, so the WebView
-fallback applies) and hands every copy — the grid's own drag selection and an
-OSC 52 store alike — to one writer thread through a one-slot, latest-wins
-hand-off. `NSPasteboard` is not main-thread-only, so a background thread is the
-right side of the bridge thread rule rather than an exception to it.
+The clipboard, file dialogs, open URL/reveal, native menus and the updater are
+host modules (`apps/ui/src/{menus,native_menus,updates}.rs`). The editor is not
+in the GUI at all: it is `forge-editor`, supervised by the daemon. The cells
+surface uses the terminal renderer and the DOM surface publishes bounded line
+windows (`docs/editor.md`). External edits arrive through connection-scoped
+directory watches (`WatchFiles`): `daemon::file_watch` coalesces native events
+into `FileChanged`, the GUI re-reads only what it shows, and every read and
+write still goes through `fs-service` (ADR-012).
 
-The file surface splits presentation from IO the same way. The windowed explorer
-lives in `apps/tauri/packages/file-workbench`, which has no Solid, Tauri or
-filesystem dependency; `apps/tauri` adapts that package to the daemon's reads
-and Forge's theme. Editing is not in that package and is not in the GUI at all:
-it is `forge-editor`, supervised by the daemon: the cells surface uses the
-terminal renderer and the headless DOM surface publishes bounded line windows
-(`docs/editor.md`). External edits arrive through
-connection-scoped directory watches (`WatchFiles`): `daemon::file_watch`
-coalesces native events into `FileChanged`, the GUI re-reads only what it shows,
-and every read and write still goes through `fs-service` (ADR-012).
-
-The explorer reads real immediate children with `ListDirectory`, including the
+The file tree reads real immediate children with `ListDirectory`, including the
 root (`path: ""`), empty directories and dotfiles. Each directory retains its
 last good children alongside request identity, generation, invalidation debt,
 loading/error and partial status. Closed directories are read when opened;
@@ -143,35 +126,30 @@ file-change paths reconcile affected parents rather than scan the checkout.
 the global file palette and terminal references and augmented by known lazy
 directory entries. It never decides which directories exist in the explorer.
 
-Workbench enqueue is fallible. Path mutations have frontend operation IDs and
-an explicit result event, separate from directory and file-read failures.
-Only acknowledged moves retarget previews, parked views and recent paths;
-editor sessions also follow authoritative session path metadata. A timeout or
-disconnect retires the pending interaction as uncertain and schedules reads
-for reconciliation, never automatically repeats the write. Watch acknowledgments
+Workbench enqueue is fallible. Path mutations have operation IDs and an
+explicit result event, separate from directory and file-read failures. Only
+acknowledged moves retarget previews, parked views and recent paths; editor
+sessions also follow authoritative session path metadata. A timeout or
+disconnect retires the pending interaction as uncertain and schedules reads for
+reconciliation, never automatically repeats the write. Watch acknowledgments
 carry the exact generation of installed interests so stale ACKs cannot arm a
 new subscription.
 
-`apps/tauri/src/features/files/explorer/fileDrag.ts` owns the explorer's pointer
-gesture and file-reference menu listener. The portable explorer only exposes row
-metadata and expansion; `TerminalPane` registers its live session/terminal identity. Tree drops reuse
-the confirmed-result rename API. Terminal drops send a host-local targeted paste
-with both identities and the connection generation, validated again before
-`encode_paste` writes to the existing PTY. No file contents or filesystem access
-are involved in constructing the quoted absolute reference.
+The file tree owns the pointer gesture and file-reference menu listener. A tree
+drop reuses the confirmed-result rename API. A terminal drop sends a local
+targeted paste with both session/terminal identities and the connection
+generation, validated again before `encode_paste` writes to the existing PTY.
+No file contents or filesystem access are involved in constructing the quoted
+absolute reference.
 
-### Frontend ownership
+### Client ownership
 
-Within `apps/tauri/src/`, `app/` composes the window and cross-feature workflows,
-`features/` groups capability-specific UI, commands and state, and `shared/`
-holds reusable rendering and pure/browser helpers. `contracts/`, `runtime/`,
-`state/` and `navigation/` separate wire mirrors, transport, shared state and view
-navigation. `ui/` and `theme/` remain the visual foundation.
-
-The detailed map, current import-check coverage and remaining state/lifecycle
-gaps live in [frontend-architecture.md](./frontend-architecture.md). That page
-also maps editor surfaces to `features/editor/` and their shared passive renderer
-to `shared/cell-grid/`.
+`apps/ui/src/` groups the shell (`ui.rs`, `chrome.rs`), the feature modules
+(`projects.rs`, `workbench/`, `editor/`, `terminal/`, `settings/`, `history.rs`,
+`processes.rs`), the host modules (`menus.rs`, `native_menus.rs`, `updates.rs`),
+and the shared visual layer (`theme/`, `glyphs.rs`, `file_icons.rs`). The full
+map is [ui.md](./ui.md). `client` stores are read-only replicas; a widget never
+runs a subprocess, reads a workspace file or opens a socket on the UI thread.
 
 ## Authoritative terminal (ADR-011)
 

@@ -15,8 +15,8 @@ Three crates build the editor:
 The integrated editor uses the same engine through a private control channel.
 `[editor] surface = "cells"` paints its PTY output; the experimental `"dom"`
 surface paints bounded view frames from a headless editor. Neither puts a
-document engine in the WebView. `apps/tauri/packages/file-workbench` owns the
-file explorer. Markdown, SVG and raster previews have a separate read-only
+document engine in the window. The Rune client owns the file explorer and the
+editor chrome. Markdown, SVG and raster previews have a separate read-only
 surface; editing text opens a `forge-editor` session.
 
 ## Run it
@@ -229,6 +229,15 @@ The daemon converts at the socket (`daemon::editor_wire`) and broadcasts
 column, no migration, and nothing on the session. Its rows ship behind an `Arc`,
 so a second client costs a refcount and not a copy of the window.
 
+`doc_version` changes on every edit, so it cannot say which rows changed. The
+daemon stamps each row with `fingerprint`, a hash of everything the row paints
+masked to 53 bits so JavaScript reads it exactly. A surface that has already
+built a row with the same line and fingerprint can keep it. Folds are a window
+property too: `hidden_lines` is what every fold in the document removes from the
+scrolled height, including folds outside the window, and `hidden_above` is what
+folds above `first_line` remove. `EditorInputEvent::ToggleFold { line }` folds
+or unfolds the block a gutter marker heads, the same as a click on it in the TUI.
+
 The GUI mounts `EditorView` instead of `EditorTerminalPane`, chosen from
 `HelloAck::editor_surface` — the daemon's word, taken at the handshake, because
 the Code region has to know which pane to build before an editor session exists.
@@ -307,8 +316,8 @@ Linux) step `ui.editor.font_size` while Code is up; they never reach the TUI
 as keys. The same chords zoom terminals and agents (`ui.terminal.zoom`) only
 while a session is on screen — the two sizes do not move together.
 
-**On a Mac the platform chords reach the editor.** `editorChords.ts` maps ⌘S/C/X,
-⌘A, ⌘Z, ⇧⌘Z, ⌘F, ⌘G, ⇧⌘G, ⌥⌘F and ⌥⌘L onto the editor's own keys. ⌘G is
+**On a Mac the platform chords reach the editor.** `editor/actions.rs` maps
+⌘S/C/X, ⌘A, ⌘Z, ⇧⌘Z, ⌘F, ⌘G, ⇧⌘G, ⌥⌘F and ⌥⌘L onto the editor's own keys. ⌘G is
 find-next and not "go to line" — a Mac user pressing it after a search wants the
 next match — so go-to-line is ⌥⌘L. Both surfaces recognize Alt-/ by the `/`
 character or the physical Slash key, because Option can produce `÷` on macOS,
@@ -619,7 +628,7 @@ family in its directory, then that family anywhere, then the rest, before the
 result cap is applied. This improves locality, not type resolution.
 
 TypeScript and JavaScript editors also search installed declaration files
-(`.d.ts`, `.d.mts`, `.d.cts`) in packages imported by the current file. This covers
+(declaration files) in packages imported by the current file. This covers
 NestJS services calling dependency methods such as
 `this.queue.upsertJobScheduler`: the candidate is that method's declaration on
 BullMQ's `Queue` class, even though `node_modules` is ignored by Git and hidden
@@ -683,7 +692,7 @@ local binding. ADR-013.
 | SCIP (`[definitions] scip`) | indexed, authoritative at a caret | no | A prebuilt `index.scip` at the checkout root, read with `metadata()` first and capped at 256 MiB. It answers only for a file no newer than the index, and never for unsaved edits. |
 | Syntax index (`[definitions] syntax`) | syntactic, authoritative when it found a declaration and no budget cut | yes | Tree-sitter for Rust, TypeScript/TSX, JavaScript, Python and Go with Forge's own `tags.scm` and `locals.scm`. Grep first, then parse only the files that mention the name, closest first, within 256 files and 16 MiB; definitions are cached per file by length and mtime. A binding in scope at the caret wins outright. |
 | Universal Ctags (`[definitions] ctags`) | indexed, never authoritative | no | Installed by the person (GPL, never bundled); the probe refuses macOS's BSD `ctags`. One `ctags --output-format=json` run over the files `git grep -l` named. |
-| Grep heuristic | heuristic | always last | The heuristic below, plus installed `.d.ts` declarations for TypeScript. |
+| Grep heuristic | heuristic | always last | The heuristic below, plus installed declaration files. |
 
 The syntax index lives in the daemon, not in `forge-editor`; the passage on
 tree-sitter below is about the editor's own highlighting. Adding a language to
@@ -744,8 +753,8 @@ cells.
   `no match`, a save refusal — which is exactly the status row a person looking
   away from the canvas cannot see. A conflict is announced over it, because the
   daemon is what saw the revision mismatch and the editor was only told a reason.
-- `editorAria.ts` holds the rules and is tested on its own; `editorPane.test.ts`
-  asserts the pane is wired to them and that it never reads `viewport.rows`.
+- `editor/aria.rs` holds the rules and is tested on its own; the editor pane is
+  wired to them and never reads `viewport.rows`.
 
 What this does **not** claim: VoiceOver does not read every ANSI cell, and the
 mirror is not a document a reader can navigate by character or by word. What it
@@ -782,9 +791,9 @@ broadcasts `ClipboardStore`. Over that cap nothing leaves: a copy too large for
 the terminal is kept in the register alone and the status row says which limit
 it hit. The renderer writes the escape inside the frame's DEC 2026 synchronized
 update, which is where the PTY test finds it
-(`a_drag_and_ctrl_c_leave_an_osc_52_inside_the_synchronized_update`). The Tauri
-host writes the system clipboard itself — one writer thread, never the thread
-that carries keystrokes — and only for a terminal the
+(`a_drag_and_ctrl_c_leave_an_osc_52_inside_the_synchronized_update`). The Rune
+host writes the system clipboard itself — off the thread that carries
+keystrokes — and only for a terminal the
 window is showing — the focused one or an open editor pane — because OSC 52 lets
 whatever runs in a PTY set the clipboard, and a background agent replacing it
 would be a real hazard. OSC 52's *read* is never answered, by the engine or by

@@ -704,8 +704,8 @@ fn lookup_latency_on_this_repository() {
         ("crates/daemon/src/core.rs", "Daemon"),
         ("crates/daemon/src/core.rs", "search_files"),
         ("crates/daemon/src/core.rs", "new"),
-        ("apps/tauri/src/main.tsx", "createSignal"),
-        ("apps/tauri/src/main.tsx", "Store"),
+        ("web/src/main.js", "createStore"),
+        ("web/src/main.js", "Store"),
     ] {
         for round in ["cold", "warm"] {
             let mut query = ask(source, symbol);

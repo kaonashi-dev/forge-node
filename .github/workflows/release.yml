@@ -26,20 +26,20 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Install Rust (pinned by rust-toolchain.toml)
-        run: rustup show
+      - name: Install Rust (both pinned toolchains)
+        run: |
+          rustup show
+          ( cd apps/ui && rustup show )
 
       - uses: Swatinem/rust-cache@v2
         with:
+          workspaces: |
+            . -> target
+            apps/ui -> target
           key: release-macos-arm64
 
-      - uses: oven-sh/setup-bun@v2
-        with:
-          bun-version-file: .bun-version
-
-      - name: Install frontend dependencies
-        run: bun install --frozen-lockfile
-        working-directory: apps/tauri
+      - name: Install the updater signer
+        run: brew install minisign
 
       # A mislabelled release is worse than a failed one: every installed app
       # compares the manifest's version against its own bundle.
@@ -58,20 +58,19 @@ jobs:
 
       - name: Build the signed bundle and updater artifact
         env:
-          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
-          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+          FORGE_UPDATER_KEY: ${{ secrets.FORGE_UPDATER_KEY }}
           FORGE_CODESIGN_IDENTITY: ${{ secrets.FORGE_CODESIGN_IDENTITY }}
           FORGE_NOTARY_PROFILE: ${{ secrets.FORGE_NOTARY_PROFILE }}
         run: scripts/package-macos --updater --zip
 
-      - name: Write latest.json
+      - name: Write latest-rune.json
         run: |
           git tag -l --format='%(contents:subject)%0a%0a%(contents:body)' "$GITHUB_REF_NAME" >/tmp/notes.md
           scripts/release-manifest \
             "$version" "$GITHUB_REF_NAME" \
             "dist/release/ForgeNode-${version}-darwin-aarch64.app.tar.gz" \
-            /tmp/notes.md >dist/release/latest.json
-          cat dist/release/latest.json
+            /tmp/notes.md >dist/release/latest-rune.json
+          cat dist/release/latest-rune.json
 
       # The tarball is what a running app swaps in; the zip is what a person
       # downloads to install Forge Node the first time.
@@ -87,7 +86,7 @@ jobs:
           assets=(
             "dist/release/ForgeNode-${version}-darwin-aarch64.app.tar.gz"
             "dist/release/ForgeNode-${version}-darwin-aarch64.app.tar.gz.sig"
-            "dist/release/latest.json"
+            "dist/release/latest-rune.json"
             "dist/macos/ForgeNode-${version}.zip"
             "dist/macos/ForgeNode-macos-arm64.zip"
           )

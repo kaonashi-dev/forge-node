@@ -33,7 +33,7 @@ Reproduce with:
 cargo test -p client --release scrollback_delta_timing -- --ignored --nocapture
 ```
 
-Current-source checks also refine the historical audit below: Tauri's bridge
+Current-source checks also refine the historical audit below: the previous client's bridge
 already owns its `CellGrid` on the runtime thread and emits shell state separately
 from terminal frames. The old whole-`Store` emission finding does not describe
 that bridge. `client::Client` now uses a bounded event queue that disconnects
@@ -51,7 +51,7 @@ The current implementation removes these additional costs:
 | `editor-core::complete` | Retain the best twelve borrowed candidates during scanning. | At most twelve owned candidate strings, with no full-result sort. |
 | `fs-service::name_search` | Partition to the best K hits, then sort those hits. | O(N + K log K) ranking instead of O(N log N), with K capped at 200. Scoring still visits the index. |
 | `agents::usage::analytics` | Keep the newest 500 transcript candidates in a bounded heap. | O(500) retained candidates instead of O(N); directory enumeration still visits all candidates. |
-| `shared/cell-grid/viewport.ts` | Decode each text run once when constructing row columns. | A 200-column run creates one code-point array instead of 200, visiting 200 code points instead of 40,000. |
+| `apps/ui/src/terminal/renderer.rs` | Decode each text run once when constructing row columns. | A 200-column run creates one code-point array instead of 200, visiting 200 code points instead of 40,000. |
 | Portable file explorer | Cache filter-independent directory interests against listing/fold changes. | Subsequent filter keystrokes do not reconstruct the unfiltered tree for watches. |
 | Git decorations | Clear pending timers and queued refresh debt on disposal. | No stale diff request after teardown. |
 | `daemon::environment` | Cap shell capture at 1 MiB and apply the deadline through process exit, with group kill on failure. | Oversized shell output cannot grow capture without bound; closing stdout cannot bypass the timeout. |
@@ -106,7 +106,7 @@ micro-benchmarks at 200×50 unless stated; none is an end-to-end latency claim.
 
 ## Why this page exists
 
-Forge is a terminal multiplexer with a Tauri front end. That combination has a
+Forge is a terminal multiplexer with a native front end. That combination has a
 cost model most apps do not: a single attached terminal streaming output makes
 the daemon build, serialize, fan out, decode and repaint a grid **up to 125
 times a second**. Work that looks free in a request handler is ruinous three layers down.
@@ -128,7 +128,7 @@ its cost times its rung.
 | per row | ~50 / frame, ~50 / delta | `DeltaBuilder::delta`, `CellGrid::apply_delta` | one `Vec` at most |
 | per PTY batch | input-driven; not capped by `FRAME` | `Daemon::pump_terminal_batch` | no blocking syscall or grid-sized clone under the core lock |
 | per emitted delta | ≤125 /s **per attached terminal** on the daemon (`FRAME` = 8 ms); the host coalesces terminal cells at `CELL_SEND_FLOOR` (16 ms, 33 ms scrolled) | `route_terminal_delta`, `runtime_loop` | no syscall that can block, no clone that scales with the grid |
-| per frame | every repaint | Tauri frontend render | nothing derivable from the store |
+| per frame | every repaint | Rune view build | nothing derivable from the store |
 | per store change | user actions and daemon broadcasts | `applyShellSnapshot`, `createMemo` | this is where per-frame work belongs |
 | per request | user-initiated | daemon request handlers | subprocesses and disk are fine, **outside the core lock** |
 | per sweep | 30 s / 300 s | idle, usage, PR sweepers | anything, within its timeout |
@@ -161,10 +161,11 @@ it is bounded and drops, the way the daemon side already does
 (`registry.rs`: `flume::bounded(256)` plus a fresh resync for a `behind`
 client — never a replayed backlog).
 
-> **Current Tauri path.** Grid rows are `Arc`, and both the daemon outbound queue
-> and the client event queue are bounded. The host builds `ShellSnapshot` from a
-> borrowed `Store`, cloning shell metadata but not its terminal grids, and sends
-> frames separately. The whole-store emission above is a historical finding.
+> **Current Rune path.** Grid rows are `Arc`, and both the daemon outbound queue
+> and the client event queue are bounded. The worker applies a delta to the
+> passive grid and wakes the terminal surface only; the shell reads the store
+> when it changes, never per frame. The whole-store emission above is a
+> historical finding.
 
 ### Cap before you allocate, not after
 
@@ -230,9 +231,9 @@ owner remove."
 The original Rust GUI's `pending_echoes` was drained only when the active
 terminal's sequence advanced. If that terminal had no replica — it exited, or
 was detached — both sides were `None`, the condition was false forever, and the
-`Vec<Instant>` grew one entry per keystroke. The Tauri host keeps a single `u64`
-high-water mark instead (`pending_echo` in
-`apps/tauri/src-tauri/src/runtime/bridge.rs`), which cannot grow.
+`Vec<Instant>` grew one entry per keystroke. The Rune client keeps a single
+`u64` high-water mark on its worker (`apps/ui/src/connection.rs`), which cannot
+grow.
 
 **Rule.** An accumulator whose drain is conditional needs a second,
 unconditional bound: a cap, a clear on session switch, or both.
@@ -314,7 +315,7 @@ closed or full workbench queue instead of losing commands. Mutation results
 settle independently of refresh results; uncertain writes reconcile with bounded
 reads and are never replayed automatically.
 
-File dragging (`apps/tauri/src/features/files/explorer/fileDrag.ts`) retains one
+File dragging in the workbench retains one
 pointer payload, one hover deadline and at most one animation frame. Each drag
 frame performs one DOM hit test and a bounded 12 px edge-scroll step; it stops scheduling at the scroll
 limit. It never traverses the file index or terminal grid. A 600 ms hover may
@@ -497,10 +498,10 @@ sequential HTTPS calls with a fresh, unpooled client each time.
 5. **Sequential network calls in a loop are a fan-out you forgot to write**, and
    a client rebuilt per call is a TLS handshake you paid for twice.
 
-## WebView budgets
+## GUI budgets
 
 The rungs above are the daemon's. The following table defines the shell's
-budgets for changes to `apps/tauri`.
+budgets for changes to `apps/ui`.
 
 | Surface | Budget | How it is held |
 |---|---|---|
@@ -508,7 +509,6 @@ budgets for changes to `apps/tauri`.
 | Editor (`surface = dom`) | one window per input burst, ≤125/s; a window is what is on screen plus 2×24 overscan, never the file | The rung is **visible DOM rows**, not VT cells. A headless host publishes `ViewFrame`s and the browser composites the scroll, so scrolling costs the rows that entered the window and nothing repaints. Frames are clamped while they are built (`VIEW_ROW_BUDGET`), because the per-row caps do not compose into a frame budget. A window of 88 syntax-coloured Rust rows measures ~19 KB; the whole window is resent on every frame, so a sustained scroll tops out near 2.4 MB/s over a local Unix socket — a per-row `stale` delta would be the fix if that ever shows up in a profile. Rows ship behind an `Arc`, so broadcasting to a second client is a refcount. |
 | Diff | expand a 2 000-line patch ≤ 50 ms | Unified and split patches mount viewport rows plus 24 rows of overscan on either side; closed and distant patches mount no rows. |
 | File tree | 50 000 paths at 60 fps; filter keystroke ≤ 8 ms | Windowed rows with an overscan; the filter narrows the daemon's listing rather than re-scoring it. |
-| Bundle | initial JS ≤ 350 kB gz; editor chunk ≤ 250 kB gz | `apps/tauri/scripts/check-bundle.ts`, run by `bun run build`. Fails the build when either is exceeded. |
 
 Two costs on this side are deliberate and documented rather than fixed:
 
@@ -516,63 +516,27 @@ Two costs on this side are deliberate and documented rather than fixed:
   whenever `scroll_offset > 0`, because a damage list is expressed in
   live-viewport rows and means nothing against a window of the scrollback. The
   floor is raised from 16 ms to 33 ms while scrolled (`CELL_SEND_FLOOR_SCROLLED`
-  in `apps/tauri/src-tauri/src/runtime/bridge.rs`), which halves it. That is not a
+  in `apps/ui/src/terminal/mod.rs`), which halves it. That is not a
   latency regression: latency is measured against the keystroke that produced the
   output, and a scrolled viewport is by definition not showing what a keystroke would produce.
-- **The colour of a cell is cached, the font already was.** `ColorCache`
-  (`apps/tauri/src/shared/cell-grid/palette.ts`) holds one `#rrggbb` per indexed
-  slot and a bounded map for truecolour. Before it, a full-screen 256-colour TUI
-  rebuilt a string per run per frame — per-cell work on the frame rung.
+- **The colour of a cell is cached, the font already was.** `terminal::palette`
+  (`apps/ui/src/terminal/palette.rs`) caches one colour per indexed slot and a
+  bounded map for truecolour. Before it, a full-screen 256-colour TUI rebuilt a
+  string per run per frame — per-cell work on the frame rung.
 
-### Diff viewport windowing
+### Diff and preview windows
 
-`features/git/diff/WindowedPatchRows.tsx` reserves the full patch height from
-theme font metrics while mounting only the visible row slice. Each vertical
-scroller owns one passive scroll listener, one intersection observer and one
-resize observer (`patchViewport.ts`). A scroll burst schedules at most one
-animation frame; that frame reads positions only for nearby patches before
-publishing any DOM changes. Parsing and intra-line marks remain memoized against
-the patch, not the scroll position. The final subscription removes the listeners,
-disconnects the observers and cancels its pending frame.
+A workspace diff is one read: the daemon parses each file's patch once when its
+text changes, and the view mounts rows per file. Patches over the daemon's budget
+arrive flagged rather than truncated, so the UI never renders half a patch. The
+Changes file list is a virtual row set; the patch body is not virtualized, and
+its bound is the daemon's `MAX_DIFF_BYTES`, not a per-frame scan. CSV previews
+use `virtual_rows`, so a large table mounts only the visible slice.
 
-Split rows share the outer vertical scroller instead of synchronizing two nested
-scrollbars. Hunk navigation scrolls by document row coordinates, so its target
-need not be mounted. Stable reserved heights prevent row-window changes from
-moving the scrollbar. Native text selection covers mounted rows, not an entire
-offscreen patch.
-
-This follows the visible-block/placeholder approach in Rebased's IntelliJ-based
-[`CombinedDiffViewer`](https://github.com/DetachHead/rebased/blob/master/platform/diff-impl/src/com/intellij/diff/tools/combined/CombinedDiffViewer.kt),
-not its JVM editor implementation. Unlike that loader, Forge still parses every
-expanded patch on a diff change; parsing itself is not lazy or off-thread.
-
-A local Chromium headless smoke used twenty files, each with 2,005 unified rows,
-in a 1,200 × 600 px scroller. Before/after: **40,100 → 84 mounted rows** and
-**240,734 → 778 DOM elements**, reserving the full document height (**704,560 →
-704,685 px**; fractional row rounding differs). Across 120 animation-frame scroll
-steps of 140 px, the measured frame-interval p95 was **22.0 → 17.1 ms** (median
-16.7 ms in both runs). These are
-synthetic browser measurements, not a Tauri WebView latency or FPS guarantee.
-Unit tests cover window bounds, inactive-block costs, shared/coalesced scheduling,
-font/patch changes, unmounted hunk targets and teardown. Browser smokes also
-checked a jump deep into the file list, intra-line marks, line activation and
-split alignment.
-
-Syntax colouring shares `shared/syntax/highlight.ts` with project-search excerpts.
-`patchSyntax.ts` tokenizes a file lazily when a row first mounts and retains the
-result against the path and parsed-row identity. Scrolling reuses those tokens;
-theme changes update scope colours without re-tokenizing. Each hunk starts fresh,
-and old/new source has independent lexer state. Intra-line marks wrap coloured
-tokens rather than replace them, and source stays text rather than HTML.
-
-Syntax work is capped before excerpt/token arrays: 4,096 patch rows and 262,144
-UTF-16 units across both sides, plus the shared 32,768-unit excerpt limit per
-hunk side. Over-budget and unknown-language fragments stay readable as complete
-plain text. The earlier measurements above predate syntax colouring. A subsequent
-syntax-enabled Chromium smoke of the same twenty-file workload retained **83
-rows / 978 DOM elements**, with a **18.4 ms** frame-interval p95; expanding a
-2,005-row patch and waiting for its next frame measured **29.3 ms**. These remain
-synthetic browser checks, not native WebView guarantees.
+The old DOM measurements (40,100 → 84 mounted rows, 22.0 → 17.1 ms frame
+interval) describe the previous client and are retained only as history. The
+Rune editor's budget is the row rung: visible rows plus overscan, a row rebuilt
+when its fingerprint changes, and a caret-only frame rebuilding no text row.
 
 ## Known open
 
@@ -583,22 +547,20 @@ Carry these forward; they are real, verified, and not yet fixed.
 | Whole-grid delta on a line feed | `DeltaBuilder::delta` | Mid-screen edits now travel as column patches. A line feed can still report `TermDamage::Full` (see Alacritty `Term::damage()`), so that path still repaints the viewport. |
 | `resolved_env` lazy fallback | `Daemon::resolved_env` | Only reachable by a caller that skips `ensure_env`; it would still capture under the lock. |
 | Full fold rescanning | `editor-cli::App::rescan_edited` | Edits still rebuild fold regions (now ~1 ms at 20 000 lines); an indent-signature splice would make it incremental. |
-| Eager diff parsing | `PatchView.tsx`, `SplitPatchView.tsx` | Expanded patches are parsed when their text changes; unchanged files keep identity and intra-line marks are lazy. |
+| Eager diff parsing | `apps/ui/src/workbench/view.rs` | Expanded patches are parsed when their text changes; unchanged files keep identity and intra-line marks are lazy. |
 | Git work before PR cache lookup | `Daemon::refresh_pull_requests` | Remote resolution still spawns Git per project before consulting the cache. |
 | Trailing blank cells on the wire | `domain::Row` | ~70% of a typical full delta is default blanks. Eliding them is a decode-side amplification risk (a 6-byte row can claim 1 000 cells) unless the decoder is budgeted per frame. |
-| Frames as evaluated script | `bridge.rs` `app.emit("runtime:cells")` | Tauri events inline JSON into `eval`; a `tauri::ipc::Channel` with raw bytes would skip the parse and the per-frame object graph. |
+| Frames through an event loop | the previous bridge's `runtime:cells` | The old client inlined JSON through the webview; Rune keeps the grid behind `Arc` and wakes one surface, with no per-frame serialization. |
 | Whole-shell publishes | `Emitter::shell`, `ShellSnapshot` | One changed section still resends every list (`external_agents` at 600 cards is ~486 KB). |
 | Transcript text under the lock | `Daemon` session transcript read | Builds up to 4 096 rows of cells under the core lock to keep a 36–96 KB text tail. |
 | Filesystem work in `build_spawn_spec` | `core.rs` | `inject_attention`, `ensure_config_dir` and executable resolution run under the core lock. |
 | `GetSnapshot` on the runtime thread | `RefreshSnapshot` in `bridge.rs` | A slow snapshot can overflow the client's 64-slot event queue and force a reconnect. |
 
-The original Rust-GUI observations about `ui::runtime` cloning the whole `Store`
-and one `impl Render` repainting the window are historical, not descriptions of
-the current Tauri implementation. The host bridge borrows `Store` when constructing
-shell snapshots and emits terminal frames separately; the portable explorer is
-windowed. This does not establish virtualization or render cost for every other
-list. Current frontend ownership and lifecycle follow-ups are tracked in
-[frontend-architecture.md](./frontend-architecture.md).
+The original Rust-GUI observations about cloning the whole `Store` and
+repainting the window are historical. The Rune worker applies terminal deltas to
+a passive `Arc` grid and wakes the terminal surface only; the shell reads the
+store when it changes. The file tree is windowed. This does not establish
+virtualization or render cost for every other list; see [ui.md](./ui.md).
 
 ## How this was measured
 

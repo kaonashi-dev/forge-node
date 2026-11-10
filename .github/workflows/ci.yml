@@ -1,8 +1,8 @@
 name: CI
 
-# The same gate `scripts/dev check` runs locally (fmt → clippy → test) plus the
-# frontend's `bun run verify`, both on macOS. No Linux job: no Linux artifact is
-# published yet.
+# The same gate `scripts/dev check` runs locally: fmt → clippy → test for the
+# root workspace, then the Rune client on its own toolchain. macOS only: no
+# Linux artifact is published yet.
 
 on:
   push:
@@ -21,43 +21,27 @@ concurrency:
 env:
   CARGO_TERM_COLOR: always
   RUST_BACKTRACE: 1
-  # Incremental artifacts are pure overhead on a cold, cached-from-scratch CI
-  # runner.
   CARGO_INCREMENTAL: 0
 
 jobs:
   workspace:
-    name: workspace (macOS)
+    name: workspace + Rune (macOS)
     runs-on: macos-latest
     timeout-minutes: 90
     steps:
       - uses: actions/checkout@v4
 
-      - name: Install Rust (pinned by rust-toolchain.toml)
-        run: rustup show
+      - name: Install Rust (both pinned toolchains)
+        run: |
+          rustup show
+          ( cd apps/ui && rustup show )
 
       - uses: Swatinem/rust-cache@v2
         with:
+          workspaces: |
+            . -> target
+            apps/ui -> target
           save-if: ${{ github.ref == 'refs/heads/main' }}
 
-      - name: Gate (fmt, clippy, test)
+      - name: Gate (fmt, clippy, test for the workspace and apps/ui)
         run: scripts/dev check
-
-  tauri:
-    name: tauri (macOS)
-    runs-on: macos-latest
-    timeout-minutes: 30
-    steps:
-      - uses: actions/checkout@v4
-
-      - uses: oven-sh/setup-bun@v2
-        with:
-          bun-version-file: .bun-version
-
-      - name: Install frontend dependencies
-        working-directory: apps/tauri
-        run: bun install --frozen-lockfile
-
-      - name: Check frontend (lint, format, tests, types, bundle)
-        working-directory: apps/tauri
-        run: bun run verify

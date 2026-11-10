@@ -1,6 +1,0 @@
-/* Global defaults precede components; settings.css loads with its route. */
-@import "./base.css";
-@import "../ui/ui.css";
-@import "./shell.css";
-@import "./workbench.css";
-@import "./panels.css";

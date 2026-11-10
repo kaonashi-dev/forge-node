@@ -1,161 +1,139 @@
 # UI
 
-Forge's window is the Tauri + Solid shell in `apps/tauri`. The host
-(`apps/tauri/src-tauri`) owns the runtime thread, workbench worker, and cell
-encoder; the WebView renders chrome and a Canvas terminal from a passive
-`client::CellGrid`. There is no second VT engine (ADR-011).
+Forge's window is the Rune client in `apps/ui` (`forge-ui`). It owns no PTY and
+no VT engine: a worker thread holds `client::Client`, applies every terminal
+delta to a passive `client::CellGrid` replica, and the Rune view paints it. The
+daemon remains the only emulator (ADR-011).
 
-Day-to-day layout and behaviour details live next to the code:
+`apps/ui` is its own Cargo workspace on Rust 1.99.1, outside the root workspace,
+because Rune needs edition 2024. `scripts/dev check` runs both gates.
+
+## Module map
 
 | Area | Where |
 |------|--------|
-| Shell (title, sidebar container, tabs) | `apps/tauri/src/app/shell/` |
-| Projects view and worktree workflows | `apps/tauri/src/features/projects/` |
-| Other sidebar views (files, git, history, PR) | `apps/tauri/src/features/` |
-| Workbench (diff, PR, previews) | `apps/tauri/src/features/{git,pull-requests,files}/` |
-| Editor surfaces (cells and DOM) | `apps/tauri/src/features/editor/{cells,dom}/` |
-| Reusable explorer package (no Solid or Tauri) | `apps/tauri/packages/file-workbench/` |
-| Terminal Canvas | `apps/tauri/src/shared/cell-grid/` |
-| Control kit | `apps/tauri/src/ui/` |
-| Icons (own stroke set, one 16px grid) | `apps/tauri/src/theme/icons/` |
-| Theme tokens | `apps/tauri/src/theme/` + [theming.md](./theming.md) |
-| Actions / keymap | `apps/tauri/src/actions/` |
-| Ownership map and dependency rules | [frontend-architecture.md](./frontend-architecture.md) |
-| App README | `apps/tauri/README.md` |
+| App state, event application, polling | `apps/ui/src/app.rs` |
+| Client worker, reconnect, command channel | `apps/ui/src/connection.rs` |
+| Shell, titlebar, sidebar, centre card | `apps/ui/src/ui.rs`, `chrome.rs` |
+| Projects rail, groups, checkouts, sessions | `apps/ui/src/projects.rs`, `rail.rs`, `project_ops.rs` |
+| Workbench: diff, files, history, PRs, processes | `apps/ui/src/workbench/` |
+| Editor surface | `apps/ui/src/editor/` |
+| Terminal replica, renderer, input, splits | `apps/ui/src/terminal/` |
+| Settings sections and preferences | `apps/ui/src/settings/` |
+| Theme roles, bases and the picker preview | `apps/ui/src/theme/`, `appearance.rs` |
+| Icons, file marks, file types | `apps/ui/src/glyphs.rs`, `file_icons.rs` |
+| Context and native menus | `apps/ui/src/menus.rs`, `native_menus.rs` |
+| Palette, keymap, tab strip, toasts | `apps/ui/src/palette.rs`, `keymap.rs`, `tabs.rs`, `toasts.rs` |
+| Agent workflow and review | `apps/ui/src/agent_ops.rs`, `handoff.rs`, `code_review.rs` |
+| Git/PR depth | `apps/ui/src/workbench/`, `pr_review.rs`, `pr_detail.rs`, `pr_compose.rs` |
+| Updater | `apps/ui/src/updates.rs` |
+| App README and commands | `apps/ui/README.md` |
 
-## Layout (summary)
+## Layout
 
 ```text
 ┌─────────────────────┬────────────────────────────────────────┐
 │ traffic lights      │ ┌ card ─────────────────────────────┐  │
 │ view switcher       │ │ session tabs + ⌕    actions/pill  │  │
 │ the active view     │ │ project / branch / path · state   │  │
-│ settings            │ │ centre: terminal / workbench tabs │  │
+│ settings            │ │ centre: terminal / editor / view  │  │
 │                     │ │                                   │  │
 │                     │ └───────────────────────────────────┘  │
 └─────────────────────┴────────────────────────────────────────┘
 ```
 
-The sidebar runs to the top of the window and holds the traffic lights, a
-segmented switcher for Projects, Files, History, PR and Git, the active view,
-and the Settings button; the daemon is named there only when it is not
-connected.
-Projects stays mounted while another view is up. Whether the sidebar is open,
-its width and the active view live in `ui.sidebar.open` / `ui.sidebar.width` /
-`ui.sidebar.view`; metrics (`metrics.stripH`, `metrics.locationH`, the sidebar
-default, the control ladder) come from `theme/tokens.ts`, never hardcoded hex
-in views.
+The sidebar holds the traffic lights, the view switcher (Projects, Files,
+History, Pull Requests, Git, Processes), the active view and Settings. Its
+open/width/view state lives in `ui.sidebar.open`, `ui.sidebar.width` and
+`ui.sidebar.view`. Projects stays mounted while another view is up. Sessions
+waiting on the user are pinned above the tree; with another view open a
+"N waiting" pill names them.
 
-All the work sits in one card. Its strip carries the session tabs, the new
-session `+` with Jump to (the palette, ⌘K) beside it, and the session's
-actions; a slim bar under it says where the card is and what the working tree
-looks like, so the terminal needs no header row of its own. Sessions
-waiting on the user are pinned above the Projects tree; in any other view, or
-with the sidebar hidden, a "N waiting" pill in the strip says so. Settings
-replace the sidebar's content with their sections and show the page in the
-card; Esc twice returns.
+The card strip carries the session tabs, the new-session `+` and the session's
+actions. A slim bar under it says where the card is and what the working tree
+looks like. Settings replace the sidebar's content with their sections and show
+the page in the card; Esc twice returns.
 
-Code is a tab in the card strip whenever a checkout is selected. Projects
-lists a checkout's Code row only while it has files open ("Code · N open").
-Individual editor sessions appear as file tabs inside Code. Closing the last
-file leaves Code open with its empty state.
+## Files and workbench
 
-## Files
+The Files tree is a lazy, watched disk tree with git decorations, a filter,
+reveal/follow and recent files. Markdown, CSV/TSV, SVG and image previews open
+without an editor; code opens in an editor session. Writes (new file/folder,
+rename, duplicate, move, delete) go through the daemon (`fs-service`), never
+`std::fs` in the UI (ADR-012).
 
-The Files sidebar is a lazy disk tree, independent of the global file index.
-Empty and hidden folders are visible; ignored folders are dimmed and loaded
-on expansion. Errors retain the last successful children and partial listings
-are labelled. Reveal loads the required ancestors before selecting its target.
-
-Right-click, Ctrl-click or Shift+F10 opens Forge's menu on rows and on the
-root/background, including an empty checkout. Root offers new file/folder,
-refresh, collapse and copy workspace path; rename, move and delete are entry
-actions. Rename edits only the basename even on a compact folder chain. Create
-accepts a validated nested relative path. The field stays pending until its own
-mutation result, preserves its text on refusal, and cannot submit twice.
-
-The embedded files/text selector, filter input and content-search block are
-removed. File search remains global: Cmd+P and the macOS Cmd+O alias open the
-file palette, with custom keybindings taking precedence. Cmd+Shift+F opens
-content search. Refresh remains a tree action and a context-menu item.
-Confirmed moves retarget open/parked views, previews, recent files and reveal
-requests. Editor tabs keep their session identity and follow daemon path
-metadata, including changes initiated in another client.
-
-Drag a row at least 5 px to move it to a folder or to the blank tree area
-(checkout root). The hover label names the operation. A 600 ms folder hover
-expands it; the tree scrolls at its edges. A drop on the visible terminal instead
-pastes the absolute, shell-quoted path, with no Enter or file contents. The file
-menu's **Insert reference in terminal** performs the same targeted paste.
-If no session terminal is visible and connected, the menu reports that instead.
-Escape, pointer cancellation, window blur, unmount, workspace/session changes
-and reconnect cancel a gesture. Capture belongs to the stable explorer mount,
-not a recycled row, and the release click and terminal mouse reports are consumed.
+Changes is a fused workspace diff; the Git panel adds commit (with Juva), fetch,
+stopped rebase/merge/cherry-pick actions and branch compare. A session's own
+changes are read separately (`GetSessionChanges`). Pull requests are a cached
+read of the daemon's last refresh; the list filters by scope and text, and a
+row opens a detail tab. Opening or composing a pull request is an agent launch
+or the normal `CommitAndOpenPullRequest` request.
 
 ## Terminal
 
-Damaged rows arrive on `runtime:cells` separately from `runtime:state`, so a
-frame of output never serializes the session tree with it. The Canvas renderer
-paints style runs; selection, IME, and mouse reporting live under
-`features/terminal/` and `shared/cell-grid/`, with clipboard helpers in
-`shared/input/`. These paths are relative to `apps/tauri/src/`.
-Latency gate: `make latency-tauri` (p95 ≤ 50 ms).
+Every attached terminal is one passive replica (`SharedTerminal`). Deltas apply
+in order; a skipped publication merges its damage and a sequence gap forces a
+resync. The compositor paints style runs, selection, underline/strike,
+links and the cursor. Input goes through `terminal-input`; a key never reaches
+a PTY as a different escape sequence here. The split column (⌘D) owns a second
+replica with its own input gate, measurement and PTY size. ⌘-hover underlines a
+URL or path and ⌘-click opens it; a plain click on the shell's line moves its
+cursor. The terminal zoom is `ui.terminal.zoom` (50–200 %). Files dropped from
+Finder paste as single-quoted paths.
 
-## Controls
+## Editor
 
-Call sites import from `apps/tauri/src/ui/` (Button, Dialog, Menu, …). Look is
-Forge CSS + tokens; interaction primitives are `@kobalte/core` behind that
-boundary. Structural chrome belongs to `app/shell/`, `app/palette/` and the
-owning feature; explorer rows are rendered by `packages/file-workbench`.
+The daemon owns `forge-editor`; `apps/ui/src/editor/` renders an
+`EditorFrame` window as Rune rows memoised by `(line, fingerprint)`. Caret,
+selection, folds, gutter marks, diagnostics, find, conflict and IME are
+overlays. Find drives `EditorFind`; ⌘B and ⌃- are go-to-definition/back in the
+editor context. A refused save offers Keep mine / Take disk / Compare.
+`ui.editor.font_size`, `ui.editor.line_height` and autosave are applied live.
+See [editor.md](./editor.md).
 
-## Icons
+## Controls and theme
 
-Every mark in the shell is Forge's own stroke set — there is no icon library.
-`theme/icons/glyphs.tsx` holds the app's vocabulary (git, sessions, views) and
-`theme/icons/uiGlyphs.tsx` the chrome's marks (chevrons, search, settings).
-Both draw on one 16px grid at a 1.5 stroke with round caps and joins. A glyph
-has no fill of its own, so `currentColor` tints it: the neutral
-`forge-icon-muted`/`faint` marks are the default, and
-`.forge-icon-{accent,blue,green,amber,red,needs-you}` carry meaning. `region`
-fills one part at 20% when the mark names the chosen thing (`.glyph-region`),
-so a selected view never relies on colour alone.
+Controls come from `rune_kit` (Button, Dialog, Menu, TextInput, Switch, …).
+Colours and metrics come from the Forge theme roles in `theme/roles.rs` and
+`theme/themes.json`, never a hex in a view. The theme picker previews a base
+before it is committed and supports a custom accent, import/export, contrast,
+density, motion, glass and trim. See [theming.md](./theming.md).
 
-Brands are the exception: `BrandIcon` paints a provider logo as a mask, and
-`LangIcon` is the one mark that keeps colours because a file type's colour is
-the information. `?gallery` shows every glyph at rest and chosen.
+Icons are Forge's own 59-glyph set on one 16-grid (`glyphs.rs`); language marks
+are the 87-file set in `file_icons.rs` with the SVGs under
+`apps/ui/assets/lang/`. Brands are the provider exception.
 
-## Keyboard
+## Keyboard and palette
 
-Chords resolve through `actions/` → dispatch. Settings → Keyboard and the
-command palette surface the same bindings. Terminal input mapping for the PTY
-stays in `terminal-input` / the host bridge, not in Solid.
+Chords resolve through `keymap.rs`; Settings › Keyboard lists the same bindings
+and captures a replacement, persisted in app state. The palette opens on ⌘K
+with scopes: `>` commands, `/` files, `@` sessions and checkouts, `#` symbols.
+⌘P opens files directly and ⇧⌘A starts a terminal or an agent (profiles
+included). Holding Ctrl and pressing Tab walks sessions in most-recently-used
+order in an overlay; releasing commits. Tabs can be dragged to reorder.
 
-`Cmd+=` / `Cmd+-` / `Cmd+0` (`Ctrl` on Linux) zoom whichever content is on
-screen, as two independent preferences: the open file (`ui.editor.font_size`)
-while Code is up, every terminal and agent (`ui.terminal.zoom`) while a
-session is up. Chrome type size is Settings → Appearance → Type size → Chrome
-(`ui.font_size`) and does not follow those chords. Unmatched, the same
-chords are swallowed so WKWebView cannot scale the whole window.
+`Cmd+=` / `Cmd+-` / `Cmd+0` zoom whichever content is on screen as two
+independent preferences: the open file (`ui.editor.font_size`) while an editor
+is up, every terminal and agent (`ui.terminal.zoom`) while a session is up.
+Chrome type size is Settings → Appearance → Type size → Chrome (`ui.font_size`).
 
-`Cmd+D` (`Ctrl+Shift+D` on Linux) splits the centre into two columns: a new
-shell beside the current terminal, or the current session beside the open
-file. Diff, search and pull-request views stay full width. `Cmd+W` on the extra
-column joins the panes without closing the session.
+⌘D splits the centre into two terminal columns; the extra column joins without
+closing its session. ⇧⌘F opens project content search; ⇧⌘T reopens the last
+closed file; ⌥⌘←/→ step between editors.
 
-Settings, a full-width Code view, or switching to Code while two terminals are
-split hides the split and keeps it: coming back shows it again. The extra shell
-stays attached with its own size, scroll and frame floor; while hidden it is
-parked, so the host keeps its replica current without sending frames and
-repaints it on return. Moving to another checkout or reconnecting to the daemon
-joins the panes, and the extra shell stays in the strip. When the main session
-goes and the extra one is its successor, the split closes and that session
-takes the single column.
+## Host
 
-`Cmd+Shift+F` (`Ctrl+Shift+F` on Linux) opens or focuses the Search tab in Code.
-Results are grouped by file with line numbers, highlighted matches and three
-lines of context on each side; overlapping excerpts merge. Click a line to
-open its file at that location. Repeating the shortcut selects the search text
-without clearing it or changing the sidebar view.
-Excerpts use the file's language and the editor theme for syntax colours;
-search marks remain visible over them. Unknown languages and oversized excerpts
-stay plain, with their text and search marks intact.
+Native menus (Forge Node, File, Edit, View, Window, Help) dispatch the same
+key path as the keyboard. File dialogs, clipboard, open URL/reveal and the
+updater are host modules, not view code: `native_menus.rs`, `updates.rs`,
+`menus.rs`. The updater checks `latest-rune.json`, verifies the minisign
+signature and installs only a protocol-compatible GUI; a hard update is refused
+in place.
+
+## Performance
+
+The cost model in [performance.md](./performance.md) binds this client too:
+nothing that scales with the grid is deep-cloned on the delta rung, per-cell
+code allocates nothing, and anything derivable from the store is computed when
+the store changes, not per frame. `apps/ui/scripts/perf.sh` records the Rune
+measurements; `apps/ui/README.md` lists the commands.

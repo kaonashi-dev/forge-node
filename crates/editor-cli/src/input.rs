@@ -36,6 +36,7 @@ pub fn apply(app: &mut App, event: EditorInput) {
         // The GUI's container is what scrolls and its textarea is what holds
         // the keyboard; there is nothing for the host to do with either.
         EditorInput::Focus(_) => {}
+        EditorInput::ToggleFold { line } => app.toggle_fold_at(line as usize),
         _ => {}
     }
 }

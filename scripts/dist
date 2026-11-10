@@ -336,7 +336,7 @@ quit_running_gui() {
   fi
 
   require_cmd osascript
-  local bundle_id="${FORGE_BUNDLE_ID:-dev.forgenode.forge.tauri}"
+  local bundle_id="${FORGE_BUNDLE_ID:-dev.forgenode.forge}"
   note "closing the running Forge Node application"
   osascript - "$bundle_id" <<'APPLESCRIPT'
 on run argv

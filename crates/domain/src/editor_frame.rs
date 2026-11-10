@@ -16,7 +16,7 @@ use std::sync::Arc;
 ///
 /// The GUI maps each one to a theme token; an unknown variant paints plain, so
 /// a newer daemon never makes an older surface guess.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[non_exhaustive]
 pub enum EditorScope {
     #[default]
@@ -68,10 +68,36 @@ pub struct EditorRow {
     /// currently hiding, so `Some(0)` is open and `None` is not foldable.
     #[serde(default)]
     pub fold: Option<u32>,
+    /// [`EditorRow::content_fingerprint`], set by the daemon. A surface that
+    /// already built a row with this line and fingerprint can keep it, because
+    /// `doc_version` changes on every edit and so invalidates every row. `0`
+    /// means unknown, so the row is rebuilt.
+    #[serde(default)]
+    pub fingerprint: u64,
+}
+
+impl EditorRow {
+    /// A hash of everything the row paints. Masked to 53 bits so it reaches a
+    /// JavaScript surface as an exact number, and never `0`.
+    #[must_use]
+    pub fn content_fingerprint(&self) -> u64 {
+        use std::hash::{Hash, Hasher};
+        const JS_SAFE: u64 = (1 << 53) - 1;
+        let mut hasher = std::collections::hash_map::DefaultHasher::new();
+        self.truncated.hash(&mut hasher);
+        self.mark.hash(&mut hasher);
+        self.diagnostic.hash(&mut hasher);
+        self.fold.hash(&mut hasher);
+        for span in self.spans.iter() {
+            span.text.hash(&mut hasher);
+            span.scope.hash(&mut hasher);
+        }
+        (hasher.finish() & JS_SAFE).max(1)
+    }
 }
 
 /// What one line's gutter mark says happened to it.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[non_exhaustive]
 pub enum EditorMark {
     Added,
@@ -81,7 +107,7 @@ pub enum EditorMark {
 }
 
 /// How much one row's diagnostic matters.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[non_exhaustive]
 pub enum EditorSeverity {
     Error,
@@ -145,6 +171,14 @@ pub struct EditorFrame {
     pub first_line: u32,
     /// Lines in the document, so the scroll container has a height.
     pub total_lines: u32,
+    /// Lines hidden by folds anywhere in the document. `total_lines` minus this
+    /// is the height that scrolls, including folds outside the window.
+    #[serde(default)]
+    pub hidden_lines: u32,
+    /// Lines hidden by folds above `first_line`, so `first_line - hidden_above`
+    /// is where the window starts among the lines that take rows.
+    #[serde(default)]
+    pub hidden_above: u32,
     /// Ascending, contiguous except across a fold.
     pub rows: Arc<Vec<EditorRow>>,
     /// The window stopped short of what was asked for, against the editor's
@@ -235,6 +269,11 @@ pub enum EditorInputEvent {
         lines: i32,
     },
     Focus(bool),
+    /// Fold or unfold the block headed by this 0-based line; a line that heads
+    /// no block does nothing.
+    ToggleFold {
+        line: u32,
+    },
 }
 
 /// Most input events one `SendEditorInput` may carry.
@@ -269,6 +308,8 @@ mod tests {
             doc_version: 7,
             first_line: 10,
             total_lines: 900,
+            hidden_lines: 40,
+            hidden_above: 3,
             rows: Arc::new(vec![EditorRow {
                 line: 10,
                 truncated: false,
@@ -285,6 +326,7 @@ mod tests {
                 mark: Some(EditorMark::Modified),
                 diagnostic: Some(EditorSeverity::Warning),
                 fold: None,
+                fingerprint: 77,
             }]),
             clipped: false,
             folded: vec![EditorFold {
@@ -302,6 +344,53 @@ mod tests {
         let json = serde_json::to_string(&frame).unwrap();
         assert_eq!(serde_json::from_str::<EditorFrame>(&json).unwrap(), frame);
         assert_eq!(frame.rows[0].text(), "let x");
+    }
+
+    fn row(text: &str, scope: EditorScope) -> EditorRow {
+        EditorRow {
+            line: 3,
+            truncated: false,
+            spans: Arc::new(vec![EditorSpan {
+                text: text.into(),
+                scope,
+            }]),
+            mark: None,
+            diagnostic: None,
+            fold: None,
+            fingerprint: 0,
+        }
+    }
+
+    #[test]
+    fn a_fingerprint_follows_what_the_row_paints() {
+        let plain = row("let x", EditorScope::Plain);
+        assert_eq!(
+            plain.content_fingerprint(),
+            row("let x", EditorScope::Plain).content_fingerprint()
+        );
+        assert_ne!(
+            plain.content_fingerprint(),
+            row("let x", EditorScope::Keyword).content_fingerprint(),
+            "a recoloured row is a different row"
+        );
+        assert_ne!(
+            plain.content_fingerprint(),
+            row("let y", EditorScope::Plain).content_fingerprint()
+        );
+        let folded = EditorRow {
+            fold: Some(4),
+            ..row("let x", EditorScope::Plain)
+        };
+        assert_ne!(plain.content_fingerprint(), folded.content_fingerprint());
+    }
+
+    #[test]
+    fn a_fingerprint_is_never_unknown_and_fits_a_javascript_number() {
+        for text in ["", "a", "fn main() {}", "漢字 🦀"] {
+            let fingerprint = row(text, EditorScope::Plain).content_fingerprint();
+            assert_ne!(fingerprint, 0);
+            assert!(fingerprint < 1 << 53);
+        }
     }
 
     /// Every optional field defaults, so a surface built against an older

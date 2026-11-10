@@ -367,8 +367,8 @@ fact and lives in `agents`, like every other one.
 ## Terminal wire types (`terminal.rs`, §11.4)
 
 These are the data the daemon's engine produces and the GUI renders. They live
-in `domain` rather than `terminal-core` so the Tauri host and `client` never
-depend on the emulator.
+in `domain` rather than `terminal-core` so the GUI and `client` never depend on
+the emulator.
 
 | Type | Notes |
 |------|-------|

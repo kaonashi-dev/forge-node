@@ -1137,7 +1137,7 @@ fn following_a_definition_reveals_it_in_the_editor_that_holds_the_file() {
 /// The whole chain in one test, because every hop already exists on its own:
 /// the editor writes an OSC 52 into its PTY, the daemon's engine is the only
 /// VT that parses it, and the store arrives as a broadcast keyed on the
-/// *editor's* terminal — which is what lets the Tauri host refuse one from a
+/// *editor's* terminal — which is what lets the GUI host refuse one from a
 /// background agent and forward this one.
 #[test]
 fn a_copy_in_the_editor_reaches_the_host_as_a_clipboard_store() {

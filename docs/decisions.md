@@ -7,7 +7,7 @@ implemented. Do not restore them from `plan/`.
 | Id | Decision | Where it lives |
 |----|----------|----------------|
 | ADR-002 | License/advisory policy for distribution (`cargo deny`) | `deny.toml`. Not part of `scripts/dev check` or CI. |
-| ADR-003 | Two processes: `forge-tauri` (GUI) and `forge-daemon` (runtime) | [`architecture.md`](./architecture.md) |
+| ADR-003 | Two processes: `forge-ui` (GUI) and `forge-daemon` (runtime) | [`architecture.md`](./architecture.md) |
 | ADR-004 | Unix domain socket, length-prefixed MessagePack, 16 MiB max frame | `crates/protocol/src/framing.rs` |
 | ADR-005 | The daemon owns every PTY | `crates/terminal-core` |
 | ADR-006 | An agent is a terminal session running a known CLI | [`agents.md`](./agents.md) |

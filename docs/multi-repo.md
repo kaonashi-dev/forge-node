@@ -17,7 +17,7 @@ Adapt this template to the actual repository names and checks:
 
 Repositories:
 - api: ./api; verify with cargo test --workspace.
-- web: ./web; verify with bun run verify.
+- web: ./web; verify with its own project command.
 
 Read and plan here. Do not edit repositories, commit, push, merge, or approve
 worker permissions. Delegate only the requested work to independent Forge

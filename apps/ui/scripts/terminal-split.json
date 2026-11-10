@@ -1,0 +1,7 @@
+[
+  { "t": 0.3, "key": "terminal-pane" },
+  { "t": 0.5, "type": "key", "name": "d", "cmd": true },
+  { "t": 1.2, "type": "type", "text": "split", "every": 0.01 },
+  { "t": 1.6, "drop_files": { "paths": ["/tmp/it's here.txt"], "key": "terminal-pane-split" } },
+  { "t": 2.0, "type": "key", "name": "=", "cmd": true }
+]

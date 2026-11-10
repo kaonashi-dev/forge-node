@@ -2,14 +2,16 @@
 //!
 //! Blocking `std` Unix sockets and one reader thread — not tokio. The GUI
 //! never links a VT engine; [`CellGrid`] applies snapshots and row deltas.
-//! Wire types are re-exported so `forge-tauri` does not depend on `protocol`.
+//! Wire types are re-exported so `forge-ui` does not depend on `protocol`.
 
 mod clamp;
+mod damage;
 mod ipc;
 pub mod paths;
 mod store;
 
 pub use clamp::{read_capped, CappedBytes};
+pub use damage::RowDamage;
 pub use paths::{resolve_socket, socket_path, SocketPathError, SocketQuery, MAX_SOCKET_PATH_LEN};
 
 pub use domain::{DirectoryListing, SymlinkTarget};
@@ -19,7 +21,8 @@ pub use ipc::{
 };
 pub use protocol::{
     DaemonEvent, DaemonStats, EditorSurface, ErrorCode, ForgePaths, Layout, ProtocolCodecError,
-    ProtocolError, ProviderInfo, RemoveProjectPolicy, SendContextSpawn, PROTOCOL_VERSION,
+    ProtocolError, ProviderInfo, RemoveProjectPolicy, Request, Response, SendContextSpawn,
+    PROTOCOL_VERSION,
 };
 pub use store::{CellGrid, DeltaOutcome, EventOutcome, Store};
 pub use terminal_input::{

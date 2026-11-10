@@ -7,7 +7,7 @@
 
 use std::io::Write;
 use std::os::unix::net::UnixListener;
-use std::process::{Child, Command, Stdio};
+use std::process::{Child, ChildStdout, Command, Stdio};
 use std::sync::mpsc::{channel, Receiver, Sender};
 use std::thread;
 use std::time::{Duration, Instant};
@@ -92,6 +92,11 @@ impl Host {
 }
 
 fn start(text: &str, display_path: &str) -> Host {
+    start_with(text, display_path, Stdio::null()).0
+}
+
+/// [`start`], with the editor's stdout: the PTY a daemon would be reading.
+fn start_with(text: &str, display_path: &str, stdout: Stdio) -> (Host, Option<ChildStdout>) {
     let directory = tempfile::tempdir().expect("temp dir");
     let socket = directory.path().join("editor.sock");
     let listener = UnixListener::bind(&socket).expect("bind control socket");
@@ -166,10 +171,12 @@ fn start(text: &str, display_path: &str) -> Host {
         .arg(display_path)
         .env("FORGE_SESSION_ID", SESSION_ID)
         .stdin(Stdio::null())
-        .stdout(Stdio::null())
+        .stdout(stdout)
         .stderr(Stdio::piped())
         .spawn()
         .expect("spawn the headless editor");
+    let mut child = child;
+    let stdout = child.stdout.take();
 
     let host = Host {
         _directory: directory,
@@ -184,7 +191,7 @@ fn start(text: &str, display_path: &str) -> Host {
             line_count: WINDOW,
         },
     });
-    host
+    (host, stdout)
 }
 
 #[test]
@@ -682,4 +689,65 @@ fn find_set(pattern: &str) -> DaemonMessage {
             regex: false,
         },
     }
+}
+
+/// A fold toggled from the surface takes its body out of the window, and the
+/// frame says how much of the document's height it removed.
+#[test]
+fn a_fold_toggled_from_the_surface_shrinks_the_scrolled_height() {
+    let host = start(
+        "fn f() {\n    one();\n    two();\n}\nfn g() {}\n",
+        "src/lib.rs",
+    );
+    host.frame();
+    host.input(vec![EditorInput::ToggleFold { line: 0 }]);
+    let deadline = Instant::now() + WAIT;
+    loop {
+        assert!(Instant::now() < deadline, "the fold never closed");
+        let frame = host.frame();
+        if frame.hidden_lines == 2 {
+            assert_eq!(frame.hidden_above, 0);
+            assert_eq!(frame.rows[0].fold, Some(2));
+            assert_eq!(frame.rows[1].line, 3, "the body is not in the window");
+            return;
+        }
+    }
+}
+
+/// A copy in the headless host leaves the way the TUI's does, as an OSC 52 on
+/// the PTY, so the daemon's existing clipboard path carries it to the GUI.
+#[test]
+fn a_copy_leaves_as_an_osc_52_on_the_pty() {
+    use std::io::Read;
+    let (host, stdout) = start_with("alpha beta\n", "src/note.txt", Stdio::piped());
+    let mut stdout = stdout.expect("piped stdout");
+    host.frame();
+    host.input(vec![
+        EditorInput::Key {
+            key: WireKey::Char('a'),
+            modifiers: editor_control::modifiers::CONTROL,
+        },
+        EditorInput::Key {
+            key: WireKey::Char('c'),
+            modifiers: editor_control::modifiers::CONTROL,
+        },
+    ]);
+    let (tx, rx) = channel();
+    thread::spawn(move || {
+        let mut seen = Vec::new();
+        let mut buf = [0u8; 256];
+        while let Ok(n) = stdout.read(&mut buf) {
+            if n == 0 {
+                break;
+            }
+            seen.extend_from_slice(&buf[..n]);
+            if seen.ends_with(b"\x07") || seen.ends_with(b"\x1b\\") {
+                let _ = tx.send(seen.clone());
+                break;
+            }
+        }
+    });
+    let seen = rx.recv_timeout(WAIT).expect("an OSC 52 on stdout");
+    let text = String::from_utf8(seen).expect("ascii escape");
+    assert!(text.starts_with("\x1b]52;c;"), "{text:?}");
 }

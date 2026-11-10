@@ -118,7 +118,7 @@ pub struct ImageContents {
     pub path: String,
     /// Media type from the extension (`image/png`, `image/svg+xml`, …).
     pub mime: String,
-    /// The file's bytes as base64: the last hop is JSON into a WebView, where a
+    /// The file's bytes as base64: the last hop is JSON into the GUI, where a
     /// byte array would serialize as a list of numbers three times the size.
     pub data: String,
 }

@@ -1,6 +1,6 @@
 //! Daemon-side PTY backend and the only VT engine (ADR-005, ADR-011).
 //!
-//! `forge-tauri` never depends on this crate. Grid wire types live in
+//! `forge-ui` never depends on this crate. Grid wire types live in
 //! `domain::terminal`; this crate produces snapshots and row deltas from them.
 
 pub mod engine;

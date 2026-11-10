@@ -76,7 +76,7 @@ enable providers, and manage launch profiles.
 
 ## Install
 
-Published builds target **macOS 11 or newer on Apple Silicon**.
+Published builds target **macOS 13 or newer on Apple Silicon**.
 
 - Have `git` available on `PATH`.
 - Install and authenticate the agent CLIs you want to use; they are not bundled.
@@ -102,11 +102,12 @@ open "/Applications/Forge Node.app"
 
 ### Updates and other platforms
 
-The app checks for updates shortly after launch and every six hours. Use
-**Check for Updates** in the app menu to check manually. Protocol-compatible
-updates relaunch the GUI while the daemon, sessions and scrollback keep running.
-A protocol-changing release requires a manual install and a deliberate daemon
-restart; restarting the daemon ends its live processes.
+The app checks `latest-rune.json` shortly after launch and every six hours. Use
+**Check for Updates** in the app menu to check manually. The download is
+verified with the release's minisign signature before it is installed.
+Protocol-compatible updates relaunch the GUI while the daemon, sessions and
+scrollback keep running. A protocol-changing release requires a manual install
+and a deliberate daemon restart; restarting the daemon ends its live processes.
 
 Intel macOS and Linux builds are not published. Source packagers are available
 in [Packaging](#packaging), but Linux Wayland/X11 runtime validation remains
@@ -179,7 +180,7 @@ not as running processes. Projects and workspaces survive either way.
 ## How it works
 
 ```text
-forge-tauri (Tauri + Solid) ── Unix socket / MessagePack ── forge-daemon
+forge-ui (Rune) ───────────── Unix socket / MessagePack ── forge-daemon
   window, controls, passive cell grid                       PTYs, VT engine,
                                                            sessions, Git, SQLite
 forgectl ──────────────────────────────────────────────────► runs, tasks, context
@@ -197,42 +198,44 @@ See [Architecture](docs/architecture.md) for the crate graph and runtime boundar
 
 ### Prerequisites
 
-- Rust **1.89.0**, pinned in [`rust-toolchain.toml`](rust-toolchain.toml).
-- [Bun](https://bun.sh), **latest** with a **1.4.3** minimum.
+- Rust **1.89.0** for the workspace, pinned in [`rust-toolchain.toml`](rust-toolchain.toml).
+- Rust **1.99.1** for the Rune client, pinned in
+  [`apps/ui/rust-toolchain.toml`](apps/ui/rust-toolchain.toml); `rustup`
+  installs it on first use.
 - `git`, `make`, and a C toolchain for bundled SQLite.
 - macOS: Xcode Command Line Tools (`xcode-select --install`).
-- Linux: Tauri's [system prerequisites](https://v2.tauri.app/start/prerequisites/#linux).
+- Linux: a Vulkan or GL driver plus the usual windowing libraries
+  (`libvulkan1`, `libxkbcommon0`, `libx11-6`); Wayland/X11 runtime validation is
+  still deferred.
 
 ### Run from source
 
 ```sh
 git clone https://github.com/kaonashi-dev/forge-node.git
 cd forge-node
-make install-ui
 make build-rust
-make dev
+make run-live          # or: make run-rune for recorded fixture data
 ```
 
-The initial workspace build includes `forge-editor` and `forgectl` alongside
-the daemon. For subsequent iterations, `make dev` builds the debug daemon and
-launches the Tauri + Solid shell with hot reload. By default, the GUI connects
-to the daily per-user daemon. To isolate development, start `scripts/dev daemon`,
-then apply the environment exports it prints in a second terminal before running
-`make dev` there.
+The workspace build includes `forge-editor` and `forgectl` alongside the
+daemon. The Rune client builds on its own toolchain. By default it connects to
+the daily per-user daemon. To isolate development, start `scripts/dev daemon`,
+then apply the environment exports it prints in a second terminal before
+running `make run-live` there.
 
 ### Checks and builds
 
 | Command | Purpose |
 | --- | --- |
-| `scripts/dev check` | Canonical Rust gate: format check, Clippy with warnings denied, workspace tests |
-| `make check` | Rust gate plus frontend lint, format, tests, typechecks, boundary checks and bundle budgets |
-| `make test-tauri` | Frontend tests and typechecks plus Rust host tests |
-| `cargo build --workspace` | Build all Rust workspace members |
+| `scripts/dev check` | Canonical gate: root fmt, Clippy with warnings denied and tests, then the Rune client |
+| `make check` | Alias for `scripts/dev check` |
+| `make check-rune` | Rune client gate only |
+| `cargo build --workspace` | Build all root workspace members |
 | `make install-local` | macOS release build, install in Applications, and relaunch the GUI |
 | `scripts/dev daemon` | Run an isolated development daemon |
 | `forge-daemon info` | Print resolved runtime paths and effective configuration |
 
-CI runs the Rust and frontend gates on macOS. `cargo deny check` is a separate
+CI runs the workspace and Rune gates on macOS. `cargo deny check` is a separate
 dependency policy check, not part of those gates. `forge-daemon dump` remains
 an unwired placeholder; `forge-daemon stats` reads a running daemon and does
 not start one.
@@ -257,8 +260,8 @@ scripts/package-linux appimage          # dist/linux/ForgeNode-<ver>-<arch>.AppI
 Bundles include the GUI, `forge-daemon`, `forge-editor` and `forgectl` as sibling
 binaries. Local Developer ID signing and notarization are optional, configured
 with `FORGE_CODESIGN_IDENTITY`, `FORGE_ENTITLEMENTS` and `FORGE_NOTARY_PROFILE`.
-Updater artifacts also require a Tauri signing key. Run the packager with
-`--help` for its requirements.
+Updater artifacts also require a minisign key: set `FORGE_UPDATER_KEY_PATH`
+or `FORGE_UPDATER_KEY`. Run the packager with `--help` for its requirements.
 
 For a machine without a checkout, `scripts/dist` creates a self-contained
 tarball with an embedded installer:
@@ -277,11 +280,11 @@ included in the pinned Rust toolchain.
 
 ### Releasing
 
-Set the version in `[workspace.package]` in `Cargo.toml` and keep
-`apps/tauri/package.json` in sync. Push a matching `v<version>` tag to trigger
-the [release workflow](.github/workflows/release.yml), which validates the tag
-against Cargo, runs the Rust gate, builds the macOS bundle and signed updater
-artifact, and publishes the release and updater manifest.
+Set the version in `[workspace.package]` in `Cargo.toml`. Push a matching
+`v<version>` tag to trigger the
+[release workflow](.github/workflows/release.yml), which validates the tag
+against Cargo, runs the gate, builds the macOS bundle and signed updater
+artifact, and publishes the release and `latest-rune.json`.
 
 Never delete a tag with a published release: GitHub demotes that release to a
 draft, and the updater can fall back to the previous version.

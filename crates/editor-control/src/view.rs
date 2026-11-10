@@ -200,6 +200,14 @@ pub struct ViewFrame {
     pub first_line: u32,
     /// Lines in the document, so the scroll container has a height.
     pub total_lines: u32,
+    /// Lines hidden by folds anywhere in the document. `total_lines` minus this
+    /// is the height that scrolls, including folds outside the window.
+    #[serde(default)]
+    pub hidden_lines: u32,
+    /// Lines hidden by folds above `first_line`, so `first_line - hidden_above`
+    /// is where the window starts among the lines that take rows.
+    #[serde(default)]
+    pub hidden_above: u32,
     /// `line` is ascending and contiguous except across a fold.
     pub rows: Vec<ViewRow>,
     /// The window stopped short of what was asked for, against
@@ -328,6 +336,11 @@ pub enum EditorInput {
         lines: i32,
     },
     Focus(bool),
+    /// Fold or unfold the block headed by this 0-based line; a line that heads
+    /// no block does nothing.
+    ToggleFold {
+        line: u32,
+    },
 }
 
 /// Most input events one [`crate::DaemonMessage::Input`] may carry.
@@ -395,6 +408,8 @@ mod tests {
             doc_version: 42,
             first_line: 0,
             total_lines: 100_000,
+            hidden_lines: u32::MAX,
+            hidden_above: u32::MAX,
             clipped: true,
             rows,
             folded: vec![WireFold {
@@ -443,6 +458,8 @@ mod tests {
             doc_version: 9,
             first_line: 30,
             total_lines: 4000,
+            hidden_lines: 12,
+            hidden_above: 5,
             clipped: false,
             rows: vec![ViewRow {
                 line: 30,

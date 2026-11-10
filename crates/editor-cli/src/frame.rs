@@ -102,6 +102,8 @@ pub fn build(app: &App, buffer_id: u64) -> ViewFrame {
         doc_version: app.document().version().0,
         first_line: first_line as u32,
         total_lines: total_lines as u32,
+        hidden_lines: app.hidden_line_count() as u32,
+        hidden_above: app.hidden_before(first_line) as u32,
         rows,
         clipped,
         folded,

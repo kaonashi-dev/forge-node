@@ -1,0 +1,211 @@
+{
+  "editor": {
+    "blocked": null,
+    "caret_frame_ms": {
+      "max": 1.705,
+      "p50": 0.565,
+      "p95": 0.872
+    },
+    "caret_rows_rebuilt": 0,
+    "caret_view_ms": {
+      "max": 0.324,
+      "p50": 0.081,
+      "p95": 0.126
+    },
+    "display_measured": false,
+    "folds": 6,
+    "key_to_paint_cpu_ms": {
+      "max": 0.733,
+      "p50": 0.625,
+      "p95": 0.652
+    },
+    "key_to_paint_rows_rebuilt": 0,
+    "mount_ms": 31.061,
+    "mount_rows_built": 88,
+    "mount_view_ms": 7.766,
+    "notes": [
+      "key_to_paint_cpu_ms is a CPU proxy: key handler, one state update and one 125 Hz frame; display and vsync are not measured",
+      "caret-only frames change doc_version and the caret, never a row fingerprint",
+      "rows_rebuilt counts text-row memo builds (EditorUi::row_builds)"
+    ],
+    "rate_hz": 125.0,
+    "rows": 88,
+    "socket_ops": 0,
+    "ui_socket_ops": 0,
+    "visible_rows": 98
+  },
+  "fixture": {
+    "echo_ms": {
+      "max": 0.984,
+      "p50": 0.35,
+      "p95": 0.667
+    },
+    "iterations": 500,
+    "sessions": 12,
+    "socket_ops": 0,
+    "switch_ms": {
+      "max": 36.157,
+      "p50": 0.396,
+      "p95": 0.673
+    },
+    "ui_socket_ops": 0,
+    "view_ms": {
+      "max": 1.832,
+      "p50": 0.056,
+      "p95": 0.108
+    }
+  },
+  "machine": {
+    "arch": "aarch64",
+    "os": "macos",
+    "profile": "release",
+    "rune": "938ba14f09bb3381946b3486ef8aa36363a3e8b2",
+    "rust": "1.99.1-aarch64-apple-darwin",
+    "unix_ms": 1794269093838
+  },
+  "schema": 1,
+  "terminal_125": {
+    "blocked": null,
+    "build_allocations": 22,
+    "build_ms": {
+      "max": 42.658,
+      "p50": 0.487,
+      "p95": 1.034
+    },
+    "cols": 128,
+    "delta_apply_ms": {
+      "max": 0.013,
+      "p50": 0.003,
+      "p95": 0.006
+    },
+    "deltas_applied": 300,
+    "draw_calls": 300,
+    "encode_allocations": 0,
+    "encode_ms": {
+      "max": 1.808,
+      "p50": 0.134,
+      "p95": 0.217
+    },
+    "feed": "rich full scroll (every row rebuilt every frame)",
+    "frame_cpu_ms": {
+      "max": 43.871,
+      "p50": 1.2,
+      "p95": 2.275
+    },
+    "frames": 300,
+    "glyph_misses": 0,
+    "gpu": "Apple M2 (Metal)",
+    "gpu_init_ms": 20.824,
+    "host_frame_ms": {
+      "max": 43.899,
+      "p50": 1.247,
+      "p95": 2.328
+    },
+    "instances_per_draw": 38019,
+    "notes": [
+      "one synthetic delta per frame through SharedTerminal::apply_delta, the path the fixture worker uses",
+      "the shell view is not rebuilt per delta; the compositor draws the pane",
+      "build/encode are the compositor's CPU clocks; GPU time is not included",
+      "frames are paced to 125 Hz; paced_loop_interval_ms includes the sleep and macOS timer overshoot, not display cadence"
+    ],
+    "paced_loop_interval_ms": {
+      "max": 44.262,
+      "p50": 9.586,
+      "p95": 9.978
+    },
+    "rate_hz": 125.0,
+    "rows": 49,
+    "rows_uploaded": 14700,
+    "socket_ops": 0,
+    "total_cpu_ms": {
+      "max": 43.874,
+      "p50": 1.203,
+      "p95": 2.279
+    },
+    "ui_socket_ops": 0,
+    "update_ms": {
+      "max": 6.93,
+      "p50": 0.563,
+      "p95": 1.115
+    },
+    "view_commits": 0,
+    "view_ms": null
+  },
+  "startup": {
+    "definition": "cold = first launch after the build; warm = the next two, median; launch to the first Drawn frame; RSS 0/1/2 s measured from that first frame, spawn at exec",
+    "cold": {
+      "label": "cold",
+      "status": "ok",
+      "launch_to_first_frame_ms": 540.0,
+      "rss_mib": {
+        "spawn": 0.47,
+        "0s": 118.3,
+        "1s": 109.16,
+        "2s": 108.67
+      },
+      "marker": {
+        "encode_ms": 11.514582999999998,
+        "pid": 21238,
+        "refresh_hz": 60.0000024000001,
+        "seq": 0,
+        "update_ms": 5.437625
+      }
+    },
+    "warm": [
+      {
+        "label": "warm1",
+        "status": "ok",
+        "launch_to_first_frame_ms": 177.0,
+        "rss_mib": {
+          "spawn": 0.17,
+          "0s": 120.86,
+          "1s": 123.23,
+          "2s": 107.22
+        },
+        "marker": {
+          "encode_ms": 13.204666,
+          "pid": 21299,
+          "refresh_hz": 60.0000024000001,
+          "seq": 0,
+          "update_ms": 5.741917
+        }
+      },
+      {
+        "label": "warm2",
+        "status": "ok",
+        "launch_to_first_frame_ms": 195.0,
+        "rss_mib": {
+          "spawn": 0.67,
+          "0s": 123.78,
+          "1s": 109.97,
+          "2s": 105.27
+        },
+        "marker": {
+          "encode_ms": 5.231832999999999,
+          "pid": 21345,
+          "refresh_hz": 60.0000024000001,
+          "seq": 0,
+          "update_ms": 5.213500000000001
+        }
+      }
+    ],
+    "warm_median": {
+      "launch_to_first_frame_ms": 186.0,
+      "rss_mib": {
+        "spawn": 0.42000000000000004,
+        "0s": 122.32,
+        "1s": 116.6,
+        "2s": 106.245
+      }
+    },
+    "headless_proxy": null,
+    "blocked": null
+  },
+  "harness": {
+    "binary": "/Users/kaonashi/dev/forge-node-rune-target/release/forge-ui",
+    "iterations": 500,
+    "frames": 300,
+    "wrapper": "apps/ui/scripts/perf.sh",
+    "note": "terminal and editor samples are CPU clocks on a headless GPU; display vsync is not measured"
+  }
+}
