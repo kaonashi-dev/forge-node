@@ -3449,6 +3449,7 @@ impl App {
             (KeyCode::Char('k'), true, _) => Action::Command(Command::DeleteLine),
             (KeyCode::Char('l'), true, _) => Action::Command(Command::SelectLine),
             (KeyCode::Char('d'), true, _) => Action::Command(Command::AddNextOccurrence),
+            (KeyCode::Char('l'), _, true) => Action::Command(Command::SelectAllOccurrences),
             (KeyCode::Up, _, true) => Action::Command(Command::AddCaretVertically { down: false }),
             (KeyCode::Down, _, true) => Action::Command(Command::AddCaretVertically { down: true }),
             (KeyCode::Char('z'), true, _) => Action::Command(Command::Undo),

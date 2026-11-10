@@ -389,14 +389,15 @@ fn ruler_style(mark: crate::app::RulerMark) -> (char, style::Color) {
     }
 }
 
-/// What a gutter mark looks like. One cell, and the same three shapes a diff
-/// uses, so the column reads without a legend.
+/// What a gutter mark looks like: a thin bar the full height of the cell, so
+/// consecutive changed lines join into one strip, and a deletion a line on the
+/// cell's top edge, where the removed lines were. Colour tells added from
+/// modified, as in Zed's gutter.
 fn mark_glyph(kind: editor_control::WireMarkKind) -> char {
     use editor_control::WireMarkKind;
     match kind {
-        WireMarkKind::Added => '+',
-        WireMarkKind::Modified => '~',
-        WireMarkKind::Deleted => '_',
+        WireMarkKind::Added | WireMarkKind::Modified => '\u{258E}',
+        WireMarkKind::Deleted => '\u{2594}',
     }
 }
 
