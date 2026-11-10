@@ -235,8 +235,10 @@ running `make run-live` there.
 | `scripts/dev daemon` | Run an isolated development daemon |
 | `forge-daemon info` | Print resolved runtime paths and effective configuration |
 
-CI runs the workspace and Rune gates on macOS. `cargo deny check` is a separate
-dependency policy check, not part of those gates. `forge-daemon dump` remains
+CI runs the workspace and Rune gates on macOS, split into `fmt`, clippy and test
+jobs so lint and the two workspaces do not queue behind each other. `cargo deny
+check` is a separate dependency policy check, not part of those gates.
+`forge-daemon dump` remains
 an unwired placeholder; `forge-daemon stats` reads a running daemon and does
 not start one.
 

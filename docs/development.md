@@ -21,10 +21,13 @@ scripts/dev check          # root fmt + clippy + test, then apps/ui on 1.99.1
 ./init.sh --fast           # skips the cargo block
 ```
 
-`scripts/dev check --root-only` skips the Rune client. CI runs the full gate on
-macOS. `cargo fmt --all` at the root does not cover `apps/ui`; `scripts/dev ui
-check` does. `cargo deny check` is a separate policy check, not part of the
-gate; `cargo-deny` is not installed by the pinned toolchain.
+`scripts/dev check --root-only` skips the Rune client. CI runs the same checks
+split into one job per workspace and phase — `fmt` on Ubuntu, clippy and tests
+for the root workspace and `apps/ui` on macOS — so lint and the two workspaces
+do not queue behind each other. `cargo fmt --all` at the root does not cover
+`apps/ui`; `scripts/dev ui check` does. `cargo deny check` is a separate policy
+check, not part of the gate; `cargo-deny` is not installed by the pinned
+toolchain.
 
 Common focused commands:
 
