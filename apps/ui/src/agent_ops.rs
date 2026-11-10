@@ -482,7 +482,7 @@ pub fn start_send_context(s: &mut AppState) {
         let role = CONTEXT_ROLES
             .get(send.role)
             .map_or(SessionRole::Generic, |(role, _)| role.clone());
-        let spawn = protocol::SendContextSpawn {
+        let spawn = client::SendContextSpawn {
             kind: SessionKind::Agent,
             provider_id: Some(choice.provider.clone()),
             profile_id: choice.profile,

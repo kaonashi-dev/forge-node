@@ -170,17 +170,17 @@ pub fn request(s: &mut AppState, op: Op) {
 }
 
 /// A daemon event the share pages follow: an apply's outcome.
-pub fn observe(s: &mut AppState, event: &protocol::DaemonEvent) {
+pub fn observe(s: &mut AppState, event: &client::DaemonEvent) {
     match event {
-        protocol::DaemonEvent::WorkspaceCreated(workspace) => {
+        client::DaemonEvent::WorkspaceCreated(workspace) => {
             crate::branch_picker::arrived(s, workspace);
         }
-        protocol::DaemonEvent::RemoteRefsUpdated { project_id, .. } => {
+        client::DaemonEvent::RemoteRefsUpdated { project_id, .. } => {
             crate::branch_picker::fetched(s, *project_id);
         }
         _ => {}
     }
-    if let protocol::DaemonEvent::SharesApplied {
+    if let client::DaemonEvent::SharesApplied {
         workspace_id,
         trigger,
         actions,
@@ -482,7 +482,7 @@ mod tests {
         };
         observe(
             &mut s,
-            &protocol::DaemonEvent::WorkspaceCreated(landed.clone()),
+            &client::DaemonEvent::WorkspaceCreated(landed.clone()),
         );
         assert!(
             s.projects.picker.is_none(),
@@ -540,7 +540,7 @@ mod tests {
         ));
         observe(
             &mut s,
-            &protocol::DaemonEvent::SharesApplied {
+            &client::DaemonEvent::SharesApplied {
                 workspace_id: id(MAIN),
                 trigger: domain::ShareTrigger::Requested,
                 actions: Vec::new(),
@@ -717,7 +717,7 @@ mod tests {
 
     fn snapshot(client: &client::Client) -> client::Store {
         let response = client
-            .request(protocol::Request::GetSnapshot)
+            .request(client::Request::GetSnapshot)
             .expect("a snapshot");
         let mut store = client::Store::new();
         store.apply_snapshot(response);
@@ -732,9 +732,9 @@ mod tests {
     }
 
     fn wait_for(
-        events: &flume::Receiver<protocol::DaemonEvent>,
-        what: impl Fn(&protocol::DaemonEvent) -> bool,
-    ) -> protocol::DaemonEvent {
+        events: &flume::Receiver<client::DaemonEvent>,
+        what: impl Fn(&client::DaemonEvent) -> bool,
+    ) -> client::DaemonEvent {
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(60);
         loop {
             let left = deadline.saturating_duration_since(std::time::Instant::now());
@@ -814,9 +814,9 @@ mod tests {
                 name: Some("remote-only".into()),
             },
         );
-        let protocol::DaemonEvent::WorkspaceCreated(worktree) = wait_for(
+        let client::DaemonEvent::WorkspaceCreated(worktree) = wait_for(
             &events,
-            |event| matches!(event, protocol::DaemonEvent::WorkspaceCreated(w) if w.kind == WorkspaceKind::GitWorktree),
+            |event| matches!(event, client::DaemonEvent::WorkspaceCreated(w) if w.kind == WorkspaceKind::GitWorktree),
         ) else {
             unreachable!()
         };
@@ -824,7 +824,7 @@ mod tests {
         assert!(worktree.path.ends_with("remote-only"));
         wait_for(
             &events,
-            |event| matches!(event, protocol::DaemonEvent::SharesApplied { workspace_id, .. } if *workspace_id == worktree.id),
+            |event| matches!(event, client::DaemonEvent::SharesApplied { workspace_id, .. } if *workspace_id == worktree.id),
         );
 
         let Answer::Candidates(candidates, _) = ok(&client, Op::DetectShares(project)) else {
@@ -851,7 +851,7 @@ mod tests {
         ok(&client, Op::ApplyShares(worktree.id, None));
         wait_for(
             &events,
-            |event| matches!(event, protocol::DaemonEvent::SharesApplied { workspace_id, .. } if *workspace_id == worktree.id),
+            |event| matches!(event, client::DaemonEvent::SharesApplied { workspace_id, .. } if *workspace_id == worktree.id),
         );
         let Answer::Status(status) = ok(&client, Op::ShareStatus(worktree.id)) else {
             panic!("GetShareStatus answers with entries");

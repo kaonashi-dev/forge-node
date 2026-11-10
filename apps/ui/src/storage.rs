@@ -8,7 +8,7 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::time::{Duration, Instant};
 
-use protocol::{ForgePaths, Layout};
+use client::{ForgePaths, Layout};
 use rune::{El, col, row, text};
 use rune_kit::{Button, ButtonVariant, ControlSize, Dialog, Kit};
 

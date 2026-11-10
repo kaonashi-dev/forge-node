@@ -129,7 +129,7 @@ pub struct AppState {
     pub metrics: Arc<Metrics>,
     pub connection: Option<ConnectionHandle>,
     pub terminal: TerminalUi,
-    pub editor_surface: protocol::EditorSurface,
+    pub editor_surface: client::EditorSurface,
     pub editor: EditorUi,
     pub workbench: Workbench,
     pub palette: crate::palette::Palette,
@@ -224,7 +224,7 @@ impl AppState {
             metrics,
             connection: None,
             terminal: TerminalUi::new(shared, fixture),
-            editor_surface: protocol::EditorSurface::Cells,
+            editor_surface: client::EditorSurface::Cells,
             editor: EditorUi::default(),
             workbench: Workbench::default(),
             palette: crate::palette::Palette::default(),
@@ -329,7 +329,7 @@ impl AppState {
             .into_iter()
             .map(|session| {
                 let lines = session.kind == SessionKind::Editor
-                    && self.editor_surface == protocol::EditorSurface::Dom;
+                    && self.editor_surface == client::EditorSurface::Dom;
                 SessionRow {
                     id: session.id,
                     kind: session.kind,
@@ -441,8 +441,7 @@ impl AppState {
     pub fn active_line_editor(&self) -> Option<SessionId> {
         self.active_row()
             .filter(|row| {
-                row.kind == SessionKind::Editor
-                    && self.editor_surface == protocol::EditorSurface::Dom
+                row.kind == SessionKind::Editor && self.editor_surface == client::EditorSurface::Dom
             })
             .map(|row| row.id)
     }
@@ -1698,13 +1697,12 @@ impl AppState {
                 if !self.accept_generation(generation) {
                     return false;
                 }
-                if let protocol::DaemonEvent::ReviewUpdated { run } = event.as_ref() {
+                if let client::DaemonEvent::ReviewUpdated { run } = event.as_ref() {
                     self.apply_review_run(run);
                     return true;
                 }
                 crate::project_ops::observe(self, event.as_ref());
-                if let protocol::DaemonEvent::ClipboardStore { terminal_id, text } = event.as_ref()
-                {
+                if let client::DaemonEvent::ClipboardStore { terminal_id, text } = event.as_ref() {
                     // Only a terminal this window shows may set the clipboard;
                     // anything else running in a PTY is not the person's choice.
                     if self.shows_terminal(*terminal_id) {
@@ -1718,19 +1716,19 @@ impl AppState {
                     }
                     return false;
                 }
-                if let protocol::DaemonEvent::FileChanged { workspace_id, path } = event.as_ref() {
+                if let client::DaemonEvent::FileChanged { workspace_id, path } = event.as_ref() {
                     self.workbench
                         .file_changed(*workspace_id, path, Instant::now());
                     return self.workbench.mode == CenterMode::Search;
                 }
-                if let protocol::DaemonEvent::EditorFrame { session_id, frame } = *event {
+                if let client::DaemonEvent::EditorFrame { session_id, frame } = *event {
                     if let Some(offset) = self.editor.apply_frame(session_id, frame) {
                         self.editor_reveal = Some(offset);
                     }
                     return true;
                 }
                 match event.as_ref() {
-                    protocol::DaemonEvent::RemoteRefsUpdated {
+                    client::DaemonEvent::RemoteRefsUpdated {
                         project_id,
                         remote,
                         updated,
@@ -1741,7 +1739,7 @@ impl AppState {
                         self.workbench.refresh();
                         return true;
                     }
-                    protocol::DaemonEvent::PullRequestOpened {
+                    client::DaemonEvent::PullRequestOpened {
                         workspace_id,
                         url,
                         error,
@@ -1752,14 +1750,14 @@ impl AppState {
                             .pr_opened(*workspace_id, url.clone(), error.clone());
                         return true;
                     }
-                    protocol::DaemonEvent::PullRequestsUpdated { .. } => return true,
-                    protocol::DaemonEvent::EditorFocusRequested { session_id, .. } => {
+                    client::DaemonEvent::PullRequestsUpdated { .. } => return true,
+                    client::DaemonEvent::EditorFocusRequested { session_id, .. } => {
                         self.editor_focus_requested(*session_id);
                         return true;
                     }
                     _ => {}
                 }
-                if let protocol::DaemonEvent::JuvaDraftReady {
+                if let client::DaemonEvent::JuvaDraftReady {
                     workspace_id,
                     draft,
                     fell_back,
@@ -1768,7 +1766,7 @@ impl AppState {
                     self.commit.apply_draft(*workspace_id, draft, *fell_back);
                     return true;
                 }
-                if let protocol::DaemonEvent::PullRequestDraftReady {
+                if let client::DaemonEvent::PullRequestDraftReady {
                     workspace_id,
                     session_id,
                     draft,
@@ -1784,11 +1782,11 @@ impl AppState {
                     self.workbench.show(CenterMode::PrCompose);
                     return true;
                 }
-                let reset = matches!(event.as_ref(), protocol::DaemonEvent::FactoryReset);
+                let reset = matches!(event.as_ref(), client::DaemonEvent::FactoryReset);
                 let agents = matches!(
                     event.as_ref(),
-                    protocol::DaemonEvent::AgentProfilesChanged { .. }
-                        | protocol::DaemonEvent::AgentDetectionChanged { .. }
+                    client::DaemonEvent::AgentProfilesChanged { .. }
+                        | client::DaemonEvent::AgentDetectionChanged { .. }
                 );
                 if let Some(store) = &mut self.store {
                     let _ = store.apply_event(&event);
@@ -1805,16 +1803,16 @@ impl AppState {
                 }
                 let rebuild = matches!(
                     event.as_ref(),
-                    protocol::DaemonEvent::SessionCreated(_)
-                        | protocol::DaemonEvent::SessionUpdated(_)
-                        | protocol::DaemonEvent::SessionRemoved { .. }
-                        | protocol::DaemonEvent::ProjectAdded(_)
-                        | protocol::DaemonEvent::ProjectUpdated(_)
-                        | protocol::DaemonEvent::ProjectRemoved { .. }
-                        | protocol::DaemonEvent::WorkspaceCreated(_)
-                        | protocol::DaemonEvent::WorkspaceUpdated(_)
-                        | protocol::DaemonEvent::WorkspaceRemoved { .. }
-                        | protocol::DaemonEvent::TerminalBell { .. }
+                    client::DaemonEvent::SessionCreated(_)
+                        | client::DaemonEvent::SessionUpdated(_)
+                        | client::DaemonEvent::SessionRemoved { .. }
+                        | client::DaemonEvent::ProjectAdded(_)
+                        | client::DaemonEvent::ProjectUpdated(_)
+                        | client::DaemonEvent::ProjectRemoved { .. }
+                        | client::DaemonEvent::WorkspaceCreated(_)
+                        | client::DaemonEvent::WorkspaceUpdated(_)
+                        | client::DaemonEvent::WorkspaceRemoved { .. }
+                        | client::DaemonEvent::TerminalBell { .. }
                 );
                 if rebuild && let Some(store) = self.store.take() {
                     self.set_store(store);
@@ -3166,7 +3164,7 @@ mod tests {
                 UiEvent::Connected {
                     generation: 1,
                     detail: "one".to_string(),
-                    editor_surface: protocol::EditorSurface::Cells,
+                    editor_surface: client::EditorSurface::Cells,
                 },
             ],
             &mut tx,
@@ -3183,7 +3181,7 @@ mod tests {
                 },
                 UiEvent::Daemon {
                     generation: 1,
-                    event: Box::new(protocol::DaemonEvent::SessionUpdated(updated)),
+                    event: Box::new(client::DaemonEvent::SessionUpdated(updated)),
                 },
                 UiEvent::CommandResult {
                     generation: 1,
@@ -3462,7 +3460,7 @@ mod tests {
                 UiEvent::Connected {
                     generation: 2,
                     detail: "connected".to_string(),
-                    editor_surface: protocol::EditorSurface::Cells,
+                    editor_surface: client::EditorSurface::Cells,
                 },
             ],
             &mut tx,

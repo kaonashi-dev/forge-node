@@ -301,7 +301,7 @@ mod tests {
         state.apply_events(
             vec![UiEvent::Daemon {
                 generation: state.generation,
-                event: Box::new(protocol::DaemonEvent::TerminalBell {
+                event: Box::new(client::DaemonEvent::TerminalBell {
                     terminal_id: terminal,
                 }),
             }],

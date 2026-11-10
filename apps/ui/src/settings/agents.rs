@@ -3,8 +3,8 @@
 
 use std::path::PathBuf;
 
+use client::ProviderInfo;
 use domain::{AgentProfile, AgentProfileId, AgentProviderId, DetectionStatus, Timestamp};
-use protocol::ProviderInfo;
 use rune::{El, TextEdit, col, el, row, text};
 use rune_kit::{Button, ButtonVariant, ControlSize, Kit, RadioItem, SegmentedControl, Switch};
 

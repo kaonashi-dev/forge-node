@@ -6,11 +6,11 @@
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
+use client::RemoveProjectPolicy;
 use domain::{
     AgentProviderId, ProjectActionId, ProjectGroupId, ProjectId, SessionId, SessionKind,
     ShareRuleId, WorkspaceId, WorkspaceKind,
 };
-use protocol::RemoveProjectPolicy;
 use rune::{El, Icon, KeyEvent, PointerPress, TextEdit, Tx, col, el, row, text};
 use rune_kit::{
     Button, ButtonVariant, Dialog, Kit, Menu, MenuEntry, MenuItem, RadioGroup, RadioItem, TextInput,
