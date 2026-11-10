@@ -14,7 +14,7 @@ use crate::terminal::atlas::{Atlas, BOLD, ITALIC, MAX_GLYPHS_PER_CELL, NO_RUN, R
 use crate::terminal::fixture::is_wide_cluster;
 use crate::terminal::input::PREEDIT_MAX_CHARS;
 use crate::terminal::links::Link;
-use crate::terminal::palette::{Palette, mix, rgb, with_alpha};
+use crate::terminal::palette::{Palette, mix};
 use crate::terminal::pane::TerminalUi;
 use crate::terminal::selection::{Selection, span_on};
 use crate::terminal::shaping::is_extender;
@@ -37,9 +37,6 @@ const R_GLYPH: usize = 1;
 const R_UNDER: usize = R_GLYPH + GLYPHS;
 const R_STRIKE: usize = R_UNDER + 1;
 const REGIONS: usize = R_STRIKE + 1;
-const SELECTION: u32 = 0x66f6_823b;
-const CURSOR: u32 = 0xaad4_d4d4;
-const PREEDIT_BG: u32 = rgb(0x2c, 0x34, 0x44);
 const DIM_ALPHA: u32 = 150;
 
 #[repr(C)]
@@ -458,7 +455,7 @@ fn encode_extras(
     atlas: &mut Atlas,
     grid: &client::CellGrid,
     o: Overlay<'_>,
-    link_color: u32,
+    palette: &Palette,
     out: &mut [Inst],
 ) {
     let Overlay {
@@ -482,7 +479,7 @@ fn encode_extras(
                     v as f32 * ch,
                     (to - from) as f32 * cw,
                     ch,
-                    SELECTION,
+                    palette.selection,
                 );
             }
         }
@@ -496,7 +493,7 @@ fn encode_extras(
             .and_then(|row| row.cells.get(cc))
             .is_some_and(|cell| cell.flags.contains(domain::CellFlags::WIDE_CHAR));
         let [x, y, w, h] = caret_rect(cc, cl, wide, (cw, ch), cur.shape, scale);
-        out[rows] = solid(x, y, w, h, CURSOR);
+        out[rows] = solid(x, y, w, h, palette.cursor);
     }
     if !preedit.is_empty() && scroll == 0 {
         let (bg, rest) = out[rows + 1..].split_at_mut(PREEDIT_MAX_CHARS);
@@ -516,13 +513,13 @@ fn encode_extras(
                 break;
             }
             let (x, y) = (col as f32 * cw, cl as f32 * ch);
-            bg[k] = solid(x, y, span as f32 * cw, ch, PREEDIT_BG);
+            bg[k] = solid(x, y, span as f32 * cw, ch, palette.preedit_bg);
             let id = atlas.run(cluster, REGULAR, span);
             put_run(
                 atlas,
                 id,
                 [x, y, span as f32 * cw, ch],
-                with_alpha(rgb(0xff, 0xff, 0xff), 255),
+                palette.preedit_fg,
                 &mut gl[k * GLYPHS..(k + 1) * GLYPHS],
             );
             under[k] = solid(
@@ -530,7 +527,7 @@ fn encode_extras(
                 y + ch - scale.max(1.0) * 1.5,
                 span as f32 * cw,
                 scale.max(1.0),
-                rgb(0xff, 0xff, 0xff),
+                palette.preedit_fg,
             );
             col += span;
             k += 1;
@@ -551,7 +548,7 @@ fn encode_extras(
                 y + atlas.baseline + line * 1.5,
                 (to - from + 1) as f32 * cw,
                 line,
-                link_color,
+                palette.fg,
             );
         }
     }
@@ -700,9 +697,9 @@ fn encode_pane(
         }
     }
     let key = extras_key(grid, o, scale);
-    if key != pg.extras_key {
+    if repaint || key != pg.extras_key {
         let at = pg.extras_at();
-        encode_extras(&mut gpu.atlas, grid, o, palette.fg, &mut pg.insts[at..]);
+        encode_extras(&mut gpu.atlas, grid, o, palette, &mut pg.insts[at..]);
         pg.extras_key = key;
         done.extras_dirty = true;
     }
