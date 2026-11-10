@@ -114,6 +114,7 @@ out_dir="${FORGE_OUT_DIR:-$repo_root/dist/macos}"
 app="$out_dir/Forge Node.app"
 ui_app="$repo_root/apps/ui"
 ui_target="${FORGE_UI_TARGET_DIR:-$ui_app/target}"
+root_target="${CARGO_TARGET_DIR:-$repo_root/target}"
 
 # Cargo package/binary name vs. the names users see. CFBundleExecutable is a
 # launcher named "Forge" (no spaces — Activity Monitor / force-quit) that
@@ -325,15 +326,15 @@ for slice in "${slices[@]}"; do
   [ -f "$gui_src" ] || die "missing $gui_src — the release build produced no $gui_bin for $slice"
   gui_sources+=("$gui_src")
 
-  daemon_src="target/$rust_target/release/$daemon_name"
+  daemon_src="$root_target/$rust_target/release/$daemon_name"
   [ -f "$daemon_src" ] || die "missing $daemon_src — the release build produced no $daemon_name for $slice"
   daemon_sources+=("$daemon_src")
 
-  editor_src="target/$rust_target/release/$editor_name"
+  editor_src="$root_target/$rust_target/release/$editor_name"
   [ -f "$editor_src" ] || die "missing $editor_src — the release build produced no $editor_name for $slice"
   editor_sources+=("$editor_src")
 
-  ctl_src="target/$rust_target/release/$ctl_name"
+  ctl_src="$root_target/$rust_target/release/$ctl_name"
   [ -f "$ctl_src" ] || die "missing $ctl_src — the release build produced no $ctl_name for $slice"
   ctl_sources+=("$ctl_src")
 done

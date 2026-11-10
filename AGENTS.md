@@ -50,7 +50,7 @@ A comment-free implementation is the default. Add a comment only when removing i
 
 Rust: `rustfmt` defaults and `clippy -D warnings` are the gate. Match `#[non_exhaustive]` with a wildcard arm from other crates. Do not `unwrap()` / `expect()` on a recoverable daemon path. `#[must_use]` on pure getters that are easy to ignore.
 
-The Rune client is Rust; there is no WebView layer. Theme values come from `apps/ui/src/theme/themes.json` through `roles.rs`, never a hex in a view. A helper with a right and a wrong answer lives in its own module so a test can import it without the window.
+The Rune client is native Rust; there is no embedded browser. Theme values come from `apps/ui/src/theme/themes.json` through `roles.rs`, never a hex in a view. A helper with a right and a wrong answer lives in its own module so a test can import it without the window.
 
 When touching existing code, remove nearby redundant or stale comments instead of adding another explanation. Keep comment-only cleanups free of behavior changes.
 
