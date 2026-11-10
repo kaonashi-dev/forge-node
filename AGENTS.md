@@ -14,7 +14,7 @@
 
 ## Commands
 
-- The canonical gate is `scripts/dev check` (also the default for bare `scripts/dev`): `cargo fmt --all -- --check`, then `cargo clippy --workspace --all-targets -- -D warnings`, then `cargo test --workspace`. CI runs the same gate on macOS.
+- The canonical gate is `scripts/dev check` (also the default for bare `scripts/dev`): `cargo fmt --all -- --check`, then `cargo clippy --workspace --all-targets -- -D warnings`, then `cargo test --workspace`. CI runs the same checks split into one job per workspace and phase: `fmt` on Ubuntu, clippy and tests for the root workspace and `apps/ui` on macOS.
 - Build everything with `cargo build --workspace`; run one package with `cargo test -p <package>`.
 - The Rune client has its own gate and runner: `scripts/dev ui check` (fmt, clippy `-D warnings`, tests), `scripts/dev ui build` (release; `make build-rune`), and `scripts/dev ui run [--daemon | --bench | --help]`. They honour `CARGO_TARGET_DIR`; never point it at the root `target/`. `scripts/rune-app [--open]` (`make app-rune` / `make open-rune`) builds `dist/rune/Forge Node Rune.app`, an unsigned review bundle with this checkout's daemon, editor and `forgectl` that keeps its own data in `~/.forge-node-rune`, never the everyday daemon's.
 - Exact unit-test example: `cargo test -p client --lib ipc::tests::connect_request_and_event_round_trip -- --exact`.

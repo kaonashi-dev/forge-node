@@ -1,8 +1,11 @@
 name: CI
 
-# The same gate `scripts/dev check` runs locally: fmt → clippy → test for the
-# root workspace, then the Rune client on its own toolchain. macOS only: no
-# Linux artifact is published yet.
+# The gate `scripts/dev check` runs locally, split across runners so lint and
+# tests, and the root workspace and the Rune client, do not queue behind each
+# other: wall clock is the slowest job instead of the sum. macOS for anything
+# that compiles — the daemon owns PTYs and Unix sockets and the Rune client
+# links Metal. `fmt` is the exception: rustfmt is platform-independent, and the
+# cheaper Linux image starts sooner, so a formatting slip fails first.
 
 on:
   push:
@@ -13,7 +16,7 @@ permissions:
   contents: read
 
 # A superseded PR run has nothing to say; cancel it instead of paying twice.
-# Pushes to main are never cancelled.
+# Pushes to main are never cancelled: they are what fills the caches below.
 concurrency:
   group: ci-${{ github.ref }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
@@ -21,13 +24,21 @@ concurrency:
 env:
   CARGO_TERM_COLOR: always
   RUST_BACKTRACE: 1
+  # Incremental state does not survive a fresh runner; it only inflates the cache.
   CARGO_INCREMENTAL: 0
+  # Full debuginfo is most of a test binary's link time and cache size. Line
+  # tables keep the file:line a panicking test's backtrace needs.
+  CARGO_PROFILE_DEV_DEBUG: line-tables-only
+  CARGO_PROFILE_TEST_DEBUG: line-tables-only
 
+# Caches are written by main only, one per job: a PR's partial dependency graph
+# is not worth evicting main's for, and every later run restores what main
+# saved. A failing main run still saves, so the next one is not cold as well.
 jobs:
-  workspace:
-    name: workspace + Rune (macOS)
-    runs-on: macos-latest
-    timeout-minutes: 90
+  fmt:
+    name: fmt
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
 
@@ -36,12 +47,101 @@ jobs:
           rustup show
           ( cd apps/ui && rustup show )
 
+      - name: Check formatting
+        run: |
+          cargo fmt --all -- --check
+          ( cd apps/ui && cargo fmt --all -- --check )
+
+  workspace-clippy:
+    name: workspace clippy
+    runs-on: macos-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust (pinned toolchain)
+        run: rustup show
+
+      - name: Select a linker-compatible macOS SDK
+        run: echo "SDKROOT=$(scripts/macos-sdk)" >>"$GITHUB_ENV"
+
       - uses: Swatinem/rust-cache@v2
         with:
-          workspaces: |
-            . -> target
-            apps/ui -> target
+          workspaces: . -> target
           save-if: ${{ github.ref == 'refs/heads/main' }}
+          cache-on-failure: ${{ github.ref == 'refs/heads/main' }}
 
-      - name: Gate (fmt, clippy, test for the workspace and apps/ui)
-        run: scripts/dev check
+      - name: Clippy
+        run: cargo clippy --workspace --all-targets -- -D warnings
+
+  workspace-test:
+    name: workspace test
+    runs-on: macos-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust (pinned toolchain)
+        run: rustup show
+
+      - name: Select a linker-compatible macOS SDK
+        run: echo "SDKROOT=$(scripts/macos-sdk)" >>"$GITHUB_ENV"
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: . -> target
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+          cache-on-failure: ${{ github.ref == 'refs/heads/main' }}
+
+      - name: Test
+        run: cargo test --workspace
+
+  # rustup reads rust-toolchain.toml from the working directory, not from the
+  # manifest, so the Rune cargo steps run inside apps/ui.
+  rune-clippy:
+    name: rune clippy
+    runs-on: macos-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust (pinned toolchain)
+        working-directory: apps/ui
+        run: rustup show
+
+      - name: Select a linker-compatible macOS SDK
+        run: echo "SDKROOT=$(scripts/macos-sdk)" >>"$GITHUB_ENV"
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: apps/ui -> target
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+          cache-on-failure: ${{ github.ref == 'refs/heads/main' }}
+
+      - name: Clippy
+        working-directory: apps/ui
+        run: cargo clippy --all-targets -- -D warnings
+
+  rune-test:
+    name: rune test
+    runs-on: macos-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust (pinned toolchain)
+        working-directory: apps/ui
+        run: rustup show
+
+      - name: Select a linker-compatible macOS SDK
+        run: echo "SDKROOT=$(scripts/macos-sdk)" >>"$GITHUB_ENV"
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: apps/ui -> target
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+          cache-on-failure: ${{ github.ref == 'refs/heads/main' }}
+
+      - name: Test
+        working-directory: apps/ui
+        run: cargo test
