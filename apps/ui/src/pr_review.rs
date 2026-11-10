@@ -1,7 +1,7 @@
 //! Pull requests, and reviewing one with an agent. A review is a read twice
 //! guarded: the launch is read-only, which applies the provider's own review
 //! flags, and the recipe from `domain::pr_review` forbids editing, committing
-//! and posting. The choice of checkout and agent follows this client.
+//! and posting.
 
 use client::ProviderInfo;
 use domain::{AgentProviderId, ProjectId, PullRequest, Workspace, WorkspaceId, WorkspaceKind};

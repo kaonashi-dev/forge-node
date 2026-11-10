@@ -1,5 +1,5 @@
 //! The sidebar's History: agent runs recorded on disk (the snapshot's
-//! `external_agents`), as the original client's `HistoryPanel` lists them. Resume is the
+//! `external_agents`). Resume is the
 //! ordinary agent launch told which conversation to re-enter, under the
 //! account that recorded it.
 

@@ -1,5 +1,5 @@
-//! One session's changes since its own baseline, as the original client's
-//! `SessionChangesPanel`: a read the person asks for, never a subscription.
+//! One session's changes since its own baseline: a read the person asks for,
+//! never a subscription.
 
 use domain::{BaseOrigin, SessionChanges, SessionId, Timestamp, WorkspaceId};
 use rune::{El, ScrollSpec, col, el, row, text};

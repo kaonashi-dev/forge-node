@@ -22,8 +22,8 @@ pub fn cell_at_zoom(zoom: f64) -> (f32, f32) {
     )
 }
 
-/// An agent's terminal rang and nobody has typed into it since, as the original client's
-/// `session_wants_you` plus the question latch: a shell's bell is a beep.
+/// An agent's terminal rang and nobody has typed into it since, plus the
+/// question latch: a shell's bell is a beep.
 #[must_use]
 pub fn asks(store: &client::Store, session: &domain::Session) -> bool {
     session.agent_provider_id.is_some()
@@ -147,7 +147,7 @@ impl AppState {
         }
     }
 
-    /// A ⌘-press on a link opens it on release, as the original client's `LinkPress`; it
+    /// A ⌘-press on a link opens it on release; it
     /// never starts a selection. Returns whether the gesture was the link's.
     pub fn link_press(&mut self, idx: usize, pointer: &Pointer, tx: &mut Tx) -> bool {
         match pointer.phase {

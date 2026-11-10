@@ -1,6 +1,5 @@
 //! The sidebar's Processes: every project action run still in the store,
-//! grouped by project with live runs first, as the original client's `ProcessesPanel` and
-//! `groupProcesses` lay them out. Grouped when the store changes.
+//! grouped by project with live runs first. Grouped when the store changes.
 
 use domain::{ActionReadiness, Project, Session, SessionId, SessionState, Workspace};
 use rune::{El, ScrollSpec, col, el, icon, row, text};
@@ -8,7 +7,7 @@ use rune_kit::Kit;
 
 use crate::app::AppState;
 
-/// Where a run is, as the original client's `sessionPhase` names it.
+/// Where a run is.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Phase {
     Waiting,

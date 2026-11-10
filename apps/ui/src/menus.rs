@@ -1,4 +1,4 @@
-//! Context menus, in the original client's order: what a row offers is built here as data
+//! Context menus: what a row offers is built here as data
 //! (`items`), so a test can read it without drawing, and drawn by
 //! `rune_kit::Menu` in the overlay layer. Every effect is a daemon request,
 //! the clipboard, or a desktop launch; nothing here touches a checkout.
@@ -22,9 +22,9 @@ use crate::workbench::{CenterMode, Panel};
 /// The file tree's element key: the Menu key and Shift+F10 reach the tree's
 /// own menu only while it is what holds focus.
 pub const FILES_TREE: &str = "files-tree-view";
-/// Shared with this client: `{ project id: hue slot }`.
+/// `{ project id: hue slot }`.
 pub const PROJECT_HUES_KEY: &str = "ui.project_hues";
-/// the original client's `HUE_NAMES`, in slot order.
+/// The hue names, in slot order.
 pub const HUE_NAMES: [&str; 9] = [
     "Teal", "Blue", "Green", "Orchid", "Rose", "Lime", "Sky", "Gold", "Violet",
 ];
@@ -37,13 +37,13 @@ pub enum Target {
     Checkout(WorkspaceId),
     /// A session's row in the rail.
     Session(SessionId),
-    /// A tab in the strip: a session's, or an editor's, which the original client keeps in
-    /// its Code strip and gives that strip's menu.
+    /// A tab in the strip: a session's, or an editor's, which has the editor
+    /// tab menu.
     Tab(SessionId),
     Files(WorkspaceId, FileTarget),
     /// A named group's header in the rail.
     Group(ProjectGroupId),
-    /// The text of a line editor, for `EditorTerminalPane`'s menu.
+    /// The text of a line editor, for its pane's menu.
     Editor(SessionId),
     /// One recorded agent run in the History panel, by store position.
     HistoryRun(usize),
@@ -86,7 +86,7 @@ pub enum FileTarget {
     Directory(String),
 }
 
-/// What an item looks like, by the original client's icon name; `icon` draws it.
+/// What an item looks like, by icon name; `icon` draws it.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Glyph {
     None,
@@ -332,7 +332,7 @@ pub fn rendered(entries: Vec<Entry>) -> Vec<Entry> {
     out
 }
 
-/// Every item the original client lists for `target`, ported or not.
+/// Every item the menu lists for `target`.
 #[must_use]
 pub fn items(s: &AppState, target: &Target) -> Vec<Entry> {
     match target {
@@ -359,7 +359,8 @@ pub fn items(s: &AppState, target: &Target) -> Vec<Entry> {
     }
 }
 
-/// `groupMenu`. Removing a group never touches its projects' directories.
+/// A project group's menu. Removing a group never touches its projects'
+/// directories.
 fn group_items(group: ProjectGroupId) -> Vec<Entry> {
     vec![
         item(
@@ -416,7 +417,7 @@ pub fn button_items(s: &AppState, menu: &ButtonMenu) -> Vec<Entry> {
     }
 }
 
-/// the original client's `urlBadge`: `:5173` for a URL with a port, else its host.
+/// `:5173` for a URL with a port, else its host.
 #[must_use]
 pub fn url_badge(url: &str) -> Option<String> {
     let rest = url.split_once("://").map_or(url, |(_, rest)| rest);
@@ -432,7 +433,7 @@ pub fn url_badge(url: &str) -> Option<String> {
     })
 }
 
-/// The status beside a live action's name, as the original client's `liveStatus`.
+/// The status beside a live action's name.
 fn live_status(phase: &crate::processes::Phase) -> String {
     use crate::processes::Phase;
     match phase {
@@ -464,7 +465,7 @@ fn served_at(session: &domain::Session, phase: &crate::processes::Phase) -> Opti
         .map(|port| format!("http://localhost:{port}"))
 }
 
-/// `actionMenuItems`: each action of the checkout's project — an idle one
+/// Each action of the checkout's project — an idle one
 /// runs (in its finished session, if it left one), a live one shows its
 /// terminal with its browser, restart and stop beneath — then the editor.
 fn run_items(s: &AppState, workspace: WorkspaceId) -> Vec<Entry> {
@@ -557,7 +558,7 @@ fn run_items(s: &AppState, workspace: WorkspaceId) -> Vec<Entry> {
     out
 }
 
-/// `EditorTerminalPane`'s `menuItems`: the editor owns the selection, so
+/// An editor pane's menu: the editor owns the selection, so
 /// Copy asks it, and Paste reads the pasteboard here.
 fn editor_pane_items(s: &AppState, session_id: SessionId) -> Vec<Entry> {
     let path = s.store.as_ref().and_then(|store| {
@@ -582,7 +583,7 @@ fn editor_pane_items(s: &AppState, session_id: SessionId) -> Vec<Entry> {
     ]
 }
 
-/// `launchItems` over the host's `launchables`: a terminal, then each agent
+/// What can be launched here: a terminal, then each agent
 /// and its profiles the person has not hidden. A missing agent stays listed
 /// and disabled, so the menu also says what could run here.
 fn launch_items(s: &AppState, workspace: WorkspaceId) -> Vec<Entry> {
@@ -638,7 +639,7 @@ fn launch_items(s: &AppState, workspace: WorkspaceId) -> Vec<Entry> {
     out
 }
 
-/// `workspaceMenu`.
+/// A checkout's menu.
 fn checkout_items(s: &AppState, workspace_id: WorkspaceId) -> Vec<Entry> {
     let Some(store) = &s.store else {
         return Vec::new();
@@ -765,7 +766,7 @@ fn checkout_items(s: &AppState, workspace_id: WorkspaceId) -> Vec<Entry> {
     out
 }
 
-/// `projectMenu`. A project whose one checkout is its own answers for that
+/// A project's menu. A project whose one checkout is its own answers for that
 /// checkout too, under a "Project" heading.
 fn project_items(s: &AppState, project_id: ProjectId) -> Vec<Entry> {
     let Some(store) = &s.store else {
@@ -888,7 +889,7 @@ fn project_items(s: &AppState, project_id: ProjectId) -> Vec<Entry> {
     }
 }
 
-/// `sessionMenuItems`, shared by the rail row and the tab.
+/// A session's menu, shared by the rail row and the tab.
 fn session_items(s: &AppState, session_id: SessionId) -> Vec<Entry> {
     let Some(session) = s
         .store
@@ -936,7 +937,7 @@ fn session_items(s: &AppState, session_id: SessionId) -> Vec<Entry> {
     ]
 }
 
-/// `historyMenuItems`: continue a recorded run in a new session, or delete its
+/// A recorded run's menu: continue it in a new session, or delete its
 /// transcript. A run in a shared store cannot be deleted on its own.
 fn history_items(s: &AppState, at: usize) -> Vec<Entry> {
     let Some(store) = &s.store else {
@@ -963,7 +964,7 @@ fn history_items(s: &AppState, at: usize) -> Vec<Entry> {
     ]
 }
 
-/// `CenterStack`'s `tabMenuItems` over the strip's editors: each bulk close
+/// An editor tab's menu: each bulk close
 /// is about the tab the menu opened on, not the active one.
 fn editor_tab_items(s: &AppState, session_id: SessionId) -> Vec<Entry> {
     let editors: Vec<SessionId> = s
@@ -1032,7 +1033,7 @@ fn tab_move_items(s: &AppState, session: SessionId) -> Vec<Entry> {
     ]
 }
 
-/// `FileTreePanel`'s `menuItems`.
+/// A Files tree row's menu.
 fn file_items(s: &AppState, workspace: WorkspaceId, target: &FileTarget) -> Vec<Entry> {
     let root = s.store.as_ref().and_then(|store| {
         store
@@ -1159,7 +1160,7 @@ pub struct OpenMenu {
     pub sub: Option<usize>,
 }
 
-/// A name or path asked for by a menu item, with the original client's `requestTextInput` copy.
+/// A name or path asked for by a menu item, with its dialog copy.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Ask {
     RenameCheckout(WorkspaceId),
@@ -1274,7 +1275,7 @@ pub fn tree_menu_key(ev: &KeyEvent, tx: &Tx) -> bool {
     menu && tx.focused() == Some(FILES_TREE)
 }
 
-/// The project-to-slot map as the original client's `parseProjectHues` keeps it: anything
+/// The project-to-slot map as stored: anything
 /// that is not a slot is dropped.
 #[must_use]
 pub fn parse_hues(raw: Option<&str>) -> BTreeMap<String, usize> {
@@ -1332,7 +1333,7 @@ pub fn under(parent: &str, name: &str) -> String {
 
 const COPY_LIMIT: u32 = 100;
 
-/// the original client's `duplicateFileName`: `notes.md` → `notes copy.md` → `notes copy 2.md`;
+/// `notes.md` → `notes copy.md` → `notes copy 2.md`;
 /// a copy's copy counts on rather than stacking. A leading dot is the name.
 #[must_use]
 pub fn duplicate_name(name: &str, taken: impl Fn(&str) -> bool) -> Option<String> {
@@ -1363,7 +1364,7 @@ pub fn duplicate_name(name: &str, taken: impl Fn(&str) -> bool) -> Option<String
         .find(|candidate| !taken(candidate))
 }
 
-/// the original client's `shellReference`: the absolute path, single-quoted for a shell.
+/// The absolute path, single-quoted for a shell.
 pub fn shell_reference(root: &str, path: &str) -> Result<String, &'static str> {
     const REFUSED: &str = "This path cannot be inserted as a terminal reference.";
     let control = |text: &str| text.chars().any(|c| c.is_control());
@@ -1420,7 +1421,7 @@ fn plural(count: usize, noun: &str) -> String {
     format!("{count} {noun}{}", if count == 1 { "" } else { "s" })
 }
 
-/// the original client's `describeProjectRemoval`.
+/// What removing a project under `policy` does, one sentence per line.
 #[must_use]
 pub fn describe_removal(policy: RemoveProjectPolicy, footprint: Footprint) -> Vec<String> {
     let mut lines = vec!["Forge Node stops tracking the project.".to_string()];
@@ -1738,7 +1739,7 @@ pub fn set_ignores(s: &mut AppState, project: ProjectId, rules: Vec<domain::Work
     });
 }
 
-/// the original client's gesture names the folder that holds the worktree, not the
+/// The gesture names the folder that holds the worktree, not the
 /// worktree: the next agent run gets a different directory there.
 fn ignore_folder(s: &mut AppState, workspace: WorkspaceId) {
     let Some(store) = &s.store else {
@@ -1767,7 +1768,7 @@ fn ignore_folder(s: &mut AppState, workspace: WorkspaceId) {
     set_ignores(s, project, rules);
 }
 
-/// the original client's `closeViews`: one confirmation when any editor might hold unsaved
+/// One confirmation when any editor might hold unsaved
 /// work, and an unknown state counts as unsaved.
 fn close_editors(s: &mut AppState, sessions: Vec<SessionId>) {
     if sessions.is_empty() {
@@ -1848,7 +1849,7 @@ fn insert_reference(s: &mut AppState, workspace: WorkspaceId, path: &str, tx: &m
     }
 }
 
-/// the original client's `open.rs`: a CLI on `PATH`, else the app bundle; Finder opens the
+/// A CLI on `PATH`, else the app bundle; Finder opens the
 /// folder. Located and reaped on its own thread.
 fn open_in(app: Opener, path: PathBuf) {
     if app == Opener::Finder {
@@ -2060,7 +2061,7 @@ pub fn remove_project(s: &mut AppState) {
     send(s, "RemoveProject", |c| c.remove_project(project, policy));
 }
 
-/// A refused file write is said in the Files panel, as the original client's `operationError`.
+/// A refused file write is said in the Files panel.
 pub fn command_result(s: &mut AppState, label: &str, ok: bool, message: &str) {
     if matches!(
         label,
@@ -2305,7 +2306,7 @@ fn confirm_dialog(s: &AppState, k: &Kit, layer: &mut Vec<El>) {
         .build(k, layer);
 }
 
-/// the original client's `RemoveProjectDialog`: the policy is chosen before the request,
+/// The policy is chosen before the request,
 /// and the one the daemon would refuse is disabled with the reason.
 fn removal_dialog(s: &AppState, k: &Kit, layer: &mut Vec<El>) {
     let (Some((project, policy)), Some(store)) = (s.menus.removal, &s.store) else {

@@ -19,7 +19,7 @@ pub struct FetchRequest {
 }
 
 /// A selection drag's pointer. `moved` stays false for a click held still,
-/// which never scrolls, as in the original client's `SelectionDrag`.
+/// which never scrolls.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct DragPoint {
     pub x: f32,
@@ -29,7 +29,7 @@ pub struct DragPoint {
     pub stepped_at: f64,
 }
 
-/// A plain click that may move the shell's cursor, as the original client's `CursorClick`:
+/// A plain click that may move the shell's cursor:
 /// it lands only on the cell it started on, against the grid it saw.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct CursorClick {

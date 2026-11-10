@@ -1,8 +1,7 @@
-//! A custom theme stored as JSON in `ui.theme_base`, read and edited as
-//! this client, the equivalent and the equivalent do. The
-//! built-in bases never pass through here: their colours come resolved in
-//! `themes.json`, and `editor_colors_match_every_built_in_base` holds this
-//! derivation to that file.
+//! A custom theme stored as JSON in `ui.theme_base`. The built-in bases never
+//! pass through here: their colours come resolved in `themes.json`, and
+//! `editor_colors_match_every_built_in_base` holds this derivation to that
+//! file.
 
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
@@ -88,7 +87,7 @@ pub enum ThemeColor {
     Text,
 }
 
-/// The keys every palette must carry, as `parsePalette` walks forge-dark's.
+/// The keys every palette must carry: forge-dark's.
 const REQUIRED: [&str; 26] = [
     "bg",
     "rail",
@@ -154,7 +153,8 @@ pub fn contrast(a: u32, b: u32) -> f64 {
     (la.max(lb) + 0.05) / (la.min(lb) + 0.05)
 }
 
-/// `readableColor` against one ground: keep the hue while it reads, else step toward `toward`.
+/// Readable against one ground: keep the hue while it reads, else step toward
+/// `toward`.
 fn lift(color: u32, ground: u32, toward: u32, floor: f64) -> u32 {
     let score = |candidate: u32| contrast(candidate, ground);
     if score(color) >= floor {
@@ -206,7 +206,7 @@ pub fn normalize_color(value: &str) -> Option<String> {
         .then(|| trimmed.to_ascii_lowercase())
 }
 
-/// Validates as `parseCustomTheme` does, with its messages.
+/// Validates a custom theme; the error is the message to show.
 pub fn parse(source: &str) -> Result<CustomTheme, String> {
     if source.len() > MAX_THEME_BYTES {
         return Err("Theme JSON must be 16 KB or smaller.".into());
@@ -319,7 +319,7 @@ fn c(value: &str) -> u32 {
     parse_hex(value).unwrap_or(0)
 }
 
-/// The editor's colours for a palette, as `editorPalette` derives them.
+/// The editor's colours for a palette.
 #[must_use]
 pub fn editor_colors(p: &Palette) -> EditorColors {
     let ground = c(&p.editor);
@@ -356,7 +356,7 @@ pub fn editor_colors(p: &Palette) -> EditorColors {
     }
 }
 
-/// `withThemeColor`: a new accent, ground or foreground, carrying the roles
+/// A new accent, ground or foreground, carrying the roles
 /// that hang off it so the palette stays one theme.
 pub fn with_color(source: &Palette, key: ThemeColor, color: &str) -> Result<Palette, String> {
     let Some(value) = normalize_color(color) else {
@@ -439,7 +439,7 @@ fn toward_ground(source: &Palette, text: &str) -> String {
     hex(mix(c(text), ground, pct(amount * 100.0)))
 }
 
-/// `withThemeContrast`: 60 is the palette as drawn; lower melts panels and
+/// Contrast 60 is the palette as drawn; lower melts panels and
 /// secondary text into the ground, higher pulls them toward the foreground.
 #[must_use]
 pub fn with_contrast(source: &Palette, contrast: u8) -> Palette {
@@ -473,7 +473,7 @@ pub fn with_contrast(source: &Palette, contrast: u8) -> Palette {
     result
 }
 
-/// `themeVariant`: the edited theme, its mode read off the new ground, with
+/// The edited theme, its mode read off the new ground, with
 /// the unadjusted palette kept so contrast is recomputed rather than compounded.
 #[must_use]
 pub fn variant(name: &str, palette: Palette, contrast: u8) -> CustomTheme {

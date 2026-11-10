@@ -28,7 +28,7 @@ impl Scope {
         Scope::Authored,
     ];
 
-    /// The stored form, shared with the original client.
+    /// The stored form.
     #[must_use]
     pub fn value(self) -> &'static str {
         match self {

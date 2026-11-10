@@ -1,6 +1,5 @@
-//! the original client's own glyphs (the equivalent, the equivalent): one 16 pt
-//! grid, a 1.5 round stroke in the current colour, so both clients draw the
-//! same marks.
+//! Forge's own glyphs: one 16 pt grid, a 1.5 round stroke in the current
+//! colour.
 
 use rune::Icon;
 
@@ -12,8 +11,8 @@ macro_rules! stroke {
     };
 }
 
-/// Each glyph is `NAME "id" "region" "rest"`. The region is the part the original client's
-/// `.glyph-region` fills at 20% when the glyph names the chosen thing, so a
+/// Each glyph is `NAME "id" "region" "rest"`. The region is the part filled
+/// at 20% when the glyph names the chosen thing, so a
 /// chosen view never rests on colour alone; [`chosen`] draws it that way.
 macro_rules! glyphs {
     ($($name:ident $id:literal $region:literal $body:literal;)*) => {
@@ -215,9 +214,8 @@ pub fn chosen(icon: &'static Icon) -> &'static Icon {
         .map_or(icon, |(_, chosen)| chosen)
 }
 
-/// A logotype drawn from the original client's `public/icons/*.svg`, filled in the current
-/// colour, so a provider never carries a hue that would rank it above another
-/// (the original client's `BrandIcon`).
+/// A provider's logotype, filled in the current colour, so a provider never
+/// carries a hue that would rank it above another.
 macro_rules! brand {
     ($(#[$meta:meta])* $name:ident, $id:literal, $view:literal, $path:literal) => {
         $(#[$meta])*
@@ -258,7 +256,7 @@ brand!(
     "M9 6a3 3 0 0 0-3 3v66H0V9a9 9 0 0 1 9-9h80.379c4.009 0 6.016 4.847 3.182 7.682L43.055 57.187H57V51h6v7.688a4.5 4.5 0 0 1-4.5 4.5H37.055L26.743 73.5H73.5V36h6v37.5a6 6 0 0 1-6 6H20.743L10.243 90H87a3 3 0 0 0 3-3V21h6v66a9 9 0 0 1-9 9H6.621c-4.009 0-6.016-4.847-3.182-7.682L52.757 39H39v6h-6v-7.5a4.5 4.5 0 0 1 4.5-4.5h21.257l10.5-10.5H22.5V60h-6V22.5a6 6 0 0 1 6-6h52.757L85.757 6H9Z"
 );
 
-/// The mark for a provider id, as `brandForProvider`; `None` for one with no
+/// The mark for a provider id; `None` for one with no
 /// logo of its own, which keeps the generic agent glyph.
 #[must_use]
 pub fn brand(provider: &str) -> Option<&'static Icon> {
@@ -284,7 +282,7 @@ pub fn for_session(kind: domain::SessionKind, provider: Option<&str>) -> &'stati
     }
 }
 
-/// What a session's tab and row show, after the original client's `sessionGlyphFace`: the
+/// What a session's tab and row show: the
 /// session the person is in keeps its identity, one that stopped to ask is a
 /// bell, a busy one a loader, and a finished agent a check. An editor's
 /// identity is its file's mark.
@@ -308,7 +306,7 @@ pub fn for_row(row: &SessionRow, active: bool, light: bool) -> &'static Icon {
 mod tests {
     use super::*;
 
-    /// The glyph the original client's `ICONS` registry (the equivalent) names, by that name.
+    /// The glyph registered under `name`.
     fn named(name: &str) -> Option<&'static Icon> {
         Some(match name {
             "git-branch" => &GIT,
@@ -374,7 +372,7 @@ mod tests {
         })
     }
 
-    /// the equivalent's `ForgeIconName`, every name the shell may ask for.
+    /// Every glyph name the shell may ask for.
     const REGISTRY: [&str; 59] = [
         "git-branch",
         "git-pull-request",

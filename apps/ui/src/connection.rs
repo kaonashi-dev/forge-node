@@ -3954,7 +3954,7 @@ fn resync_live(
 
 /// The first read after connecting. It adds no project and starts no
 /// shell: an empty daemon shows the empty centre (New terminal, Add a
-/// project) as the original client's does, and a launch from Finder has `/` for its
+/// project), and a launch from Finder has `/` for its
 /// working directory, which is no one's project.
 fn bootstrap(client: &Client, metrics: &Metrics) -> Result<(Store, u64), String> {
     load_snapshot(client, metrics)

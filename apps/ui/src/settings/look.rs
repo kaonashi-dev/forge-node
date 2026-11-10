@@ -1,5 +1,5 @@
-//! Settings › Appearance: the theme, then the original client's density, motion, finish,
-//! type size and editor rows (the equivalent `Appearance`).
+//! Settings › Appearance: the theme, then density, motion, finish, type size
+//! and editor rows.
 
 use rune::{El, col, row, text};
 use rune_kit::{Button, ButtonVariant, ControlSize, Kit, SegmentedControl, Switch};

@@ -15,7 +15,7 @@ use rune_kit::{Button, ButtonVariant, ControlSize, Kit, TextArea, TextInput};
 
 use crate::app::AppState;
 
-/// the original client's cap on the diff embedded in a draft prompt.
+/// The cap on the diff embedded in a draft prompt.
 pub const MAX_PROMPT_PATCH: usize = 24 * 1024;
 
 pub struct ReceivedDraft {

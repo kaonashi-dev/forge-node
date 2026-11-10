@@ -1,8 +1,8 @@
-//! Settings › Storage, as the original client's `StorageSection`: where the daemon keeps
-//! its config, state and managed worktrees. The paths are the daemon's own
-//! resolution (`GetPaths`), immutable per daemon, so one read per connection.
-//! Moving data out of a legacy layout stops and restarts the daemon, which
-//! only the original client's host does today; here it is named, not offered.
+//! Settings › Storage: where the daemon keeps its config, state and managed
+//! worktrees. The paths are the daemon's own resolution (`GetPaths`),
+//! immutable per daemon, so one read per connection. Moving data out of a
+//! legacy layout stops the daemon, runs `forge-daemon migrate-home`, and
+//! reconnects.
 
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -154,7 +154,7 @@ impl Migration {
     }
 }
 
-/// Managed worktrees still under a legacy `…/worktrees/`, as `legacyWorktreeCount`:
+/// Managed worktrees still under a legacy `…/worktrees/`:
 /// `/x/worktrees2` is not under `/x/worktrees`, and an unmanaged checkout is not Forge's.
 #[must_use]
 pub fn legacy_worktree_count(workspaces: &[domain::Workspace], legacy: Option<&Path>) -> usize {

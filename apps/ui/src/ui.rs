@@ -112,7 +112,7 @@ pub fn view(s: &AppState, cx: &mut Cx<AppState>) -> El {
     root
 }
 
-/// the original client's card strip: the checkout's tabs, then its actions; the band the
+/// The card strip: the checkout's tabs, then its actions; the band the
 /// window drags by.
 fn toolbar(s: &AppState, k: &Kit) -> Toolbar {
     let mut bar = Toolbar::new().leading(crate::chrome::strip(s, k));
@@ -145,7 +145,7 @@ fn toolbar(s: &AppState, k: &Kit) -> Toolbar {
     bar.trailing(create).trailing(jump)
 }
 
-/// the original client's sidebar: the view switcher, the chosen view, and the footer. Each
+/// The sidebar: the view switcher, the chosen view, and the footer. Each
 /// view scrolls itself, so Git can keep its commit box in reach.
 fn sidebar(s: &AppState, k: &Kit) -> El {
     use crate::workbench::Panel;
@@ -391,7 +391,7 @@ fn terminal_surface(s: &AppState, k: &Kit) -> El {
         .child(body)
 }
 
-/// the original client's terminalPadX / terminalPadY, painted in the terminal's own ground;
+/// The terminal's padding, painted in the terminal's own ground;
 /// the pane inside keeps its coordinates.
 fn pane_inset(s: &AppState, k: &Kit, idx: usize) -> El {
     col()
@@ -407,7 +407,7 @@ fn pane_inset(s: &AppState, k: &Kit, idx: usize) -> El {
         .child(terminal_pane(s, k, idx))
 }
 
-/// A column divider that stores a fraction, as the original client's `SplitHandle`: a
+/// A column divider that stores a fraction: a
 /// remembered width of one column would starve the other after a resize.
 fn split_handle(k: &Kit) -> El {
     el().key("terminal-split-handle")
@@ -500,7 +500,7 @@ fn terminal_ground(s: &AppState, k: &Kit) -> rune::Color {
     rune::color::hex(&srgb).unwrap_or(k.c.bg_base)
 }
 
-/// the original client's `SessionHeader` crumbs: project / checkout / session.
+/// The header's crumbs: project / checkout / session.
 fn session_crumbs(s: &AppState, k: &Kit) -> El {
     let mut crumbs = row()
         .key("session-crumbs")
@@ -1140,7 +1140,7 @@ fn tab_switcher(s: &AppState, k: &Kit, layer: &mut Vec<El>) {
     );
 }
 
-/// the original client's empty centre (the equivalent): what can be started from here.
+/// The empty centre: what can be started from here.
 fn empty_center(s: &AppState, k: &Kit) -> El {
     let has_projects = s
         .store
@@ -1274,7 +1274,7 @@ fn rename_dialog(s: &AppState, k: &Kit, layer: &mut Vec<El>) {
         .build(k, layer);
 }
 
-/// the original client's confirmation before a close stops a live process.
+/// The confirmation before a close stops a live process.
 fn close_dialog(s: &AppState, k: &Kit, layer: &mut Vec<El>) {
     let Some(session) = s.confirm_close else {
         return;

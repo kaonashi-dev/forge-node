@@ -1,7 +1,6 @@
-//! The window's chrome as the original client draws it: the card strip (session tabs on
-//! the left, actions on the right, the window's drag band), the sidebar's
-//! view switcher, and its footer. the original client's `CardStrip`, `SessionTabs` and
-//! `Sidebar` are the reference.
+//! The window's chrome: the card strip (session tabs on the left, actions on
+//! the right, the window's drag band), the sidebar's view switcher, and its
+//! footer.
 
 use rune::{El, Icon, col, el, icon, row, text};
 use rune_kit::Kit;
@@ -13,7 +12,7 @@ use crate::workbench::{CenterMode, Panel};
 /// A tab never grows past this, as `.session-tab-wrap { max-width: 280px }`.
 const TAB_MAX_W: f32 = 240.0;
 
-/// The sidebar's views, in the original client's order: panel, name, element key, glyph.
+/// The sidebar's views, in order: panel, name, element key, glyph.
 pub const VIEWS: [(Panel, &str, &str, &Icon); 6] = [
     (
         Panel::Projects,
@@ -285,7 +284,7 @@ pub fn actions(k: &Kit) -> [El; 2] {
     ]
 }
 
-/// The sidebar's view switcher, as the original client's `sidebar-views`.
+/// The sidebar's view switcher.
 pub fn views(s: &AppState, k: &Kit) -> El {
     let mut bar = row()
         .key("sidebar-views")
@@ -328,7 +327,7 @@ pub fn views(s: &AppState, k: &Kit) -> El {
 }
 
 /// The sidebar's foot: the daemon's state only while it is not connected,
-/// and Settings, as the original client's `SidebarFooter`.
+/// and Settings.
 pub fn footer(s: &AppState, k: &Kit) -> El {
     let trouble = match s.status {
         LinkStatus::Connected => None,

@@ -1,4 +1,4 @@
-//! The commit box under the changed files, as the original client's `WorkingTreeRail`: a
+//! The commit box under the changed files: a
 //! message, a button that stages everything and commits, and Juva only when
 //! asked. Nothing here pushes.
 
@@ -22,7 +22,7 @@ pub struct CommitBox {
     pub committed: bool,
 }
 
-/// `Commit 3 files`, as the original client's `commitLabel` words it.
+/// `Commit 3 files`.
 #[must_use]
 pub fn commit_label(files: usize) -> String {
     match files {
@@ -94,7 +94,7 @@ pub fn commit_box(s: &AppState, k: &Kit, files: usize) -> El {
         .on_edit(|s: &mut AppState| &mut s.commit.message)
         .on_change(|s: &mut AppState, _| s.commit.committed = false)
         .on_key(|s: &mut AppState, ev, _| {
-            // ⌘↩ commits, as in the original client; a bare Return is a new line.
+            // ⌘↩ commits; a bare Return is a new line.
             if ev.key == rune::Key::Enter && ev.mods.cmd {
                 s.create_commit();
                 return true;

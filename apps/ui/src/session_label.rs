@@ -1,5 +1,4 @@
-//! How a session is named and its state said, as the original client's `sessionTitle`,
-//! `promptPath` and `sessionStateLabel` (the equivalent) do.
+//! How a session is named and its state said.
 
 use domain::{Session, SessionKind, SessionState};
 
@@ -14,8 +13,7 @@ fn is_agent(session: &Session) -> bool {
 
 fn fallback_kind(session: &Session) -> String {
     if session.kind == SessionKind::Editor {
-        // the original client shows editors in its Code tab, never among session tabs; here
-        // they are tabs, so the file's name tells them apart.
+        // Editors are tabs beside sessions, so the file's name tells them apart.
         return session
             .editor
             .as_ref()

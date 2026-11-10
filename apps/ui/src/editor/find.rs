@@ -1,6 +1,6 @@
 //! Find in the open file. The editor owns the query, the search and the
 //! marks; the panel sends what was typed (`EditorFind`) and draws the
-//! `EditorState.find` the editor reports back, as this client.
+//! `EditorState.find` the editor reports back.
 //!
 //! The field keeps its own text while typing, because the state that echoes a
 //! keystroke arrives after the next one.
@@ -42,7 +42,7 @@ pub enum Flag {
     Regex,
 }
 
-/// the original client's three toggles: what the button says, and what it is called.
+/// The three toggles: what the button says, and what it is called.
 pub const TOGGLES: [(Flag, &str, &str); 3] = [
     (Flag::Case, "Aa", "Match case"),
     (Flag::Word, "ab", "Match whole word"),
