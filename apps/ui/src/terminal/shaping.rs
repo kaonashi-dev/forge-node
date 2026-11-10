@@ -704,7 +704,7 @@ mod tests {
 
     #[cfg(target_os = "macos")]
     #[test]
-    fn nerd_fonts_are_found_by_family_with_the_original_client_face_first() {
+    fn nerd_fonts_are_found_by_family_with_the_primary_face_first() {
         let installed = [
             "Geist Mono",
             "CaskaydiaCove Nerd Font",

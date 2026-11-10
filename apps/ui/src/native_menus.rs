@@ -309,7 +309,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn the_menu_builds_every_item_the_original_client_lists() {
+    fn the_menu_builds_every_listed_item() {
         assert_eq!(
             items(&MenuSignature::default()).len(),
             26,

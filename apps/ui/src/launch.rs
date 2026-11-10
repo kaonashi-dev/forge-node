@@ -191,7 +191,7 @@ mod tests {
     }
 
     #[test]
-    fn the_preference_reads_as_the_original_client_writes_it() {
+    fn the_preference_reads_as_it_is_written() {
         assert_eq!(parse(None), DefaultAgent::Ask);
         assert_eq!(parse(Some("shell")), DefaultAgent::Shell);
         assert_eq!(

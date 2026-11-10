@@ -123,7 +123,7 @@ mod tests {
     }
 
     #[test]
-    fn states_are_said_in_the_original_client_words() {
+    fn states_are_said_in_plain_words() {
         assert_eq!(state_label(&SessionState::Running), "running");
         assert_eq!(
             state_label(&SessionState::Exited {

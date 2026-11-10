@@ -3201,7 +3201,7 @@ mod tests {
     }
 
     #[test]
-    fn a_tab_order_is_stored_under_the_original_client_key() {
+    fn a_tab_order_is_stored_under_its_app_state_key() {
         let mut state = state();
         let workspace = state.workspaces[0].id;
         state.tabs.set_order(workspace, vec![state.rows[0].id]);

@@ -2439,7 +2439,7 @@ mod tests {
     const RUNE_SHELL: &str = "31";
 
     #[test]
-    fn a_project_with_several_checkouts_lists_the_original_client_items_in_order() {
+    fn a_project_with_several_checkouts_lists_its_items_in_order() {
         let s = state(store());
         let all = items(&s, &Target::Project(id(PROJECT)));
         assert_eq!(
@@ -2588,7 +2588,7 @@ mod tests {
         assert_eq!(
             act_of(entries, "Zed"),
             Act::OpenIn(Opener::Zed, "/home/dev/forge".into()),
-            "the original client opens the project's root, not the checkout"
+            "Open in opens the project's root, not the checkout"
         );
     }
 
@@ -2822,7 +2822,7 @@ mod tests {
     }
 
     #[test]
-    fn project_hues_keep_the_original_client_map_and_its_default() {
+    fn project_hues_keep_the_stored_map_and_its_default() {
         let raw = Some(r#"{"a": 2, "b": 12, "c": "x", "d": 8}"#);
         assert_eq!(
             parse_hues(raw),
@@ -2864,7 +2864,7 @@ mod tests {
     }
 
     #[test]
-    fn a_copy_is_named_as_the_original_client_names_it() {
+    fn a_copy_gets_the_next_free_copy_name() {
         let none = |_: &str| false;
         assert_eq!(
             duplicate_name("notes.md", none).as_deref(),

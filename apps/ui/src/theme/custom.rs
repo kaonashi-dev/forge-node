@@ -575,7 +575,7 @@ mod tests {
     }
 
     #[test]
-    fn variants_match_the_fixture_the_original_client_emits() {
+    fn variants_match_the_recorded_fixture() {
         for case in super::super::variant_fixture() {
             let source = base(&case.base);
             let palette = match case.color {

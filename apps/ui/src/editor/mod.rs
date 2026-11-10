@@ -728,7 +728,7 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn command_chords_follow_the_the_original_client_table() {
+    fn command_chords_follow_the_editor_table() {
         let cmd = rune::Mods {
             cmd: true,
             ..rune::Mods::default()

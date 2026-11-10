@@ -185,7 +185,7 @@ mod tests {
     }
 
     #[test]
-    fn the_button_counts_files_as_the_original_client_does() {
+    fn the_button_counts_staged_and_unstaged_files() {
         assert_eq!(commit_label(0), "Nothing to commit");
         assert_eq!(commit_label(1), "Commit 1 file");
         assert_eq!(commit_label(3), "Commit 3 files");

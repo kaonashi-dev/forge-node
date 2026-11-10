@@ -299,7 +299,7 @@ mod tests {
     }
 
     #[test]
-    fn flags_and_densities_read_as_the_original_client_writes_them() {
+    fn flags_and_densities_read_as_they_are_written() {
         assert!(read_flag(Some("true"), false));
         assert!(!read_flag(Some("yes"), true));
         assert!(read_flag(None, true));

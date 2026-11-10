@@ -1146,7 +1146,7 @@ mod tests {
     }
 
     #[test]
-    fn legacy_the_original_client_specs_parse_and_describe_the_same_keys() {
+    fn legacy_specs_parse_and_describe_the_same_keys() {
         assert_eq!(parse_chord("cmd-shift-o"), parse_chord("mod+shift+o"));
         assert_eq!(parse_chord("ctrl-tab"), parse_chord("ctrl+tab"));
         assert_eq!(parse_chord("cmd--"), parse_chord("mod+-"));
@@ -1204,13 +1204,13 @@ mod tests {
                 .chord_for(Action::NewShell)
                 .map(|chord| chord.to_string()),
             Some("mod+n".to_string()),
-            "the original client's cmd-n is the rune mod+n"
+            "a legacy cmd-n is the rune mod+n"
         );
         assert_eq!(Keymap::parse(Some("not json")), Keymap::default());
     }
 
     #[test]
-    fn a_the_original_client_context_name_does_not_stop_an_override_from_loading() {
+    fn a_legacy_context_name_does_not_stop_an_override_from_loading() {
         let raw = r#"[{"action":"new_terminal","context":"App","chord":"cmd-9"}]"#;
         let keymap = Keymap::parse(Some(raw));
         assert_eq!(
@@ -1218,7 +1218,7 @@ mod tests {
                 .chord_for(Action::NewShell)
                 .map(|chord| chord.to_string()),
             Some("mod+9".to_string()),
-            "the original client writes App, Rune writes Global; the action decides"
+            "a legacy spec writes App, Rune writes Global; the action decides"
         );
     }
 
@@ -1359,7 +1359,7 @@ mod tests {
     }
 
     #[test]
-    fn the_new_chords_are_what_the_original_client_documents() {
+    fn the_new_chords_match_the_documented_defaults() {
         let keymap = Keymap::default();
         assert_eq!(
             keymap.app_action(&chord('o', true)),

@@ -395,7 +395,7 @@ mod tests {
     }
 
     #[test]
-    fn the_ratio_is_clamped_as_the_original_client_clamps_it() {
+    fn the_ratio_is_clamped_to_its_bounds() {
         assert_eq!(clamp_ratio(0.05), RATIO_MIN);
         assert_eq!(clamp_ratio(0.95), RATIO_MAX);
         assert_eq!(clamp_ratio(f32::NAN), RATIO_FALLBACK);

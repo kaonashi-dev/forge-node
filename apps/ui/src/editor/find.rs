@@ -141,7 +141,7 @@ mod tests {
     }
 
     #[test]
-    fn the_counter_reads_as_the_original_client() {
+    fn the_counter_reads_as_position_of_total() {
         assert_eq!(counter(&found(12, 3, false), "x"), "3 of 12");
         assert_eq!(counter(&found(12, 0, false), "x"), "12 results");
         assert_eq!(counter(&found(5000, 0, true), "x"), "5000+ results");

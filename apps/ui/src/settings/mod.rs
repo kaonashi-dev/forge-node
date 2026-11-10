@@ -632,7 +632,7 @@ mod tests {
     }
 
     #[test]
-    fn the_sections_follow_the_original_client_order() {
+    fn the_sections_follow_their_nav_order() {
         let labels: Vec<&str> = Section::ALL.iter().map(|s| s.label()).collect();
         assert_eq!(
             labels,
