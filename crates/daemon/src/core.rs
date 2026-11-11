@@ -1956,6 +1956,11 @@ impl Daemon {
                 .map(|w| (w.id, w.path.clone()))
                 .collect();
             let git_root = inner.projects[&project_id].git_root.clone();
+            if ws_ids.iter().any(|id| inner.removing.contains(id)) {
+                return Err(ProtocolError::conflict(
+                    "a workspace in this project is already being removed",
+                ));
+            }
             for id in &ws_ids {
                 inner.removing.insert(*id);
             }
@@ -4054,6 +4059,11 @@ impl Daemon {
                 .sessions
                 .values()
                 .any(|s| s.workspace_id == workspace_id && s.state.is_active());
+            if inner.removing.contains(&workspace_id) {
+                return Err(ProtocolError::conflict(
+                    "the workspace is already being removed",
+                ));
+            }
             inner.removing.insert(workspace_id);
             (ws, git_root, running)
         };
