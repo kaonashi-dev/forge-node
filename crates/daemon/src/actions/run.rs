@@ -156,6 +156,11 @@ impl Daemon {
 
         let session_id = SessionId::new();
         let (created, launch) = self.commit_launch(&action, &root, launch, |inner, launch| {
+            if inner.removing.contains(&workspace_id) {
+                return Err(ProtocolError::conflict(
+                    "the workspace is being removed; no action can start in it",
+                ));
+            }
             // The authoritative check: the one above only spared the port probe.
             if action.single_instance {
                 if let Some(running) = live_session(inner, workspace_id, action_id) {
@@ -672,6 +677,11 @@ impl Daemon {
         let session_id = SessionId::new();
         let (wake_rx, session) = {
             let mut inner = self.lock();
+            if inner.removing.contains(&workspace_id) {
+                return Err(ProtocolError::conflict(
+                    "the workspace is being removed; no action can start in it",
+                ));
+            }
             if action.single_instance {
                 if let Some(session_id) = live_session(&inner, workspace_id, action.id) {
                     return Ok(Response::ActionAlreadyRunning { session_id });
