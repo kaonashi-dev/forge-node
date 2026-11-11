@@ -209,7 +209,7 @@ fn assemble(
             Patch::OverBudget => match stat {
                 Some((additions, deletions, binary)) => (None, binary, (additions, deletions)),
                 None if entry.untracked || !head => {
-                    (None, false, (file_lines(repo, &entry.path), 0))
+                    (None, false, (untracked_lines(repo, &entry.path).0, 0))
                 }
                 None => (None, false, (0, 0)),
             },
@@ -670,40 +670,6 @@ fn untracked_patch(repo: &Path, path: &str, context: u32) -> Patch<'static> {
     }
 }
 
-/// Lines in a file, read through a fixed buffer: what an over-budget untracked
-/// patch would have counted as additions, without holding the file or patch.
-///
-/// Regular files only: opening a FIFO blocks the request, and a link to a
-/// device would never reach end of file.
-fn file_lines(repo: &Path, path: &str) -> u32 {
-    use std::io::Read;
-
-    let full = repo.join(path);
-    if !std::fs::metadata(&full).is_ok_and(|meta| meta.is_file()) {
-        return 0;
-    }
-    let Ok(mut file) = std::fs::File::open(&full) else {
-        return 0;
-    };
-    let mut buffer = vec![0; 64 * 1024];
-    let mut newlines = 0usize;
-    let mut last = None;
-    loop {
-        match file.read(&mut buffer) {
-            Ok(0) => break,
-            Ok(read) => {
-                newlines += bytecount(&buffer[..read], b'\n');
-                last = buffer[..read].last().copied();
-            }
-            Err(error) if error.kind() == std::io::ErrorKind::Interrupted => {}
-            Err(_) => break,
-        }
-    }
-    // A last line with no trailing newline is still a line.
-    let trailing = usize::from(last.is_some_and(|byte| byte != b'\n'));
-    u32::try_from(newlines + trailing).unwrap_or(u32::MAX)
-}
-
 fn is_binary_patch(patch: &str) -> bool {
     patch
         .lines()
@@ -1020,7 +986,12 @@ mod tests {
         assert!(big.truncated && diff.truncated);
         assert!(big.patch.is_empty());
         assert!(!big.binary);
-        assert_eq!((big.additions, big.deletions), (lines as u32 + 1, 0));
+        assert_eq!(
+            big.additions,
+            u32::try_from(MAX_UNTRACKED_SCAN_BYTES / 4).unwrap(),
+            "the count is a floor of the scanned prefix"
+        );
+        assert_eq!(big.deletions, 0);
     }
 
     /// A batch past its own budget is retried without the file `numstat`
@@ -1040,7 +1011,11 @@ mod tests {
             .find(|file| file.path == "huge.txt")
             .unwrap();
         assert!(huge.truncated && huge.patch.is_empty());
-        assert_eq!(huge.additions as usize, MAX_BATCH_BYTES / 2 + 1);
+        assert_eq!(
+            huge.additions as u64,
+            MAX_UNTRACKED_SCAN_BYTES / 2,
+            "the count is a floor of the scanned prefix"
+        );
         let small = diff.files.iter().find(|file| file.path == "a.txt").unwrap();
         assert!(small.patch.contains("+TWO"), "{small:?}");
         assert!(!small.truncated);

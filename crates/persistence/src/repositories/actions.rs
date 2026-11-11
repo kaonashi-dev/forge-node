@@ -98,6 +98,7 @@ impl<'a> ActionRepo<'a> {
                 source: action.source.clone(),
             })
             .map_err(|e| DbError::Encode(format!("action spec: {e}")))?;
+            let kind = kind_to_str(action.kind)?;
             self.conn.execute(
                 "INSERT INTO project_actions (\
                    id, project_id, label, command, kind, spec, pinned, position, created_at) \
@@ -107,7 +108,7 @@ impl<'a> ActionRepo<'a> {
                     project_id.to_string(),
                     action.label,
                     action.command,
-                    kind_to_str(action.kind),
+                    kind,
                     spec,
                     i64::from(action.pinned),
                     i64::try_from(position).unwrap_or(i64::MAX),
@@ -119,13 +120,16 @@ impl<'a> ActionRepo<'a> {
     }
 }
 
-fn kind_to_str(kind: ActionKind) -> &'static str {
+fn kind_to_str(kind: ActionKind) -> Result<&'static str, DbError> {
     match kind {
-        ActionKind::Dev => "dev",
-        ActionKind::Test => "test",
-        ActionKind::Lint => "lint",
-        ActionKind::Build => "build",
-        _ => "custom",
+        ActionKind::Dev => Ok("dev"),
+        ActionKind::Test => Ok("test"),
+        ActionKind::Lint => Ok("lint"),
+        ActionKind::Build => Ok("build"),
+        ActionKind::Custom => Ok("custom"),
+        other => Err(DbError::Encode(format!(
+            "unhandled ActionKind variant: {other:?}"
+        ))),
     }
 }
 
