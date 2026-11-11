@@ -11,8 +11,8 @@ use domain::spec_run::{
     compose_planner_prompt, planner_effort,
 };
 use domain::{AgentDescriptor, AgentProviderId, WorkspaceId};
-use rune::{El, TextEdit, col, row, text};
-use rune_kit::{Button, ButtonVariant, ControlSize, Kit, TextArea, TextInput};
+use rune::{El, TextEdit, col, text};
+use rune_kit::{Button, ButtonVariant, Kit, SegmentedControl, TextArea, TextInput};
 
 use crate::app::AppState;
 
@@ -231,7 +231,7 @@ pub fn coders(store: &client::Store) -> Vec<(String, String)> {
         .map(|info| {
             let id = info.descriptor.id.to_string();
             let label = if id == CLAUDE_PRESET {
-                format!("{}, medium effort", info.descriptor.display_name)
+                format!("{} · medium", info.descriptor.display_name)
             } else {
                 info.descriptor.display_name.clone()
             };
@@ -321,74 +321,64 @@ pub fn dialog(s: &AppState, k: &Kit, layer: &mut Vec<El>) {
     let Some(dialog) = &s.spec_dialog else {
         return;
     };
-    let mut coder_row = row()
-        .key("spec-coders")
-        .role("radiogroup")
-        .label("Coder")
-        .w_full()
-        .gap(crate::ds::SPACE_2)
-        .flex_wrap();
     let offered = s.store.as_ref().map(coders).unwrap_or_default();
-    for (id, label) in &offered {
-        let chosen = dialog.coder == *id;
-        let pick = id.clone();
-        coder_row = coder_row.child(
-            Button::new(label.clone())
-                .variant(if chosen {
-                    ButtonVariant::Outline
-                } else {
-                    ButtonVariant::GhostMuted
-                })
-                .control_size(ControlSize::Small)
-                .on_press(move |s: &mut AppState| {
-                    if let Some(dialog) = s.spec_dialog.as_mut() {
-                        dialog.coder = pick.clone();
-                    }
-                })
-                .build(k)
-                .key(format!("spec-coder-{id}")),
-        );
-    }
-    if offered.is_empty() {
-        coder_row = coder_row.child(
-            text("No installed agent takes a prompt.")
-                .font(k.ty.text_xsmall)
-                .color(k.c.warning.fg),
-        );
-    }
-    let mut rounds = row()
-        .key("spec-rounds")
-        .role("radiogroup")
-        .label("Review rounds")
-        .gap(crate::ds::SPACE_2);
-    for count in ROUNDS {
-        rounds = rounds.child(
-            Button::new(count.to_string())
-                .variant(if dialog.rounds == count {
-                    ButtonVariant::Outline
-                } else {
-                    ButtonVariant::GhostMuted
-                })
-                .control_size(ControlSize::Small)
-                .on_press(move |s: &mut AppState| {
-                    if let Some(dialog) = s.spec_dialog.as_mut() {
-                        dialog.rounds = count;
-                    }
-                })
-                .build(k)
-                .key(format!("spec-rounds-{count}")),
-        );
-    }
-    let label = |words: &'static str| text(words).font(k.ty.text_xsmall).color(k.c.text_faint);
+    let coder = if offered.is_empty() {
+        text("No installed agent takes a prompt.")
+            .font(k.ty.text_xsmall)
+            .color(k.c.warning.fg)
+    } else {
+        let labels: Vec<&str> = offered.iter().map(|(_, label)| label.as_str()).collect();
+        let picks: Vec<String> = offered.iter().map(|(id, _)| id.clone()).collect();
+        SegmentedControl::new(
+            &labels,
+            offered.iter().position(|(id, _)| *id == dialog.coder),
+        )
+        .label("Coder")
+        .width(None)
+        .on_pick(move |s: &mut AppState, index: usize, _| {
+            if let (Some(dialog), Some(id)) = (s.spec_dialog.as_mut(), picks.get(index)) {
+                dialog.coder.clone_from(id);
+            }
+        })
+        .build(k)
+        .key("spec-coders")
+    };
+    let round_labels = ROUNDS.map(|count| count.to_string());
+    let rounds = SegmentedControl::new(
+        &round_labels,
+        ROUNDS.iter().position(|count| *count == dialog.rounds),
+    )
+    .label("Review rounds")
+    .fit()
+    .on_pick(|s: &mut AppState, index: usize, _| {
+        if let (Some(dialog), Some(count)) = (s.spec_dialog.as_mut(), ROUNDS.get(index)) {
+            dialog.rounds = *count;
+        }
+    })
+    .build(k)
+    .key("spec-rounds");
+    let field = |words: &'static str, control: El| {
+        col()
+            .w_full()
+            .gap(crate::ds::SPACE_3)
+            .child(
+                text(words)
+                    .font(k.ty.text_xsmall)
+                    .color(k.c.text_muted)
+                    .a11y_hidden(),
+            )
+            .child(control)
+    };
     let note = dialog.error.clone().unwrap_or_else(|| {
         "A Claude planner validates the spec, asks what it cannot answer, plans, starts the \
          coder under itself and reviews its work. It never commits or pushes."
             .into()
     });
     let body = col()
-        .gap(crate::ds::SPACE_5)
-        .child(label("Spec"))
-        .child(
+        .w_full()
+        .gap(crate::ds::SPACE_6)
+        .child(field(
+            "Spec",
             TextArea::new(&dialog.spec)
                 .label("Spec")
                 .placeholder("docs/spec.md, a Claude artifact link, or the spec itself")
@@ -400,11 +390,10 @@ pub fn dialog(s: &AppState, k: &Kit, layer: &mut Vec<El>) {
                 .build(k)
                 .key("spec-text")
                 .h(96.0),
-        )
-        .child(label("Coder"))
-        .child(coder_row)
-        .child(label("Worktree branch"))
-        .child(
+        ))
+        .child(field("Coder", coder))
+        .child(field(
+            "Worktree branch",
             TextInput::new(&dialog.worktree)
                 .label("Worktree branch")
                 .placeholder("Empty: the coder works in this checkout")
@@ -415,9 +404,8 @@ pub fn dialog(s: &AppState, k: &Kit, layer: &mut Vec<El>) {
                 })
                 .build(k)
                 .key("spec-worktree"),
-        )
-        .child(label("Review rounds"))
-        .child(rounds)
+        ))
+        .child(field("Review rounds", rounds))
         .child(
             text(note)
                 .key("spec-note")
@@ -428,7 +416,8 @@ pub fn dialog(s: &AppState, k: &Kit, layer: &mut Vec<El>) {
                 } else {
                     k.c.text_faint
                 })
-                .wrap(),
+                .wrap()
+                .pb(crate::ds::SPACE_4),
         );
     let blocked = dialog.request().is_none() || offered.is_empty();
     crate::modal::Modal::new("run-spec", "Run a spec")
