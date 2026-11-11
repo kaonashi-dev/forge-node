@@ -141,23 +141,6 @@ pub fn checkout_chip(status: &domain::WorkspaceStatus) -> Option<(String, Tone)>
     })
 }
 
-/// One of the launchers under the chosen checkout.
-fn launcher(
-    k: &Kit,
-    label: impl Into<String>,
-    glyph: &'static rune::Icon,
-    key: String,
-    press: impl Fn(&mut AppState) + 'static,
-) -> El {
-    Button::new(label)
-        .icon(glyph)
-        .variant(ButtonVariant::Outline)
-        .control_size(ControlSize::Small)
-        .on_press(press)
-        .build(k)
-        .key(key)
-}
-
 /// A project's checkouts in their default order:
 /// the repository's own checkout first, then its worktrees by name.
 #[must_use]
@@ -244,7 +227,12 @@ pub fn rail_key(s: &mut AppState, ev: &KeyEvent, tx: &mut Tx) -> bool {
     };
     let m = ev.mods;
     let plain = !m.cmd && !m.ctrl && !m.alt && !m.logo && !m.shift;
-    let rows = crate::rail::rows(store, &s.projects.rail, &rail_sessions(s));
+    let rows = crate::rail::rows(
+        store,
+        &s.projects.rail,
+        &rail_sessions(s),
+        s.workbench.workspace,
+    );
     if rows.is_empty() {
         return false;
     }
@@ -430,29 +418,39 @@ fn group_header(s: &AppState, k: &Kit, group: ProjectGroupId, projects: &[Projec
         });
     let id = format!("group:{target}");
     let fold = target.clone();
-    let mut line = Row::new(format!("group-row-{group}"), name)
+    let mut line = row()
+        .key(format!("group-row-{group}"))
         .role("treeitem")
-        .emphasis(Emphasis::Quiet)
-        .height(s.chrome_metrics().row)
-        .leading(rune::icon(chevron(open), ds::ICON_SMALL).color(k.c.icon_faint))
-        .leading(
-            rune::icon(
-                if open {
-                    &crate::glyphs::FOLDER_OPEN
-                } else {
-                    &crate::glyphs::FILES
-                },
-                ds::ICON_ROW,
-            )
-            .color(k.c.icon_muted),
+        .label(name.clone())
+        .w_full()
+        .h(s.chrome_metrics().row)
+        .pl(ds::SPACE_2)
+        .pr(ds::SPACE_2)
+        .gap(ds::SPACE_3)
+        .radius(k.radius.md)
+        .center_y()
+        .hover_group_focus()
+        .child(
+            text(name.to_uppercase())
+                .font(k.ty.text_xsmall_medium)
+                .color(k.c.text_faint)
+                .truncate()
+                .min_w(0.0)
+                .grow(1.0),
         );
     if asking {
-        line = line.trailing(
+        line = line.child(
             rune::icon(&crate::glyphs::NEEDS_YOU, ds::ICON_SMALL).color(roles.needs_you.solid),
         );
     }
-    let line = line
-        .build(k, &roles)
+    // A folded section keeps its chevron; an open one shows it only under the pointer.
+    line = line.child(
+        rune::icon(chevron(open), ds::ICON_SMALL)
+            .color(k.c.icon_faint)
+            .group_opacity(if open { 0.0 } else { 1.0 }, 1.0),
+    );
+    let line = k
+        .interactive(line)
         .on_press(move |s: &mut AppState| {
             select_row(s, format!("group:{fold}"));
             toggle_fold(s, &fold);
@@ -471,7 +469,6 @@ fn project_block(
     k: &Kit,
     hues: &std::collections::BTreeMap<String, usize>,
     project: &domain::Project,
-    depth: u8,
 ) -> El {
     let Some(store) = &s.store else {
         return el();
@@ -488,7 +485,6 @@ fn project_block(
     let menu = ButtonMenu::Project(project_id);
     let mut head = Row::new(format!("project-row-{project_id}"), project.name.clone())
         .role("treeitem")
-        .indent(depth)
         .height(s.chrome_metrics().row)
         .emphasis(Emphasis::Strong)
         .leading(rune::icon(chevron(open), ds::ICON_SMALL).color(k.c.icon_faint))
@@ -541,11 +537,71 @@ fn project_block(
         .gap(ds::SPACE_1)
         .child(cursored(s, k, &format!("project:{target}"), head));
     if open {
-        for workspace in workspaces {
-            block = block.child(workspace_row(s, k, workspace, depth + 1));
+        let (shown, idle) =
+            crate::rail::split_idle(workspaces, &rail_sessions(s), s.workbench.workspace);
+        let mut checkouts: Vec<El> = shown
+            .into_iter()
+            .map(|workspace| workspace_row(s, k, workspace))
+            .collect();
+        if !idle.is_empty() {
+            let target = crate::rail::idle_target(project_id);
+            let listed = s.projects.rail.folds.contains(&target);
+            checkouts.push(idle_row(s, k, &target, idle.len(), listed));
+            if listed {
+                checkouts.push(subtree(
+                    k,
+                    idle.into_iter()
+                        .map(|workspace| workspace_row(s, k, workspace))
+                        .collect(),
+                ));
+            }
         }
+        block = block.child(subtree(k, checkouts));
     }
     block
+}
+
+/// Where a tree row's children hang: a guide under the parent's leading
+/// mark, and one `INDENT` in from it.
+const GUIDE_X: f32 = ds::SPACE_2 + ds::ICON_SMALL / 2.0;
+
+fn subtree(k: &Kit, children: Vec<El>) -> El {
+    col().w_full().pl(GUIDE_X).child(
+        col()
+            .w_full()
+            .gap(ds::SPACE_1)
+            .pl(ds::INDENT - GUIDE_X - ds::SPACE_2)
+            .border_sides([0.0, 0.0, 0.0, 1.0], k.c.border_weak)
+            .children(children),
+    )
+}
+
+/// The fold for a project's idle checkouts.
+fn idle_row(s: &AppState, k: &Kit, target: &str, count: usize, listed: bool) -> El {
+    let roles = crate::theme::roles(k);
+    let fold = target.to_string();
+    let line = Row::new(
+        format!("idle-row-{target}"),
+        format!("{count} idle checkouts"),
+    )
+    .role("treeitem")
+    .label(if listed {
+        format!("Hide {count} idle checkouts")
+    } else {
+        format!("Show {count} idle checkouts")
+    })
+    .height(s.chrome_metrics().row)
+    .emphasis(Emphasis::Quiet)
+    .leading(rune::icon(chevron(listed), ds::ICON_SMALL).color(k.c.icon_faint))
+    .build(k, &roles)
+    .on_press(move |s: &mut AppState| {
+        select_row(s, fold.clone());
+        toggle_fold(s, &fold);
+    })
+    .focusable(true)
+    .no_focus_ring()
+    .on_key(rail_key);
+    cursored(s, k, target, line)
 }
 
 pub fn view(s: &AppState, k: &Kit) -> El {
@@ -586,12 +642,11 @@ pub fn view(s: &AppState, k: &Kit) -> El {
             }
         };
         if open {
-            let depth = u8::from(group.is_some());
             for project in projects
                 .iter()
                 .filter_map(|id| store.projects.iter().find(|p| p.id == *id))
             {
-                section = section.child(project_block(s, k, &hues, project, depth));
+                section = section.child(project_block(s, k, &hues, project));
             }
         }
         list = list.child(section);
@@ -631,59 +686,25 @@ pub fn view(s: &AppState, k: &Kit) -> El {
         )
 }
 
-/// The launchers under the chosen checkout: a shell, its changes, its files,
-/// its actions, and the actions pinned to it.
-fn launchers(s: &AppState, k: &Kit, id: WorkspaceId, depth: u8) -> El {
-    let mut actions = row()
-        .key(format!("launchers-{id}"))
-        .w_full()
-        .gap(ds::SPACE_2)
-        .flex_wrap()
-        .pl(ds::SPACE_2 + f32::from(depth) * ds::INDENT)
-        .pt(ds::SPACE_3)
-        .pb(ds::SPACE_4)
-        .child(launcher(
-            k,
-            "Shell",
-            &crate::glyphs::TERMINAL,
-            format!("shell-{id}"),
-            move |s: &mut AppState| s.shell_in(id),
-        ))
-        .child(launcher(
-            k,
-            "Git",
-            &crate::glyphs::GIT,
-            format!("changes-{id}"),
-            move |s: &mut AppState| {
-                s.inspect(id, CenterMode::Changes);
-            },
-        ))
-        .child(launcher(
-            k,
-            "Files",
-            &crate::glyphs::FILES,
-            format!("files-{id}"),
-            move |s: &mut AppState| {
-                s.inspect(id, CenterMode::Files);
-            },
-        ))
-        .child(
-            Button::new("Run")
-                .icon(&crate::glyphs::PLAY)
-                .variant(ButtonVariant::Outline)
-                .control_size(ControlSize::Small)
-                .expanded(s.menus.button == Some(ButtonMenu::Run(id)))
-                .on_press(move |s: &mut AppState| s.menus.button = Some(ButtonMenu::Run(id)))
-                .build(k)
-                .key(ButtonMenu::Run(id).trigger())
-                .label("Actions"),
-        );
+/// The actions pinned to a project, under its chosen checkout; the rest
+/// are behind the row's Run menu.
+fn pinned_actions(s: &AppState, k: &Kit, id: WorkspaceId) -> Option<El> {
     let mut pinned: Vec<_> = s
         .actions_for(id)
         .into_iter()
         .filter(|action| action.pinned)
         .collect();
+    if pinned.is_empty() {
+        return None;
+    }
     pinned.sort_by_key(|action| action.position);
+    let mut actions = row()
+        .key(format!("pinned-actions-{id}"))
+        .w_full()
+        .gap(ds::SPACE_2)
+        .flex_wrap()
+        .pl(ds::SPACE_2)
+        .py(ds::SPACE_2);
     for action in pinned {
         let running = s.action_running(id, &action.id);
         let action_id = action.id;
@@ -710,10 +731,55 @@ fn launchers(s: &AppState, k: &Kit, id: WorkspaceId, depth: u8) -> El {
                 }),
         );
     }
-    actions
+    Some(actions)
 }
 
-fn workspace_row(s: &AppState, k: &Kit, workspace: &Workspace, depth: u8) -> El {
+/// What a checkout opens, as icons the row reveals under the pointer and
+/// keeps while it is chosen.
+fn checkout_tools(s: &AppState, k: &Kit, id: WorkspaceId, name: &str) -> [El; 4] {
+    let run = ButtonMenu::Run(id);
+    [
+        ds::icon_button(
+            &crate::glyphs::TERMINAL,
+            format!("New shell in {name}"),
+            IconButtonSize::Mini,
+        )
+        .on_press(move |s: &mut AppState| s.shell_in(id))
+        .build(k)
+        .key(format!("shell-{id}")),
+        ds::icon_button(
+            &crate::glyphs::GIT,
+            format!("Changes in {name}"),
+            IconButtonSize::Mini,
+        )
+        .on_press(move |s: &mut AppState| {
+            s.inspect(id, CenterMode::Changes);
+        })
+        .build(k)
+        .key(format!("changes-{id}")),
+        ds::icon_button(
+            &crate::glyphs::FILES,
+            format!("Files in {name}"),
+            IconButtonSize::Mini,
+        )
+        .on_press(move |s: &mut AppState| {
+            s.inspect(id, CenterMode::Files);
+        })
+        .build(k)
+        .key(format!("files-{id}")),
+        ds::icon_button(
+            &crate::glyphs::PLAY,
+            format!("Actions in {name}"),
+            IconButtonSize::Mini,
+        )
+        .expanded(s.menus.button == Some(run.clone()))
+        .on_press(move |s: &mut AppState| s.menus.button = Some(ButtonMenu::Run(id)))
+        .build(k)
+        .key(run.trigger()),
+    ]
+}
+
+fn workspace_row(s: &AppState, k: &Kit, workspace: &Workspace) -> El {
     let id = workspace.id;
     let roles = crate::theme::roles(k);
     let kind = match workspace.kind {
@@ -725,11 +791,7 @@ fn workspace_row(s: &AppState, k: &Kit, workspace: &Workspace, depth: u8) -> El 
         .clone()
         .unwrap_or_else(|| "detached".into());
     let name = workspace.label();
-    let title = if name == branch {
-        branch.clone()
-    } else {
-        format!("{name} · {branch}")
-    };
+    let title = workspace.branch.clone().unwrap_or_else(|| name.clone());
     let fold = id.to_string();
     let open = !s.projects.rail.folds.contains(&fold);
     let current = s.workbench.workspace == Some(id);
@@ -738,8 +800,7 @@ fn workspace_row(s: &AppState, k: &Kit, workspace: &Workspace, depth: u8) -> El 
         .and_then(|active| s.rows.iter().find(|row| row.id == active))
         .is_some_and(|row| row.workspace_id == id);
     let mut line = Row::new(format!("checkout-{id}"), title)
-        .label(format!("Show {name}"))
-        .indent(depth)
+        .label(format!("Show {name}, {kind}"))
         .height(s.chrome_metrics().row)
         .selected(current && !session_here)
         .leading(
@@ -752,8 +813,7 @@ fn workspace_row(s: &AppState, k: &Kit, workspace: &Workspace, depth: u8) -> El 
                 ds::ICON_ROW,
             )
             .color(k.c.icon_muted),
-        )
-        .meta(kind, Tone::Neutral);
+        );
     if let Some(store) = &s.store
         && let Some(pr) = crate::sync::pull_request_for(
             &store.pull_requests.pull_requests,
@@ -777,6 +837,9 @@ fn workspace_row(s: &AppState, k: &Kit, workspace: &Workspace, depth: u8) -> El 
         .hover(k.c.hover)
         .on_press(move |s: &mut AppState| toggle_fold(s, &fold))
         .child(rune::icon(chevron(open), ds::ICON_SMALL).color(k.c.icon_faint));
+    for tool in checkout_tools(s, k, id, &name) {
+        line = line.action(tool);
+    }
     line = if open {
         line.action(chevron)
     } else {
@@ -813,11 +876,11 @@ fn workspace_row(s: &AppState, k: &Kit, workspace: &Workspace, depth: u8) -> El 
                         .role("status")
                         .font(k.ty.text_xsmall)
                         .color(k.c.warning.fg)
-                        .pl(ds::SPACE_2 + f32::from(depth + 1) * ds::INDENT)
+                        .pl(ds::INDENT)
                 }),
         );
     if open {
-        let sessions = s
+        let mut children: Vec<El> = s
             .rows
             .iter()
             .enumerate()
@@ -827,12 +890,15 @@ fn workspace_row(s: &AppState, k: &Kit, workspace: &Workspace, depth: u8) -> El 
                     s,
                     k,
                     &format!("session:{}", row.id),
-                    crate::ui::session_row(s, row, index, depth + 1, k),
+                    crate::ui::session_row(s, row, index, 0, k),
                 )
-            });
-        block = block.children(sessions);
+            })
+            .collect();
         if current {
-            block = block.child(launchers(s, k, id, depth + 1));
+            children.extend(pinned_actions(s, k, id));
+        }
+        if !children.is_empty() {
+            block = block.child(subtree(k, children));
         }
     }
     block
