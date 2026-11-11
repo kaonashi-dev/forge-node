@@ -3,7 +3,7 @@
 #
 # Usage:
 #   ./init.sh          # toolchain pin, then `scripts/dev check`
-#   ./init.sh --fast   # the same, minus the cargo gate
+#   ./init.sh --fast   # toolchain pin only
 
 set -u
 cd "$(dirname "$0")"

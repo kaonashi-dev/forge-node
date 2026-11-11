@@ -5,7 +5,7 @@ defined in `crates/protocol` and is transport-agnostic; the transport itself is
 a Unix domain socket (ADR-004). The GUI-side implementation is
 `crates/client` (`Client` + `Store`).
 
-`PROTOCOL_VERSION = 37` (`protocol::PROTOCOL_VERSION` is the source).
+`PROTOCOL_VERSION = 38` (`protocol::PROTOCOL_VERSION` is the source).
 
 ## Transport & framing
 
@@ -63,7 +63,7 @@ then uses that terminal replica's modes with `encode_paste`. No Enter is appende
 Queue acceptance is not execution confirmation; execution refusals use the
 existing runtime notice. Neither rejection nor reconnect replays a paste.
 
-The WebView constructs a shell-quoted absolute path from its known workspace
+The Rune client constructs a shell-quoted absolute path from its known workspace
 root, rejecting control characters. This host-local envelope adds no daemon
 message: the encoded bytes travel through ordinary terminal input. Filesystem
 drops use the correlated workbench `rename_path` operation above.
@@ -170,6 +170,11 @@ DaemonMessage::Event    (DaemonEvent)
 | | `SetProviderExecutable { provider_id, path }` | Override persisted; `None` clears. |
 | | `SaveAgentProfile { profile }` | Create or replace a launch profile; the client supplies its id. `Conflict` for a duplicate name, `InvalidRequest` for a config directory the provider does not support, `ProviderNotInstalled` when its own executable fails the version probe. Profiles declare a config directory and arguments, not arbitrary environment variables. `AgentProfilesChanged`. |
 | | `RemoveAgentProfile { profile_id }` | Deletes it; sessions it already started keep running. `AgentProfilesChanged`. |
+| Forge Review | `StartReview { target, tier, provider, preset, instructions, model, effort }` | `Response::ReviewStarted { review_id }`; progress and the outcome arrive as `ReviewUpdated`. One run is in flight per workspace: a start with the same head, base, provider, model, effort, preset, tier and instructions answers with that run's id unless it was cancelled, and any other start cancels it and begins anew. `Conflict` while two other workspaces' reviews already run. `InvalidRequest` for a provider without structured review, a base that names no commit, an unknown preset, or instructions over 4 096 bytes. The reviewer is an ordinary read-only agent session; [review.md](./review.md). |
+| | `GetReviewConfig { workspace_id }` | `Response::ReviewConfig(ReviewSettings)` — the workspace's `.forge/review/` presets and rules plus one note per file that could not be used. Local read of the working tree, synchronous like `GetWorkspaceDiff`. |
+| | `CancelReview { review_id }` | `Ack`; ends the run and stops its reviewer session. |
+| | `GetReview { review_id }` | `Response::Review { run, findings }` — stored metadata and validated findings; a local read. |
+| | `ListReviews { workspace_id, limit }` | `Response::Reviews`, newest first, without findings; `limit` is clamped to 100. |
 | Project actions | `SuggestActions { workspace_id }` | `Response::ActionSuggestions` — what the workspace root's manifests suggest, plus what `.forge/actions.toml` offers for import (`repo_file`, with parse `error` and `drift`). Bounded, local, **synchronous**; writes and runs nothing. [actions.md](./actions.md). |
 | | `SetProjectActions { project_id, actions }` | Replaces the project's whole action set. `InvalidRequest` for a duplicate label (ignoring case), a `cwd` outside the checkout, a probe without its port, a dependency outside the set, a cycle, or a chain deeper than 4. A live session of a dropped action is untagged (`SessionUpdated`). `ProjectActionsChanged`. |
 | | `RunAction { workspace_id, action_id }` | `SessionCreated`, `ActionAlreadyRunning { session_id }` for a live single-instance action in that workspace, or `ActionQueued { session_id }` while its dependencies come up. The live check and the creation share one critical section. `NotFound` for an action not in the workspace's project. |
@@ -246,6 +251,7 @@ Removed relative to the v1 plan: `FocusSession` (pure GUI state) and generic
 | `FileChanged { workspace_id, path }` | Native watch notifications go to the watching connection; successful Forge renames also broadcast invalidations for both paths. An event is not proof of watch coverage. Carries no content; clients reconcile relevant reads without discarding dirty buffers. `path` is workspace-relative; an **empty** path asks the client to resync its visible surface. An undeliverable native notification becomes an owed resync, retried rather than disconnecting. |
 | `AgentDetectionChanged { results }` | After startup detection or a refresh. |
 | `AgentProfilesChanged { profiles }` | The whole set after any profile write (§13.4) — like usage and detection, a merge would strand a deleted profile. |
+| `ReviewUpdated { run }` | A Forge Review changed status or stage. Compact: findings are read with `GetReview` once the run is `Completed`. |
 | `ProjectActionsChanged { project_id, actions }` | One project's whole action set after `SetProjectActions`. |
 | `ProjectSharesChanged { project_id, rules }` | One project's whole rule set after any write (§14.2), for the same reason as the profiles event. |
 | `ProjectWorktreeIgnoresChanged { project_id, rules }` | One project's whole ignore set after `SetWorktreeIgnores` (§14.4) — and when a rescan collects a tombstone, so the GUI's list matches the daemon's. |

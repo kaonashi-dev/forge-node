@@ -6,19 +6,21 @@
   not supported.
 - Rust: the root workspace is pinned to 1.89.0; `apps/ui` is pinned separately
   to 1.99.1 (Rune needs edition 2024). `rustup` reads each toolchain file.
-- `git` and a C toolchain (bundled SQLite compiles from source).
+- `git`, a C toolchain (bundled SQLite compiles from source), and Bun **1.4**.
+  The gate runs the OpenCode attention plugin's strict `tsc` check and tests,
+  and the editor scenarios' fake `forge-editor` is a Bun script.
 - A linker-compatible macOS SDK: `scripts/macos-sdk` picks one this `ld` can
   parse (the highest `xcrun` SDK can name an architecture the installed linker
   does not know). `scripts/dev` exports it; bare `cargo` on macOS needs
   `SDKROOT="$(scripts/macos-sdk)"`.
-- No database service and no JavaScript runtime.
+- No database service. There is no JavaScript runtime other than Bun.
 
 ## Gate
 
 ```sh
-scripts/dev check          # root fmt + clippy + test, then apps/ui on 1.99.1
+scripts/dev check          # root fmt + clippy + test, the Bun plugin, then apps/ui on 1.99.1
 ./init.sh                  # toolchain check, then the same gate
-./init.sh --fast           # skips the cargo block
+./init.sh --fast           # toolchain check only
 ```
 
 `scripts/dev check --root-only` skips the Rune client. CI runs the same checks
@@ -86,7 +88,7 @@ executable = "/path/to/forge-node/target/debug/forge-editor"
 - Workspace tests are not fully hermetic: shell-environment coverage invokes
   the user's login shell, and daemon startup may run `--version` for installed
   agent CLIs.
-- Ignored Phase 0 smokes exercise the real local agents (claude, opencode,
+- Ignored smoke tests exercise the real local agents (claude, opencode,
   cursor), `vim`/`htop` and latency. They are macOS reference checks, not a
   substitute for the deferred Wayland/X11 validation.
 - The Rune client's pure tests live beside their modules; headless checks use

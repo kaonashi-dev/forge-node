@@ -288,7 +288,8 @@ command as a tool: places (`list_projects`, `list_providers`,
 `run_brief`, `run_wait`, `run_close`, `run_resume`, `task_add`, `task_list`,
 `task_show`, `task_start`, `task_review`, `task_accept`, `task_reject`,
 `task_cancel`, `task_integrate`, `task_cleanup`) and Forge Review
-(`review_start`, `review_show`, `review_status`, `review_cancel`). A tool's
+(`review_start`, `review_show`, `review_status`, `review_cancel`; see
+[review.md](./review.md)). A tool's
 arguments are the command's flags without dashes; `report`'s `outcome` and
 `task_integrate`'s `how` name the flag (`done`, `squash`), and list arguments
 (`ack`, `after`, `task`) repeat it. `session watch`, `review bench`,
