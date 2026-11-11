@@ -275,6 +275,8 @@ pub struct Changes {
     /// Paths git reported with no patch to draw: binary, or over the budget.
     pub without_patch: Vec<String>,
     pub truncated: bool,
+    /// Bumped whenever `files` is replaced; the virtual list's key version.
+    pub key_revision: u64,
     pub loaded: bool,
     pub error: Option<String>,
     pub decorations: Rc<decorations::Decorations>,
@@ -604,6 +606,20 @@ impl Workbench {
         }
     }
 
+    /// A new connection is an arm: the daemon may have changed while this
+    /// client was away, and an unchanged `head`/`dirty` cannot prove otherwise.
+    /// Watches are re-sent by `take_watch` under the new generation.
+    pub fn reconnected(&mut self) {
+        if !self.shows_diff() {
+            self.changes.loaded = false;
+        }
+        // A read whose command was rejected at the generation bump never
+        // answered; forget the request so `take_reads` asks again.
+        self.files.root_requested = false;
+        self.files.requested.clear();
+        self.refresh();
+    }
+
     pub fn show_panel(&mut self, panel: Panel) {
         self.panel = panel;
         if self.shows_diff() && !self.changes.loaded {
@@ -754,11 +770,23 @@ impl Workbench {
                 .sent
                 .as_ref()
                 .is_none_or(|(sent, _)| *sent != workspace);
-        self.watch.rescan = if first && !dirs.is_empty() {
+        let added: Vec<String> = if first {
             self.files.listings.keys().cloned().collect()
         } else {
-            Vec::new()
+            let previous = self
+                .watch
+                .sent
+                .as_ref()
+                .filter(|(sent, _)| *sent == workspace)
+                .map(|(_, dirs)| dirs);
+            previous.map_or_else(Vec::new, |previous| {
+                dirs.iter()
+                    .filter(|dir| !previous.contains(dir))
+                    .cloned()
+                    .collect()
+            })
         };
+        self.watch.rescan = added;
         self.files.watch_notice = (dirs.len() != total).then(|| {
             format!(
                 "Live updates cover at most {MAX_WATCHED} folders. Refresh to update the others."
@@ -785,7 +813,16 @@ impl Workbench {
         match result {
             Ok(()) => {
                 self.watch.armed = self.watch.sent.is_some();
-                for dir in std::mem::take(&mut self.watch.rescan) {
+                let rescan = std::mem::take(&mut self.watch.rescan);
+                if self
+                    .files
+                    .previewing
+                    .as_deref()
+                    .is_some_and(|path| rescan.iter().any(|dir| dir == parent_of(path)))
+                {
+                    self.reread_preview();
+                }
+                for dir in rescan {
                     if self.files.listings.contains_key(&dir) {
                         self.queue(Read::Directory(dir));
                     }
@@ -882,6 +919,7 @@ impl Workbench {
                         patch: file.patch,
                     })
                     .collect();
+                changes.key_revision = changes.key_revision.wrapping_add(1);
                 let again = kept.and_then(|path| changes.files.iter().position(|f| f.path == path));
                 self.select_change(again.unwrap_or(0));
                 self.changes.sync_conflict();
@@ -919,6 +957,12 @@ impl Workbench {
     }
 
     /// Shows one changed file's patch; one file is open at a time.
+    pub fn select_change_path(&mut self, path: &str) {
+        if let Some(index) = self.changes.files.iter().position(|file| file.path == path) {
+            self.select_change(index);
+        }
+    }
+
     pub fn select_change(&mut self, index: usize) {
         let changes = &mut self.changes;
         match changes.files.get(index) {
@@ -1016,13 +1060,14 @@ impl Workbench {
         files.rebuild();
     }
 
-    pub fn apply_file(&mut self, scope: Scope, file: Result<FileContents, String>) {
+    pub fn apply_file(&mut self, scope: Scope, path: &str, file: Result<FileContents, String>) {
         if self.scope() != Some(scope) {
             return;
         }
         match file {
             Ok(file) => {
-                if self.files.previewing.as_deref() != Some(file.path.as_str()) {
+                if self.files.previewing.as_deref() != Some(file.path.as_str()) || file.path != path
+                {
                     return;
                 }
                 self.files.error = None;
@@ -1035,7 +1080,10 @@ impl Workbench {
                 }
                 self.files.preview = Some(preview);
             }
-            Err(error) => self.files.error = Some(error),
+            Err(error) if self.files.previewing.as_deref() == Some(path) => {
+                self.files.error = Some(error);
+            }
+            Err(_) => {}
         }
     }
 
@@ -1631,6 +1679,19 @@ mod tests {
     }
 
     #[test]
+    fn a_late_file_error_does_not_replace_another_preview() {
+        let (mut bench, _) = bench();
+        let scope = bench.scope().expect("a scope");
+        bench.preview("a.md");
+        bench.preview("b.png");
+        bench.apply_file(scope, "a.md", Err("gone".into()));
+        assert!(
+            bench.files.error.is_none(),
+            "an answer for a.md must not land on b.png"
+        );
+    }
+
+    #[test]
     fn the_watch_follows_the_open_folders_and_is_asked_again_on_a_new_connection() {
         let (mut bench, workspace) = bench();
         let scope = bench.scope().expect("a scope");
@@ -1817,6 +1878,7 @@ mod tests {
         );
         bench.apply_file(
             scope,
+            "logo.svg",
             Ok(FileContents {
                 workspace_id: workspace,
                 path: "logo.svg".into(),

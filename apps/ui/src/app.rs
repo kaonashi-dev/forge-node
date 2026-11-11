@@ -165,6 +165,8 @@ pub struct AppState {
     pub processes: Vec<crate::processes::ProcessGroup>,
     /// Each checkout's last status mark, so Git re-reads when it moves.
     pub checkout_marks: HashMap<WorkspaceId, crate::workbench::CheckoutMark>,
+    /// Project-to-hue slots, parsed once per store change for the rail.
+    pub hues: std::collections::BTreeMap<String, usize>,
     pub theme_editor: crate::appearance::ThemeEditor,
     pub settings: crate::settings::Settings,
     pub sync: crate::sync::Sync,
@@ -274,6 +276,7 @@ impl AppState {
             history: crate::history::History::default(),
             processes: Vec::new(),
             checkout_marks: HashMap::new(),
+            hues: std::collections::BTreeMap::new(),
             theme_editor: crate::appearance::ThemeEditor::default(),
             settings: crate::settings::Settings::default(),
             sync: crate::sync::Sync::default(),
@@ -450,6 +453,7 @@ impl AppState {
             crate::processes::group(&store.sessions, &store.workspaces, &store.projects);
         self.diff_split =
             store.app_state_value(crate::workbench::patch::DIFF_SPLIT_KEY) == Some("true");
+        self.hues = crate::menus::parse_hues(store.app_state_value(crate::menus::PROJECT_HUES_KEY));
         self.store = Some(store);
         self.workbench.set_split(self.diff_split);
         self.terminal.set_fixture_titles(
@@ -1769,6 +1773,12 @@ impl AppState {
                 self.editor_surface = editor_surface;
                 self.editor.reset_requests();
                 self.editor.autosave.reset();
+                self.workbench.reconnected();
+                self.session_changes.loading = false;
+                self.usage.pending = None;
+                if self.workbench.mode == CenterMode::SessionChanges {
+                    crate::session_changes::reload(self);
+                }
                 true
             }
             UiEvent::Disconnected { generation, reason } => {
@@ -1964,12 +1974,14 @@ impl AppState {
             UiEvent::File {
                 generation,
                 scope,
+                path,
                 result,
             } => {
                 if !self.accept_generation(generation) {
                     return false;
                 }
-                self.workbench.apply_file(scope, result.map(|file| *file));
+                self.workbench
+                    .apply_file(scope, &path, result.map(|file| *file));
                 true
             }
             UiEvent::Image {
@@ -2573,7 +2585,13 @@ impl AppState {
             };
             // A selection held at an edge keeps scrolling with a still pointer.
             if clock - drag.stepped_at >= input::EDGE_STEP_SECS {
-                changed |= self.terminal_edge_step(idx);
+                let stepped = self.terminal_edge_step(idx);
+                changed |= stepped;
+                if stepped {
+                    // The step can queue a history fetch; without this it
+                    // waits for key-up and `fetch_pending` stalls the next step.
+                    self.flush_outbox();
+                }
                 if let Some(drag) = self.pane_mut(idx).drag.as_mut() {
                     drag.stepped_at = clock;
                 }

@@ -1,5 +1,7 @@
 //! The Changes and Files views, and the switch between them and the session.
 
+use std::borrow::Cow;
+
 use rune::{El, GrowthSpec, ScrollSpec, col, el, icon, rich, row, text};
 use rune_kit::diff::DiffView;
 use rune_kit::syntax::SyntaxTheme;
@@ -16,6 +18,7 @@ use crate::file_icons::FileIcon;
 const CODE_ROW_H: f32 = 18.0;
 const CSV_ROW_H: f32 = 24.0;
 const CSV_COLUMN_W: f32 = 160.0;
+const CHANGED_ROW_H: f32 = 26.0;
 
 fn tone_color(k: &Kit, tone: Tone) -> rune::Color {
     let git = crate::theme::roles(k).git;
@@ -84,102 +87,128 @@ pub(crate) fn status_word(status: domain::DiffStatus) -> &'static str {
 
 fn changed_rows(s: &AppState, k: &Kit) -> El {
     let changes = &s.workbench.changes;
-    let mut list = col().key("changed-files").w_full().gap(1.0);
     let note = |message: String| text(message).font(k.ty.small).color(k.c.text_faint);
     if s.workbench.workspace.is_none() {
-        return list.child(note("No checkout in this window.".into()));
+        return col()
+            .key("changed-files")
+            .w_full()
+            .child(note("No checkout in this window.".into()));
     }
     if let Some(error) = &changes.error {
-        return list.child(note(format!("Could not read the diff: {error}")));
+        return col()
+            .key("changed-files")
+            .w_full()
+            .child(note(format!("Could not read the diff: {error}")));
     }
     if !changes.loaded {
-        return list.child(note("Reading the working tree…".into()));
+        return col()
+            .key("changed-files")
+            .w_full()
+            .child(note("Reading the working tree…".into()));
     }
     if changes.files.is_empty() {
-        list = list.child(note("Nothing uncommitted.".into()).key("changes-clean"));
+        return col()
+            .key("changed-files")
+            .w_full()
+            .child(note("Nothing uncommitted.".into()).key("changes-clean"));
     }
-    let shown = s.workbench.mode == CenterMode::Changes;
-    for (index, file) in changes.files.iter().enumerate() {
-        let selected = shown && changes.selected == Some(index);
-        let name = file
-            .path
-            .rsplit('/')
-            .next()
-            .unwrap_or(&file.path)
-            .to_string();
-        let dir = file
-            .path
-            .strip_suffix(name.as_str())
-            .unwrap_or_default()
-            .trim_end_matches('/')
-            .to_string();
-        list = list.child(
-            row()
-                .key(format!("changed-{}", file.path))
-                .role("button")
-                .label(format!(
-                    "{}, {}, {} added, {} removed",
-                    file.path,
-                    status_word(file.status),
-                    file.additions,
-                    file.deletions
-                ))
-                .w_full()
-                .h(26.0)
-                .px(8.0)
-                .gap(crate::ds::SPACE_3)
-                .radius(k.radius.sm)
-                .items_center()
-                .fill(if selected {
-                    k.c.surface_hover
+    let kit = k.clone();
+    let version = changes.key_revision;
+    col()
+        .key("changed-files")
+        .w_full()
+        .growth(GrowthSpec::default())
+        .virtual_rows(
+            changes.files.len(),
+            CHANGED_ROW_H,
+            |s: &AppState, index| {
+                s.workbench
+                    .changes
+                    .files
+                    .get(index)
+                    .map_or(Cow::Borrowed("changed-missing"), |file| {
+                        Cow::Borrowed(file.path.as_str())
+                    })
+            },
+            move |s: &AppState, index| changed_row(s, &kit, index),
+        )
+        .virtual_rows_version(version)
+}
+
+fn changed_row(s: &AppState, k: &Kit, index: usize) -> El {
+    let changes = &s.workbench.changes;
+    let Some(file) = changes.files.get(index) else {
+        return el();
+    };
+    let selected = s.workbench.mode == CenterMode::Changes && changes.selected == Some(index);
+    let name = file
+        .path
+        .rsplit('/')
+        .next()
+        .unwrap_or(&file.path)
+        .to_string();
+    let dir = file
+        .path
+        .strip_suffix(name.as_str())
+        .unwrap_or_default()
+        .trim_end_matches('/')
+        .to_string();
+    let path = file.path.clone();
+    row()
+        .role("button")
+        .label(format!(
+            "{}, {}, {} added, {} removed",
+            file.path,
+            status_word(file.status),
+            file.additions,
+            file.deletions
+        ))
+        .w_full()
+        .h(CHANGED_ROW_H)
+        .px(8.0)
+        .gap(crate::ds::SPACE_3)
+        .radius(k.radius.sm)
+        .items_center()
+        .fill(if selected {
+            k.c.surface_hover
+        } else {
+            rune::Color::TRANSPARENT
+        })
+        .hover(k.c.hover)
+        .on_press(move |s: &mut AppState| {
+            s.workbench.select_change_path(&path);
+            s.workbench.mode = CenterMode::Changes;
+        })
+        .child(
+            text(status_letter(file.status))
+                .font(k.ty.mono)
+                .color(if file.status == domain::DiffStatus::Conflicted {
+                    crate::theme::roles(k).git.conflict
                 } else {
-                    rune::Color::TRANSPARENT
+                    k.c.text_muted
                 })
-                .hover(k.c.hover)
-                .on_press(move |s: &mut AppState| {
-                    s.workbench.select_change(index);
-                    s.workbench.mode = CenterMode::Changes;
-                })
-                .child(
-                    text(status_letter(file.status))
-                        .font(k.ty.mono)
-                        .color(if file.status == domain::DiffStatus::Conflicted {
-                            crate::theme::roles(k).git.conflict
-                        } else {
-                            k.c.text_muted
-                        })
-                        .w(12.0),
-                )
-                .child(icon(file.icon.icon(!k.dark), 14.0))
-                .child(text(name).font(k.ty.small).color(k.c.text_base))
-                .child(
-                    text(dir)
-                        .font(k.ty.text_xsmall)
-                        .color(k.c.text_faint)
-                        .grow(1.0)
-                        .min_w(0.0)
-                        .truncate(),
-                )
-                .child(
-                    text(format!("+{}", file.additions))
-                        .font(k.ty.text_xsmall)
-                        .color(crate::theme::roles(k).git.added),
-                )
-                .child(
-                    text(format!("−{}", file.deletions))
-                        .font(k.ty.text_xsmall)
-                        .color(crate::theme::roles(k).git.deleted),
-                ),
-        );
-    }
-    if changes.truncated {
-        list = list.child(
-            text("Some files were over budget and are not listed.")
+                .w(12.0),
+        )
+        .child(icon(file.icon.icon(!k.dark), 14.0))
+        .child(text(name).font(k.ty.small).color(k.c.text_base))
+        .child(
+            text(dir)
                 .font(k.ty.text_xsmall)
-                .color(k.c.text_faint),
-        );
-    }
-    list
+                .color(k.c.text_faint)
+                .grow(1.0)
+                .min_w(0.0)
+                .truncate(),
+        )
+        .child(
+            text(format!("+{}", file.additions))
+                .font(k.ty.text_xsmall)
+                .color(crate::theme::roles(k).git.added),
+        )
+        .child(
+            text(format!("−{}", file.deletions))
+                .font(k.ty.text_xsmall)
+                .color(crate::theme::roles(k).git.deleted),
+        )
 }
 
 /// The sidebar's Git panel: the branch and its sync,
@@ -302,6 +331,14 @@ pub fn git_panel(s: &AppState, k: &Kit) -> El {
                 .on_wheel(crate::pages::wheel)
                 .child(changed_rows(s, k)),
         );
+    if changes.loaded && changes.error.is_none() && changes.truncated {
+        panel = panel.child(
+            text("Some files were over budget and are not listed.")
+                .font(k.ty.text_xsmall)
+                .color(k.c.text_faint)
+                .key("changes-truncated"),
+        );
+    }
     if changes.loaded && changes.error.is_none() {
         panel = panel.child(crate::commit::commit_box(s, k, changes.files.len()));
     }
@@ -1256,7 +1293,7 @@ mod tests {
             let scope = s.workbench.scope().expect("a scope");
             let code: String = (0..200).map(|i| format!("let x{i} = {i};\n")).collect();
             s.workbench
-                .apply_file(scope, Ok(file("a.rs", &code, "rust", workspace)));
+                .apply_file(scope, "a.rs", Ok(file("a.rs", &code, "rust", workspace)));
         });
         rt.frame(0.1);
         rt.frame(0.2);
@@ -1272,6 +1309,7 @@ mod tests {
             let scope = s.workbench.scope().expect("a scope");
             s.workbench.apply_file(
                 scope,
+                "README.md",
                 Ok(file(
                     "README.md",
                     "# Title\n\nBody.\n",
@@ -1319,6 +1357,7 @@ mod tests {
             let scope = s.workbench.scope().expect("a scope");
             s.workbench.apply_file(
                 scope,
+                "data.csv",
                 Ok(file("data.csv", "name,size\na,1\nb,2\n", "", workspace)),
             );
         });
