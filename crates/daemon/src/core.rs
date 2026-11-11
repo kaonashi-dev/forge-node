@@ -91,11 +91,13 @@ pub(crate) struct Inner {
     idle_warned: HashSet<SessionId>,
     /// Provider session id this launch was resumed from. Runtime-only, like `terminal_id`.
     resumed_from: HashMap<SessionId, String>,
-    /// Sessions launched in the provider's read-only mode. Runtime-only
-    /// like `resumed_from`, and remembered for the *opposite* reason the
-    /// initial prompt is forgotten: a restarted review that came back able to
-    /// write would be a different session wearing the same name.
+    /// Sessions launched in the provider's read-only mode. Startup also seeds
+    /// it from persisted review runs, so a `persist_history` restart cannot
+    /// make a reviewer writable.
     read_only: HashSet<SessionId>,
+    /// Workspaces whose rows are being removed. Session creation refuses them
+    /// under the same lock that sets this, closing the check-then-delete race.
+    pub(crate) removing: HashSet<WorkspaceId>,
     launch_options: HashMap<SessionId, domain::AgentLaunchOptions>,
     pub(crate) pending_prompts: HashMap<SessionId, crate::prompts::PendingPrompt>,
     pub(crate) prompt_gates: HashMap<SessionId, Arc<Mutex<()>>>,
@@ -261,7 +263,7 @@ impl Daemon {
             });
         }
 
-        if daemon.config.idle_policy().is_enabled() {
+        if daemon.config.idle_policy().is_enabled() || daemon.config.lsp.enabled {
             let d = daemon.clone();
             std::thread::spawn(move || d.run_idle_sweeper());
         }
@@ -309,7 +311,7 @@ impl Daemon {
         // A PTY never survives the daemon. Default: drop session rows. Opt-in: mark them Orphaned.
         crate::orchestration::reconcile_startup(&db, &config.orchestration.limits())
             .map_err(|error| error.to_string())?;
-        // No reviewer survives the daemon, whatever `persist_history` says.
+        // No reviewer process survives the daemon, whatever `persist_history` says.
         let review_store = db.review_store().map_err(|e| e.to_string())?;
         let interrupted = review_store
             .interrupt_unfinished()
@@ -317,6 +319,9 @@ impl Daemon {
         if interrupted > 0 {
             tracing::info!(interrupted, "interrupted reviews left in flight");
         }
+        let reviewer_sessions = review_store
+            .reviewer_sessions()
+            .map_err(|e| e.to_string())?;
         if config.sessions.persist_history {
             let orphaned = db.reconcile_orphaned().map_err(|e| e.to_string())?;
             if orphaned > 0 {
@@ -393,6 +398,10 @@ impl Daemon {
         }
 
         let context_writer = db.context_writer().map_err(|e| e.to_string())?;
+        let read_only = reviewer_sessions
+            .into_iter()
+            .filter(|id| sessions.contains_key(id))
+            .collect();
         let inner = Inner {
             db,
             project_groups,
@@ -406,7 +415,8 @@ impl Daemon {
             detections: HashMap::new(),
             idle_warned: HashSet::new(),
             resumed_from: HashMap::new(),
-            read_only: HashSet::new(),
+            read_only,
+            removing: HashSet::new(),
             launch_options: HashMap::new(),
             pending_prompts: HashMap::new(),
             prompt_gates: HashMap::new(),
@@ -1566,6 +1576,7 @@ impl Daemon {
             inner.idle_warned.clear();
             inner.resumed_from.clear();
             inner.read_only.clear();
+            inner.removing.clear();
             inner.launch_options.clear();
             inner.pending_prompts.clear();
             inner.prompt_gates.clear();
@@ -1922,7 +1933,7 @@ impl Daemon {
         policy: RemoveProjectPolicy,
     ) -> Result<Response, ProtocolError> {
         let (ws_ids, session_ids, managed_worktrees, git_root) = {
-            let inner = self.lock();
+            let mut inner = self.lock();
             if !inner.projects.contains_key(&project_id) {
                 return Err(ProtocolError::not_found("project"));
             }
@@ -1945,7 +1956,19 @@ impl Daemon {
                 .map(|w| (w.id, w.path.clone()))
                 .collect();
             let git_root = inner.projects[&project_id].git_root.clone();
+            if ws_ids.iter().any(|id| inner.removing.contains(id)) {
+                return Err(ProtocolError::conflict(
+                    "a workspace in this project is already being removed",
+                ));
+            }
+            for id in &ws_ids {
+                inner.removing.insert(*id);
+            }
             (ws_ids, session_ids, managed_worktrees, git_root)
+        };
+        let _removing = RemovingGuard {
+            daemon: Arc::clone(self),
+            workspaces: ws_ids.clone(),
         };
 
         let has_running = {
@@ -1967,12 +1990,11 @@ impl Daemon {
                 // Groups must be dead before rows and managed worktrees go (P1).
                 self.kill_groups_blocking(&self.kill_targets(&session_ids));
             }
-            _ if has_running => {
-                return Err(ProtocolError::precondition_failed(
-                    "project has running sessions",
-                ));
+            _ => {
+                return Err(ProtocolError::invalid_request(
+                    "unknown remove-project policy",
+                ))
             }
-            _ => {}
         }
 
         if matches!(
@@ -4022,7 +4044,7 @@ impl Daemon {
     ) -> Result<Response, ProtocolError> {
         let _span = tracing::info_span!("worktree.remove", %workspace_id).entered();
         let (ws, git_root, running) = {
-            let inner = self.lock();
+            let mut inner = self.lock();
             let ws = inner
                 .workspaces
                 .get(&workspace_id)
@@ -4037,7 +4059,17 @@ impl Daemon {
                 .sessions
                 .values()
                 .any(|s| s.workspace_id == workspace_id && s.state.is_active());
+            if inner.removing.contains(&workspace_id) {
+                return Err(ProtocolError::conflict(
+                    "the workspace is already being removed",
+                ));
+            }
+            inner.removing.insert(workspace_id);
             (ws, git_root, running)
+        };
+        let _removing = RemovingGuard {
+            daemon: Arc::clone(self),
+            workspaces: vec![workspace_id],
         };
 
         if ws.kind != WorkspaceKind::GitWorktree {
@@ -4333,6 +4365,11 @@ impl Daemon {
                 .get(&workspace_id)
                 .cloned()
                 .ok_or_else(|| ProtocolError::not_found("workspace"))?;
+            if inner.removing.contains(&workspace_id) {
+                return Err(ProtocolError::conflict(
+                    "the workspace is being removed; no session can start in it",
+                ));
+            }
 
             let (parent_id, root_id) = Self::graph_placement(&inner, parent, workspace_id)?;
 
@@ -4503,6 +4540,11 @@ impl Daemon {
                 .get(&workspace_id)
                 .cloned()
                 .ok_or_else(|| ProtocolError::not_found("workspace"))?;
+            if inner.removing.contains(&workspace_id) {
+                return Err(ProtocolError::conflict(
+                    "the workspace is being removed; no session can start in it",
+                ));
+            }
 
             let now = Timestamp::now();
             let session = Session {
@@ -5522,6 +5564,11 @@ impl Daemon {
                 .get(&session.workspace_id)
                 .cloned()
                 .ok_or_else(|| ProtocolError::not_found("workspace"))?;
+            if inner.removing.contains(&session.workspace_id) {
+                return Err(ProtocolError::conflict(
+                    "the workspace is being removed; the session cannot restart in it",
+                ));
+            }
             let cwd = ws.path.clone();
             let shell_command = session.launch_command.clone();
             let resume = inner.resumed_from.get(&session_id).cloned();
@@ -7779,6 +7826,21 @@ impl PrOpeningGuard {
 /// Releases the global PR-refresh flag however the worker ends.
 struct PrRefreshingGuard {
     daemon: Arc<Daemon>,
+}
+
+/// Clears a removal's workspace marks however the request ends.
+struct RemovingGuard {
+    daemon: Arc<Daemon>,
+    workspaces: Vec<WorkspaceId>,
+}
+
+impl Drop for RemovingGuard {
+    fn drop(&mut self) {
+        let mut inner = self.daemon.lock();
+        for id in &self.workspaces {
+            inner.removing.remove(id);
+        }
+    }
 }
 
 /// Releases a workspace's Juva flag however the worker ends, for the reason

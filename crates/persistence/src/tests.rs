@@ -95,8 +95,8 @@ fn migrations_apply_and_user_version_advances() {
     // count of applied migrations, and the assertion is what catches a migration
     // that was silently reordered or dropped.
     assert_eq!(
-        version, 17,
-        "seventeen migrations applied => user_version == 17"
+        version, 18,
+        "eighteen migrations applied => user_version == 18"
     );
 
     for table in [
@@ -126,6 +126,38 @@ fn migrations_apply_and_user_version_advances() {
             .unwrap_or_else(|e| panic!("table {table} not queryable: {e}"));
         assert_eq!(count, 0);
     }
+}
+
+#[test]
+fn review_runs_from_before_presets_get_the_standard_preset() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("forge-review-preset.db");
+    {
+        let mut conn = rusqlite::Connection::open(&path).unwrap();
+        crate::migrations::migrations()
+            .to_version(&mut conn, 17)
+            .unwrap();
+        conn.execute_batch("PRAGMA foreign_keys = OFF;").unwrap();
+        conn.execute(
+            "INSERT INTO review_runs \
+             (id, workspace_id, target, head_oid, tier, provider, status, summary, coverage, \
+              created_at) \
+             VALUES ('r1', 'w1', '{}', 'head', 'base', 'claude', 'Completed', '', '{}', \
+              '2026-01-01T00:00:00Z')",
+            [],
+        )
+        .unwrap();
+    }
+    let db = Db::open(&path).unwrap();
+    let preset: String = db
+        .conn()
+        .query_row(
+            "SELECT preset FROM review_runs WHERE id = 'r1'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(preset, "standard");
 }
 
 #[test]
@@ -159,7 +191,7 @@ fn version_two_database_upgrades_existing_projects_into_general() {
         .conn()
         .query_row("PRAGMA user_version", [], |row| row.get(0))
         .unwrap();
-    assert_eq!(version, 17);
+    assert_eq!(version, 18);
 }
 
 /// Migration 6 over a database that already has workspaces: the display_name
@@ -1045,7 +1077,7 @@ fn sessions_schema_is_unchanged() {
         .conn()
         .query_row("PRAGMA user_version", [], |r| r.get(0))
         .unwrap();
-    assert_eq!(version, 17, "the review preset is migration 17");
+    assert_eq!(version, 18, "the review preset fix is migration 18");
 
     let (db, _project, workspace_id) = db_with_workspace();
     let mut session = mk_session(workspace_id, SessionState::Running);
@@ -1196,7 +1228,7 @@ fn reset_clears_every_application_table_and_keeps_the_schema() {
         .conn()
         .query_row("PRAGMA user_version", [], |row| row.get(0))
         .unwrap();
-    assert_eq!(version, 17, "reset retains the migrated schema");
+    assert_eq!(version, 18, "reset retains the migrated schema");
 }
 
 // ---- on-disk open ----------------------------------------------------------
@@ -1694,6 +1726,18 @@ fn reviews_are_listed_newest_first_per_workspace() {
 }
 
 #[test]
+fn reviewer_sessions_are_named_for_the_restart() {
+    let (db, _, ws) = db_with_workspace();
+    let store = db.review_store().unwrap();
+    let session = domain::SessionId::new();
+    let mut run = mk_run(ws, domain::ReviewStatus::Completed);
+    run.session_id = Some(session);
+    store.insert_run(&run).unwrap();
+
+    assert!(store.reviewer_sessions().unwrap().contains(&session));
+}
+
+#[test]
 fn unfinished_reviews_become_interrupted() {
     let (db, _, ws) = db_with_workspace();
     let store = db.review_store().unwrap();
@@ -1741,6 +1785,31 @@ fn pruning_keeps_the_newest_runs_and_drops_old_ones_with_their_findings() {
     let future = Timestamp::from_unix_secs(4_000_000_000).unwrap();
     assert_eq!(store.prune(ws, 20, future).unwrap(), 2);
     assert!(store.list(ws, 10).unwrap().is_empty());
+}
+
+#[test]
+fn pruning_keeps_a_run_while_its_reviewer_session_exists() {
+    let (db, _, ws) = db_with_workspace();
+    let store = db.review_store().unwrap();
+    let session = mk_session(
+        ws,
+        SessionState::Exited {
+            code: Some(0),
+            signal: None,
+        },
+    );
+    db.sessions().upsert(&session).unwrap();
+    let mut run = mk_run(ws, domain::ReviewStatus::Completed);
+    run.session_id = Some(session.id);
+    store.insert_run(&run).unwrap();
+
+    let future = Timestamp::from_unix_secs(4_000_000_000).unwrap();
+    assert_eq!(store.prune(ws, 0, future).unwrap(), 0);
+    assert!(store.get(run.id).unwrap().is_some(), "the restart needs it");
+
+    db.sessions().delete(session.id).unwrap();
+    assert_eq!(store.prune(ws, 0, future).unwrap(), 1);
+    assert!(store.get(run.id).unwrap().is_none());
 }
 
 #[test]

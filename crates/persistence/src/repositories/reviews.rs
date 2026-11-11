@@ -1,9 +1,11 @@
 //! Forge Review runs and findings. `target` and `coverage` are JSON columns,
 //! the `project_actions.spec` reasoning: nothing queries inside them.
 
+use std::collections::HashSet;
+
 use domain::{
-    Coverage, Finding, ReviewId, ReviewRun, ReviewStage, ReviewStatus, ReviewTarget, Severity,
-    Tier, Timestamp, Verdict, WorkspaceId,
+    Coverage, Finding, ReviewId, ReviewRun, ReviewStage, ReviewStatus, ReviewTarget, SessionId,
+    Severity, Tier, Timestamp, Verdict, WorkspaceId,
 };
 use rusqlite::{params, Connection, OptionalExtension, Row};
 
@@ -148,8 +150,22 @@ pub fn interrupt_unfinished(conn: &Connection) -> Result<usize, DbError> {
     )?)
 }
 
+/// Session ids named by review runs, for the restart's read-only set.
+pub fn reviewer_sessions(conn: &Connection) -> Result<HashSet<SessionId>, DbError> {
+    let mut stmt =
+        conn.prepare("SELECT DISTINCT session_id FROM review_runs WHERE session_id IS NOT NULL")?;
+    let rows = stmt.query_map([], |row| row.get::<_, String>(0))?;
+    let mut ids = HashSet::new();
+    for row in rows {
+        ids.insert(id_from_str("review reviewer session", &row?)?);
+    }
+    Ok(ids)
+}
+
 /// Keep a workspace's newest `keep` runs, and of those only the ones created
-/// at or after `cutoff`. Findings go with their run.
+/// at or after `cutoff`. Findings go with their run. A run whose reviewer
+/// session row still exists is kept: that row is what makes the restart
+/// read-only.
 pub fn prune(
     conn: &Connection,
     workspace: WorkspaceId,
@@ -157,8 +173,10 @@ pub fn prune(
     cutoff: Timestamp,
 ) -> Result<usize, DbError> {
     Ok(conn.execute(
-        "DELETE FROM review_runs WHERE workspace_id = ?1 AND (created_at < ?3 OR id NOT IN \
-         (SELECT id FROM review_runs WHERE workspace_id = ?1 ORDER BY id DESC LIMIT ?2))",
+        "DELETE FROM review_runs WHERE workspace_id = ?1 \
+         AND (created_at < ?3 OR id NOT IN \
+           (SELECT id FROM review_runs WHERE workspace_id = ?1 ORDER BY id DESC LIMIT ?2)) \
+         AND (session_id IS NULL OR session_id NOT IN (SELECT id FROM sessions))",
         params![workspace.to_string(), keep, ts_to_str(&cutoff)],
     )?)
 }

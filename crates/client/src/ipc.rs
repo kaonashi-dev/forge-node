@@ -1943,7 +1943,13 @@ impl Client {
             self.shared.disconnect();
             return Err(ClientError::Disconnected);
         };
-        write_frame(&mut write, message)
+        let result = write_frame(&mut write, message);
+        // A failed write can leave a partial frame too; an encode failure
+        // wrote nothing and leaves the stream intact.
+        if matches!(result, Err(ClientError::Io(_))) {
+            self.shared.disconnect();
+        }
+        result
     }
 
     fn remove_waiter(&self, request_id: u64) {

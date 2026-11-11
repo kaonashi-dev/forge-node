@@ -171,12 +171,21 @@ impl ReviewStore {
         reviews::list(&self.conn(), workspace, limit)
     }
 
-    /// `Queued` and `Running` become `Interrupted`: no reviewer survives the daemon.
+    /// `Queued` and `Running` become `Interrupted`: no reviewer process survives
+    /// the daemon.
     pub fn interrupt_unfinished(&self) -> Result<usize, DbError> {
         reviews::interrupt_unfinished(&self.conn())
     }
 
-    /// Keep the newest `keep` runs of a workspace, none created before `cutoff`.
+    /// Reviewer sessions a restart must keep read-only.
+    pub fn reviewer_sessions(
+        &self,
+    ) -> Result<std::collections::HashSet<domain::SessionId>, DbError> {
+        reviews::reviewer_sessions(&self.conn())
+    }
+
+    /// Keep the newest `keep` runs of a workspace, none created before
+    /// `cutoff`; a run whose reviewer session row still exists is kept.
     pub fn prune(
         &self,
         workspace: domain::WorkspaceId,

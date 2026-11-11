@@ -203,6 +203,9 @@ See [Architecture](docs/architecture.md) for the crate graph and runtime boundar
   [`apps/ui/rust-toolchain.toml`](apps/ui/rust-toolchain.toml); `rustup`
   installs it on first use.
 - `git`, `make`, and a C toolchain for bundled SQLite.
+- [Bun](https://bun.sh/) **1.4** for the gate: the OpenCode attention plugin is
+  TypeScript checked and tested with it, and the editor scenarios' fake
+  `forge-editor` is a Bun script.
 - macOS: Xcode Command Line Tools (`xcode-select --install`).
 - Linux: a Vulkan or GL driver plus the usual windowing libraries
   (`libvulkan1`, `libxkbcommon0`, `libx11-6`); Wayland/X11 runtime validation is
@@ -227,7 +230,7 @@ running `make run-live` there.
 
 | Command | Purpose |
 | --- | --- |
-| `scripts/dev check` | Canonical gate: root fmt, Clippy with warnings denied and tests, then the Rune client |
+| `scripts/dev check` | Canonical gate: root fmt, Clippy with warnings denied and tests, the OpenCode plugin's Bun checks, then the Rune client |
 | `make check` | Alias for `scripts/dev check` |
 | `make check-rune` | Rune client gate only |
 | `cargo build --workspace` | Build all root workspace members |
@@ -300,6 +303,7 @@ Start with the [documentation index](docs/README.md) or choose a topic:
 | Vocabulary and project map | [CONTEXT.md](CONTEXT.md) |
 | Architecture and crate layout | [Architecture](docs/architecture.md) |
 | Agents, profiles and usage | [Agent providers](docs/agents.md) |
+| Workspace review | [Review](docs/review.md) |
 | Worktrees and provisioning | [Worktrees](docs/worktrees.md) |
 | Editing and previews | [Editor](docs/editor.md) |
 | Layout and keyboard behavior | [UI](docs/ui.md) |

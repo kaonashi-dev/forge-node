@@ -26,6 +26,9 @@ use crate::config::LspConfig;
 const MAX_OPEN_DOCUMENTS: usize = 64;
 
 const PROBE_TIMEOUT_MS: u64 = 3_000;
+/// A failed probe is retried after this long (a transient spawn/timeout is not
+/// a permanent verdict); a success stays valid until the binary changes.
+const PROBE_FAILURE_TTL: Duration = Duration::from_secs(30);
 
 /// How long a lookup waits for a server it just started before answering
 /// without it. Short: the person is waiting, and the next lookup will find
@@ -73,6 +76,7 @@ enum Slot {
 struct Probed {
     fingerprint: (u64, Option<SystemTime>),
     result: Result<(), String>,
+    checked_at: Instant,
 }
 
 /// The servers, their probes and their state.
@@ -341,7 +345,10 @@ impl Manager {
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
             .get(&program)
-            .filter(|known| known.fingerprint == fingerprint)
+            .filter(|known| {
+                known.fingerprint == fingerprint
+                    && (known.result.is_ok() || known.checked_at.elapsed() < PROBE_FAILURE_TTL)
+            })
         {
             return known.result.clone();
         }
@@ -367,6 +374,7 @@ impl Manager {
                 Probed {
                     fingerprint,
                     result: result.clone(),
+                    checked_at: Instant::now(),
                 },
             );
         result

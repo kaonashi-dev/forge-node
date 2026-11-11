@@ -146,6 +146,15 @@ impl Daemon {
         // branch switch or a new edit since would publish something else.
         let now = git_service::working_tree_diff(path, None, git_service::DIFF_CONTEXT_LINES)
             .and_then(|diff| Ok(CheckoutPrint::of(&git_service::status(path)?, &diff)));
+        if drafted.truncated || now.as_ref().is_ok_and(|print| print.truncated) {
+            return self.pr_agent_failed(
+                workspace_id,
+                Some(session_id),
+                "the checkout is over the diff budget, so Forge cannot prove it stayed the same \
+                 while the agent was drafting; nothing was committed or pushed"
+                    .into(),
+            );
+        }
         if now.as_ref().ok() != Some(drafted) {
             return self.pr_agent_failed(
                 workspace_id,
@@ -230,6 +239,7 @@ struct CheckoutPrint {
     branch: Option<String>,
     head: Option<String>,
     dirty: bool,
+    truncated: bool,
     files: u64,
 }
 
@@ -245,6 +255,7 @@ impl CheckoutPrint {
             branch: status.branch.clone(),
             head: status.head.clone(),
             dirty: status.dirty,
+            truncated: diff.truncated,
             files: hasher.finish(),
         }
     }

@@ -40,6 +40,7 @@ impl<'a> ContextRepo<'a> {
             .as_ref()
             .map(serde_json::to_string)
             .transpose()?;
+        let kind = envelope.kind.map(kind_to_str).transpose()?;
         self.conn.execute(
             "INSERT INTO context_envelopes (\
                id, source_session_id, target_session_id, summary, instructions, \
@@ -57,7 +58,7 @@ impl<'a> ContextRepo<'a> {
                 ts_to_str(&envelope.created_at),
                 envelope.run_id.map(|id| id.to_string()),
                 envelope.task_id.map(|id| id.to_string()),
-                envelope.kind.map(kind_to_str),
+                kind,
                 envelope.in_reply_to.map(|id| id.to_string()),
                 envelope.acked_at.as_ref().map(ts_to_str),
             ],
@@ -170,15 +171,17 @@ impl<'a> ContextRepo<'a> {
     }
 }
 
-fn kind_to_str(kind: ContextKind) -> &'static str {
+fn kind_to_str(kind: ContextKind) -> Result<&'static str, DbError> {
     match kind {
-        ContextKind::Message => "message",
-        ContextKind::Question => "question",
-        ContextKind::Answer => "answer",
-        ContextKind::Feedback => "feedback",
-        ContextKind::Pointer => "pointer",
-        ContextKind::Unrecognized => "unrecognized",
-        _ => "unrecognized",
+        ContextKind::Message => Ok("message"),
+        ContextKind::Question => Ok("question"),
+        ContextKind::Answer => Ok("answer"),
+        ContextKind::Feedback => Ok("feedback"),
+        ContextKind::Pointer => Ok("pointer"),
+        ContextKind::Unrecognized => Ok("unrecognized"),
+        other => Err(DbError::Encode(format!(
+            "unhandled ContextKind variant: {other:?}"
+        ))),
     }
 }
 

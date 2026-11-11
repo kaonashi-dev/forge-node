@@ -19,6 +19,7 @@ Orchestration: [`docs/orchestration.md`](docs/orchestration.md).
 | Invariants agents must preserve | [`AGENTS.md`](AGENTS.md) |
 | ADR numbers cited in code (`ADR-002` …) | [`docs/decisions.md`](docs/decisions.md) |
 | Cost rungs (per cell / delta / frame / request) | [`docs/performance.md`](docs/performance.md) |
+| Workspace review (pack, rules, presets) | [`docs/review.md`](docs/review.md) |
 | Commands and "where to change X" | [`docs/development.md`](docs/development.md) |
 | GUI layout, module ownership, tokens, keymap | [`docs/ui.md`](docs/ui.md) |
 | Repeatable architecture/quality review | `/forge-clean-code` (`.agents/skills/forge-clean-code`) |

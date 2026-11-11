@@ -4,7 +4,8 @@
 # Usage:
 #   scripts/dev daemon      # build + run the daemon in the foreground (verbose logs)
 #                           # isolated socket/db/config per run; the daily daemon is untouched
-#   scripts/dev check       # fmt-check + clippy + test the workspace and apps/ui
+#   scripts/dev check       # fmt-check + clippy + test the workspace, the
+#                           # OpenCode attention plugin (Bun) and apps/ui
 #   scripts/dev check --root-only  # skip apps/ui
 #   scripts/dev dump        # unwired placeholder (forge-daemon dump --json)
 #   scripts/dev ui check    # fmt-check + clippy + test the Rune client (apps/ui, Rust 1.99)

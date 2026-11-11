@@ -400,6 +400,7 @@ pub enum UiEvent {
     File {
         generation: u64,
         scope: crate::workbench::Scope,
+        path: String,
         result: Result<Box<domain::FileContents>, String>,
     },
     Search {
@@ -2979,14 +2980,18 @@ fn handle_live_command(
                         .map(Box::new)
                         .map_err(|error| error.to_string()),
                 },
-                crate::workbench::Read::File(path) => UiEvent::File {
-                    generation,
-                    scope,
-                    result: client
-                        .read_file(workspace_id, path)
-                        .map(Box::new)
-                        .map_err(|error| error.to_string()),
-                },
+                crate::workbench::Read::File(path) => {
+                    let requested = path.clone();
+                    UiEvent::File {
+                        generation,
+                        scope,
+                        path: requested,
+                        result: client
+                            .read_file(workspace_id, path)
+                            .map(Box::new)
+                            .map_err(|error| error.to_string()),
+                    }
+                }
                 crate::workbench::Read::Image(path) => UiEvent::Image {
                     generation,
                     scope,

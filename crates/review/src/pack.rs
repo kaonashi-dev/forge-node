@@ -147,15 +147,15 @@ pub fn build_pack(
                 .push(format!("{}: patch over the diff budget", file.path));
             continue;
         }
-        let (patch, redactions) = redact(&file.patch);
         if full
             || coverage.included.len() >= caps.files
-            || bytes.saturating_add(patch.len()) > caps.bytes
+            || bytes.saturating_add(file.patch.len()) > caps.bytes
         {
             full = true;
             coverage.truncated.push(file.path.clone());
             continue;
         }
+        let (patch, redactions) = redact(&file.patch);
         bytes += patch.len();
         coverage.redactions += redactions;
         coverage.included.push(file.path.clone());

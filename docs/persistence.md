@@ -32,7 +32,7 @@ Versioned by `rusqlite_migration` through SQLite's `PRAGMA user_version`
 
 - **Append only.** Add a new `M::up(...)` to `migrations()`; never edit or
   reorder an existing one, or already-migrated databases will diverge.
-- Fifteen migrations so far: `INITIAL_SCHEMA`, `REFERENTIAL_ACTIONS`,
+- Eighteen migrations so far: `INITIAL_SCHEMA`, `REFERENTIAL_ACTIONS`,
   `PROJECT_GROUPS`, `AGENT_PROFILES`, `PROJECT_ICONS`,
   `WORKSPACE_DISPLAY_NAMES`, `SESSION_LAUNCH_COMMAND`, `WORKTREE_SHARES`,
   `SESSION_BASE_COMMIT`, `PROFILE_CONFIG_DIR`, `WORKTREE_IGNORES`,
@@ -42,7 +42,8 @@ Versioned by `rusqlite_migration` through SQLite's `PRAGMA user_version`
   received them; plain handoffs keep their lifecycle through triggers), and
   `FOREIGN_KEY_INDEXES` (the child columns a parent delete searches, so the
   startup session purge does not scan `runs` and `attempts` once per row),
-  and `PROJECT_ACTIONS` (below).
+  and `PROJECT_ACTIONS` (below), and `REVIEWS` + `REVIEW_PRESET` +
+  `REVIEW_PRESET_STANDARD` (below).
   Session activity is not a column. A restart reconciles live attempts to lost
   and an active run to interrupted before the socket is bound. Factory reset
   deletes those tables with the rest of the application rows.
@@ -184,12 +185,38 @@ ignoring case because a chip and a palette entry name an action by label. A
 run's session (`SessionKind::Task`) is an ordinary `sessions` row; which action
 it runs is runtime-only.
 
+## Schema (v16 — `REVIEWS`)
+
+```sql
+review_runs     (id PK, workspace_id FK→workspaces ON DELETE CASCADE, target,
+                 head_oid, base_oid, tier, preset, provider, status, stage, summary,
+                 score, verdict, error, session_id, coverage, created_at,
+                 finished_at)
+review_findings (review_id → review_runs ON DELETE CASCADE, id, fingerprint,
+                 path, line, end_line, severity, category, rule_id, confidence,
+                 title, body, evidence, suggestion)
+                PRIMARY KEY (review_id, id)
+```
+
+A Forge Review run and its validated findings ([review.md](./review.md));
+`REVIEW_PRESET` adds the resolved preset, and `REVIEW_PRESET_STANDARD` corrects
+the id it defaulted pre-preset runs to. `target` and `coverage` are JSON like
+`project_actions.spec` — nothing queries inside them. The diff, the pack and the
+reviewer's transcript are never stored. A run outlives a daemon restart as
+metadata; runs left `Queued`/`Running` are reconciled to `Interrupted`, because
+the reviewer process they named cannot survive. With `sessions.persist_history`,
+the reviewer's session row is kept `Orphaned`; startup seeds the read-only set
+from these runs, so restarting it cannot turn a review into a writable session.
+Pruning keeps a run while that session row exists, which is what keeps the
+identification available.
+
 ## Repositories (`repositories/`)
 
 One repository per table, obtained from the handle: `db.projects()`,
 `db.project_groups()`, `db.workspaces()`, `db.sessions()`, `db.context()`,
 `db.orchestration()`, `db.provider_overrides()`, `db.agent_profiles()`,
-`db.shares()`, `db.ignores()`, `db.app_state()`. Each maps every domain field to
+`db.shares()`, `db.ignores()`, `db.app_state()`, plus `db.review_store()` for
+`review_runs`/`review_findings`. Each maps every domain field to
 and from its columns; the daemon loads all rows into memory at startup and
 writes through on every mutation (`upsert`/`delete`).
 

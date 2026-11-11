@@ -219,9 +219,10 @@ until that account is signed in.
   change nothing.
 - `domain::RESERVED_PROFILE_VARS` (`TERM`, `TERMINFO`, `COLORTERM`,
   `FORGE_SESSION_ID`, `FORGE_WORKSPACE`, `FORGE_SOCKET`, `FORGE_RUN_ID`,
-  `FORGE_TASK_ID`, `FORGE_ATTEMPT_ID`, `FORGECTL_JSON`) is what Forge owns of the
-  child's environment. A profile can no longer name a variable at all; the
-  constant is the contract every descriptor's `ConfigDirSpec` is tested against.
+  `FORGE_TASK_ID`, `FORGE_ATTEMPT_ID`, `FORGE_REVIEW_ID`, `FORGECTL_JSON`) is
+  the set of names Forge reserves in the child's environment. A profile can no
+  longer name a variable at all; the constant is the contract every descriptor's
+  `ConfigDirSpec` is tested against.
 - Inside a Forge-launched PTY, `forge-daemon` is on `PATH` and
   `FORGE_SESSION_ID` is set. Agents cite or spawn other sessions through Forge,
   not peer-to-peer: `forge-daemon session list|read|spawn-child` and

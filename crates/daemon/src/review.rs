@@ -1,9 +1,6 @@
-//! Forge Review: one worker thread per run, `diff → pack → model → validate`.
-//!
-//! The core lock is taken only to claim, to read session state and to
-//! release; git, the pack, the transcript and SQLite all run outside it. The
-//! reviewer is an ordinary read-only agent session that Forge reads the answer
-//! of once its hook reports it idle.
+//! Forge Review: one worker thread per run, `diff → pack → model → validate`,
+//! with git, the pack, the transcript and SQLite outside the core lock. The
+//! reviewer is an ordinary read-only agent session, read when its hook idles.
 
 use std::fmt::Write as _;
 use std::io::Read;
@@ -123,7 +120,9 @@ impl Daemon {
         {
             let mut inner = self.lock();
             match inner.reviews_running.get(&workspace_id) {
-                Some(running) if running.key == key => {
+                Some(running)
+                    if running.key == key && !inner.review_cancel.contains(&running.id) =>
+                {
                     return Ok(Response::ReviewStarted {
                         review_id: running.id,
                     });
@@ -702,29 +701,53 @@ fn read_dir_files(
     problems: &mut Vec<String>,
 ) -> Vec<(String, String)> {
     let relative = Path::new(".forge/review").join(dir);
-    let Ok(entries) = std::fs::read_dir(root.join(&relative)) else {
+    let Ok(root) = std::fs::canonicalize(root) else {
         return Vec::new();
     };
-    let mut names: Vec<String> = entries
+    let full = match std::fs::canonicalize(root.join(&relative)) {
+        Ok(full) if full.starts_with(&root) => full,
+        Ok(_) => {
+            problems.push(format!(
+                ".forge/review/{dir}: outside the checkout; ignored"
+            ));
+            return Vec::new();
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Vec::new(),
+        Err(error) => {
+            problems.push(format!(".forge/review/{dir}: {error}; ignored"));
+            return Vec::new();
+        }
+    };
+    let Ok(entries) = std::fs::read_dir(&full) else {
+        return Vec::new();
+    };
+    let mut names = std::collections::BTreeSet::new();
+    let mut total = 0usize;
+    for name in entries
         .filter_map(|entry| entry.ok()?.file_name().into_string().ok())
         .filter(|name| {
             Path::new(name)
                 .extension()
                 .is_some_and(|ext| ext == extension)
         })
-        .collect();
-    names.sort();
-    if names.len() > cap {
+    {
+        total += 1;
+        names.insert(name);
+        // Keep the `cap` names a full sort would have kept, without holding a
+        // repository's whole directory in memory first.
+        if names.len() > cap {
+            names.pop_last();
+        }
+    }
+    if total > cap {
         problems.push(format!(
-            ".forge/review/{dir}: only the first {cap} of {} files were read",
-            names.len()
+            ".forge/review/{dir}: only the first {cap} of {total} files were read"
         ));
-        names.truncate(cap);
     }
     names
         .into_iter()
         .filter_map(
-            |name| match read_inside(root, &relative.join(&name), MAX_REPO_FILE_BYTES) {
+            |name| match read_inside(&root, &relative.join(&name), MAX_REPO_FILE_BYTES) {
                 Ok(Some(text)) => Some((name, text)),
                 Ok(None) => None,
                 Err(error) => {
@@ -800,4 +823,43 @@ fn read_inside(root: &Path, relative: &Path, cap: u64) -> Result<Option<String>,
         .and_then(|file| file.take(cap).read_to_string(&mut text))
         .map_err(|error| error.to_string())?;
     Ok(Some(text))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn review_files_keep_the_sorted_prefix_and_report_the_rest() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let rules = dir.path().join(".forge/review/rules");
+        std::fs::create_dir_all(&rules).expect("rules directory");
+        for index in 0..(MAX_RULE_FILES + 2) {
+            std::fs::write(rules.join(format!("{index:03}.md")), "").expect("rule file");
+        }
+        let mut problems = Vec::new();
+        let files = read_dir_files(dir.path(), "rules", "md", MAX_RULE_FILES, &mut problems);
+        assert_eq!(files.len(), MAX_RULE_FILES);
+        assert_eq!(files.first().map(|(name, _)| name.as_str()), Some("000.md"));
+        assert_eq!(files.last().map(|(name, _)| name.as_str()), Some("099.md"));
+        assert!(problems.iter().any(|note| note.contains("only the first")));
+    }
+
+    #[test]
+    fn review_rule_directory_outside_the_checkout_is_refused() {
+        let root = tempfile::tempdir().expect("checkout");
+        let outside = tempfile::tempdir().expect("outside");
+        std::fs::write(outside.path().join("secret.md"), "text").expect("secret");
+        let rules = root.path().join(".forge/review/rules");
+        std::fs::create_dir_all(rules.parent().expect("review dir")).expect("review dir");
+        std::os::unix::fs::symlink(outside.path(), &rules).expect("symlink");
+
+        let mut problems = Vec::new();
+        let files = read_dir_files(root.path(), "rules", "md", MAX_RULE_FILES, &mut problems);
+        assert!(files.is_empty());
+        assert!(problems
+            .iter()
+            .any(|note| note.contains("outside the checkout")));
+        assert!(!problems.iter().any(|note| note.contains("secret.md")));
+    }
 }

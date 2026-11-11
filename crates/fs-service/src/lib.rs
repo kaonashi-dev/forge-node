@@ -9,7 +9,7 @@ use std::hash::{Hash, Hasher};
 use std::io::{Read, Write};
 use std::path::{Component, Path, PathBuf};
 
-use git_service::{discover_root, run_git, run_git_bounded, run_git_prefix, GitError};
+use git_service::{discover_root, run_git, run_git_prefix, GitError};
 use thiserror::Error;
 
 pub mod definition;
@@ -1032,14 +1032,14 @@ fn list_via_git(root: &Path, include_ignored: bool) -> Result<FileTree, FsError>
      * still need this subtraction and would have to be parsed out of the same
      * NUL-separated stream.
      */
-    let gone = run_git_bounded(Some(root), &["ls-files", "--deleted", "-z"], MAX_TREE_BYTES)?;
-    let deleted: HashSet<&str> = gone
-        .stdout
+    let (gone, gone_cut) =
+        run_git_prefix(Some(root), &["ls-files", "--deleted", "-z"], MAX_TREE_BYTES)?;
+    let deleted: HashSet<&str> = complete_records(&gone.stdout, gone_cut)
         .split('\0')
         .filter(|path| !path.is_empty())
         .collect();
 
-    let out = run_git_bounded(
+    let (out, list_cut) = run_git_prefix(
         Some(root),
         &[
             "ls-files",
@@ -1051,12 +1051,12 @@ fn list_via_git(root: &Path, include_ignored: bool) -> Result<FileTree, FsError>
         MAX_TREE_BYTES,
     )?;
     let mut entries = Vec::new();
-    let mut truncated = false;
+    let mut truncated = gone_cut || list_cut;
     let mut bytes = 0;
     // An unmerged path is in the index once per stage, so `--cached` names it
     // up to three times; the tree wants one row.
     let mut seen = HashSet::new();
-    for path in out.stdout.split('\0') {
+    for path in complete_records(&out.stdout, list_cut).split('\0') {
         if path.is_empty() {
             continue;
         }
@@ -1113,7 +1113,7 @@ fn list_via_git(root: &Path, include_ignored: bool) -> Result<FileTree, FsError>
      * extra `ls-files` is a whole-tree walk the query cannot use.
      */
     if include_ignored && !truncated {
-        let ignored = run_git_bounded(
+        let (ignored, ignored_cut) = run_git_prefix(
             Some(root),
             &[
                 "ls-files",
@@ -1127,7 +1127,7 @@ fn list_via_git(root: &Path, include_ignored: bool) -> Result<FileTree, FsError>
             MAX_TREE_BYTES,
         )?;
         let mut extra = Vec::new();
-        for path in ignored.stdout.split('\0') {
+        for path in complete_records(&ignored.stdout, ignored_cut).split('\0') {
             if path.is_empty() {
                 continue;
             }
@@ -1151,11 +1151,20 @@ fn list_via_git(root: &Path, include_ignored: bool) -> Result<FileTree, FsError>
                 extra.push(entry);
             }
         }
+        truncated |= ignored_cut;
         extra.sort_by(|a, b| a.path.cmp(&b.path));
         entries.append(&mut extra);
     }
 
     Ok(FileTree { entries, truncated })
+}
+
+/// A prefix can end inside a NUL record; the partial tail is not a path.
+fn complete_records(text: &str, cut: bool) -> &str {
+    if !cut {
+        return text;
+    }
+    text.rfind('\0').map_or("", |end| &text[..=end])
 }
 
 /// `ls-files` already says file vs `--directory` folder. `lstat` every path
@@ -2026,6 +2035,13 @@ a.ts\x0019\0nineteen\na.ts\x0020\0hit twenty\nb.ts\x001\0hit b\nb.ts\x002\0b two
             .unwrap()
             .success());
         tmp
+    }
+
+    #[test]
+    fn a_cut_prefix_drops_the_partial_record() {
+        assert_eq!(complete_records("a\0b\0", false), "a\0b\0");
+        assert_eq!(complete_records("a\0b", true), "a\0");
+        assert_eq!(complete_records("a", true), "");
     }
 
     #[test]

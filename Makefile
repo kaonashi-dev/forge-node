@@ -47,7 +47,7 @@ help: ## Show this help
 	@printf '  make build-rune            # release forge-ui\n'
 	@printf '  make check-rune            # apps/ui gate\n'
 	@printf '\nGate:\n'
-	@printf '  make check                 # root + apps/ui (fmt, clippy, tests)\n'
+	@printf '  make check                 # root + Bun plugin + apps/ui (fmt, clippy, tests)\n'
 
 dev: run-live ## Alias for run-live
 
@@ -83,17 +83,17 @@ app-rune: ## Build dist/rune/Forge Node Rune.app with its own daemon and data
 open-rune: ## Build Forge Node Rune.app and open it
 	"$(ROOT)/scripts/rune-app" --open
 
-test: ## `cargo test --workspace` plus the Rune client tests
+test: ## `cargo test --workspace` plus the Rune client gate
 	cargo test --workspace
 	"$(ROOT)/scripts/dev" ui check
 
-check: ## Full gate: root workspace + Rune client
+check: ## Full gate: root workspace + Bun plugin + Rune client
 	"$(ROOT)/scripts/dev" check
 
 check-rune: ## Rune gate: fmt + clippy + tests for apps/ui
 	"$(ROOT)/scripts/dev" ui check
 
-check-fast: ## Root workspace gate only
+check-fast: ## Root workspace + Bun plugin, no Rune client
 	"$(ROOT)/scripts/dev" check --root-only
 
 fmt: ## `cargo fmt --all` (root and Rune client)

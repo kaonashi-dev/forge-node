@@ -304,7 +304,8 @@ Workspace filesystem views for the in-app editor (ADR-012). Runtime-only like
 `ReadImage` / `SearchFiles`, never stored, never broadcast. `DirectoryListing` is
 the immediate-children answer (`path`, `entries`, `truncated`) and follows the
 same rule. `ImageContents.data` is base64
-because the last hop is JSON into the WebView. `FileContents.revision` is the optimistic-
+because image bytes travel as text in the shared wire type, where a byte array
+would cost roughly three times the bytes in JSON. `FileContents.revision` is the optimistic-
 concurrency token `WriteFile` must present back. `SearchResults.query` echoes
 what was asked: the daemon answers with the correlated
 `Response::SearchResults`, but the GUI's workbench re-broadcasts it as

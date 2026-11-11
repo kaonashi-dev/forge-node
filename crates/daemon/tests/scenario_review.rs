@@ -456,6 +456,13 @@ fn reviews_coalesce_cap_at_two_and_a_newer_head_wins() {
             .request(Request::CancelReview { review_id: id })
             .expect("cancel");
     }
+    let restarted = start(&client, ws[1], None).expect("a cancelled run must not be joined");
+    assert_ne!(restarted, second);
+    client
+        .request(Request::CancelReview {
+            review_id: restarted,
+        })
+        .expect("cancel");
 }
 
 #[test]

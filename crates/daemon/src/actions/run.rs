@@ -156,6 +156,11 @@ impl Daemon {
 
         let session_id = SessionId::new();
         let (created, launch) = self.commit_launch(&action, &root, launch, |inner, launch| {
+            if inner.removing.contains(&workspace_id) {
+                return Err(ProtocolError::conflict(
+                    "the workspace is being removed; no action can start in it",
+                ));
+            }
             // The authoritative check: the one above only spared the port probe.
             if action.single_instance {
                 if let Some(running) = live_session(inner, workspace_id, action_id) {
@@ -211,6 +216,11 @@ impl Daemon {
                 .get(&session_id)
                 .cloned()
                 .ok_or_else(|| ProtocolError::not_found("session"))?;
+            if inner.removing.contains(&session.workspace_id) {
+                return Err(ProtocolError::conflict(
+                    "the workspace is being removed; the task cannot restart in it",
+                ));
+            }
             if !session.state.is_terminal() {
                 return Err(ProtocolError::precondition_failed(
                     "session is not in a terminal state",
@@ -237,6 +247,11 @@ impl Daemon {
                 let prior_port = session.action.as_ref().and_then(|run| run.port);
                 let launch = prepare(action, &root, &reserved, prior_port)?;
                 self.commit_launch(action, &root, launch, |inner, launch| {
+                    if inner.removing.contains(&session.workspace_id) {
+                        return Err(ProtocolError::conflict(
+                            "the workspace is being removed; the task cannot restart in it",
+                        ));
+                    }
                     if action.single_instance
                         && live_session(inner, session.workspace_id, action.id).is_some()
                     {
@@ -269,6 +284,11 @@ impl Daemon {
                     ));
                 }
                 let mut inner = self.lock();
+                if inner.removing.contains(&session.workspace_id) {
+                    return Err(ProtocolError::conflict(
+                        "the workspace is being removed; the task cannot restart in it",
+                    ));
+                }
                 let spec = self.plain_task_spec(&mut inner, &root, session_id, &command)?;
                 (spec, restart_state(&mut inner, session_id)?)
             }
@@ -581,6 +601,11 @@ impl Daemon {
                 .sessions
                 .get(&session_id)
                 .ok_or_else(|| ProtocolError::not_found("session"))?;
+            if inner.removing.contains(&session.workspace_id) {
+                return Err(ProtocolError::conflict(
+                    "the workspace is being removed; the task cannot restart in it",
+                ));
+            }
             if session.state.is_terminal() {
                 drop(inner);
                 return self.restart_task(session_id);
@@ -672,6 +697,11 @@ impl Daemon {
         let session_id = SessionId::new();
         let (wake_rx, session) = {
             let mut inner = self.lock();
+            if inner.removing.contains(&workspace_id) {
+                return Err(ProtocolError::conflict(
+                    "the workspace is being removed; no action can start in it",
+                ));
+            }
             if action.single_instance {
                 if let Some(session_id) = live_session(&inner, workspace_id, action.id) {
                     return Ok(Response::ActionAlreadyRunning { session_id });
@@ -779,6 +809,11 @@ impl Daemon {
         let (deps, deadline) = self.start_dependencies(workspace_id, action)?;
         let (wake_rx, updated) = {
             let mut inner = self.lock();
+            if inner.removing.contains(&workspace_id) {
+                return Err(ProtocolError::conflict(
+                    "the workspace is being removed; the task cannot be queued in it",
+                ));
+            }
             if action.single_instance && live_session(&inner, workspace_id, action.id).is_some() {
                 return Err(ProtocolError::conflict(
                     "this action is already running in this workspace",
@@ -880,6 +915,11 @@ impl Daemon {
         };
         let launch = prepare(&action, &root, &reserved, None)?;
         let (spec, launch) = self.commit_launch(&action, &root, launch, |inner, launch| {
+            if inner.removing.contains(&workspace_id) {
+                return Err(ProtocolError::conflict(
+                    "the workspace is being removed; the queued task cannot start in it",
+                ));
+            }
             let spec = self.task_spawn_spec(inner, &root, session_id, launch)?;
             let Some(session) = inner.sessions.get_mut(&session_id) else {
                 return Ok(None);

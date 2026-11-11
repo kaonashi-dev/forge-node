@@ -27,7 +27,8 @@ pub struct Validated {
     /// With the diagram appended, when the model drew one.
     pub summary: String,
     pub findings: Vec<Finding>,
-    /// Lines outside every new-side hunk, demoted to general.
+    /// Claims whose line is not near their evidence, or outside every new-side
+    /// hunk, demoted to general.
     pub invalid_anchors: u32,
     /// Findings considered, after the caps, the category and the confidence
     /// filters, before dedupe.
@@ -96,19 +97,28 @@ pub fn validate(
     let total = u32::try_from(findings.len()).unwrap_or(u32::MAX);
     let mut invalid_anchors = 0u32;
     let mut kept: Vec<Finding> = Vec::new();
+    let prepared: Vec<Prepared<'_>> = files
+        .iter()
+        .map(|file| Prepared {
+            path: &file.path,
+            hunks: hunks(&file.patch),
+            lines: file
+                .text
+                .as_deref()
+                .map(|text| text.lines().collect())
+                .unwrap_or_default(),
+        })
+        .collect();
 
     for raw in findings {
         let raw = capped(raw);
         if raw.path.contains("..") || raw.path.starts_with('/') {
             continue;
         }
-        let Some(file) = files.iter().find(|file| file.path == raw.path) else {
+        let Some(file) = prepared.iter().find(|file| file.path == raw.path) else {
             continue;
         };
-        let Some(text) = file.text.as_deref() else {
-            continue;
-        };
-        let occurrences = evidence_lines(text, &raw.evidence);
+        let occurrences = evidence_lines(&file.lines, &raw.evidence);
         if occurrences.is_empty() {
             continue;
         }
@@ -119,22 +129,27 @@ pub fn validate(
                 .iter()
                 .copied()
                 .filter(|found| found.abs_diff(asked) <= ANCHOR_SLACK)
-                .min_by_key(|found| found.abs_diff(asked))
-                .unwrap_or(asked);
-            if hunks(&file.patch)
-                .iter()
-                .any(|(first, last)| (*first..=*last).contains(&anchored))
-            {
-                line = Some(anchored);
-                end_line = raw
-                    .end_line
-                    .and_then(|end| {
-                        let shifted = i64::from(end) + i64::from(anchored) - i64::from(asked);
-                        u32::try_from(shifted).ok()
-                    })
-                    .filter(|end| *end >= anchored && *end <= last_line(text));
-            } else {
-                invalid_anchors += 1;
+                .min_by_key(|found| found.abs_diff(asked));
+            let in_hunk = anchored.is_some_and(|anchored| {
+                file.hunks
+                    .iter()
+                    .any(|(first, last)| (*first..=*last).contains(&anchored))
+            });
+            match anchored {
+                Some(anchored) if in_hunk => {
+                    line = Some(anchored);
+                    end_line = raw
+                        .end_line
+                        .and_then(|end| {
+                            let shifted = i64::from(end) + i64::from(anchored) - i64::from(asked);
+                            u32::try_from(shifted).ok()
+                        })
+                        .filter(|end| {
+                            *end >= anchored
+                                && usize::try_from(*end).is_ok_and(|end| end <= file.lines.len())
+                        });
+                }
+                _ => invalid_anchors += 1,
             }
         }
 
@@ -167,7 +182,8 @@ pub fn validate(
 
     if invalid_anchors * 2 > total {
         return Err(format!(
-            "{invalid_anchors} of {total} findings were anchored outside the diff"
+            "{invalid_anchors} of {total} findings were anchored outside the diff or away from \
+             their evidence"
         ));
     }
     kept.sort_by_key(|finding| finding.severity);
@@ -210,28 +226,40 @@ fn capped(mut raw: RawFinding) -> RawFinding {
     raw
 }
 
+/// What validation needs from one changed file, computed once for all findings.
+struct Prepared<'a> {
+    path: &'a str,
+    hunks: Vec<(u32, u32)>,
+    lines: Vec<&'a str>,
+}
+
 /// 1-based lines where `evidence` starts, compared line by line with
 /// surrounding whitespace ignored: the model rarely keeps indentation.
-fn evidence_lines(text: &str, evidence: &str) -> Vec<u32> {
+fn evidence_lines(lines: &[&str], evidence: &str) -> Vec<u32> {
     let wanted: Vec<&str> = evidence
         .lines()
         .map(str::trim)
         .filter(|line| !line.is_empty())
         .collect();
-    if wanted.is_empty() {
+    let Some((first, rest)) = wanted.split_first() else {
         return Vec::new();
+    };
+    let mut found = Vec::new();
+    for (start, line) in lines.iter().enumerate() {
+        if !line.contains(first) {
+            continue;
+        }
+        if rest.iter().enumerate().all(|(offset, want)| {
+            lines
+                .get(start + 1 + offset)
+                .is_some_and(|line| line.contains(want))
+        }) {
+            if let Ok(line) = u32::try_from(start + 1) {
+                found.push(line);
+            }
+        }
     }
-    let lines: Vec<&str> = text.lines().collect();
-    (0..lines.len())
-        .filter(|start| {
-            wanted.iter().enumerate().all(|(offset, want)| {
-                lines
-                    .get(start + offset)
-                    .is_some_and(|line| line.contains(want))
-            })
-        })
-        .filter_map(|start| u32::try_from(start + 1).ok())
-        .collect()
+    found
 }
 
 fn overlaps(a: &Finding, b: &Finding) -> bool {
@@ -293,8 +321,4 @@ pub fn verdict(findings: &[Finding], score: f32) -> Verdict {
     } else {
         Verdict::Ok
     }
-}
-
-fn last_line(text: &str) -> u32 {
-    u32::try_from(text.lines().count()).unwrap_or(u32::MAX)
 }

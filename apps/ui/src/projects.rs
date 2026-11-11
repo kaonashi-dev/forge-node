@@ -149,7 +149,8 @@ pub fn checkouts_of(workspaces: &[Workspace], project: ProjectId) -> Vec<&Worksp
         .iter()
         .filter(|workspace| workspace.project_id == project)
         .collect();
-    owned.sort_by_key(|workspace| (workspace.kind != WorkspaceKind::Main, workspace.label()));
+    owned
+        .sort_by_cached_key(|workspace| (workspace.kind != WorkspaceKind::Main, workspace.label()));
     owned
 }
 
@@ -625,7 +626,7 @@ pub fn view(s: &AppState, k: &Kit) -> El {
         .label("Projects, checkouts and sessions")
         .w_full()
         .gap(ds::SPACE_1);
-    let hues = crate::menus::parse_hues(store.app_state_value(crate::menus::PROJECT_HUES_KEY));
+    let hues = &s.hues;
     for (group, projects) in crate::rail::grouped(store) {
         let mut section = col().w_full().gap(ds::SPACE_1);
         let open = match group {
@@ -646,7 +647,7 @@ pub fn view(s: &AppState, k: &Kit) -> El {
                 .iter()
                 .filter_map(|id| store.projects.iter().find(|p| p.id == *id))
             {
-                section = section.child(project_block(s, k, &hues, project));
+                section = section.child(project_block(s, k, hues, project));
             }
         }
         list = list.child(section);

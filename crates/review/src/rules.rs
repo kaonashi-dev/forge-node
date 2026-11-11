@@ -29,7 +29,18 @@ impl Rule {
 pub fn in_scope(rules: &[Rule], paths: &[&str]) -> Vec<Rule> {
     rules
         .iter()
-        .filter(|rule| paths.iter().any(|path| rule.matches(path)))
+        .filter(|rule| {
+            // Compile each glob once per rule: `Rule::matches` recompiles it
+            // for every path.
+            let patterns: Vec<glob::Pattern> = rule
+                .scope
+                .iter()
+                .filter_map(|glob| glob::Pattern::new(glob).ok())
+                .collect();
+            paths
+                .iter()
+                .any(|path| patterns.iter().any(|pattern| pattern.matches(path)))
+        })
         .cloned()
         .collect()
 }
