@@ -1,5 +1,5 @@
 use std::io::{self, BufRead, Write};
-use std::sync::{Arc, Condvar, Mutex};
+use std::sync::{mpsc, Arc, Condvar, Mutex};
 
 use super::*;
 
@@ -8,13 +8,45 @@ const MAX_MCP_LINE: usize = 65_536;
 const INSTRUCTIONS: &str = "Forge daemon tools. Identity is this session's own: a worker reports, asks and \
 reads its inbox for its task; a controller runs the task loop (task_add, task_start, run_wait, act). \
 Results are {ok, result} or {ok: false, error: {code, message, details, next}}; next is CLI argv for a human. \
+Pass the same request_id when retrying a ledger mutation that timed out, so it is not applied twice. \
 Read guide (topic worker or controller) for the full contract.";
+
+/// A call that carries a progress token hears from the server at this cadence,
+/// so a client that resets its timeout on progress does not cut a 600 s wait.
+const PROGRESS_EVERY: Duration = Duration::from_secs(10);
+
+const MAX_REQUEST_ID: u64 = 128;
+
+/// Who the caller is, from the identity the daemon injected. It narrows the
+/// advertised catalog only: the daemon enforces the rails, so a call is never
+/// refused for the role.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Role {
+    Session,
+    Controller,
+    Worker,
+}
+
+impl Role {
+    pub(crate) fn from_env() -> Self {
+        if env_attempt().is_some() {
+            Self::Worker
+        } else if env_run().is_some() {
+            Self::Controller
+        } else {
+            Self::Session
+        }
+    }
+}
+
+const EVERY_ROLE: &[Role] = &[Role::Session, Role::Controller, Role::Worker];
+const NOT_A_WORKER: &[Role] = &[Role::Session, Role::Controller];
 
 /// Bounds concurrent tool calls; each holds its own daemon connection, so a
 /// long `wait_session` no longer stalls a `list_sessions` behind it.
 const MAX_IN_FLIGHT: usize = 8;
 
-type Output = Arc<Mutex<io::Stdout>>;
+type Output = Arc<Mutex<dyn Write + Send>>;
 
 struct Slots {
     used: Mutex<usize>,
@@ -24,16 +56,26 @@ struct Slots {
 struct Slot(Arc<Slots>);
 
 impl Slots {
-    fn acquire(self: &Arc<Self>) -> Slot {
-        let mut used = self
-            .used
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+    /// Blocks until a slot is free, calling `waiting` every `every` meanwhile
+    /// so a queued call can report progress before it runs.
+    fn acquire(self: &Arc<Self>, every: Duration, mut waiting: impl FnMut()) -> Slot {
+        let lock = || {
+            self.used
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+        };
+        let mut used = lock();
         while *used >= MAX_IN_FLIGHT {
-            used = self
+            let (guard, wait) = self
                 .freed
-                .wait(used)
+                .wait_timeout(used, every)
                 .unwrap_or_else(std::sync::PoisonError::into_inner);
+            used = guard;
+            if wait.timed_out() && *used >= MAX_IN_FLIGHT {
+                drop(used);
+                waiting();
+                used = lock();
+            }
         }
         *used += 1;
         Slot(Arc::clone(self))
@@ -64,7 +106,41 @@ fn write(output: &Output, response: &Value) -> Result<(), u8> {
         .map_err(|_| 3)
 }
 
+fn progress(token: &Value, elapsed: Duration) -> Value {
+    let secs = elapsed.as_secs();
+    json!({ "jsonrpc": "2.0", "method": "notifications/progress", "params": {
+        "progressToken": token, "progress": secs, "message": format!("still running after {secs} s"),
+    } })
+}
+
+/// Runs `call` while reporting progress to `token`; the wait blocks on the
+/// call's completion, so a short call sends nothing.
+fn with_progress<R: Send>(
+    output: &Output,
+    token: &Value,
+    started: Instant,
+    every: Duration,
+    call: impl FnOnce() -> R + Send,
+) -> R {
+    std::thread::scope(|scope| {
+        let (done, finished) = mpsc::channel::<()>();
+        let worker = scope.spawn(move || {
+            let result = call();
+            let _ = done.send(());
+            result
+        });
+        while let Err(mpsc::RecvTimeoutError::Timeout) = finished.recv_timeout(every) {
+            let _ = write(output, &progress(token, started.elapsed()));
+        }
+        match worker.join() {
+            Ok(result) => result,
+            Err(panic) => std::panic::resume_unwind(panic),
+        }
+    })
+}
+
 pub(crate) fn serve(app: &App) -> Result<(), u8> {
+    let role = Role::from_env();
     let stdin = io::stdin();
     let mut reader = stdin.lock();
     let output: Output = Arc::new(Mutex::new(io::stdout()));
@@ -97,17 +173,34 @@ pub(crate) fn serve(app: &App) -> Result<(), u8> {
             }
         };
         if request.get("method").and_then(Value::as_str) == Some("tools/call") {
-            let slot = slots.acquire();
+            let started = Instant::now();
+            let token = request
+                .pointer("/params/_meta/progressToken")
+                .filter(|token| token.is_string() || token.is_i64())
+                .cloned();
+            let slot = slots.acquire(PROGRESS_EVERY, || {
+                if let Some(token) = &token {
+                    let _ = write(&output, &progress(token, started.elapsed()));
+                }
+            });
             let app = app.clone();
             let output = Arc::clone(&output);
             workers.retain(|worker| !worker.is_finished());
             workers.push(std::thread::spawn(move || {
                 let _slot = slot;
-                if let Some(response) = handle(&app, request) {
+                let response = match token {
+                    Some(token) => {
+                        with_progress(&output, &token, started, PROGRESS_EVERY, move || {
+                            handle(&app, role, request)
+                        })
+                    }
+                    None => handle(&app, role, request),
+                };
+                if let Some(response) = response {
                     let _ = write(&output, &response);
                 }
             }));
-        } else if let Some(response) = handle(app, request) {
+        } else if let Some(response) = handle(app, role, request) {
             write(&output, &response)?;
         }
     };
@@ -147,7 +240,7 @@ fn error(id: Value, code: i32, message: &str) -> Value {
     json!({ "jsonrpc": "2.0", "id": id, "error": { "code": code, "message": message } })
 }
 
-fn handle(app: &App, request: Value) -> Option<Value> {
+fn handle(app: &App, role: Role, request: Value) -> Option<Value> {
     if !request.is_object()
         || request.get("jsonrpc").and_then(Value::as_str) != Some("2.0")
         || !request.get("method").is_some_and(Value::is_string)
@@ -173,7 +266,7 @@ fn handle(app: &App, request: Value) -> Option<Value> {
             "instructions": INSTRUCTIONS,
         }),
         Some("ping") => json!({}),
-        Some("tools/list") => json!({ "tools": tools() }),
+        Some("tools/list") => json!({ "tools": tools(role) }),
         Some("tools/call") => {
             let Some(name) = request.pointer("/params/name").and_then(Value::as_str) else {
                 return Some(error(id, -32602, "tool name required"));
@@ -192,7 +285,7 @@ fn handle(app: &App, request: Value) -> Option<Value> {
             };
             let tool_app = App {
                 json: true,
-                request_id: None,
+                request_id: cli.request_id,
                 capture: Some(std::cell::RefCell::new(Value::Null)),
                 ..app.clone()
             };
@@ -219,6 +312,7 @@ struct Tool {
     positional: &'static [&'static str],
     /// Enum-valued properties whose value is itself the flag (`outcome: done` is `--done`).
     flags: &'static [&'static str],
+    roles: &'static [Role],
 }
 
 impl Tool {
@@ -236,7 +330,27 @@ impl Tool {
             required: &[],
             positional: &[],
             flags: &[],
+            roles: EVERY_ROLE,
         }
+    }
+
+    fn roles(mut self, roles: &'static [Role]) -> Self {
+        self.roles = roles;
+        self
+    }
+
+    /// A ledger mutation: the daemon stores its result under `(request_id, caller)`
+    /// and answers a retry with it. Session dispatch has no receipt, so it never
+    /// offers the key.
+    fn idempotent(mut self) -> Self {
+        if let Some(properties) = self.properties.as_object_mut() {
+            properties.insert(
+                "request_id".into(),
+                json!({ "type": "string", "minLength": 1, "maxLength": MAX_REQUEST_ID,
+                    "description": "Idempotency key: reuse it when retrying this call after a timeout." }),
+            );
+        }
+        self
     }
 
     fn required(mut self, required: &'static [&'static str]) -> Self {
@@ -350,114 +464,114 @@ fn catalog() -> Vec<Tool> {
         Tool::new("close_session", "Remove an ended session from the tree.",
             &["session", "close"], session).required(&["session"]).positional(&["session"]),
         Tool::new("run_spec", "Run a spec with two agents: launch a planner (Claude at high effort) that reads the spec, writes a plan, launches the coder, waits, reviews and sends its review. spec is a Claude artifact link, a Markdown file path or the full spec text. preset claude codes with Claude at medium effort; mix codes with Cursor, or with coder (for example opencode).",
-            &["spec", "run"], spec_properties(true)).required(&["spec"]).positional(&["spec"]),
+            &["spec", "run"], spec_properties(true)).required(&["spec"]).positional(&["spec"]).roles(NOT_A_WORKER),
         Tool::new("spec_brief", "Return the planner brief for a spec, for the calling session to act as the planner itself instead of launching one.",
-            &["spec", "brief"], spec_properties(false)).required(&["spec"]).positional(&["spec"]),
+            &["spec", "brief"], spec_properties(false)).required(&["spec"]).positional(&["spec"]).roles(NOT_A_WORKER),
         // A worker's side of a run. Identity is the session's FORGE_* environment.
         Tool::new("context", "This task's current context: run objective, brief, spec, acceptance, accepted dependencies, board keys and the unread message count.",
-            &["context"], json!({})),
+            &["context"], json!({})).roles(&[Role::Worker]),
         Tool::new("report", "Settle this attempt, exactly once, then stop and wait. summary says what changed, how it was verified and what is left. result_file is an optional path in this checkout.",
             &["report"],
             json!({ "outcome": { "type": "string", "enum": ["done", "failed", "blocked"] },
                 "summary": string, "verification": string, "result_file": string }))
-            .required(&["outcome", "summary"]).flags(&["outcome"]),
+            .required(&["outcome", "summary"]).flags(&["outcome"]).roles(&[Role::Worker]).idempotent(),
         Tool::new("report_show", "Show a task's report, its latest attempt unless attempt is given.",
             &["report", "show"], json!({ "task": string, "attempt": { "type": "integer", "minimum": 1 } }))
             .required(&["task"]).positional(&["task"]),
         Tool::new("ask", "Ask the controller a question on scope, ownership or architecture. With wait, block until the answer (timeout in seconds).",
             &["ask"], json!({ "text": string, "wait": boolean, "timeout": wait_secs }))
-            .required(&["text"]).positional(&["text"]),
+            .required(&["text"]).positional(&["text"]).roles(&[Role::Worker]).idempotent(),
         Tool::new("inbox", "Read this session's stored messages. With wait, block until one arrives. ack takes message ids to mark read.",
             &["inbox"],
             json!({ "wait": boolean, "timeout": wait_secs, "ack": strings, "ack_all": boolean, "run": string })),
         Tool::new("send_message", "Store a message for controller, task:<id>, session:<id> or run:<id>. It is never typed into a terminal.",
             &["send"], json!({ "to": string, "kind": string, "text": string }))
-            .required(&["to", "text"]).positional(&["text"]),
+            .required(&["to", "text"]).positional(&["text"]).idempotent(),
         Tool::new("state_list", "List the run's board entries, optionally under a key prefix.",
             &["state", "list"], json!({ "prefix": string })),
         Tool::new("state_get", "Read one board key with its version.",
             &["state", "get"], json!({ "key": string })).required(&["key"]).positional(&["key"]),
         Tool::new("state_set", "Write a board key. value is JSON text. if_version is the version you read; 0 creates the key. A mismatch is a conflict carrying the current version.",
             &["state", "set"], json!({ "key": string, "value": string, "if_version": version }))
-            .required(&["key", "value", "if_version"]).positional(&["key", "value"]),
+            .required(&["key", "value", "if_version"]).positional(&["key", "value"]).idempotent(),
         Tool::new("state_delete", "Delete a board key at the version you read.",
             &["state", "del"], json!({ "key": string, "if_version": version }))
-            .required(&["key", "if_version"]).positional(&["key"]),
+            .required(&["key", "if_version"]).positional(&["key"]).idempotent(),
         Tool::new("state_watch", "Block until a board key changes past from_version, or the timeout in seconds.",
             &["state", "watch"], json!({ "key": string, "from_version": version, "timeout": wait_secs }))
             .required(&["key"]).positional(&["key"]),
         Tool::new("pr_draft", "Hand this session's pull-request text to Forge Node, which shows it for editing, commits, pushes and opens the pull request. branch is used only when the checkout is on its default branch; commit is the commit subject and commit_body its body; body is the pull request in Markdown.",
             &["pr", "draft"],
             json!({ "title": string, "branch": string, "commit": string, "commit_body": string, "body": string }))
-            .required(&["title", "branch", "commit", "body"]),
+            .required(&["title", "branch", "commit", "body"]).roles(&[Role::Session]),
         // A controller's side of a run.
         Tool::new("run_start", "Start a run. controller is agent:<provider>[:profile], self or none; integration is new (default), current or a workspace id.",
             &["run", "start"],
             json!({ "objective": string, "controller": string, "integration": string, "base": string, "project": string }))
-            .required(&["objective"]),
+            .required(&["objective"]).roles(NOT_A_WORKER).idempotent(),
         Tool::new("run_list", "List runs, optionally of one project or only active ones.",
-            &["run", "list"], json!({ "project": string, "active": boolean })),
+            &["run", "list"], json!({ "project": string, "active": boolean })).roles(NOT_A_WORKER),
         Tool::new("run_show", "Show a run with its tasks and attempts; defaults to the caller's run.",
-            &["run", "show"], json!({ "run": string })).positional(&["run"]),
+            &["run", "show"], json!({ "run": string })).positional(&["run"]).roles(NOT_A_WORKER),
         Tool::new("run_brief", "Replace the run brief with set, at the brief version you read.",
             &["run", "brief"], json!({ "run": string, "set": string, "if_version": version }))
-            .required(&["set", "if_version"]).positional(&["run"]),
+            .required(&["set", "if_version"]).positional(&["run"]).roles(NOT_A_WORKER).idempotent(),
         Tool::new("run_wait", "Block until the first of a comma-separated list holds: attention, reported, question or settled, optionally for some tasks. Never poll with sleep.",
             &["run", "wait"],
             json!({ "run": string, "for": { "type": "string", "pattern": "^[a-z]+(,[a-z]+)*$" }, "task": strings, "timeout": wait_secs }))
-            .required(&["for"]).positional(&["run"]),
+            .required(&["for"]).positional(&["run"]).roles(NOT_A_WORKER),
         Tool::new("run_close", "Close a run. With pr, open one pull request from the integration workspace (title, body, draft, base); cancel stops live attempts; cleanup removes task worktrees.",
             &["run", "close"],
             json!({ "run": string, "pr": boolean, "title": string, "body": string, "draft": boolean,
                 "base": string, "cancel": boolean, "cleanup": boolean }))
-            .positional(&["run"]),
+            .positional(&["run"]).roles(NOT_A_WORKER).idempotent(),
         Tool::new("run_resume", "Start a new controller for an interrupted run from its ledger. Workers are not revived.",
             &["run", "resume"], json!({ "run": string, "provider": string, "profile": string }))
-            .required(&["run", "provider"]).positional(&["run"]),
+            .required(&["run", "provider"]).positional(&["run"]).roles(NOT_A_WORKER).idempotent(),
         Tool::new("task_add", "Add a task to the run. after names tasks whose output this one needs.",
             &["task", "add"],
             json!({ "title": string, "spec": string, "acceptance": string, "after": strings,
                 "read_only": boolean, "allow_subruns": boolean, "run": string }))
-            .required(&["title"]),
+            .required(&["title"]).roles(NOT_A_WORKER).idempotent(),
         Tool::new("task_list", "List the run's tasks, optionally only ready ones.",
-            &["task", "list"], json!({ "run": string, "ready": boolean })),
+            &["task", "list"], json!({ "run": string, "ready": boolean })).roles(NOT_A_WORKER),
         Tool::new("task_show", "Show one task.", &["task", "show"], task.clone())
-            .required(&["task"]).positional(&["task"]),
+            .required(&["task"]).positional(&["task"]).roles(NOT_A_WORKER),
         Tool::new("task_start", "Start an attempt of a ready task with a provider. placement is worktree (default for write), integration, same or a workspace id.",
             &["task", "start"],
             json!({ "task": string, "provider": string, "profile": string, "placement": string, "branch": string }))
-            .required(&["task", "provider"]).positional(&["task"]),
+            .required(&["task", "provider"]).positional(&["task"]).roles(NOT_A_WORKER).idempotent(),
         Tool::new("task_review", "The evidence for a decision: the latest report and the attempt's diff stat, or the patch.",
             &["task", "review"], json!({ "task": string, "patch": boolean }))
-            .required(&["task"]).positional(&["task"]),
+            .required(&["task"]).positional(&["task"]).roles(NOT_A_WORKER),
         Tool::new("task_accept", "Accept a reported task.", &["task", "accept"], json!({ "task": string, "note": string }))
-            .required(&["task"]).positional(&["task"]),
+            .required(&["task"]).positional(&["task"]).roles(NOT_A_WORKER).idempotent(),
         Tool::new("task_reject", "Reject a reported task with feedback; retry starts a new attempt, optionally with another provider.",
             &["task", "reject"],
             json!({ "task": string, "feedback": string, "retry": boolean, "provider": string, "profile": string }))
-            .required(&["task", "feedback"]).positional(&["task"]),
+            .required(&["task", "feedback"]).positional(&["task"]).roles(NOT_A_WORKER).idempotent(),
         Tool::new("task_cancel", "Cancel a task; kill also ends its live session.",
             &["task", "cancel"], json!({ "task": string, "kill": boolean }))
-            .required(&["task"]).positional(&["task"]),
+            .required(&["task"]).positional(&["task"]).roles(NOT_A_WORKER).idempotent(),
         Tool::new("task_integrate", "Merge an accepted task into the integration worktree (merge or squash), or continue or abort a conflicted integration.",
             &["task", "integrate"],
             json!({ "task": string, "how": { "type": "string", "enum": ["merge", "squash", "continue", "abort"] } }))
-            .required(&["task", "how"]).positional(&["task"]).flags(&["how"]),
+            .required(&["task", "how"]).positional(&["task"]).flags(&["how"]).roles(NOT_A_WORKER).idempotent(),
         Tool::new("task_cleanup", "Remove a settled task's worktree unless keep_worktree.",
             &["task", "cleanup"], json!({ "task": string, "keep_worktree": boolean }))
-            .required(&["task"]).positional(&["task"]),
+            .required(&["task"]).positional(&["task"]).roles(NOT_A_WORKER).idempotent(),
         // Forge Review.
         Tool::new("review_start", "Start a structured, read-only review of a workspace's changes against its merge base. With wait, block until it ends and return its findings.",
             &["review", "start"],
             json!({ "workspace": string, "base": string, "tier": { "type": "string", "enum": ["base", "plus", "apex"] },
                 "provider": string, "preset": string, "instructions": string, "model": string,
-                "effort": string, "wait": boolean })),
+                "effort": string, "wait": boolean })).roles(NOT_A_WORKER),
         Tool::new("review_show", "A review run and its findings.", &["review", "show"], json!({ "review": string }))
-            .required(&["review"]).positional(&["review"]),
+            .required(&["review"]).positional(&["review"]).roles(NOT_A_WORKER),
         Tool::new("review_status", "A workspace's review runs, newest first.",
-            &["review", "status"], json!({ "workspace": string })),
+            &["review", "status"], json!({ "workspace": string })).roles(NOT_A_WORKER),
         Tool::new("review_cancel", "Stop a queued or running review.", &["review", "cancel"], json!({ "review": string }))
-            .required(&["review"]).positional(&["review"]),
+            .required(&["review"]).positional(&["review"]).roles(NOT_A_WORKER),
     ]
 }
 
@@ -485,8 +599,12 @@ fn spec_properties(launch: bool) -> Value {
     properties
 }
 
-fn tools() -> Vec<Value> {
-    catalog().iter().map(Tool::schema).collect()
+fn tools(role: Role) -> Vec<Value> {
+    catalog()
+        .iter()
+        .filter(|tool| tool.roles.contains(&role))
+        .map(Tool::schema)
+        .collect()
 }
 
 fn valid_scalar(schema: &Value, value: &Value) -> bool {
@@ -495,7 +613,11 @@ fn valid_scalar(schema: &Value, value: &Value) -> bool {
             && schema["maximum"].as_u64().is_none_or(|max| v <= max)
     };
     let typed = match schema["type"].as_str() {
-        Some("string") => value.is_string(),
+        Some("string") => value.as_str().is_some_and(|s| {
+            let chars = s.chars().count() as u64;
+            schema["minLength"].as_u64().is_none_or(|min| chars >= min)
+                && schema["maxLength"].as_u64().is_none_or(|max| chars <= max)
+        }),
         Some("boolean") => value.is_boolean(),
         Some("integer") => value.as_u64().is_some_and(within),
         _ => false,
@@ -834,26 +956,211 @@ mod tests {
             request_id: None,
             capture: None,
         };
-        let initialize = handle(&app, json!({"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2024-11-05"}})).unwrap();
+        let initialize = handle(&app, Role::Session, json!({"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2024-11-05"}})).unwrap();
         assert_eq!(initialize["result"]["protocolVersion"], "2024-11-05");
-        let catalog = handle(&app, json!({"jsonrpc":"2.0","id":2,"method":"tools/list"})).unwrap();
+        let catalog = handle(
+            &app,
+            Role::Session,
+            json!({"jsonrpc":"2.0","id":2,"method":"tools/list"}),
+        )
+        .unwrap();
         assert_eq!(
             catalog["result"]["tools"].as_array().unwrap().len(),
-            super::catalog().len()
+            tools(Role::Session).len()
         );
         assert!(handle(
             &app,
+            Role::Session,
             json!({"jsonrpc":"2.0","method":"notifications/initialized"})
         )
         .is_none());
-        assert_eq!(handle(&app, json!({})).unwrap()["error"]["code"], -32600);
+        assert_eq!(
+            handle(&app, Role::Session, json!({})).unwrap()["error"]["code"],
+            -32600
+        );
         assert_eq!(
             handle(
                 &app,
+                Role::Session,
                 json!({"jsonrpc":"2.0","id":3,"method":"no-such-method"})
             )
             .unwrap()["error"]["code"],
             -32601
         );
+    }
+
+    #[test]
+    fn ledger_mutations_carry_an_idempotency_key_and_dispatch_does_not() {
+        let cli = Cli::try_parse_from(
+            tool_argv(
+                "state_set",
+                &json!({ "key": "k", "value": "1", "if_version": 0, "request_id": "retry-1" }),
+            )
+            .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(cli.request_id.as_deref(), Some("retry-1"));
+        let long = "x".repeat(MAX_REQUEST_ID as usize + 1);
+        assert!(tool_argv(
+            "report",
+            &json!({ "outcome": "done", "summary": "s", "request_id": long })
+        )
+        .is_err());
+        assert!(tool_argv(
+            "report",
+            &json!({ "outcome": "done", "summary": "s", "request_id": "" })
+        )
+        .is_err());
+        // The daemon keeps no receipt for session dispatch, so a key there would promise a dedup that never happens.
+        assert!(tool_argv("spawn_session", &json!({ "request_id": "r" })).is_err());
+        assert!(tool_argv(
+            "send_prompt",
+            &json!({ "session": "s", "text": "t", "request_id": "r" })
+        )
+        .is_err());
+    }
+
+    #[test]
+    fn the_catalog_follows_the_callers_role() {
+        let names = |role| -> Vec<String> {
+            tools(role)
+                .iter()
+                .map(|tool| tool["name"].as_str().unwrap().to_owned())
+                .collect()
+        };
+        let worker = names(Role::Worker);
+        let controller = names(Role::Controller);
+        let session = names(Role::Session);
+        for name in [
+            "context",
+            "report",
+            "ask",
+            "state_set",
+            "inbox",
+            "read_session",
+        ] {
+            assert!(worker.iter().any(|n| n == name), "worker lacks {name}");
+        }
+        for name in [
+            "task_add",
+            "run_wait",
+            "review_start",
+            "pr_draft",
+            "run_spec",
+        ] {
+            assert!(!worker.iter().any(|n| n == name), "worker sees {name}");
+        }
+        for name in [
+            "task_add",
+            "task_start",
+            "run_wait",
+            "state_set",
+            "report_show",
+        ] {
+            assert!(
+                controller.iter().any(|n| n == name),
+                "controller lacks {name}"
+            );
+        }
+        for name in ["report", "ask", "context", "pr_draft"] {
+            assert!(
+                !controller.iter().any(|n| n == name),
+                "controller sees {name}"
+            );
+        }
+        for name in [
+            "pr_draft",
+            "run_start",
+            "spawn_session",
+            "state_set",
+            "report_show",
+        ] {
+            assert!(session.iter().any(|n| n == name), "session lacks {name}");
+        }
+        for name in ["report", "ask", "context"] {
+            assert!(!session.iter().any(|n| n == name), "session sees {name}");
+        }
+        let every: std::collections::BTreeSet<String> = [worker, controller, session]
+            .into_iter()
+            .flatten()
+            .collect();
+        assert_eq!(every.len(), catalog().len(), "a tool no role can see");
+    }
+
+    #[test]
+    fn a_hidden_tool_is_still_callable() {
+        assert!(tool_argv("run_start", &json!({ "objective": "nested" })).is_ok());
+    }
+
+    struct Signalling {
+        bytes: Vec<u8>,
+        flushed: mpsc::Sender<()>,
+    }
+
+    impl Write for Signalling {
+        fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+            self.bytes.extend_from_slice(buf);
+            Ok(buf.len())
+        }
+        fn flush(&mut self) -> io::Result<()> {
+            let _ = self.flushed.send(());
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn a_call_queued_behind_full_slots_reports_while_it_waits() {
+        let slots = Arc::new(Slots {
+            used: Mutex::new(0),
+            freed: Condvar::new(),
+        });
+        let mut held: Vec<Slot> = (0..MAX_IN_FLIGHT)
+            .map(|_| slots.acquire(Duration::from_secs(60), || unreachable!()))
+            .collect();
+        let (reported, first_report) = mpsc::channel();
+        let queued = {
+            let slots = Arc::clone(&slots);
+            std::thread::spawn(move || {
+                let mut reports = 0;
+                let _slot = slots.acquire(Duration::from_millis(1), || {
+                    reports += 1;
+                    let _ = reported.send(());
+                });
+                reports
+            })
+        };
+        // A slot frees only after the queued call has reported, so the report cannot be skipped by a fast release.
+        first_report.recv().unwrap();
+        held.pop();
+        assert!(queued.join().unwrap() >= 1);
+    }
+
+    #[test]
+    fn a_long_call_reports_progress_and_still_returns_its_result() {
+        let (flushed, first_progress) = mpsc::channel();
+        let sink = Arc::new(Mutex::new(Signalling {
+            bytes: Vec::new(),
+            flushed,
+        }));
+        let output: Output = sink.clone();
+        let token = json!("tok-7");
+        // The call cannot finish until a progress line has been written, so the test cannot pass by racing it.
+        let result = with_progress(
+            &output,
+            &token,
+            Instant::now(),
+            Duration::from_millis(1),
+            move || {
+                first_progress.recv().unwrap();
+                42
+            },
+        );
+        assert_eq!(result, 42);
+        let bytes = sink.lock().unwrap().bytes.clone();
+        let first: Value =
+            serde_json::from_slice(bytes.split(|b| *b == b'\n').next().unwrap()).unwrap();
+        assert_eq!(first["method"], "notifications/progress");
+        assert_eq!(first["params"]["progressToken"], "tok-7");
+        assert!(first.get("id").is_none());
     }
 }
