@@ -184,7 +184,8 @@ impl ReviewStore {
         reviews::reviewer_sessions(&self.conn())
     }
 
-    /// Keep the newest `keep` runs of a workspace, none created before `cutoff`.
+    /// Keep the newest `keep` runs of a workspace, none created before
+    /// `cutoff`; a run whose reviewer session row still exists is kept.
     pub fn prune(
         &self,
         workspace: domain::WorkspaceId,

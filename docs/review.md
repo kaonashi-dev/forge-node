@@ -33,7 +33,9 @@ A workspace has one run in flight. A start with the same head, base, provider,
 model, effort, tier, preset and instructions answers with that run's id unless
 it was cancelled; any other start cancels it and begins anew. Two runs may be in
 flight daemon-wide (`Conflict` past that). After every run the workspace is
-pruned: anything older than 90 days, and anything past the newest 20.
+pruned: anything older than 90 days, and anything past the newest 20. A run
+whose reviewer session row still exists is kept, because that row is what makes
+a restart read-only.
 
 Validation is what makes a finding a finding:
 

@@ -207,6 +207,8 @@ metadata; runs left `Queued`/`Running` are reconciled to `Interrupted`, because
 the reviewer process they named cannot survive. With `sessions.persist_history`,
 the reviewer's session row is kept `Orphaned`; startup seeds the read-only set
 from these runs, so restarting it cannot turn a review into a writable session.
+Pruning keeps a run while that session row exists, which is what keeps the
+identification available.
 
 ## Repositories (`repositories/`)
 

@@ -1788,6 +1788,31 @@ fn pruning_keeps_the_newest_runs_and_drops_old_ones_with_their_findings() {
 }
 
 #[test]
+fn pruning_keeps_a_run_while_its_reviewer_session_exists() {
+    let (db, _, ws) = db_with_workspace();
+    let store = db.review_store().unwrap();
+    let session = mk_session(
+        ws,
+        SessionState::Exited {
+            code: Some(0),
+            signal: None,
+        },
+    );
+    db.sessions().upsert(&session).unwrap();
+    let mut run = mk_run(ws, domain::ReviewStatus::Completed);
+    run.session_id = Some(session.id);
+    store.insert_run(&run).unwrap();
+
+    let future = Timestamp::from_unix_secs(4_000_000_000).unwrap();
+    assert_eq!(store.prune(ws, 0, future).unwrap(), 0);
+    assert!(store.get(run.id).unwrap().is_some(), "the restart needs it");
+
+    db.sessions().delete(session.id).unwrap();
+    assert_eq!(store.prune(ws, 0, future).unwrap(), 1);
+    assert!(store.get(run.id).unwrap().is_none());
+}
+
+#[test]
 fn reset_clears_reviews() {
     let (mut db, _, ws) = db_with_workspace();
     let store = db.review_store().unwrap();
