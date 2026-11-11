@@ -398,7 +398,7 @@ fn run_app(
             ui::view,
         )
     };
-    let app = native_menus::install(App::new(spec));
+    let app = native_menus::install(App::new(spec).maximized(true));
     let handle = app.handle();
     native_menus::install_handle(handle.clone());
     updates::install_handle(handle.clone());

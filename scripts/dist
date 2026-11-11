@@ -337,7 +337,7 @@ installed_gui_pids() {
 }
 
 quit_running_gui() {
-  [ -n "$(installed_gui_pids)" ] || return
+  [ -n "$(installed_gui_pids)" ] || return 0
 
   require_cmd osascript
   local bundle_id="${FORGE_BUNDLE_ID:-dev.forgenode.forge}"
