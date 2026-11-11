@@ -40,7 +40,6 @@ impl Role {
 }
 
 const EVERY_ROLE: &[Role] = &[Role::Session, Role::Controller, Role::Worker];
-const IN_A_RUN: &[Role] = &[Role::Controller, Role::Worker];
 const NOT_A_WORKER: &[Role] = &[Role::Session, Role::Controller];
 
 /// Bounds concurrent tool calls; each holds its own daemon connection, so a
@@ -57,16 +56,26 @@ struct Slots {
 struct Slot(Arc<Slots>);
 
 impl Slots {
-    fn acquire(self: &Arc<Self>) -> Slot {
-        let mut used = self
-            .used
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+    /// Blocks until a slot is free, calling `waiting` every `every` meanwhile
+    /// so a queued call can report progress before it runs.
+    fn acquire(self: &Arc<Self>, every: Duration, mut waiting: impl FnMut()) -> Slot {
+        let lock = || {
+            self.used
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+        };
+        let mut used = lock();
         while *used >= MAX_IN_FLIGHT {
-            used = self
+            let (guard, wait) = self
                 .freed
-                .wait(used)
+                .wait_timeout(used, every)
                 .unwrap_or_else(std::sync::PoisonError::into_inner);
+            used = guard;
+            if wait.timed_out() && *used >= MAX_IN_FLIGHT {
+                drop(used);
+                waiting();
+                used = lock();
+            }
         }
         *used += 1;
         Slot(Arc::clone(self))
@@ -109,10 +118,10 @@ fn progress(token: &Value, elapsed: Duration) -> Value {
 fn with_progress<R: Send>(
     output: &Output,
     token: &Value,
+    started: Instant,
     every: Duration,
     call: impl FnOnce() -> R + Send,
 ) -> R {
-    let started = Instant::now();
     std::thread::scope(|scope| {
         let (done, finished) = mpsc::channel::<()>();
         let worker = scope.spawn(move || {
@@ -164,20 +173,27 @@ pub(crate) fn serve(app: &App) -> Result<(), u8> {
             }
         };
         if request.get("method").and_then(Value::as_str) == Some("tools/call") {
-            let slot = slots.acquire();
+            let started = Instant::now();
+            let token = request
+                .pointer("/params/_meta/progressToken")
+                .filter(|token| token.is_string() || token.is_i64())
+                .cloned();
+            let slot = slots.acquire(PROGRESS_EVERY, || {
+                if let Some(token) = &token {
+                    let _ = write(&output, &progress(token, started.elapsed()));
+                }
+            });
             let app = app.clone();
             let output = Arc::clone(&output);
             workers.retain(|worker| !worker.is_finished());
             workers.push(std::thread::spawn(move || {
                 let _slot = slot;
-                let token = request
-                    .pointer("/params/_meta/progressToken")
-                    .filter(|token| token.is_string() || token.is_i64())
-                    .cloned();
                 let response = match token {
-                    Some(token) => with_progress(&output, &token, PROGRESS_EVERY, move || {
-                        handle(&app, role, request)
-                    }),
+                    Some(token) => {
+                        with_progress(&output, &token, started, PROGRESS_EVERY, move || {
+                            handle(&app, role, request)
+                        })
+                    }
                     None => handle(&app, role, request),
                 };
                 if let Some(response) = response {
@@ -461,7 +477,7 @@ fn catalog() -> Vec<Tool> {
             .required(&["outcome", "summary"]).flags(&["outcome"]).roles(&[Role::Worker]).idempotent(),
         Tool::new("report_show", "Show a task's report, its latest attempt unless attempt is given.",
             &["report", "show"], json!({ "task": string, "attempt": { "type": "integer", "minimum": 1 } }))
-            .required(&["task"]).positional(&["task"]).roles(IN_A_RUN),
+            .required(&["task"]).positional(&["task"]),
         Tool::new("ask", "Ask the controller a question on scope, ownership or architecture. With wait, block until the answer (timeout in seconds).",
             &["ask"], json!({ "text": string, "wait": boolean, "timeout": wait_secs }))
             .required(&["text"]).positional(&["text"]).roles(&[Role::Worker]).idempotent(),
@@ -472,18 +488,18 @@ fn catalog() -> Vec<Tool> {
             &["send"], json!({ "to": string, "kind": string, "text": string }))
             .required(&["to", "text"]).positional(&["text"]).idempotent(),
         Tool::new("state_list", "List the run's board entries, optionally under a key prefix.",
-            &["state", "list"], json!({ "prefix": string })).roles(IN_A_RUN),
+            &["state", "list"], json!({ "prefix": string })),
         Tool::new("state_get", "Read one board key with its version.",
-            &["state", "get"], json!({ "key": string })).required(&["key"]).positional(&["key"]).roles(IN_A_RUN),
+            &["state", "get"], json!({ "key": string })).required(&["key"]).positional(&["key"]),
         Tool::new("state_set", "Write a board key. value is JSON text. if_version is the version you read; 0 creates the key. A mismatch is a conflict carrying the current version.",
             &["state", "set"], json!({ "key": string, "value": string, "if_version": version }))
-            .required(&["key", "value", "if_version"]).positional(&["key", "value"]).roles(IN_A_RUN).idempotent(),
+            .required(&["key", "value", "if_version"]).positional(&["key", "value"]).idempotent(),
         Tool::new("state_delete", "Delete a board key at the version you read.",
             &["state", "del"], json!({ "key": string, "if_version": version }))
-            .required(&["key", "if_version"]).positional(&["key"]).roles(IN_A_RUN).idempotent(),
+            .required(&["key", "if_version"]).positional(&["key"]).idempotent(),
         Tool::new("state_watch", "Block until a board key changes past from_version, or the timeout in seconds.",
             &["state", "watch"], json!({ "key": string, "from_version": version, "timeout": wait_secs }))
-            .required(&["key"]).positional(&["key"]).roles(IN_A_RUN),
+            .required(&["key"]).positional(&["key"]),
         Tool::new("pr_draft", "Hand this session's pull-request text to Forge Node, which shows it for editing, commits, pushes and opens the pull request. branch is used only when the checkout is on its default branch; commit is the commit subject and commit_body its body; body is the pull request in Markdown.",
             &["pr", "draft"],
             json!({ "title": string, "branch": string, "commit": string, "commit_body": string, "body": string }))
@@ -1052,10 +1068,16 @@ mod tests {
                 "controller sees {name}"
             );
         }
-        for name in ["pr_draft", "run_start", "spawn_session"] {
+        for name in [
+            "pr_draft",
+            "run_start",
+            "spawn_session",
+            "state_set",
+            "report_show",
+        ] {
             assert!(session.iter().any(|n| n == name), "session lacks {name}");
         }
-        for name in ["report", "state_set", "context"] {
+        for name in ["report", "ask", "context"] {
             assert!(!session.iter().any(|n| n == name), "session sees {name}");
         }
         let every: std::collections::BTreeSet<String> = [worker, controller, session]
@@ -1087,6 +1109,33 @@ mod tests {
     }
 
     #[test]
+    fn a_call_queued_behind_full_slots_reports_while_it_waits() {
+        let slots = Arc::new(Slots {
+            used: Mutex::new(0),
+            freed: Condvar::new(),
+        });
+        let mut held: Vec<Slot> = (0..MAX_IN_FLIGHT)
+            .map(|_| slots.acquire(Duration::from_secs(60), || unreachable!()))
+            .collect();
+        let (reported, first_report) = mpsc::channel();
+        let queued = {
+            let slots = Arc::clone(&slots);
+            std::thread::spawn(move || {
+                let mut reports = 0;
+                let _slot = slots.acquire(Duration::from_millis(1), || {
+                    reports += 1;
+                    let _ = reported.send(());
+                });
+                reports
+            })
+        };
+        // A slot frees only after the queued call has reported, so the report cannot be skipped by a fast release.
+        first_report.recv().unwrap();
+        held.pop();
+        assert!(queued.join().unwrap() >= 1);
+    }
+
+    #[test]
     fn a_long_call_reports_progress_and_still_returns_its_result() {
         let (flushed, first_progress) = mpsc::channel();
         let sink = Arc::new(Mutex::new(Signalling {
@@ -1096,10 +1145,16 @@ mod tests {
         let output: Output = sink.clone();
         let token = json!("tok-7");
         // The call cannot finish until a progress line has been written, so the test cannot pass by racing it.
-        let result = with_progress(&output, &token, Duration::from_millis(1), move || {
-            first_progress.recv().unwrap();
-            42
-        });
+        let result = with_progress(
+            &output,
+            &token,
+            Instant::now(),
+            Duration::from_millis(1),
+            move || {
+                first_progress.recv().unwrap();
+                42
+            },
+        );
         assert_eq!(result, 42);
         let bytes = sink.lock().unwrap().bytes.clone();
         let first: Value =

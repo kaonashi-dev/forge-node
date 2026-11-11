@@ -318,10 +318,13 @@ resets its timeout on progress does not cut a long `wait_session`,
 `tools/list` follows the caller's identity: a worker (`FORGE_ATTEMPT_ID`) sees
 its own side and no controller, review, spec or `pr_draft` tools; a
 controller (`FORGE_RUN_ID` alone) sees no `context`, `report`, `ask` or
-`pr_draft`; a session outside a run sees no run-scoped `context`, `report`, `report_show`,
-`ask` or board tools. Only the advertised list narrows. A call is never
-refused for the role, since the daemon enforces the rails; a worker allowed
-nested runs starts one with `forgectl run start`.
+`pr_draft`; a session outside a run sees no `context`, `report` or `ask`, but
+keeps the board and `report_show` because `run_start` with `controller: self`
+makes it a controller without giving it `FORGE_RUN_ID`. Only the advertised
+list narrows. A call is never refused for the role, since the daemon enforces
+the rails; a worker allowed nested runs starts one with `forgectl run start`.
+A call queued behind the eight running ones reports progress while it waits
+for a slot.
 
 The daemon registers the server as `forge` in every **writable** Claude and
 OpenCode launch when `[orchestration] mcp` is on (the default) and a
