@@ -172,7 +172,7 @@ impl ReviewStore {
     }
 
     /// `Queued` and `Running` become `Interrupted`: no reviewer process survives
-    /// the daemon, though a kept session row is still its read-only session.
+    /// the daemon.
     pub fn interrupt_unfinished(&self) -> Result<usize, DbError> {
         reviews::interrupt_unfinished(&self.conn())
     }

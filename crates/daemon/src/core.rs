@@ -91,11 +91,8 @@ pub(crate) struct Inner {
     idle_warned: HashSet<SessionId>,
     /// Provider session id this launch was resumed from. Runtime-only, like `terminal_id`.
     resumed_from: HashMap<SessionId, String>,
-    /// Sessions launched in the provider's read-only mode. Runtime-only
-    /// like `resumed_from`, and remembered for the *opposite* reason the
-    /// initial prompt is forgotten: a restarted review that came back able to
-    /// write would be a different session wearing the same name. Startup seeds
-    /// it from persisted review runs, so `sessions.persist_history` cannot
+    /// Sessions launched in the provider's read-only mode. Startup also seeds
+    /// it from persisted review runs, so a `persist_history` restart cannot
     /// make a reviewer writable.
     read_only: HashSet<SessionId>,
     /// Workspaces whose rows are being removed. Session creation refuses them

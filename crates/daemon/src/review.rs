@@ -1,9 +1,6 @@
-//! Forge Review: one worker thread per run, `diff → pack → model → validate`.
-//!
-//! The core lock is taken only to claim, to read session state and to
-//! release; git, the pack, the transcript and SQLite all run outside it. The
-//! reviewer is an ordinary read-only agent session that Forge reads the answer
-//! of once its hook reports it idle.
+//! Forge Review: one worker thread per run, `diff → pack → model → validate`,
+//! with git, the pack, the transcript and SQLite outside the core lock. The
+//! reviewer is an ordinary read-only agent session, read when its hook idles.
 
 use std::fmt::Write as _;
 use std::io::Read;

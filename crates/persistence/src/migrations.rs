@@ -556,7 +556,7 @@ CREATE TABLE review_findings (
 );
 ";
 
-/// The preset a review run resolved; runs from before presets ran the standard one.
+/// Adds the preset column; migration 18 repairs the default for pre-preset runs.
 pub const REVIEW_PRESET: &str =
     "ALTER TABLE review_runs ADD COLUMN preset TEXT NOT NULL DEFAULT 'estandar';";
 
