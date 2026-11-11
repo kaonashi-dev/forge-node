@@ -10,6 +10,11 @@ use domain::{ProjectGroupId, ProjectId, Session, SessionId, Workspace, Workspace
 pub const FOLDS_KEY: &str = "ui.sidebar.collapsed";
 /// `{ project id: [checkout id, …] }`.
 pub const ORDER_KEY: &str = "ui.sidebar.workspace_order";
+/// A project's idle checkouts are listed when this id is in the folds, the
+/// reverse of every other row, so they start out of the way.
+pub const IDLE_PREFIX: &str = "idle:";
+/// Fewer idle checkouts stay in place: a fold row would save no rows.
+pub const IDLE_FOLD_MIN: usize = 2;
 
 #[derive(Default)]
 pub struct Rail {
@@ -113,10 +118,52 @@ pub fn moved_checkout(
     Some((project, ids))
 }
 
+#[must_use]
+pub fn idle_target(project: ProjectId) -> String {
+    format!("{IDLE_PREFIX}{project}")
+}
+
+/// A checkout with nothing to look at: measured clean with nothing to push,
+/// no session, and not the one on screen. Unmeasured is not clean, so it stays.
+#[must_use]
+pub fn is_idle(
+    workspace: &Workspace,
+    sessions: &[(WorkspaceId, SessionId)],
+    current: Option<WorkspaceId>,
+) -> bool {
+    let status = &workspace.status;
+    status.measured_at.is_some()
+        && !status.dirty
+        && status.ahead.unwrap_or(0) == 0
+        && current != Some(workspace.id)
+        && !sessions.iter().any(|(w, _)| *w == workspace.id)
+}
+
+/// A project's checkouts as (shown, behind its idle row), each in rail order.
+/// The second is empty when too few are idle to fold.
+#[must_use]
+pub fn split_idle<'a>(
+    checkouts: Vec<&'a Workspace>,
+    sessions: &[(WorkspaceId, SessionId)],
+    current: Option<WorkspaceId>,
+) -> (Vec<&'a Workspace>, Vec<&'a Workspace>) {
+    let idle = checkouts
+        .iter()
+        .filter(|w| is_idle(w, sessions, current))
+        .count();
+    if idle < IDLE_FOLD_MIN {
+        return (checkouts, Vec::new());
+    }
+    checkouts
+        .into_iter()
+        .partition(|w| !is_idle(w, sessions, current))
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum RowKind {
     Group,
     Project,
+    Idle,
     Workspace,
     Session,
 }
@@ -164,6 +211,7 @@ pub fn rows(
     store: &client::Store,
     rail: &Rail,
     sessions: &[(WorkspaceId, SessionId)],
+    current: Option<WorkspaceId>,
 ) -> Vec<RailRow> {
     let open = |id: &str| !rail.folds.contains(id);
     let mut out = Vec::new();
@@ -197,34 +245,68 @@ pub fn rows(
             if !open(&target) {
                 continue;
             }
-            for workspace in ordered(&store.workspaces, project, &rail.order) {
-                let target = workspace.id.to_string();
-                let workspace_row = format!("workspace:{target}");
-                out.push(RailRow {
-                    id: workspace_row.clone(),
-                    kind: RowKind::Workspace,
-                    parent: Some(id.clone()),
-                    expandable: true,
-                    expanded: open(&target),
-                    target: target.clone(),
-                });
-                if !open(&target) {
-                    continue;
-                }
-                for (_, session) in sessions.iter().filter(|(w, _)| *w == workspace.id) {
-                    out.push(RailRow {
-                        id: format!("session:{session}"),
-                        kind: RowKind::Session,
-                        parent: Some(workspace_row.clone()),
-                        expandable: false,
-                        expanded: false,
-                        target: session.to_string(),
-                    });
+            let (shown, idle) = split_idle(
+                ordered(&store.workspaces, project, &rail.order),
+                sessions,
+                current,
+            );
+            for workspace in shown {
+                push_checkout(&mut out, rail, sessions, workspace, &id);
+            }
+            if idle.is_empty() {
+                continue;
+            }
+            let target = idle_target(project);
+            let listed = rail.folds.contains(&target);
+            out.push(RailRow {
+                id: target.clone(),
+                kind: RowKind::Idle,
+                parent: Some(id.clone()),
+                expandable: true,
+                expanded: listed,
+                target: target.clone(),
+            });
+            if listed {
+                for workspace in idle {
+                    push_checkout(&mut out, rail, sessions, workspace, &target);
                 }
             }
         }
     }
     out
+}
+
+fn push_checkout(
+    out: &mut Vec<RailRow>,
+    rail: &Rail,
+    sessions: &[(WorkspaceId, SessionId)],
+    workspace: &Workspace,
+    parent: &str,
+) {
+    let target = workspace.id.to_string();
+    let workspace_row = format!("workspace:{target}");
+    let open = !rail.folds.contains(&target);
+    out.push(RailRow {
+        id: workspace_row.clone(),
+        kind: RowKind::Workspace,
+        parent: Some(parent.to_string()),
+        expandable: true,
+        expanded: open,
+        target,
+    });
+    if !open {
+        return;
+    }
+    for (_, session) in sessions.iter().filter(|(w, _)| *w == workspace.id) {
+        out.push(RailRow {
+            id: format!("session:{session}"),
+            kind: RowKind::Session,
+            parent: Some(workspace_row.clone()),
+            expandable: false,
+            expanded: false,
+            target: session.to_string(),
+        });
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -338,7 +420,7 @@ mod tests {
         let session = SessionId::new();
         let sessions = [(workspace, session)];
         let mut rail = Rail::default();
-        let all = rows(&store, &rail, &sessions);
+        let all = rows(&store, &rail, &sessions, None);
         let kinds: Vec<RowKind> = all.iter().map(|row| row.kind).collect();
         assert_eq!(kinds[0], RowKind::Group, "the fixture's project is grouped");
         assert!(all.iter().any(|row| row.id == format!("session:{session}")));
@@ -360,7 +442,7 @@ mod tests {
             Some(Step::Fold(workspace.to_string()))
         );
         rail.folds.insert(workspace.to_string());
-        let folded = rows(&store, &rail, &sessions);
+        let folded = rows(&store, &rail, &sessions, None);
         assert!(!folded.iter().any(|row| row.kind == RowKind::Session));
         assert_eq!(
             expand_target(&folded, at),
@@ -368,9 +450,66 @@ mod tests {
         );
         rail.folds.insert(all[0].target.clone());
         assert_eq!(
-            rows(&store, &rail, &sessions).len(),
+            rows(&store, &rail, &sessions, None).len(),
             1,
             "a folded group is one row"
+        );
+    }
+
+    #[test]
+    fn idle_checkouts_fold_behind_one_row_only_when_that_saves_rows() {
+        let mut store = store();
+        let project = store.projects[0].id;
+        let clean = domain::WorkspaceStatus {
+            measured_at: Some(domain::Timestamp::now()),
+            ..Default::default()
+        };
+        for workspace in &mut store.workspaces {
+            workspace.status = clean.clone();
+        }
+        let ids: Vec<WorkspaceId> = crate::projects::checkouts_of(&store.workspaces, project)
+            .iter()
+            .map(|w| w.id)
+            .collect();
+        let idle_row = idle_target(project);
+        let mut rail = Rail::default();
+        let folded = rows(&store, &rail, &[], None);
+        assert!(folded.iter().any(|row| row.id == idle_row));
+        assert!(
+            !folded.iter().any(|row| row.kind == RowKind::Workspace),
+            "every clean checkout is behind the fold"
+        );
+        rail.folds.insert(idle_row.clone());
+        let listed = rows(&store, &rail, &[], None);
+        let checkout = listed
+            .iter()
+            .find(|row| row.id == format!("workspace:{}", ids[0]))
+            .expect("listed once unfolded");
+        assert_eq!(checkout.parent.as_deref(), Some(idle_row.as_str()));
+
+        let on_screen = rows(&store, &Rail::default(), &[], Some(ids[0]));
+        assert!(
+            on_screen
+                .iter()
+                .any(|row| row.id == format!("workspace:{}", ids[0])),
+            "the checkout on screen is never folded"
+        );
+        assert!(
+            !on_screen.iter().any(|row| row.id == idle_row),
+            "one idle checkout left is shown in place"
+        );
+
+        let unmeasured = store
+            .workspaces
+            .iter_mut()
+            .find(|w| w.id == ids[1])
+            .expect("second checkout");
+        unmeasured.status = domain::WorkspaceStatus::default();
+        assert!(
+            !rows(&store, &Rail::default(), &[], None)
+                .iter()
+                .any(|row| row.id == idle_row),
+            "unmeasured is not clean, so it is not folded"
         );
     }
 
