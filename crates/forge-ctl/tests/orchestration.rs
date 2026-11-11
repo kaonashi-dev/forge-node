@@ -668,6 +668,9 @@ fn session_dispatch_crosses_projects_without_graph_edges_and_waits_by_events() {
         .arg(&running.socket)
         .arg("mcp")
         .env_remove("FORGE_SESSION_ID")
+        .env_remove("FORGE_RUN_ID")
+        .env_remove("FORGE_TASK_ID")
+        .env_remove("FORGE_ATTEMPT_ID")
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
@@ -718,7 +721,7 @@ fn session_dispatch_crosses_projects_without_graph_edges_and_waits_by_events() {
     assert_eq!(responses.len(), 8);
     assert_eq!(
         responses[1]["result"]["tools"].as_array().unwrap().len(),
-        56
+        47
     );
     assert_eq!(responses[2]["result"]["structuredContent"]["ok"], true);
     for response in &responses[2..] {
@@ -1169,6 +1172,7 @@ fn scenario_ledger_report_wait_and_restart() {
         "request_id_once task={} copies={copies}",
         once["task_id"]
     ));
+    mcp_request_id_dedupes_a_retry(&ctl, &run_id);
 
     let report_task = add_task(&ctl, "report me", "PROMPT_TOKEN_report", None, false);
     let started = start_task(&ctl, &report_task);
@@ -3685,4 +3689,64 @@ fn review_start_takes_a_preset_and_launch_options() {
     let args = fs::read_to_string(harness.tmp.path().join("args")).unwrap();
     assert!(args.contains("--model opus"), "{args}");
     assert!(args.contains("--effort high"), "{args}");
+}
+
+fn mcp_request_id_dedupes_a_retry(ctl: &Ctl, run_id: &str) {
+    let mut server = Command::new(&ctl.bin)
+        .arg("--socket")
+        .arg(&ctl.socket)
+        .arg("mcp")
+        .env_remove("FORGE_SESSION_ID")
+        .env_remove("FORGE_TASK_ID")
+        .env_remove("FORGE_ATTEMPT_ID")
+        .env("FORGE_RUN_ID", run_id)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    let mut stdin = server.stdin.take().unwrap();
+    let mut stdout = std::io::BufReader::new(server.stdout.take().unwrap());
+    let mut call = |request: Value| {
+        writeln!(stdin, "{request}").unwrap();
+        let mut line = String::new();
+        std::io::BufRead::read_line(&mut stdout, &mut line).unwrap();
+        serde_json::from_str::<Value>(&line).unwrap()
+    };
+    let listed = call(json!({"jsonrpc":"2.0","id":1,"method":"tools/list"}));
+    let names: Vec<&str> = listed["result"]["tools"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(|tool| tool["name"].as_str())
+        .collect();
+    assert!(
+        names.contains(&"task_add") && !names.contains(&"report"),
+        "{names:?}"
+    );
+    let add = |id: u64, spec: &str| {
+        json!({"jsonrpc":"2.0","id":id,"method":"tools/call","params":{"name":"task_add",
+            "arguments":{"title":"mcp idempotent","spec":spec,"request_id":"mcp-retry-1"}}})
+    };
+    let once = call(add(2, "once"));
+    let again = call(add(3, "a retry body that must not be stored"));
+    assert_eq!(once["result"]["isError"], false, "{once}");
+    assert_eq!(
+        once["result"]["structuredContent"]["result"]["task_id"],
+        again["result"]["structuredContent"]["result"]["task_id"],
+        "{again}"
+    );
+    drop(stdin);
+    assert!(server.wait().unwrap().success());
+    let listed = ok(&ctl.run(&["task", "list", "--run", run_id], &[]));
+    let copies = listed["tasks"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|task| task["title"] == "mcp idempotent")
+        .count();
+    assert_eq!(
+        copies, 1,
+        "an MCP retry with the same request_id created a second task"
+    );
 }

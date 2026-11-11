@@ -147,5 +147,5 @@ JSON errors are on stdout: {\"ok\":false,\"error\":{\"code\",\"message\",\"detai
 
 Exit codes: 0 ok or wait met, 1 other refusal, 2 usage, 3 unreachable or protocol mismatch (sandbox_denied on EPERM/EACCES), 4 not found, 5 conflict or precondition, 6 policy, 124 wait timeout.
 
-A mutation timeout or disconnect is exit 3 with details.uncertain true. Retry with the same --request-id.
+A mutation timeout or disconnect is exit 3 with details.uncertain true. Retry with the same --request-id (over MCP, the same request_id argument); only ledger mutations take one.
 ";

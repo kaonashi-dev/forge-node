@@ -305,6 +305,24 @@ other's events); a ninth waits for a free slot, so a long `wait_session` or
 `ask` with `wait` (maximum 600 s) does not stall the calls behind it.
 Responses can therefore arrive out of request order; match them by `id`.
 
+Every ledger mutation tool (`report`, `ask`, `send_message`, `state_set`,
+`state_delete`, `run_start`, `run_brief`, `run_close`, `run_resume`, and the
+`task_*` mutations) takes an optional `request_id`, the `--request-id` of the
+CLI: a retry after a timeout returns the stored result rather than acting
+twice. Session dispatch offers no key, because the daemon keeps no receipt
+for it. A call whose `_meta` carries a `progressToken` receives
+`notifications/progress` every 10 s until it answers, so a client that
+resets its timeout on progress does not cut a long `wait_session`,
+`run_wait`, `ask` or `state_watch`.
+
+`tools/list` follows the caller's identity: a worker (`FORGE_ATTEMPT_ID`) sees
+its own side and no controller, review, spec or `pr_draft` tools; a
+controller (`FORGE_RUN_ID` alone) sees no `context`, `report`, `ask` or
+`pr_draft`; a session outside a run sees no run-scoped `context`, `report`, `report_show`,
+`ask` or board tools. Only the advertised list narrows. A call is never
+refused for the role, since the daemon enforces the rails; a worker allowed
+nested runs starts one with `forgectl run start`.
+
 The daemon registers the server as `forge` in every **writable** Claude and
 OpenCode launch when `[orchestration] mcp` is on (the default) and a
 `forgectl` sits beside `forge-daemon`. The server's environment carries the
@@ -316,7 +334,14 @@ trailing `--mcp-config <inline JSON>`; it adds to a profile's own
 OpenCode gets `OPENCODE_CONFIG_CONTENT` with
 `{"mcp":{"forge":{"type":"local","command":[…],"environment":{…}}}}`, unless
 the launch already sets that variable. Cursor takes no launch-local MCP
-configuration, so it keeps the CLI.
+configuration, so it keeps the CLI. Its only sources are the checkout's
+`.cursor/mcp.json` and the user's `~/.cursor/mcp.json`; it hands an MCP child
+only `PATH` and `HOME`, so the session identity would have to travel through
+`${env:…}` interpolation, and its approval covers the interpolated values,
+so every session would need approving again or `--approve-mcps`, which would
+also approve whatever server the repository declares. Writing either file, or
+passing that flag, would break the rule that a repository can offer but never
+run.
 
 A read-only launch (a pull-request reviewer, a read-only task) never gets the
 server: dispatching a writing agent is itself a mutation, and `exec_shell`
