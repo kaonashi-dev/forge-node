@@ -560,6 +560,10 @@ CREATE TABLE review_findings (
 pub const REVIEW_PRESET: &str =
     "ALTER TABLE review_runs ADD COLUMN preset TEXT NOT NULL DEFAULT 'estandar';";
 
+/// Migration 17 defaulted pre-preset runs to a misspelled id; the built-in is `standard`.
+pub const REVIEW_PRESET_STANDARD: &str =
+    "UPDATE review_runs SET preset = 'standard' WHERE preset = 'estandar';";
+
 /// The full, ordered migration set. Appended to over time; never reordered.
 #[must_use]
 pub fn migrations() -> Migrations<'static> {
@@ -581,5 +585,6 @@ pub fn migrations() -> Migrations<'static> {
         M::up(PROJECT_ACTIONS),
         M::up(REVIEWS),
         M::up(REVIEW_PRESET),
+        M::up(REVIEW_PRESET_STANDARD),
     ])
 }

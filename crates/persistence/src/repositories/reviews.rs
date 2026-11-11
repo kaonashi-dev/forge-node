@@ -1,9 +1,11 @@
 //! Forge Review runs and findings. `target` and `coverage` are JSON columns,
 //! the `project_actions.spec` reasoning: nothing queries inside them.
 
+use std::collections::HashSet;
+
 use domain::{
-    Coverage, Finding, ReviewId, ReviewRun, ReviewStage, ReviewStatus, ReviewTarget, Severity,
-    Tier, Timestamp, Verdict, WorkspaceId,
+    Coverage, Finding, ReviewId, ReviewRun, ReviewStage, ReviewStatus, ReviewTarget, SessionId,
+    Severity, Tier, Timestamp, Verdict, WorkspaceId,
 };
 use rusqlite::{params, Connection, OptionalExtension, Row};
 
@@ -146,6 +148,18 @@ pub fn interrupt_unfinished(conn: &Connection) -> Result<usize, DbError> {
          WHERE status IN ('Queued', 'Running')",
         params![ts_to_str(&Timestamp::now())],
     )?)
+}
+
+/// Session ids named by review runs, for the restart's read-only set.
+pub fn reviewer_sessions(conn: &Connection) -> Result<HashSet<SessionId>, DbError> {
+    let mut stmt =
+        conn.prepare("SELECT DISTINCT session_id FROM review_runs WHERE session_id IS NOT NULL")?;
+    let rows = stmt.query_map([], |row| row.get::<_, String>(0))?;
+    let mut ids = HashSet::new();
+    for row in rows {
+        ids.insert(id_from_str("review reviewer session", &row?)?);
+    }
+    Ok(ids)
 }
 
 /// Keep a workspace's newest `keep` runs, and of those only the ones created

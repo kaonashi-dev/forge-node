@@ -994,6 +994,17 @@ fn validate_honours_rules() {
 }
 
 #[test]
+fn validate_does_not_trust_a_line_away_from_its_evidence() {
+    let good = raw(Some(2), "fn b() {}");
+    let far = raw(Some(22), "fn b() {}");
+    let v = validate(output(vec![good, far]), &changed(), &[], &resolved()).unwrap();
+    assert_eq!(v.invalid_anchors, 1);
+    assert_eq!(v.findings.len(), 2);
+    assert_eq!(v.findings.iter().filter(|f| f.line == Some(2)).count(), 1);
+    assert_eq!(v.findings.iter().filter(|f| f.line.is_none()).count(), 1);
+}
+
+#[test]
 fn validate_drops_disabled_categories_unless_a_rule_backs_them() {
     let rules = [Rule {
         category: "style".into(),
