@@ -10,6 +10,7 @@ pub mod csv;
 pub mod decorations;
 pub mod hooks;
 pub mod patch;
+pub mod preview_find;
 pub mod recent;
 pub mod search;
 pub mod search_view;
@@ -440,6 +441,7 @@ pub struct Files {
     followed: bool,
     /// A preview image had not decoded when the view was last built.
     image_pending: bool,
+    pub find: Option<preview_find::PreviewFind>,
 }
 
 impl Default for Files {
@@ -459,7 +461,25 @@ impl Default for Files {
             follow: None,
             followed: false,
             image_pending: false,
+            find: None,
         }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Shown {
+    Image,
+    Table,
+    TooLarge,
+    Binary,
+    Rendered,
+    Lines,
+}
+
+impl Shown {
+    #[must_use]
+    pub fn searchable(self) -> bool {
+        matches!(self, Shown::Rendered | Shown::Lines)
     }
 }
 
@@ -549,6 +569,7 @@ impl Workbench {
     pub fn preview(&mut self, path: &str) {
         self.files.preview = None;
         self.files.error = None;
+        self.files.find = None;
         self.files.previewing = Some(path.to_string());
         self.read_preview(path);
         self.mode = CenterMode::Files;
@@ -577,6 +598,27 @@ impl Workbench {
         {
             preview.source = !preview.source;
         }
+        self.refresh_find();
+    }
+
+    /// Searches what the preview shows now for the find field's text.
+    pub fn refresh_find(&mut self) {
+        let (Some(find), Some(preview)) = (&mut self.files.find, &self.files.preview) else {
+            return;
+        };
+        let query = find.edit.text.as_str();
+        let (hits, capped) = match preview.shown() {
+            Shown::Rendered => {
+                let (hits, capped) = preview_find::rendered_hits(&preview.text, query);
+                (preview_find::Hits::Rendered(hits), capped)
+            }
+            Shown::Lines => {
+                let (hits, capped) = preview_find::line_hits(&preview.text, &preview.lines, query);
+                (preview_find::Hits::Lines(hits), capped)
+            }
+            _ => (preview_find::Hits::None, false),
+        };
+        find.set_hits(hits, capped);
     }
 
     /// Where git's view of the checkout shows: the Git panel and its diff,
@@ -1079,6 +1121,7 @@ impl Workbench {
                     preview.source = old.source;
                 }
                 self.files.preview = Some(preview);
+                self.refresh_find();
             }
             Err(error) if self.files.previewing.as_deref() == Some(path) => {
                 self.files.error = Some(error);
@@ -1335,6 +1378,30 @@ impl Preview {
             binary: false,
             too_large: false,
             highlights: Rc::from(Vec::new()),
+        }
+    }
+
+    /// What the centre draws for this preview.
+    #[must_use]
+    pub fn shown(&self) -> Shown {
+        match self.kind {
+            Some(PreviewKind::Image) => return Shown::Image,
+            Some(PreviewKind::Svg) if !self.source => return Shown::Image,
+            Some(PreviewKind::Csv)
+                if !self.source && !self.too_large && !self.binary && self.table.is_some() =>
+            {
+                return Shown::Table;
+            }
+            _ => {}
+        }
+        if self.too_large {
+            Shown::TooLarge
+        } else if self.binary {
+            Shown::Binary
+        } else if self.is_markdown() && !self.source {
+            Shown::Rendered
+        } else {
+            Shown::Lines
         }
     }
 

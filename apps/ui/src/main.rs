@@ -351,7 +351,7 @@ fn init() -> AppState {
 }
 
 fn app_key(s: &mut AppState, ev: &rune::KeyEvent, tx: &mut rune::Tx) -> bool {
-    if s.editor_chord(ev, tx) || s.global_key(ev) {
+    if s.preview_find_chord(ev, tx) || s.editor_chord(ev, tx) || s.global_key(ev) {
         return true;
     }
     if s.active_line_editor().is_some() {

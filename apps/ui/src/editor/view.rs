@@ -38,18 +38,18 @@ pub fn pane(s: &AppState, k: &Kit) -> El {
     let aria = aria::editor_aria(editor);
     let announcement = aria::editor_announcement(editor);
     // The label already names the file; the header would say it twice.
-    let header = row()
+    let mut header = row()
         .key("editor-header")
         .w_full()
         .h(HEADER_H)
         .items_center()
         .px(12.0)
         .gap(10.0)
-        .a11y_hidden()
         .child(
             text(path.to_string())
                 .font(k.ty.small_medium)
-                .color(palette.foreground),
+                .color(palette.foreground)
+                .a11y_hidden(),
         )
         .child(
             text(aria::editor_mark(editor))
@@ -58,13 +58,33 @@ pub fn pane(s: &AppState, k: &Kit) -> El {
                     palette.git_modified
                 } else {
                     palette.gutter_foreground
-                }),
+                })
+                .a11y_hidden(),
         )
         .child(
             text(aria::editor_details(editor, path))
                 .font(k.ty.text_xsmall)
-                .color(palette.gutter_foreground),
+                .color(palette.gutter_foreground)
+                .grow(1.0)
+                .a11y_hidden(),
         );
+    if let Some(state) = editor.filter(|state| {
+        crate::workbench::preview_kind(&state.path)
+            .is_some_and(crate::workbench::PreviewKind::has_source)
+    }) {
+        let path = state.path.clone();
+        header = header.child(
+            crate::ds::icon_button(
+                &crate::glyphs::EYE,
+                "Show Rendered",
+                crate::ds::IconButtonSize::Mini,
+            )
+            .help("Show Rendered")
+            .on_press(move |s: &mut AppState| s.preview_file(&path))
+            .build(k)
+            .key("editor-preview"),
+        );
+    }
     let body = match &ui.frame {
         Some(frame) => scroller(ui, frame, palette),
         None => col()

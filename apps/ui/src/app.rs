@@ -2729,6 +2729,9 @@ impl AppState {
         if self.modal_open() {
             return false;
         }
+        if self.preview_find_chord(ev, tx) {
+            return true;
+        }
         // The focus proxy outlives the surface: a tab or sidebar press focuses
         // it, and keys must reach the editor that is now on screen.
         if self.active_line_editor().is_some() {

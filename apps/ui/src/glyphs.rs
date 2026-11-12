@@ -202,6 +202,12 @@ glyphs! {
     KEYBOARD "forge-keyboard"
         ""
         r#"<rect x="1.9" y="4.1" width="12.2" height="7.8" rx="1.7"/><circle cx="4.6" cy="6.5" r="0.55"/><circle cx="7" cy="6.5" r="0.55"/><circle cx="9.4" cy="6.5" r="0.55"/><circle cx="11.8" cy="6.5" r="0.55"/><path d="M5.5 9.5h5"/>"#;
+    EYE "forge-eye"
+        r#"<circle cx="8" cy="8" r="2.1"/>"#
+        r#"<path d="M1.7 8S4 3.6 8 3.6 14.3 8 14.3 8 12 12.4 8 12.4 1.7 8 1.7 8z"/>"#;
+    TEXT_CURSOR "forge-text-cursor"
+        ""
+        r#"<path d="M8 3.6v8.8"/><path d="M5.6 2.4c1.5 0 2.4.5 2.4 1.4 0-.9.9-1.4 2.4-1.4"/><path d="M5.6 13.6c1.5 0 2.4-.5 2.4-1.4 0 .9.9 1.4 2.4 1.4"/><path d="M6.4 8h3.2"/>"#;
 }
 
 /// `icon` with its region filled, as a chosen tab or view draws it; an icon
