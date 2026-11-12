@@ -1,6 +1,6 @@
 //! The handshake requires exact `protocol_version` equality.
 
-use domain::Timestamp;
+use domain::{SessionId, Timestamp};
 use serde::{Deserialize, Serialize};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -23,6 +23,11 @@ pub struct Hello {
     /// The client's own build version, informational.
     pub client_version: String,
     pub client_kind: ClientKind,
+    /// The Forge session this client acts for (its `FORGE_SESSION_ID`), which
+    /// `[orchestration] cross_profile` is checked against. Self-declared: a
+    /// rail for agents, not an authentication boundary.
+    #[serde(default)]
+    pub caller_session_id: Option<SessionId>,
 }
 
 impl Hello {
@@ -34,6 +39,7 @@ impl Hello {
             protocol_version: crate::PROTOCOL_VERSION,
             client_version: client_version.into(),
             client_kind,
+            caller_session_id: None,
         }
     }
 }

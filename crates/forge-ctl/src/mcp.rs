@@ -418,9 +418,22 @@ fn catalog() -> Vec<Tool> {
             json!({ "topic": { "type": "string", "enum": ["controller", "worker", "messages", "board", "integration", "errors", "sessions", "spec"] } }))
             .positional(&["topic"]),
         // Sessions.
-        Tool::new("list_sessions", "List daemon-owned sessions with project, title, provider, state and activity.",
+        Tool::new("list_sessions", "List daemon-owned sessions with project, title, provider, profile, state and activity. profile is a profile name or UUID, or default.",
             &["session", "list"],
-            json!({ "project": string, "kind": { "type": "string", "enum": ["agent", "shell", "editor", "task"] }, "active": boolean })),
+            json!({ "project": string, "kind": { "type": "string", "enum": ["agent", "shell", "editor", "task"] }, "active": boolean, "profile": string })),
+        Tool::new("list_external_sessions", "List agent runs Forge did not launch, from every account's transcripts: provider, provider session id, profile, project, checkout, title, summary, updated_at, and live (true while a process owns it; null when unknown).",
+            &["session", "external", "list"],
+            json!({ "project": string, "provider": string, "profile": string })),
+        Tool::new("read_external_session", "Read a discovered run's conversation as plain text, newest turn last. session is the provider's session id or a unique prefix.",
+            &["session", "external", "read"],
+            json!({ "session": string, "provider": string, "profile": string,
+                "turns": { "type": "integer", "minimum": 1, "maximum": 400 },
+                "max_bytes": { "type": "integer", "minimum": 1, "maximum": 1_048_576 } }))
+            .required(&["session"]).positional(&["session"]),
+        Tool::new("adopt_session", "Resume a discovered run inside Forge as an agent session, in its checkout and account; it then takes send_prompt and wait_session. Refused while a process still owns the conversation unless force.",
+            &["session", "adopt"],
+            json!({ "session": string, "provider": string, "profile": string, "name": string, "force": boolean }))
+            .required(&["session"]).positional(&["session"]),
         Tool::new("show_session", "Show one session as the daemon stores it.",
             &["session", "show"], session.clone()).required(&["session"]).positional(&["session"]),
         Tool::new("read_session", "Read a bounded terminal transcript, newest lines last.",
@@ -463,7 +476,7 @@ fn catalog() -> Vec<Tool> {
             &["session", "restart"], session.clone()).required(&["session"]).positional(&["session"]),
         Tool::new("close_session", "Remove an ended session from the tree.",
             &["session", "close"], session).required(&["session"]).positional(&["session"]),
-        Tool::new("run_spec", "Run a spec with two agents: launch a planner (Claude at high effort) that reads the spec, writes a plan, launches the coder, waits, reviews and sends its review. spec is a Claude artifact link, a Markdown file path or the full spec text. preset claude codes with Claude at medium effort; mix codes with Cursor, or with coder (for example opencode).",
+        Tool::new("run_spec", "Run a spec with two agents: launch a planner (Claude at high effort) that reads the spec, writes a plan, launches the coder, waits, reviews and sends its review. spec is a Claude artifact link, a Markdown file path or the full spec text. preset claude codes with Claude at medium effort; mix codes with Cursor, or with coder (for example opencode). coder_profile and planner_profile pick an account by profile name or UUID.",
             &["spec", "run"], spec_properties(true)).required(&["spec"]).positional(&["spec"]).roles(NOT_A_WORKER),
         Tool::new("spec_brief", "Return the planner brief for a spec, for the calling session to act as the planner itself instead of launching one.",
             &["spec", "brief"], spec_properties(false)).required(&["spec"]).positional(&["spec"]).roles(NOT_A_WORKER),
@@ -579,7 +592,7 @@ fn spec_properties(launch: bool) -> Value {
     let string = json!({ "type": "string" });
     let mut properties = json!({
         "spec": string, "preset": { "type": "string", "enum": ["claude", "mix"] },
-        "coder": string, "coder_effort": string, "coder_model": string,
+        "coder": string, "coder_effort": string, "coder_model": string, "coder_profile": string,
         "worktree": string, "base": string, "name": string,
         "rounds": { "type": "integer", "minimum": 1, "maximum": 10 },
     });
@@ -591,6 +604,7 @@ fn spec_properties(launch: bool) -> Value {
                 "planner",
                 "planner_effort",
                 "planner_model",
+                "planner_profile",
             ] {
                 properties.insert(key.into(), string.clone());
             }
@@ -764,7 +778,19 @@ mod tests {
             ("guide", json!({ "topic": "worker" })),
             (
                 "list_sessions",
-                json!({ "project": "api", "kind": "shell", "active": true }),
+                json!({ "project": "api", "kind": "shell", "active": true, "profile": "work" }),
+            ),
+            (
+                "list_external_sessions",
+                json!({ "project": "api", "provider": "claude", "profile": "default" }),
+            ),
+            (
+                "read_external_session",
+                json!({ "session": "--abc", "provider": "claude", "turns": 20, "max_bytes": 4096 }),
+            ),
+            (
+                "adopt_session",
+                json!({ "session": "abc", "profile": "work", "name": "--x", "force": true }),
             ),
             ("show_session", json!({ "session": "s" })),
             (
@@ -796,7 +822,7 @@ mod tests {
             ("close_session", json!({ "session": "s" })),
             (
                 "run_spec",
-                json!({ "spec": "https://claude.ai/public/artifacts/x", "preset": "mix", "coder": "opencode", "rounds": 2, "project": "api", "planner_effort": "high" }),
+                json!({ "spec": "https://claude.ai/public/artifacts/x", "preset": "mix", "coder": "opencode", "coder_profile": "Work", "rounds": 2, "project": "api", "planner_effort": "high", "planner_profile": "Personal" }),
             ),
             (
                 "spec_brief",

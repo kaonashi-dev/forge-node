@@ -58,7 +58,9 @@ pub use editor_frame::{
     EditorInputEvent, EditorKey, EditorMark, EditorPlace, EditorPointer, EditorRange, EditorRow,
     EditorScope, EditorSeverity, EditorSpan, MAX_EDITOR_INPUT_EVENTS, MAX_EDITOR_TEXT_BYTES,
 };
-pub use external::{ExternalAgentSession, ExternalTranscript, TranscriptStore};
+pub use external::{
+    ExternalAgentSession, ExternalSessionEntry, ExternalTranscript, TranscriptStore,
+};
 pub use file::{
     DirectoryListing, FileContents, FileEntry, FileKind, FileTree, ImageContents, SearchKind,
     SearchMatch, SearchResults, SymlinkTarget,

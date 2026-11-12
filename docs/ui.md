@@ -66,8 +66,11 @@ Changes is a fused workspace diff; the Git panel adds commit (with Juva), fetch,
 stopped rebase/merge/cherry-pick actions and branch compare. A session's own
 changes are read separately (`GetSessionChanges`). Pull requests are a cached
 read of the daemon's last refresh; the list filters by scope and text, and a
-row opens a detail tab. Opening or composing a pull request is an agent launch
-or the normal `CommitAndOpenPullRequest` request.
+row opens a detail tab. "Review Pull Request…" in the palette takes a pasted
+link (`pr_url`) and opens the same detail; one the last refresh did not list is
+read with `FetchPullRequest` and kept across refreshes (open ones only).
+Opening or composing a pull request is an agent launch or the normal
+`CommitAndOpenPullRequest` request.
 
 ## Terminal
 

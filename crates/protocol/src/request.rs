@@ -121,6 +121,18 @@ pub enum Request {
         #[serde(default)]
         force: bool,
     },
+    /// Read one pull request by its URL's parts → `Ack` when the read starts;
+    /// [`crate::event::DaemonEvent::PullRequestFetched`] when it ends.
+    ///
+    /// Refused with `InvalidRequest` for a host that is neither `github.com` nor
+    /// in `[github] enterprise_hosts`. An open pull request joins the cached
+    /// state, pinned across listing refreshes up to a small bound.
+    FetchPullRequest {
+        host: String,
+        /// `owner/name`.
+        repository: String,
+        number: u32,
+    },
     /// Runtime statistics from a live daemon →
     /// [`crate::response::Response::DaemonStats`].
     ///
@@ -354,6 +366,29 @@ pub enum Request {
         max_turns: Option<u32>,
         /// Hard cap on the returned text. `None` takes the service default.
         max_bytes: Option<u32>,
+    },
+    /// Discovered runs, each with whether a process still owns it →
+    /// [`crate::response::Response::ExternalSessions`].
+    ///
+    /// Unlike the snapshot's `external_agents`, this is filtered by
+    /// `[orchestration] cross_profile` for a caller connected as a session.
+    ListExternalSessions {
+        #[serde(default)]
+        project_id: Option<ProjectId>,
+    },
+    /// Resume a discovered run inside Forge as an agent session →
+    /// [`crate::response::Response::SessionCreated`].
+    ///
+    /// Refused with `PreconditionFailed` while a process still owns the
+    /// conversation, unless `force`: two processes on one transcript interleave it.
+    AdoptExternalSession {
+        session_id: String,
+        provider: String,
+        profile_id: Option<AgentProfileId>,
+        #[serde(default)]
+        title: Option<String>,
+        #[serde(default)]
+        force: bool,
     },
     /// Remove a discovered agent run's transcript from disk →
     /// [`crate::response::Response::Ack`].

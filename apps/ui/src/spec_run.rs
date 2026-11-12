@@ -10,17 +10,21 @@ use domain::spec_run::{
     Coder, MAX_INLINE_SPEC_BYTES, Preset, SpecRun, SpecSource, agent_refusal, classify,
     compose_planner_prompt, planner_effort,
 };
-use domain::{AgentDescriptor, AgentProviderId, WorkspaceId};
+use domain::{AgentDescriptor, AgentProfileId, AgentProviderId, WorkspaceId};
 use rune::{El, TextEdit, col, text};
 use rune_kit::{Button, ButtonVariant, Kit, SegmentedControl, TextArea, TextInput};
 
+use crate::agent_ops::Choice;
 use crate::app::AppState;
 
 /// The planner is Claude, at high effort when it offers it.
 const PLANNER: &str = "claude";
-/// Claude as the coder is the `claude` preset, at medium effort; any other
-/// provider is the `mix` preset with that coder.
+/// A Claude coder, under any profile, codes at the `claude` preset's medium
+/// effort; any other provider is the `mix` preset with that coder.
 const CLAUDE_PRESET: &str = "claude";
+/// The last coder and planner rows a run started with.
+const CODER_PREF: &str = "ui.spec_run.coder";
+const PLANNER_PREF: &str = "ui.spec_run.planner";
 pub const DEFAULT_ROUNDS: u32 = 3;
 const ROUNDS: [u32; 5] = [1, 2, 3, 4, 5];
 
@@ -29,10 +33,27 @@ const ROUNDS: [u32; 5] = [1, 2, 3, 4, 5];
 pub struct SpecRequest {
     /// A path (relative to the checkout, absolute or `~/`), a link, or the spec's text.
     pub spec: String,
-    pub coder: String,
+    pub coder: SpecAgent,
+    pub planner_profile: Option<AgentProfileId>,
     /// A new worktree on this branch for the coder, instead of the planner's checkout.
     pub worktree: Option<String>,
     pub rounds: u32,
+}
+
+/// An agent and the account it runs under.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SpecAgent {
+    pub provider: String,
+    pub profile: Option<AgentProfileId>,
+}
+
+impl From<&Choice> for SpecAgent {
+    fn from(row: &Choice) -> Self {
+        Self {
+            provider: row.provider.to_string(),
+            profile: row.profile,
+        }
+    }
 }
 
 /// Where a spec path points, for the one question asked about it: is it a file?
@@ -47,6 +68,7 @@ pub enum SpecPath<'a> {
 #[derive(Debug, PartialEq, Eq)]
 pub struct PlannerLaunch {
     pub provider: AgentProviderId,
+    pub profile: Option<AgentProfileId>,
     pub effort: Option<String>,
     pub title: String,
     pub brief: String,
@@ -94,11 +116,11 @@ pub fn planner_launch(
         }
         other => other,
     };
-    let (provider, effort) = if request.coder == CLAUDE_PRESET {
-        let (provider, effort) = Preset::Claude.coder();
-        (provider.to_owned(), effort.map(str::to_owned))
+    let provider = request.coder.provider.clone();
+    let effort = if provider == CLAUDE_PRESET {
+        Preset::Claude.coder().1.map(str::to_owned)
     } else {
-        (request.coder.clone(), None)
+        None
     };
     check(providers, &provider, effort.as_deref(), "coder")?;
     let planner = descriptor(providers, PLANNER, "planner")?;
@@ -115,6 +137,7 @@ pub fn planner_launch(
         source,
         coder: Coder {
             provider,
+            profile: request.coder.profile.map(|id| id.to_string()),
             effort,
             model: None,
         },
@@ -134,6 +157,7 @@ pub fn planner_launch(
     };
     Ok(PlannerLaunch {
         provider: planner.id.clone(),
+        profile: request.planner_profile,
         effort: planner_effort,
         title: format!("{name} planner"),
         brief: compose_planner_prompt(&run),
@@ -180,7 +204,9 @@ pub fn forgectl() -> PathBuf {
 pub struct SpecDialog {
     pub workspace: WorkspaceId,
     pub spec: TextEdit,
-    pub coder: String,
+    /// [`Choice`] keys.
+    pub coder: Option<String>,
+    pub planner: Option<String>,
     pub worktree: TextEdit,
     pub rounds: u32,
     pub starting: bool,
@@ -189,13 +215,17 @@ pub struct SpecDialog {
 
 impl SpecDialog {
     #[must_use]
-    pub fn new(workspace: WorkspaceId, spec: &str) -> Self {
+    pub fn new(workspace: WorkspaceId, spec: &str, store: Option<&client::Store>) -> Self {
         let mut edit = TextEdit::new(spec);
         edit.focused = true;
+        let remembered = |rows: Vec<Choice>, pref: &str| {
+            remembered_row(&rows, store.and_then(|store| store.app_state_value(pref)))
+        };
         Self {
             workspace,
             spec: edit,
-            coder: CLAUDE_PRESET.to_owned(),
+            coder: store.and_then(|store| remembered(coder_rows(store), CODER_PREF)),
+            planner: store.and_then(|store| remembered(planner_rows(store), PLANNER_PREF)),
             worktree: TextEdit::new(""),
             rounds: DEFAULT_ROUNDS,
             starting: false,
@@ -204,42 +234,54 @@ impl SpecDialog {
     }
 
     #[must_use]
-    pub fn request(&self) -> Option<SpecRequest> {
+    pub fn request(&self, store: &client::Store) -> Option<SpecRequest> {
         let spec = self.spec.text.trim();
+        let pick = |rows: Vec<Choice>, key: &Option<String>| {
+            rows.into_iter()
+                .find(|row| key.as_deref() == Some(row.key.as_str()))
+        };
+        let coder = pick(coder_rows(store), &self.coder)?;
+        let planner = pick(planner_rows(store), &self.planner)?;
         (!spec.is_empty() && !self.starting).then(|| SpecRequest {
             spec: spec.to_owned(),
-            coder: self.coder.clone(),
+            coder: SpecAgent::from(&coder),
+            planner_profile: planner.profile,
             worktree: Some(self.worktree.text.trim().to_owned()).filter(|b| !b.is_empty()),
             rounds: self.rounds,
         })
     }
 }
 
-/// The coders on offer: one row per installed provider that takes a prompt,
-/// Claude first. The planner launches the coder by provider, never by profile.
+/// Every agent and visible profile that takes a prompt, Claude's first; a
+/// Claude row codes at the preset's medium effort and says so.
 #[must_use]
-pub fn coders(store: &client::Store) -> Vec<(String, String)> {
-    let mut rows: Vec<(String, String)> = store
-        .providers
-        .iter()
-        .filter(|info| {
-            matches!(
-                info.detection.status,
-                domain::DetectionStatus::Installed { .. }
-            ) && info.descriptor.capabilities.supports_initial_prompt
-        })
-        .map(|info| {
-            let id = info.descriptor.id.to_string();
-            let label = if id == CLAUDE_PRESET {
-                format!("{} · medium", info.descriptor.display_name)
-            } else {
-                info.descriptor.display_name.clone()
-            };
-            (id, label)
-        })
-        .collect();
-    rows.sort_by_key(|(id, _)| id != CLAUDE_PRESET);
+pub fn coder_rows(store: &client::Store) -> Vec<Choice> {
+    let mut rows = crate::agent_ops::choices(store, true);
+    rows.sort_by_key(|row| row.provider.as_str() != CLAUDE_PRESET);
+    for row in &mut rows {
+        if row.provider.as_str() == CLAUDE_PRESET {
+            row.label.push_str(" · medium");
+        }
+    }
     rows
+}
+
+/// The planner is Claude; its rows are Claude and each Claude profile.
+#[must_use]
+pub fn planner_rows(store: &client::Store) -> Vec<Choice> {
+    crate::agent_ops::choices(store, true)
+        .into_iter()
+        .filter(|row| row.provider.as_str() == PLANNER)
+        .collect()
+}
+
+/// The row a run last started with, when it is still offered, else the first.
+#[must_use]
+pub fn remembered_row(rows: &[Choice], remembered: Option<&str>) -> Option<String> {
+    rows.iter()
+        .find(|row| Some(row.key.as_str()) == remembered)
+        .or_else(|| rows.first())
+        .map(|row| row.key.clone())
 }
 
 impl AppState {
@@ -264,20 +306,21 @@ impl AppState {
                     .is_some_and(|ext| matches!(ext, "md" | "markdown" | "mdx"))
             })
             .unwrap_or_default();
-        self.spec_dialog = Some(SpecDialog::new(workspace, &on_screen));
+        self.spec_dialog = Some(SpecDialog::new(workspace, &on_screen, self.store.as_ref()));
     }
 
     pub fn start_spec_run(&mut self) {
-        let Some(dialog) = self.spec_dialog.as_mut() else {
+        let (Some(dialog), Some(store)) = (self.spec_dialog.as_mut(), &self.store) else {
             return;
         };
-        let Some(request) = dialog.request() else {
+        let Some(request) = dialog.request(store) else {
             return;
         };
         let workspace = dialog.workspace;
-        let Some(store) = &self.store else {
-            return;
-        };
+        let remembered = [
+            (CODER_PREF, dialog.coder.clone()),
+            (PLANNER_PREF, dialog.planner.clone()),
+        ];
         let Some(checkout) = store
             .workspaces
             .iter()
@@ -298,6 +341,11 @@ impl AppState {
         };
         match connection.run_spec(workspace, checkout, providers, request) {
             Ok(()) => {
+                for (pref, key) in remembered {
+                    if let Some(key) = key {
+                        let _ = connection.set_app_state(pref, &key);
+                    }
+                }
                 dialog.starting = true;
                 dialog.error = None;
             }
@@ -321,28 +369,47 @@ pub fn dialog(s: &AppState, k: &Kit, layer: &mut Vec<El>) {
     let Some(dialog) = &s.spec_dialog else {
         return;
     };
-    let offered = s.store.as_ref().map(coders).unwrap_or_default();
-    let coder = if offered.is_empty() {
-        text("No installed agent takes a prompt.")
-            .font(k.ty.text_xsmall)
-            .color(k.c.warning.fg)
-    } else {
-        let labels: Vec<&str> = offered.iter().map(|(_, label)| label.as_str()).collect();
-        let picks: Vec<String> = offered.iter().map(|(id, _)| id.clone()).collect();
+    let offered = s.store.as_ref().map(coder_rows).unwrap_or_default();
+    let planners = s.store.as_ref().map(planner_rows).unwrap_or_default();
+    let picker = |rows: &[Choice],
+                  chosen: &Option<String>,
+                  label: &'static str,
+                  empty: &'static str,
+                  set: fn(&mut SpecDialog, String)| {
+        if rows.is_empty() {
+            return text(empty).font(k.ty.text_xsmall).color(k.c.warning.fg);
+        }
+        let labels: Vec<&str> = rows.iter().map(|row| row.label.as_str()).collect();
+        let picks: Vec<String> = rows.iter().map(|row| row.key.clone()).collect();
         SegmentedControl::new(
             &labels,
-            offered.iter().position(|(id, _)| *id == dialog.coder),
+            rows.iter()
+                .position(|row| chosen.as_deref() == Some(row.key.as_str())),
         )
-        .label("Coder")
+        .label(label)
         .width(None)
         .on_pick(move |s: &mut AppState, index: usize, _| {
-            if let (Some(dialog), Some(id)) = (s.spec_dialog.as_mut(), picks.get(index)) {
-                dialog.coder.clone_from(id);
+            if let (Some(dialog), Some(key)) = (s.spec_dialog.as_mut(), picks.get(index)) {
+                set(dialog, key.clone());
             }
         })
         .build(k)
-        .key("spec-coders")
+        .key(format!("spec-{}", label.to_ascii_lowercase()))
     };
+    let coder = picker(
+        &offered,
+        &dialog.coder,
+        "Coder",
+        "No installed agent takes a prompt.",
+        |dialog, key| dialog.coder = Some(key),
+    );
+    let planner = picker(
+        &planners,
+        &dialog.planner,
+        "Planner",
+        "The planner is Claude, and Claude is not installed.",
+        |dialog, key| dialog.planner = Some(key),
+    );
     let round_labels = ROUNDS.map(|count| count.to_string());
     let rounds = SegmentedControl::new(
         &round_labels,
@@ -391,6 +458,7 @@ pub fn dialog(s: &AppState, k: &Kit, layer: &mut Vec<El>) {
                 .key("spec-text")
                 .h(96.0),
         ))
+        .child(field("Planner", planner))
         .child(field("Coder", coder))
         .child(field(
             "Worktree branch",
@@ -419,7 +487,11 @@ pub fn dialog(s: &AppState, k: &Kit, layer: &mut Vec<El>) {
                 .wrap()
                 .pb(crate::ds::SPACE_4),
         );
-    let blocked = dialog.request().is_none() || offered.is_empty();
+    let blocked = s
+        .store
+        .as_ref()
+        .and_then(|store| dialog.request(store))
+        .is_none();
     crate::modal::Modal::new("run-spec", "Run a spec")
         .width(crate::modal::WIDTH_STANDARD)
         .on_close(|s: &mut AppState| s.spec_dialog = None)
@@ -458,7 +530,11 @@ mod tests {
     fn request(spec: &str, coder: &str) -> SpecRequest {
         SpecRequest {
             spec: spec.into(),
-            coder: coder.into(),
+            coder: SpecAgent {
+                provider: coder.into(),
+                profile: None,
+            },
+            planner_profile: None,
             worktree: None,
             rounds: DEFAULT_ROUNDS,
         }
@@ -550,5 +626,71 @@ mod tests {
             brief.contains("After 5 review round(s)"),
             "clamped to the offer"
         );
+    }
+
+    #[test]
+    fn profiles_reach_the_planner_launch_and_the_coder_spawn_by_uuid() {
+        let (work, personal) = (AgentProfileId::new(), AgentProfileId::new());
+        let mut asked = request("Add a cache", "claude");
+        asked.coder.profile = Some(work);
+        asked.planner_profile = Some(personal);
+        let launch = launch(&asked, &[]).expect("launch");
+        assert_eq!(launch.profile, Some(personal));
+        assert!(
+            launch.brief.contains(&format!(
+                "--provider claude --profile {work} --role executor --effort medium"
+            )),
+            "a Claude coder keeps the preset's effort under a profile"
+        );
+    }
+
+    #[test]
+    fn rows_offer_every_profile_with_claude_first_and_the_planner_only_claude() {
+        use crate::test_support::provider;
+        let account = |provider: &str, name: &str| domain::AgentProfile {
+            id: AgentProfileId::new(),
+            provider_id: AgentProviderId::new(provider),
+            name: name.into(),
+            executable: None,
+            config_dir: None,
+            args: vec![],
+            created_at: domain::Timestamp::now(),
+        };
+        let mut store = client::Store::new();
+        store.providers = vec![
+            provider("opencode", true, true, false),
+            provider("claude", true, true, true),
+        ];
+        let work = account("claude", "Work");
+        store.agent_profiles = vec![account("opencode", "Personal"), work.clone()];
+        let labels = |rows: Vec<Choice>| rows.into_iter().map(|row| row.label).collect::<Vec<_>>();
+        assert_eq!(
+            labels(coder_rows(&store)),
+            [
+                "claude · medium",
+                "claude · Work · medium",
+                "opencode",
+                "opencode · Personal"
+            ]
+        );
+        let planners = planner_rows(&store);
+        assert_eq!(labels(planners.clone()), ["claude", "claude · Work"]);
+
+        let remembered = format!("profile:{}", work.id);
+        assert_eq!(
+            remembered_row(&planners, Some(&remembered)),
+            Some(remembered.clone())
+        );
+        assert_eq!(
+            remembered_row(&planners, Some("profile:gone")),
+            Some("provider:claude".into()),
+            "a forgotten profile falls back to the bare provider"
+        );
+        store.app_state = vec![(PLANNER_PREF.into(), remembered.clone())];
+        let dialog = SpecDialog::new(WorkspaceId::new(), "spec.md", Some(&store));
+        assert_eq!(dialog.planner, Some(remembered));
+        let request = dialog.request(&store).expect("a request");
+        assert_eq!(request.planner_profile, Some(work.id));
+        assert_eq!(request.coder.provider, "claude");
     }
 }

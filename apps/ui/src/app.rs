@@ -150,6 +150,7 @@ pub struct AppState {
     pub review: Option<crate::pr_review::ReviewDialog>,
     pub open_pr: crate::open_pr::OpenPr,
     pub spec_dialog: Option<crate::spec_run::SpecDialog>,
+    pub pr_link: Option<crate::pr_link::LinkDialog>,
     /// A Refresh the person pressed is in flight; cleared by the update.
     pub pr_refreshing: bool,
     /// The connection generation the Pull Requests view read on its own.
@@ -267,6 +268,7 @@ impl AppState {
             review: None,
             open_pr: crate::open_pr::OpenPr::default(),
             spec_dialog: None,
+            pr_link: None,
             pr_refreshing: false,
             pr_auto_read: None,
             pr_query: rune::TextEdit::new(""),
@@ -576,6 +578,7 @@ impl AppState {
             || self.about
             || self.review.is_some()
             || self.spec_dialog.is_some()
+            || self.pr_link.is_some()
             || self.rename.is_some()
             || self.confirm_close.is_some()
             || self.settings.confirm_reset
@@ -1118,6 +1121,7 @@ impl AppState {
                 Command::ToggleSidebar => self.sidebar.toggle(),
                 Command::NewWorktree => self.new_worktree_here(),
                 Command::RunSpec => self.open_run_spec(),
+                Command::ReviewPullRequestLink => self.open_pr_link(),
                 Command::Theme(base) => self.choose_theme(base),
                 Command::FindInFiles => self.find_in_files(),
                 Command::SplitPane => {
@@ -1385,7 +1389,7 @@ impl AppState {
         let agents = self
             .store
             .as_ref()
-            .map(|store| crate::pr_review::review_agents(&store.providers))
+            .map(crate::pr_review::review_agents)
             .unwrap_or_default();
         if let Some(pr) = self.pull_request(repository, number) {
             self.review = Some(crate::pr_review::ReviewDialog::new(pr, &agents));
@@ -1469,8 +1473,13 @@ impl AppState {
             }
             return;
         };
-        let problem = if review.agent.is_none() {
-            Some("Pick an agent with a review mode.")
+        let agent = self.store.as_ref().and_then(|store| {
+            crate::pr_review::review_agents(store)
+                .into_iter()
+                .find(|row| review.agent.as_deref() == Some(row.key.as_str()))
+        });
+        let problem = if agent.is_none() {
+            Some("Pick an agent.")
         } else if review.prompt(&pr).is_none() {
             Some("Write what the review should look for.")
         } else {
@@ -1495,12 +1504,14 @@ impl AppState {
             }
             return;
         };
-        let review = self.review.take().expect("checked above");
-        let prompt = review.prompt(&pr);
-        let Some(agent) = review.agent else {
+        let Some(agent) = agent else {
             return;
         };
-        match connection.create_agent(workspace, agent, None, prompt, true) {
+        let Some(review) = self.review.take() else {
+            return;
+        };
+        let prompt = review.prompt(&pr);
+        match connection.create_agent(workspace, agent.provider, agent.profile, prompt, false) {
             Ok(()) => self.workbench.show(CenterMode::Session),
             Err(error) => self.toasts.danger("The review did not start", error),
         }
@@ -1864,6 +1875,15 @@ impl AppState {
                             error.clone(),
                             *session_id,
                         );
+                        return true;
+                    }
+                    client::DaemonEvent::PullRequestFetched {
+                        host,
+                        repository,
+                        number,
+                        error,
+                    } => {
+                        self.pr_link_fetched(host, repository, *number, error.clone());
                         return true;
                     }
                     client::DaemonEvent::EditorFocusRequested { session_id, .. } => {
@@ -2262,6 +2282,9 @@ impl AppState {
                 }
                 if label == "RunSpec" {
                     self.spec_run_result(ok, &message);
+                }
+                if label == "FetchPullRequest" && !ok {
+                    self.pr_link_refused(&message);
                 }
                 if label == "RefreshPullRequests" && !ok && self.pr_refreshing {
                     self.pr_refreshing = false;
@@ -3365,6 +3388,128 @@ mod tests {
             state.store.as_ref().expect("store").pull_requests,
             refreshed
         );
+    }
+
+    fn linked_pr(repository: &str, number: u32) -> domain::PullRequest {
+        let at = domain::Timestamp::parse_rfc3339("2026-01-01T00:00:00Z").unwrap();
+        domain::PullRequest {
+            project_id: None,
+            repository: repository.into(),
+            host: "github.com".into(),
+            number,
+            title: "Linked".into(),
+            body: String::new(),
+            body_truncated: false,
+            url: format!("https://github.com/{repository}/pull/{number}"),
+            author: "rin".into(),
+            base_ref: "main".into(),
+            head_ref: "topic".into(),
+            is_draft: false,
+            review_decision: None,
+            labels: Vec::new(),
+            assignees: Vec::new(),
+            review_requests: Vec::new(),
+            additions: 0,
+            deletions: 0,
+            changed_files: 0,
+            comment_count: 0,
+            created_at: at,
+            updated_at: at,
+            relations: domain::PullRequestRelations {
+                assigned: false,
+                review_requested: false,
+                authored: false,
+            },
+        }
+    }
+
+    fn paste_link(state: &mut AppState, url: &str) {
+        state.open_pr_link();
+        state.pr_link.as_mut().expect("dialog").url = rune::TextEdit::new(url);
+        state.submit_pr_link();
+    }
+
+    #[test]
+    fn a_listed_pull_request_link_opens_its_detail_like_the_sidebar_row() {
+        let mut state = state();
+        state
+            .store
+            .as_mut()
+            .expect("store")
+            .pull_requests
+            .pull_requests = vec![linked_pr("Acme/Widgets", 7)];
+        state.workbench.panel = Panel::Files;
+        paste_link(&mut state, "https://github.com/acme/widgets/pull/7/files");
+        assert!(state.pr_link.is_none());
+        assert_eq!(state.workbench.panel, Panel::PullRequests);
+        assert_eq!(state.workbench.mode, CenterMode::PrDetail);
+        assert_eq!(
+            state.workbench.pr_detail.as_deref(),
+            Some("github.com/Acme/Widgets#7")
+        );
+    }
+
+    #[test]
+    fn an_unlisted_pull_request_link_waits_for_the_daemon_then_opens_or_says_why() {
+        let mut state = state();
+        let (handle, rx) = ConnectionHandle::test_handle(Arc::new(Metrics::default()));
+        state.connection = Some(handle);
+        paste_link(&mut state, "not a link");
+        assert!(state.pr_link.as_ref().unwrap().error.is_some());
+        assert!(
+            rx.try_recv().is_err(),
+            "a bad link never reaches the daemon"
+        );
+
+        paste_link(&mut state, "https://github.com/acme/widgets/pull/9");
+        let Ok(crate::connection::Command::FetchPullRequest(link)) = rx.try_recv() else {
+            panic!("expected FetchPullRequest");
+        };
+        assert_eq!((link.repository.as_str(), link.number), ("acme/widgets", 9));
+        let generation = state.generation;
+        let daemon = |event| UiEvent::Daemon {
+            generation,
+            event: Box::new(event),
+        };
+        let mut tx = Tx::default();
+        state.apply_events(
+            vec![
+                daemon(client::DaemonEvent::PullRequestsUpdated {
+                    state: domain::PullRequestState {
+                        pull_requests: vec![linked_pr("Acme/Widgets", 9)],
+                        ..domain::PullRequestState::default()
+                    },
+                }),
+                daemon(client::DaemonEvent::PullRequestFetched {
+                    // A read coalesced into an earlier one echoes that one's spelling.
+                    host: "github.com".into(),
+                    repository: "Acme/Widgets".into(),
+                    number: 9,
+                    error: None,
+                }),
+            ],
+            &mut tx,
+        );
+        assert!(state.pr_link.is_none());
+        assert_eq!(
+            state.workbench.pr_detail.as_deref(),
+            Some("github.com/Acme/Widgets#9")
+        );
+
+        paste_link(&mut state, "https://github.com/acme/widgets/pull/10");
+        let _ = rx.try_recv();
+        state.apply_events(
+            vec![daemon(client::DaemonEvent::PullRequestFetched {
+                host: "github.com".into(),
+                repository: "acme/widgets".into(),
+                number: 10,
+                error: Some("acme/widgets#10 is merged".into()),
+            })],
+            &mut tx,
+        );
+        let dialog = state.pr_link.as_ref().expect("the dialog stays");
+        assert!(dialog.pending.is_none());
+        assert_eq!(dialog.error.as_deref(), Some("acme/widgets#10 is merged"));
     }
 
     #[test]

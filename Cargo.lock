@@ -14,6 +14,7 @@ version = "0.1.9"
 dependencies = [
  "directories",
  "domain",
+ "nix 0.31.3",
  "rusqlite",
  "serde",
  "serde_json",

@@ -31,8 +31,10 @@ reasons but does not write — the third sibling of `ResumeStyle` and
 name the provider itself uses for the mode, which is what lets a menu say which
 of two different postures the user is picking.
 
-It exists because an automatic pull-request review starts in a checkout the
-user is working in. `build_launch` appends those flags **after** a profile's own
+It serves read-only orchestration tasks, Forge Review and `forgectl session
+spawn --read-only`. The GUI's pull-request review does not use it: that review
+is kept a read by its prompt (`domain::pr_review::READ_ONLY_RULES`), so every
+agent and profile can run it. `build_launch` appends those flags **after** a profile's own
 arguments so they win — a profile must not turn a review into a session that
 can edit the checkout — and refuses with
 `AgentError::ReviewUnsupported` when a read-only launch is asked of a provider

@@ -26,7 +26,10 @@ use crate::jsonl::{self, Object, Text};
 
 mod bounded;
 mod cursor;
+mod live;
 mod opencode_db;
+
+pub use live::Liveness;
 
 #[cfg(test)]
 mod provider_tests;

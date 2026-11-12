@@ -241,6 +241,99 @@ no completion signal for a command: read the transcript, or end the shell with
 `exit <code>` and `session wait --for exit`. Text a person already typed at
 that prompt is not cleared and would prefix the line.
 
+### Accounts and runs Forge did not launch
+
+The daemon owns every session it launched, whatever profile (account) it runs
+under, so `session list`, `send`, `wait` and hooks already work across
+accounts. A provider's own registry does not: Claude lists sessions per
+`CLAUDE_CONFIG_DIR`, so a work-profile Claude cannot see the personal one, and
+neither sees a Forge launch in the other. `session list` names each agent's
+`profile` (`{"id": null, "name": "default"}` for the provider's own login,
+`null` for a shell or editor) and filters with `--profile <name|uuid|default>`.
+
+`session external list [--project] [--provider] [--profile]` (`ListExternalSessions`)
+reports the runs transcript discovery found in the default directory and every
+profile's `config_dir`: provider, provider session id, profile, project,
+checkout and `cwd`, title, summary, `updated_at` and `live`. `live` is `true`
+while a process still owns the run and `false` once none does; Claude answers
+it from `<config>/sessions/<pid>.json` (the `sessionId` and a living `pid`,
+read in `crates/agents` off the core lock, at most 256 `.json` entries of
+16 KiB per account; an account with more is `null`, since an unread entry may
+be the live one). OpenCode and Cursor keep no such registry on disk, so theirs
+is `null`, and `adopt` does not wait for `--force` on `null`. `session external read <id|prefix> [--turns N] [--max-bytes N]` is
+`GetExternalTranscript` with its existing clamps. A run is named by the
+provider's session id or a prefix of at least 8 characters; one that matches in
+two accounts exits 5 until `--provider` or `--profile` picks one.
+
+`session adopt <id> [--name] [--provider] [--profile] [--force]`
+(`AdoptExternalSession`) resumes the run as an ordinary agent session — the
+`CreateAgentSession` path with `resume` — in the checkout it was recorded in
+(the project's main checkout when that one is gone) and the account it was
+found in. `--profile` only chooses between accounts holding the same id: a
+transcript lives in its account's config directory, so resuming it under
+another login would not find it. A provider whose descriptor cannot resume is
+refused, and a run that is `live` exits 5 with `details.reason = "live"`
+unless `--force`, because two processes appending to one transcript interleave
+it. The adopted session then takes `send`, `wait` and hooks like any other.
+
+`[orchestration] cross_profile` bounds what a *session* may do to another
+account; a caller with no `FORGE_SESSION_ID` (a person at a shell, the GUI) is
+never limited. `forgectl` names its caller in the connection handshake
+(`Hello.caller_session_id`, or a request's own `caller_session_id`) and the
+daemon checks these requests against it, and no others:
+
+- **Read:** `GetSessionTranscript`, `GetSessionChanges`, `GetExternalTranscript`,
+  and `SendContext`'s source when `include_transcript` is set.
+- **Control:** `SendSessionPrompt`, `SendShellCommand`, `SendSignal`,
+  `KillSession`, `RestartSession`, `CloseSession`, `RenameSession`,
+  `SetSessionRole`, `CreateChildSession` (its parent), `SendContext` (its
+  target, and its source when it spawns a child), `AdoptExternalSession` and
+  `DeleteExternalSession`.
+- **Filtered:** `GetSnapshot` (`sessions`, `external_agents`) and
+  `ListExternalSessions`.
+
+Editor sessions belong to no account, so the editor requests are not checked;
+neither are orchestration ledger requests, whose rails are their own.
+
+| Mode | Own account | Another account |
+|------|-------------|-----------------|
+| `off` | everything | filtered out; read and control refused |
+| `read` (default) | everything | listed and readable; control refused |
+| `full` | everything | everything |
+
+An agent's account is its profile, or the default login; a shell or editor
+belongs to none and is never filtered, and a non-agent caller counts as the
+default login. A refusal exits 6 with `code: "policy"` and
+`details.reason = "policy:cross_profile"`. The caller is self-declared, so this
+is a rail against an agent wandering across accounts, not an authentication
+boundary: any process that can open the socket can omit it, and an agent with
+filesystem access can read the transcripts directly. Session events still reach
+every CLI connection.
+
+#### Input to sessions running outside Forge
+
+A Claude session started outside Forge has no stable input API: channels are a
+research preview behind `--dangerously-load-development-channels` and a
+dialog, and `Stop` or `asyncRewake` hooks are bound to a turn or undocumented.
+Adopt it instead.
+
+OpenCode was checked against 2.0.20 (`opencode --version`). `opencode --help`
+shows that a plain `opencode` attaches to a shared background service
+(`--standalone` runs a private one); `opencode service status` printed its URL
+(`http://127.0.0.1:<port>`), and that server answers `/openapi.json` with 401
+`UnauthorizedError` unless authenticated with the password kept in the config
+directory's `service.json`. `opencode api GET /openapi.json` (which
+authenticates itself) lists `GET /api/session`, `GET /api/session/active`
+("foreground Session drains currently owned by this OpenCode process"),
+`GET /api/session/{id}/inbox` and `POST /api/session/{id}/prompt` with
+`{ text, delivery: "steer" | "queue", resume }` ("durably admit one session
+input and schedule agent-loop execution"). The `prompt_async` and
+`/tui/append-prompt` routes of earlier versions are gone. The sound path to a
+live OpenCode session outside Forge is therefore that service's API, not the
+Forge plugin, which is loaded only into Forge launches. It is not
+implemented: it needs the user's service password, read from their OpenCode
+config, behind an explicit opt-in.
+
 ### Spec runs
 
 `forgectl spec run <spec>` launches a planner session whose prompt is the brief
@@ -257,7 +350,12 @@ GUI (`apps/ui/src/spec_run.rs`): the client composes the brief with the same
 function and starts the planner in the checkout on screen. A relative path
 resolves against that checkout and is checked through the daemon's `ReadFile`
 (ADR-012), the Markdown file on screen is prefilled, and a refusal (missing
-file, unknown coder) stays in the dialog before anything starts.
+file, unknown coder) stays in the dialog before anything starts. The dialog
+offers a planner row for Claude and each visible Claude profile, and a coder row
+for every prompt-taking agent and visible profile (`agent_ops::choices`); a
+Claude coder, under any profile, codes at `medium`. The rows a run started
+with are remembered (`ui.spec_run.planner`, `ui.spec_run.coder`) and offered
+first next time.
 
 The planner validates every criterion (context, and a check that proves it),
 asks the person every open point at once with its question selector, writes a
@@ -272,6 +370,10 @@ Cursor, or with `--coder opencode`. A preset is a provider and an effort;
 and `--planner-effort` say otherwise. Provider, effort and model are checked
 against the detected descriptors before anything launches; Cursor applies an
 effort only with `--coder-model`, since its effort is a model suffix.
+`--coder-profile` and `--planner-profile` take a profile name or UUID of that
+role's provider (exit 4 when there is none); the planner launches under its
+profile, and the brief names the coder's as `session spawn --profile <uuid>`, so
+a profile renamed while the run is going still resolves.
 
 ### MCP stdio
 
@@ -279,6 +381,7 @@ Agents reach Forge through MCP first. `forgectl mcp` serves every agent-facing
 command as a tool: places (`list_projects`, `list_providers`,
 `list_workspaces`, `list_actions`, `run_action`, `status`, `guide`), sessions
 (`list_sessions`, `show_session`, `read_session`, `session_changes`,
+`list_external_sessions`, `read_external_session`, `adopt_session`,
 `spawn_session`, `spawn_shell`, `exec_shell`, `send_prompt`, `wait_session`,
 `rename_session`, `signal_session`, `kill_session`, `restart_session`,
 `close_session`, `run_spec`, `spec_brief`), a worker's side of a run

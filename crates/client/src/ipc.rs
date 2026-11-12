@@ -220,13 +220,14 @@ impl Client {
         client_version: impl Into<String>,
         kind: ClientKind,
     ) -> Result<Self, ClientError> {
+        Self::connect_with(socket_path, Hello::new(client_version, kind))
+    }
+
+    /// Connect with a caller-built handshake, e.g. one naming the session it acts for.
+    pub fn connect_with(socket_path: &Path, hello: Hello) -> Result<Self, ClientError> {
         let mut stream = UnixStream::connect(socket_path)?;
 
-        let hello = ClientMessage::Hello(Hello {
-            protocol_version: PROTOCOL_VERSION,
-            client_version: client_version.into(),
-            client_kind: kind,
-        });
+        let hello = ClientMessage::Hello(hello);
         write_frame(&mut stream, &hello)?;
 
         let mut decoder = FrameDecoder::new();
@@ -1151,6 +1152,21 @@ impl Client {
         self.expect_ack(Request::RefreshPullRequests { force })
     }
 
+    /// Start reading one pull request; the answer arrives as
+    /// `DaemonEvent::PullRequestFetched`.
+    pub fn fetch_pull_request(
+        &self,
+        host: String,
+        repository: String,
+        number: u32,
+    ) -> Result<(), ClientError> {
+        self.expect_ack(Request::FetchPullRequest {
+            host,
+            repository,
+            number,
+        })
+    }
+
     /// Working-tree status and bounded patch for a workspace.
     pub fn get_change_context(
         &self,
@@ -1323,6 +1339,7 @@ impl Client {
         &self,
         workspace_id: WorkspaceId,
         provider_id: AgentProviderId,
+        profile_id: Option<domain::AgentProfileId>,
         effort: Option<String>,
         title: String,
         brief: String,
@@ -1330,7 +1347,7 @@ impl Client {
         self.expect_session_created(Request::CreateAgentSession {
             workspace_id,
             provider_id,
-            profile_id: None,
+            profile_id,
             parent: None,
             role: SessionRole::Planner,
             resume: None,

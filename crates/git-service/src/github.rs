@@ -363,6 +363,121 @@ pub fn list_pull_requests_with_cli(
     parse_graphql_response(&output, cli, &args, host, &repos, include_all_repos)
 }
 
+const PR_FIELDS: &str = "fragment PrFields on PullRequest {\n  number title url body isDraft createdAt updatedAt\n  author { login }\n  repository { nameWithOwner }\n  baseRefName headRefName reviewDecision\n  additions deletions changedFiles\n  comments { totalCount }\n  labels(first: 8) { nodes { name color } }\n  assignees(first: 8) { nodes { login } }\n  reviewRequests(first: 8) {\n    nodes { requestedReviewer { ... on User { login } ... on Team { slug } } }\n  }\n}\n";
+
+/// GitHub's lifecycle state of one pull request.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PullRequestLifecycle {
+    Open,
+    Closed,
+    Merged,
+    /// A value introduced by GitHub after this crate was released.
+    Unknown,
+}
+
+/// One pull request asked for by number.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SinglePullRequest {
+    pub viewer: Option<String>,
+    /// `None` when the repository or the number does not exist, or the viewer cannot see it.
+    pub found: Option<(GitHubPullRequest, PullRequestLifecycle)>,
+    /// GitHub's own words when `found` is `None`.
+    pub message: Option<String>,
+}
+
+/// Read one pull request by number, in any state.
+///
+/// # Errors
+/// As [`list_pull_requests_with_cli`]: a missing executable, a timeout, or a
+/// response with no usable `data`. A pull request that does not exist is
+/// `Ok` with `found: None`, because GitHub reports it inside `data`.
+pub fn fetch_pull_request_with_cli(
+    cli: &GitHubCli,
+    repo: &GitHubRepo,
+    number: u32,
+) -> Result<SinglePullRequest, GitError> {
+    let query = format!(
+        "query($owner: String!, $name: String!, $number: Int!) {{\n  viewer {{ login }}\n  repository(owner: $owner, name: $name) {{\n    nameWithOwner\n    pullRequest(number: $number) {{ state ...PrFields }}\n  }}\n}}\n{PR_FIELDS}"
+    );
+    let args = vec![
+        "api".to_string(),
+        "graphql".to_string(),
+        "--hostname".to_string(),
+        repo.host.clone(),
+        "-f".to_string(),
+        format!("query={query}"),
+        "-f".to_string(),
+        format!("owner={}", repo.owner),
+        "-f".to_string(),
+        format!("name={}", repo.name),
+        "-F".to_string(),
+        format!("number={number}"),
+    ];
+    let output = run_gh(cli, None, &args)?;
+    parse_single_response(&output, cli, &args, repo)
+}
+
+fn parse_single_response(
+    output: &GhOutput,
+    cli: &GitHubCli,
+    args: &[String],
+    repo: &GitHubRepo,
+) -> Result<SinglePullRequest, GitError> {
+    let response: RawResponse = serde_json::from_str(&output.stdout).map_err(|error| {
+        let detail = command_detail(output, format!("invalid GraphQL response: {error}"));
+        command_failed(cli, args, output.status, detail)
+    })?;
+    let Some(data) = response.data.as_ref().and_then(Value::as_object) else {
+        return Err(command_failed(
+            cli,
+            args,
+            output.status,
+            command_detail(output, "GraphQL response contained no data"),
+        ));
+    };
+    let viewer = data
+        .get("viewer")
+        .and_then(|value| serde_json::from_value::<RawActor>(value.clone()).ok())
+        .and_then(|actor| actor.login);
+    let message = response
+        .errors
+        .into_iter()
+        .map(|error| error.message)
+        .find(|message| !message.is_empty());
+    let raw = data
+        .get("repository")
+        .filter(|value| !value.is_null())
+        .and_then(|value| serde_json::from_value::<RawSingleRepository>(value.clone()).ok());
+    let Some((repository, raw)) = raw.and_then(|raw| {
+        let identity = raw
+            .name_with_owner
+            .filter(|identity| !identity.is_empty())
+            .unwrap_or_else(|| repo.name_with_owner());
+        raw.pull_request
+            .map(|pull_request| (identity, pull_request))
+    }) else {
+        return Ok(SinglePullRequest {
+            viewer,
+            found: None,
+            message,
+        });
+    };
+    let lifecycle = match raw.state.as_deref() {
+        Some("OPEN") => PullRequestLifecycle::Open,
+        Some("CLOSED") => PullRequestLifecycle::Closed,
+        Some("MERGED") => PullRequestLifecycle::Merged,
+        _ => PullRequestLifecycle::Unknown,
+    };
+    Ok(SinglePullRequest {
+        viewer,
+        found: Some((
+            convert_pull_request(&repo.host, &repository, raw.fields),
+            lifecycle,
+        )),
+        message,
+    })
+}
+
 fn unique_repositories(repos: &[GitHubRepo]) -> Vec<&GitHubRepo> {
     let mut seen = HashSet::new();
     repos
@@ -424,9 +539,8 @@ fn build_query(repos: &[&GitHubRepo], include_all_repos: bool) -> (String, Vec<S
             "  assigned: search(query: $assignedQuery, type: ISSUE, first: 50) {\n    nodes { ... on PullRequest { ...PrFields } }\n  }\n  authored: search(query: $authoredQuery, type: ISSUE, first: 50) {\n    nodes { ... on PullRequest { ...PrFields } }\n  }\n",
         );
     }
-    query.push_str(
-        "  rateLimit { cost remaining resetAt }\n}\nfragment PrFields on PullRequest {\n  number title url body isDraft createdAt updatedAt\n  author { login }\n  repository { nameWithOwner }\n  baseRefName headRefName reviewDecision\n  additions deletions changedFiles\n  comments { totalCount }\n  labels(first: 8) { nodes { name color } }\n  assignees(first: 8) { nodes { login } }\n  reviewRequests(first: 8) {\n    nodes { requestedReviewer { ... on User { login } ... on Team { slug } } }\n  }\n}\n",
-    );
+    query.push_str("  rateLimit { cost remaining resetAt }\n}\n");
+    query.push_str(PR_FIELDS);
     (query, fields)
 }
 
@@ -953,6 +1067,23 @@ struct RawRepository {
 
 type RawSearch = RawConnection<RawPullRequest>;
 
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct RawSingleRepository {
+    #[serde(default)]
+    name_with_owner: Option<String>,
+    #[serde(default)]
+    pull_request: Option<RawStatedPullRequest>,
+}
+
+#[derive(Deserialize)]
+struct RawStatedPullRequest {
+    #[serde(default)]
+    state: Option<String>,
+    #[serde(flatten)]
+    fields: RawPullRequest,
+}
+
 #[derive(Clone, Deserialize)]
 #[serde(bound(deserialize = "T: Deserialize<'de>"))]
 struct RawConnection<T> {
@@ -1066,6 +1197,42 @@ mod tests {
             &refs,
             include_all_repos,
         )
+    }
+
+    fn parse_single(fixture: &str, status: i32) -> Result<SinglePullRequest, GitError> {
+        parse_single_response(
+            &output(status, fixture, "gh: GraphQL error"),
+            &GitHubCli::default(),
+            &["api".into(), "graphql".into()],
+            &repo("github.com", "acme", "widgets"),
+        )
+    }
+
+    #[test]
+    fn one_pull_request_reports_its_lifecycle_or_githubs_refusal() {
+        let found = parse_single(
+            r#"{"data":{"viewer":{"login":"octocat"},"repository":{"nameWithOwner":"Acme/Widgets",
+                "pullRequest":{"state":"MERGED","number":7,"title":"Ship","url":"https://github.com/Acme/Widgets/pull/7",
+                "createdAt":"2026-01-01T00:00:00Z","updatedAt":"2026-01-02T00:00:00Z","author":{"login":"alice"}}}}}"#,
+            0,
+        )
+        .unwrap();
+        assert_eq!(found.viewer.as_deref(), Some("octocat"));
+        let (pr, lifecycle) = found.found.unwrap();
+        assert_eq!(lifecycle, PullRequestLifecycle::Merged);
+        assert_eq!((pr.repository.as_str(), pr.number), ("Acme/Widgets", 7));
+
+        // gh exits 1 with usable data: the missing number is an answer, not a failure.
+        let missing = parse_single(
+            r#"{"data":{"viewer":{"login":"octocat"},"repository":{"nameWithOwner":"acme/widgets","pullRequest":null}},
+                "errors":[{"type":"NOT_FOUND","path":["repository","pullRequest"],"message":"Could not resolve to a PullRequest with the number of 9."}]}"#,
+            1,
+        )
+        .unwrap();
+        assert!(missing.found.is_none());
+        assert!(missing.message.unwrap().contains("number of 9"));
+
+        assert!(parse_single(r#"{"errors":[{"message":"bad credentials"}]}"#, 1).is_err());
     }
 
     #[test]

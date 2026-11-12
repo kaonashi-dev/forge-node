@@ -214,3 +214,4 @@ stall_after_secs = 900          # an attempt quiet this long raises attention
 agent_may_integrate = "pr"      # none | merge | pr; anything else is treated as pr
 keep_closed_runs_days = 30      # reserved: accepted, not read yet
 mcp = true                      # register `forgectl mcp` as the `forge` MCP server in writable Claude/OpenCode launches
+cross_profile = "read"          # off | read | full: what a session may do to another profile's sessions; anything else is off

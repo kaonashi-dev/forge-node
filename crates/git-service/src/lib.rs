@@ -28,10 +28,10 @@ pub use diff::{
     DIFF_CONTEXT_LINES, MAX_DIFF_BYTES, MAX_DIFF_FILES, MAX_FILE_PATCH_BYTES, MAX_SUMMARY_COMMITS,
 };
 pub use github::{
-    create_pull_request, create_pull_request_with_cli, list_pull_requests,
-    list_pull_requests_with_cli, parse_remote_url, GitHubCli, GitHubPullRequest, GitHubRepo,
-    PullRequest, PullRequestLabel, PullRequestPage, PullRequestReviewDecision, GH_TIMEOUT,
-    MAX_PR_BODY,
+    create_pull_request, create_pull_request_with_cli, fetch_pull_request_with_cli,
+    list_pull_requests, list_pull_requests_with_cli, parse_remote_url, GitHubCli,
+    GitHubPullRequest, GitHubRepo, PullRequest, PullRequestLabel, PullRequestLifecycle,
+    PullRequestPage, PullRequestReviewDecision, SinglePullRequest, GH_TIMEOUT, MAX_PR_BODY,
 };
 pub use marks::{
     file_hunk, file_marks, hunk_at, marks_from_hunks, Hunk, Mark, MarkKind, MAX_DETAIL_LINES,
