@@ -40,7 +40,7 @@ pub use response::{DaemonStats, ProviderInfo, Response, SessionsByState};
 /// every new request with an undecodable frame and no `Response` — the caller
 /// waits on a reply that never comes. Equality at connect turns that stall
 /// into `ClientError::VersionMismatch`. N/N-1 compatibility is not supported.
-pub const PROTOCOL_VERSION: u32 = 39;
+pub const PROTOCOL_VERSION: u32 = 40;
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[non_exhaustive]
@@ -164,6 +164,7 @@ mod tests {
             project_group_id: None,
             name: "forge".to_string(),
             icon: Some("🦀".to_string()),
+            icon_image: None,
             root_path: PathBuf::from("/home/dev/forge"),
             git_root: Some(PathBuf::from("/home/dev/forge")),
             created_at: sample_timestamp(),

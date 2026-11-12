@@ -215,6 +215,16 @@ pub enum Request {
         /// not a single drawable mark (`domain::is_valid_icon`).
         icon: Option<String>,
     },
+    /// Set or clear the picture that stands for a project → `Ack`;
+    /// `ProjectUpdated` broadcast.
+    SetProjectIconImage {
+        project_id: ProjectId,
+        /// A path relative to the project's root, such as its favicon or app
+        /// icon, or `None` to fall back to `icon`. Refused with
+        /// `InvalidRequest` unless it is an image path inside the checkout
+        /// (`domain::is_icon_image_path`) naming a file that exists.
+        path: Option<String>,
+    },
 
     // ----- Workspaces -----
     /// List a project's workspaces →

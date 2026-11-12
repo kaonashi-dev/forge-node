@@ -564,6 +564,10 @@ pub const REVIEW_PRESET: &str =
 pub const REVIEW_PRESET_STANDARD: &str =
     "UPDATE review_runs SET preset = 'standard' WHERE preset = 'estandar';";
 
+/// A project's picture from its own checkout (`domain::Project::icon_image`).
+/// Null for every existing project, which keeps drawing its glyph or initials.
+pub const PROJECT_ICON_IMAGES: &str = "ALTER TABLE projects ADD COLUMN icon_image TEXT;";
+
 /// The full, ordered migration set. Appended to over time; never reordered.
 #[must_use]
 pub fn migrations() -> Migrations<'static> {
@@ -586,5 +590,6 @@ pub fn migrations() -> Migrations<'static> {
         M::up(REVIEWS),
         M::up(REVIEW_PRESET),
         M::up(REVIEW_PRESET_STANDARD),
+        M::up(PROJECT_ICON_IMAGES),
     ])
 }

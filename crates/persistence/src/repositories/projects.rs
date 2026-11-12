@@ -7,7 +7,7 @@ use crate::db::DbError;
 use crate::repositories::{id_from_str, path_to_str, ts_from_str, ts_to_str};
 
 const COLUMNS: &str =
-    "id, project_group_id, name, icon, root_path, git_root, created_at, last_opened_at";
+    "id, project_group_id, name, icon, root_path, git_root, created_at, last_opened_at, icon_image";
 
 /// Repository over the `projects` table.
 pub struct ProjectRepo<'a> {
@@ -31,8 +31,8 @@ impl<'a> ProjectRepo<'a> {
         self.conn.execute(
             "INSERT INTO projects \
                (id, project_group_id, name, icon, root_path, git_root, created_at, \
-                last_opened_at) \
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8) \
+                last_opened_at, icon_image) \
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9) \
              ON CONFLICT(id) DO UPDATE SET \
                project_group_id = excluded.project_group_id, \
                name = excluded.name, \
@@ -40,7 +40,8 @@ impl<'a> ProjectRepo<'a> {
                root_path = excluded.root_path, \
                git_root = excluded.git_root, \
                created_at = excluded.created_at, \
-               last_opened_at = excluded.last_opened_at",
+               last_opened_at = excluded.last_opened_at, \
+               icon_image = excluded.icon_image",
             params![
                 project.id.to_string(),
                 project.project_group_id.map(|id| id.to_string()),
@@ -50,6 +51,7 @@ impl<'a> ProjectRepo<'a> {
                 project.git_root.as_deref().map(path_to_str),
                 ts_to_str(&project.created_at),
                 ts_to_str(&project.last_opened_at),
+                project.icon_image,
             ],
         )?;
         Ok(())
@@ -123,6 +125,7 @@ struct RawProject {
     git_root: Option<String>,
     created_at: String,
     last_opened_at: String,
+    icon_image: Option<String>,
 }
 
 impl RawProject {
@@ -136,6 +139,7 @@ impl RawProject {
             git_root: row.get(5)?,
             created_at: row.get(6)?,
             last_opened_at: row.get(7)?,
+            icon_image: row.get(8)?,
         })
     }
 
@@ -149,6 +153,7 @@ impl RawProject {
                 .transpose()?,
             name: self.name,
             icon: self.icon,
+            icon_image: self.icon_image,
             root_path: PathBuf::from(self.root_path),
             git_root: self.git_root.map(PathBuf::from),
             created_at: ts_from_str(&self.created_at)?,

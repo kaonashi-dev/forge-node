@@ -1681,6 +1681,7 @@ mod tests {
             project_group_id: None,
             name: "p".into(),
             icon: None,
+            icon_image: None,
             root_path: root.to_path_buf(),
             git_root: None,
             created_at: Timestamp::now(),

@@ -30,6 +30,7 @@ mod pr_review;
 mod pr_url;
 mod probe;
 mod processes;
+mod project_icon;
 mod project_ops;
 mod projects;
 mod rail;

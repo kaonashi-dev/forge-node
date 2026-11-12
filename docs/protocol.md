@@ -5,7 +5,7 @@ defined in `crates/protocol` and is transport-agnostic; the transport itself is
 a Unix domain socket (ADR-004). The GUI-side implementation is
 `crates/client` (`Client` + `Store`).
 
-`PROTOCOL_VERSION = 39` (`protocol::PROTOCOL_VERSION` is the source).
+`PROTOCOL_VERSION = 40` (`protocol::PROTOCOL_VERSION` is the source).
 
 ## Transport & framing
 
@@ -121,6 +121,7 @@ DaemonMessage::Event    (DaemonEvent)
 | | `RefreshProject { project_id }` | Re-detects the git root, reconciles the worktrees on disk, and re-reads each workspace's branch and status; `ProjectUpdated`, plus `WorkspaceCreated`/`WorkspaceRemoved`/`WorkspaceUpdated` for what changed. |
 | | `RenameProject { project_id, name }` | `ProjectUpdated`. |
 | | `SetProjectIcon { project_id, icon }` | `ProjectUpdated`. `None` (or a blank string) clears it and the UI falls back to the project's initials; anything that is not a single drawable mark is refused with `InvalidRequest` rather than quietly cleared. |
+| | `SetProjectIconImage { project_id, path }` | `ProjectUpdated`. `path` is relative to the project's root (its favicon or app icon: `.png`, `.jpg`, `.svg`, `.ico` or `.icns`); clients read it through `ReadImage` and draw it in place of `icon`, which stays the fallback. `None` or a blank string clears it. A path outside the checkout, of another type, missing or over `ReadImage`'s size cap is refused with `InvalidRequest`. |
 | Workspaces | `ListWorkspaces { project_id }` | `Response::Workspaces`. |
 | | `CreateWorktree { project_id, branch, base, name }` | `WorkspaceCreated`; see [worktrees.md](./worktrees.md). |
 | | `RemoveWorktree { workspace_id, force }` | `WorkspaceRemoved`; pre-checks unless `force`. |

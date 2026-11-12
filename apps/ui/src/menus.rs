@@ -1416,6 +1416,30 @@ fn send(
     }
 }
 
+/// An image path becomes the project's picture and keeps its glyph as the
+/// fallback; a glyph, or an empty box, also drops the picture it would hide.
+fn set_icon(s: &mut AppState, project: ProjectId, value: Option<String>) {
+    let pictured = s
+        .store
+        .as_ref()
+        .and_then(|store| store.projects.iter().find(|p| p.id == project))
+        .is_some_and(|p| p.icon_image.is_some());
+    match value {
+        Some(path) if domain::is_icon_image_path(&path) => {
+            send(s, "SetProjectIconImage", |c| {
+                c.set_project_icon_image(project, Some(path))
+            });
+        }
+        glyph => {
+            if send(s, "SetProjectIcon", |c| c.set_project_icon(project, glyph)) && pictured {
+                send(s, "SetProjectIconImage", |c| {
+                    c.set_project_icon_image(project, None)
+                });
+            }
+        }
+    }
+}
+
 fn ask(s: &mut AppState, ask: Ask, value: String) {
     let mut edit = TextEdit::new(value);
     edit.focused = true;
@@ -1481,9 +1505,10 @@ pub fn run(s: &mut AppState, act: Act, tx: &mut Tx) {
                 .store
                 .as_ref()
                 .and_then(|store| store.projects.iter().find(|p| p.id == project))
-                .and_then(|p| p.icon.clone())
+                .and_then(|p| p.icon_image.clone().or_else(|| p.icon.clone()))
                 .unwrap_or_default();
             ask(s, Ask::SetIcon(project), current);
+            s.open_icon_picker(project);
         }
         Act::Hue(project, slot) => {
             let raw = s
@@ -1844,7 +1869,11 @@ pub fn submit_prompt(s: &mut AppState) {
         }
     };
     let problem = match &prompt.ask {
-        Ask::RenameCheckout(_) | Ask::SetIcon(_) | Ask::MovePath(..) => None,
+        Ask::SetIcon(_) => (!value.is_empty()
+            && !domain::is_icon_image_path(&value)
+            && !domain::is_valid_icon(&value))
+        .then_some("Enter an emoji, or the path of an image in the project."),
+        Ask::RenameCheckout(_) | Ask::MovePath(..) => None,
         Ask::NewPath { .. } | Ask::NewGroup | Ask::RenameGroup(_) => {
             value.is_empty().then_some("Enter a name.")
         }
@@ -1864,11 +1893,7 @@ pub fn submit_prompt(s: &mut AppState) {
                 c.rename_workspace(workspace, optional)
             });
         }
-        Ask::SetIcon(project) => {
-            send(s, "SetProjectIcon", |c| {
-                c.set_project_icon(project, optional)
-            });
-        }
+        Ask::SetIcon(project) => set_icon(s, project, optional),
         Ask::NewPath {
             workspace,
             parent,
@@ -2099,7 +2124,7 @@ impl Ask {
     fn label(&self) -> &'static str {
         match self {
             Ask::RenameCheckout(_) => "Checkout name",
-            Ask::SetIcon(_) => "Icon (one or two characters)",
+            Ask::SetIcon(_) => "Icon: an emoji, or an image in the project",
             Ask::MovePath(..) => "Destination folder relative to checkout (empty for root)",
             Ask::NewPath { .. } | Ask::RenamePath(..) | Ask::Duplicate(..) => "Name",
             Ask::NewGroup | Ask::RenameGroup(_) => "Group name",
@@ -2108,7 +2133,7 @@ impl Ask {
 
     fn placeholder(&self) -> &'static str {
         match self {
-            Ask::SetIcon(_) => "🦀",
+            Ask::SetIcon(_) => "🦀 or public/favicon.svg",
             Ask::MovePath(..) => "e.g. src/components",
             _ => "",
         }
@@ -2172,6 +2197,9 @@ fn prompt_dialog(s: &AppState, k: &Kit, layer: &mut Vec<El>) {
         .build(k)
         .key("menu-prompt-confirm");
     let mut body = col().gap(crate::ds::SPACE_3).child(field);
+    if let Ask::SetIcon(project) = prompt.ask {
+        body = body.child(icon_suggestions(s, k, project, prompt.edit.text.trim()));
+    }
     if let Some(error) = &prompt.error {
         body = body.child(
             text(error.clone())
@@ -2191,6 +2219,89 @@ fn prompt_dialog(s: &AppState, k: &Kit, layer: &mut Vec<El>) {
             submit,
         ))
         .build(s, k, layer);
+}
+
+/// The checkout's favicons and app icons the dialog offers; a press puts the
+/// path in the field, and Apply sets it.
+fn icon_suggestions(s: &AppState, k: &Kit, project: ProjectId, typed: &str) -> El {
+    const THUMB: f32 = 40.0;
+    let picker = s
+        .project_icons
+        .picker
+        .as_ref()
+        .filter(|picker| picker.project == project);
+    let note = |message: &str| {
+        text(message.to_string())
+            .key("icon-suggestions-note")
+            .font(k.ty.text_xsmall)
+            .color(k.c.text_faint)
+    };
+    let paths = match picker.and_then(|picker| picker.candidates.as_ref()) {
+        None => return note("Looking for a favicon or app icon…"),
+        Some(Err(error)) => return note(&format!("Could not list the project: {error}")),
+        Some(Ok(paths)) => paths,
+    };
+    let shown: Vec<(&String, &rune::Image)> = paths
+        .iter()
+        .filter_map(|path| Some((path, s.project_icons.image(project, path)?)))
+        .collect();
+    if shown.is_empty() {
+        let waiting = paths
+            .iter()
+            .any(|path| !s.project_icons.failed(project, path));
+        return note(if waiting {
+            "Reading the project's icons…"
+        } else {
+            "No favicon or app icon found; type the path of an image."
+        });
+    }
+    let mut row_el = row()
+        .key("icon-suggestions")
+        .role("listbox")
+        .label("Icons in the project")
+        .gap(crate::ds::SPACE_3)
+        .wrap();
+    for (at, (path, image)) in shown.into_iter().enumerate() {
+        let chosen = typed == path.as_str();
+        let pick = path.clone();
+        row_el = row_el.child(
+            k.interactive(
+                el().key(format!("icon-suggestion-{at}"))
+                    .role("option")
+                    .label(path.clone())
+                    .help(path.clone())
+                    .checked(chosen)
+                    .size(THUMB, THUMB)
+                    .padding(4.0)
+                    .radius(k.radius.md)
+                    .border(
+                        1.0,
+                        if chosen {
+                            k.c.border_focus
+                        } else {
+                            k.c.border_base
+                        },
+                    )
+                    .child(
+                        el().w_full()
+                            .h_full()
+                            .pixels_fit(image.pixels(), rune::SurfaceFit::Fit),
+                    ),
+            )
+            .on_press(move |s: &mut AppState| {
+                if let Some(prompt) = s.menus.prompt.as_mut() {
+                    let mut edit = TextEdit::new(pick.clone());
+                    edit.focused = true;
+                    prompt.edit = edit;
+                    prompt.error = None;
+                }
+            }),
+        );
+    }
+    col()
+        .gap(crate::ds::SPACE_2)
+        .child(note("From the project"))
+        .child(row_el)
 }
 
 fn confirm_dialog(s: &AppState, k: &Kit, layer: &mut Vec<El>) {
@@ -2841,6 +2952,124 @@ mod tests {
         assert!(menu_items(&rt).is_empty(), "choosing closes the menu");
         assert!(
             matches!(rx.try_recv(), Ok(Command::RefreshProject(project)) if project == id(PROJECT))
+        );
+    }
+
+    #[test]
+    fn set_icon_offers_the_checkouts_favicon_and_applies_it_as_a_picture() {
+        let (handle, rx) = ConnectionHandle::test_handle(Arc::new(Metrics::default()));
+        let mut s = state(store());
+        s.connection = Some(handle);
+        s.images = Some(rune::ImageCache::new(Arc::new(|| {})));
+        let mut rt = runtime(s);
+        let project: ProjectId = id(PROJECT);
+        let row = format!("project-row-{project}");
+        let at = rt.find(&row).expect("the project row");
+        secondary_click(&mut rt, at);
+        let item = center_of(&rt, |e| {
+            e.role == "menuitem" && e.label.as_deref() == Some("Set icon…")
+        });
+        click(&mut rt, item);
+        let commands: Vec<Command> = rx.try_iter().collect();
+        assert!(
+            commands.iter().any(|c| matches!(
+                c,
+                Command::ListIconCandidates { project_id, .. } if *project_id == project
+            )),
+            "the dialog asks what the checkout could use"
+        );
+
+        let generation = rt.state.generation;
+        rt.update(move |s, tx| {
+            s.apply_events(
+                vec![crate::connection::UiEvent::IconCandidates {
+                    generation,
+                    project_id: project,
+                    result: Ok(vec!["public/favicon.svg".into()]),
+                }],
+                tx,
+            );
+        });
+        assert!(
+            rx.try_iter().any(|c| matches!(
+                c,
+                Command::ReadProjectIcon { ref path, .. } if path == "public/favicon.svg"
+            )),
+            "each suggestion is read for its thumbnail"
+        );
+        let svg = br#"<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16"><rect width="16" height="16" fill="red"/></svg>"#;
+        rt.update(move |s, tx| {
+            s.apply_events(
+                vec![crate::connection::UiEvent::ProjectIcon {
+                    generation,
+                    project_id: project,
+                    path: "public/favicon.svg".into(),
+                    result: Ok(("image/svg+xml".into(), Arc::from(&svg[..]))),
+                }],
+                tx,
+            );
+        });
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        // The decode runs on the image cache's worker; frames poll it.
+        while rt.find("icon-suggestion-0").is_none() {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "the thumbnail never drew"
+            );
+            std::thread::sleep(std::time::Duration::from_millis(10));
+            settle(&mut rt);
+        }
+        let thumb = rt.find("icon-suggestion-0").expect("the thumbnail");
+        click(&mut rt, thumb);
+        assert_eq!(
+            rt.state.menus.prompt.as_ref().map(|p| p.edit.text.as_str()),
+            Some("public/favicon.svg"),
+            "a press puts the path in the field"
+        );
+        let apply = rt.find("menu-prompt-confirm").expect("Apply");
+        click(&mut rt, apply);
+        assert!(
+            rx.try_iter().any(|c| matches!(
+                c,
+                Command::SetProjectIconImage { project_id, path: Some(ref path) }
+                    if project_id == project && path == "public/favicon.svg"
+            )),
+            "Apply sets the picture"
+        );
+        assert!(rt.state.menus.prompt.is_none());
+    }
+
+    #[test]
+    fn a_glyph_drops_the_picture_it_would_hide_and_a_label_is_refused() {
+        let (handle, rx) = ConnectionHandle::test_handle(Arc::new(Metrics::default()));
+        let mut s = state(store());
+        s.connection = Some(handle);
+        let project: ProjectId = id(PROJECT);
+        if let Some(store) = s.store.as_mut() {
+            for p in store.projects.iter_mut().filter(|p| p.id == project) {
+                p.icon_image = Some("public/favicon.svg".into());
+            }
+        }
+        ask(&mut s, Ask::SetIcon(project), "HP Backend".into());
+        submit_prompt(&mut s);
+        assert!(
+            s.menus.prompt.as_ref().is_some_and(|p| p.error.is_some()),
+            "a name is neither a mark nor a path"
+        );
+        let _ = rx.try_iter().count();
+        if let Some(prompt) = s.menus.prompt.as_mut() {
+            prompt.edit = TextEdit::new("🦀");
+        }
+        submit_prompt(&mut s);
+        let sent: Vec<Command> = rx.try_iter().collect();
+        assert!(sent.iter().any(|c| matches!(
+            c,
+            Command::SetProjectIcon { icon: Some(icon), .. } if icon == "🦀"
+        )));
+        assert!(
+            sent.iter()
+                .any(|c| matches!(c, Command::SetProjectIconImage { path: None, .. })),
+            "the picture would hide the glyph just set"
         );
     }
 

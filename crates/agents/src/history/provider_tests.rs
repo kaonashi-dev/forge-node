@@ -93,6 +93,7 @@ fn discovery_includes_profiles_and_keeps_same_ids_in_distinct_accounts() {
         project_group_id: None,
         name: "p".into(),
         icon: None,
+        icon_image: None,
         root_path: checkout.clone(),
         git_root: None,
         created_at: Timestamp::now(),

@@ -489,7 +489,16 @@ fn project_block(
         .height(s.chrome_metrics().row)
         .emphasis(Emphasis::Strong)
         .leading(rune::icon(chevron(open), ds::ICON_SMALL).color(k.c.icon_faint))
-        .leading(ds::avatar(k, &roles, hue, &mark))
+        .leading(
+            match project
+                .icon_image
+                .as_deref()
+                .and_then(|path| s.project_icons.image(project_id, path))
+            {
+                Some(image) => ds::avatar_image(k, &roles, hue, image),
+                None => ds::avatar(k, &roles, hue, &mark),
+            },
+        )
         .action(
             ds::icon_button(
                 &crate::glyphs::PLUS,

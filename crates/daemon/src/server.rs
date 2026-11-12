@@ -410,6 +410,7 @@ fn request_name(request: &Request) -> &'static str {
         Request::RemoveProject { .. } => "RemoveProject",
         Request::RefreshProject { .. } => "RefreshProject",
         Request::RenameProject { .. } => "RenameProject",
+        Request::SetProjectIconImage { .. } => "SetProjectIconImage",
         Request::ListWorkspaces { .. } => "ListWorkspaces",
         Request::CreateWorktree { .. } => "CreateWorktree",
         Request::RemoveWorktree { .. } => "RemoveWorktree",

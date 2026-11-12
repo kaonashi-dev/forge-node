@@ -508,6 +508,16 @@ impl Client {
         self.expect_ack(Request::SetProjectIcon { project_id, icon })
     }
 
+    /// Set the image in the project's checkout that stands for it, or clear
+    /// it with `None` so the UI falls back to the icon.
+    pub fn set_project_icon_image(
+        &self,
+        project_id: domain::ProjectId,
+        path: Option<String>,
+    ) -> Result<(), ClientError> {
+        self.expect_ack(Request::SetProjectIconImage { project_id, path })
+    }
+
     ///
     /// `base` is the start point for a branch that does not exist yet; pass
     /// `origin/<branch>` to start from a remote-tracking branch, which is what

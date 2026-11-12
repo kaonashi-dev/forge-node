@@ -575,6 +575,35 @@ pub fn read_image(root: &Path, relative: &str) -> Result<ImageBytes, FsError> {
     })
 }
 
+/// Whether `relative` names an image file inside `root` that [`read_image`]
+/// would serve, without reading it: the same extension gate, containment and
+/// size cap.
+///
+/// # Errors
+/// The [`FsError`] [`read_image`] would return for the same path.
+pub fn check_image(root: &Path, relative: &str) -> Result<(), FsError> {
+    image_mime(relative).ok_or_else(|| FsError::NotAnImage(relative.to_string()))?;
+    let root = canonicalize_root(root)?;
+    let path = resolve_inside(&root, relative)?;
+    let meta = fs::metadata(&path).map_err(|e| {
+        if e.kind() == std::io::ErrorKind::NotFound {
+            FsError::NotFound(relative.to_string())
+        } else {
+            FsError::Io(e)
+        }
+    })?;
+    if !meta.is_file() {
+        return Err(FsError::NotFound(relative.to_string()));
+    }
+    if meta.len() > MAX_IMAGE_BYTES as u64 {
+        return Err(FsError::TooLarge {
+            size: meta.len(),
+            limit: MAX_IMAGE_BYTES,
+        });
+    }
+    Ok(())
+}
+
 /// Media type for an image extension a WebView can draw, or `None`.
 #[must_use]
 pub fn image_mime(path: &str) -> Option<&'static str> {
@@ -588,6 +617,7 @@ pub fn image_mime(path: &str) -> Option<&'static str> {
         "avif" => "image/avif",
         "bmp" => "image/bmp",
         "ico" => "image/x-icon",
+        "icns" => "image/icns",
         _ => return None,
     })
 }
@@ -2447,6 +2477,28 @@ a.ts\x0019\0nineteen\na.ts\x0020\0hit twenty\nb.ts\x001\0hit b\nb.ts\x002\0b two
         ));
         assert!(matches!(
             read_image(tmp.path(), "missing.png"),
+            Err(FsError::NotFound(_))
+        ));
+    }
+
+    #[test]
+    fn checking_an_image_answers_as_reading_it_would() {
+        let tmp = git_repo();
+        fs::create_dir_all(tmp.path().join("src-tauri/icons")).unwrap();
+        fs::write(tmp.path().join("src-tauri/icons/icon.icns"), b"icns").unwrap();
+        fs::write(tmp.path().join(".env"), "SECRET=1").unwrap();
+        check_image(tmp.path(), "src-tauri/icons/icon.icns").unwrap();
+        assert_eq!(image_mime("icon.icns"), Some("image/icns"));
+        assert!(matches!(
+            check_image(tmp.path(), ".env"),
+            Err(FsError::NotAnImage(_))
+        ));
+        assert!(matches!(
+            check_image(tmp.path(), "../outside.png"),
+            Err(FsError::EscapesWorkspace(_))
+        ));
+        assert!(matches!(
+            check_image(tmp.path(), "missing.png"),
             Err(FsError::NotFound(_))
         ));
     }

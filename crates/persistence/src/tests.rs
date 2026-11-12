@@ -23,6 +23,7 @@ fn mk_project(root: &str) -> Project {
         project_group_id: None,
         name: "demo".to_owned(),
         icon: None,
+        icon_image: None,
         root_path: PathBuf::from(root),
         git_root: None,
         created_at: Timestamp::now(),
@@ -95,8 +96,8 @@ fn migrations_apply_and_user_version_advances() {
     // count of applied migrations, and the assertion is what catches a migration
     // that was silently reordered or dropped.
     assert_eq!(
-        version, 18,
-        "eighteen migrations applied => user_version == 18"
+        version, 19,
+        "nineteen migrations applied => user_version == 19"
     );
 
     for table in [
@@ -191,7 +192,7 @@ fn version_two_database_upgrades_existing_projects_into_general() {
         .conn()
         .query_row("PRAGMA user_version", [], |row| row.get(0))
         .unwrap();
-    assert_eq!(version, 18);
+    assert_eq!(version, 19);
 }
 
 /// Migration 6 over a database that already has workspaces: the display_name
@@ -360,6 +361,17 @@ fn version_four_database_upgrades_and_its_projects_have_no_icon() {
             .as_deref(),
         Some("🦀"),
         "the upgraded row takes an icon like any other"
+    );
+    assert_eq!(project.icon_image, None, "nor is an icon image");
+    let mut pictured = iconed;
+    pictured.icon_image = Some("public/favicon.svg".to_owned());
+    db.projects().upsert(&pictured).unwrap();
+    let stored = db.projects().get(project_id).unwrap().unwrap();
+    assert_eq!(stored.icon_image.as_deref(), Some("public/favicon.svg"));
+    assert_eq!(
+        stored.icon.as_deref(),
+        Some("🦀"),
+        "the glyph stays the fallback"
     );
 }
 
@@ -1077,7 +1089,7 @@ fn sessions_schema_is_unchanged() {
         .conn()
         .query_row("PRAGMA user_version", [], |r| r.get(0))
         .unwrap();
-    assert_eq!(version, 18, "the review preset fix is migration 18");
+    assert_eq!(version, 19, "every migration up to the icon image column");
 
     let (db, _project, workspace_id) = db_with_workspace();
     let mut session = mk_session(workspace_id, SessionState::Running);
@@ -1228,7 +1240,7 @@ fn reset_clears_every_application_table_and_keeps_the_schema() {
         .conn()
         .query_row("PRAGMA user_version", [], |row| row.get(0))
         .unwrap();
-    assert_eq!(version, 18, "reset retains the migrated schema");
+    assert_eq!(version, 19, "reset retains the migrated schema");
 }
 
 // ---- on-disk open ----------------------------------------------------------

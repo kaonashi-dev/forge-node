@@ -1078,6 +1078,7 @@ dependencies = [
  "flate2",
  "flume",
  "fontique",
+ "image",
  "libc",
  "minisign-verify",
  "pollster",

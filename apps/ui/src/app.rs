@@ -168,6 +168,7 @@ pub struct AppState {
     pub checkout_marks: HashMap<WorkspaceId, crate::workbench::CheckoutMark>,
     /// Project-to-hue slots, parsed once per store change for the rail.
     pub hues: std::collections::BTreeMap<String, usize>,
+    pub project_icons: crate::project_icon::ProjectIcons,
     pub theme_editor: crate::appearance::ThemeEditor,
     pub settings: crate::settings::Settings,
     pub sync: crate::sync::Sync,
@@ -279,6 +280,7 @@ impl AppState {
             processes: Vec::new(),
             checkout_marks: HashMap::new(),
             hues: std::collections::BTreeMap::new(),
+            project_icons: crate::project_icon::ProjectIcons::default(),
             theme_editor: crate::appearance::ThemeEditor::default(),
             settings: crate::settings::Settings::default(),
             sync: crate::sync::Sync::default(),
@@ -467,6 +469,7 @@ impl AppState {
             self.refresh_palette_context();
         }
         self.editor_store_changed();
+        self.sync_project_icons();
     }
 
     pub fn apply_events(&mut self, events: Vec<UiEvent>, tx: &mut Tx) {
@@ -1785,6 +1788,7 @@ impl AppState {
                 self.editor.reset_requests();
                 self.editor.autosave.reset();
                 self.workbench.reconnected();
+                self.project_icons.forget_reads();
                 self.session_changes.loading = false;
                 self.usage.pending = None;
                 if self.workbench.mode == CenterMode::SessionChanges {
@@ -2015,6 +2019,40 @@ impl AppState {
                 }
                 self.apply_image(scope, &path, result);
                 true
+            }
+            UiEvent::ProjectIcon {
+                generation,
+                project_id,
+                path,
+                result,
+            } => {
+                if !self.accept_generation(generation) {
+                    return false;
+                }
+                let image = result.and_then(|(mime, bytes)| match &self.images {
+                    Some(cache) => {
+                        Ok(cache.load_mime(bytes, &mime, crate::project_icon::ICON_PT, 2.0))
+                    }
+                    None => Err("This window has no image decoder.".to_string()),
+                });
+                self.project_icons.apply(project_id, path, image)
+            }
+            UiEvent::IconCandidates {
+                generation,
+                project_id,
+                result,
+            } => {
+                if !self.accept_generation(generation) {
+                    return false;
+                }
+                match &mut self.project_icons.picker {
+                    Some(picker) if picker.project == project_id => {
+                        picker.candidates = Some(result);
+                        self.sync_project_icons();
+                        true
+                    }
+                    _ => false,
+                }
             }
             UiEvent::ContentSearch {
                 generation,
@@ -2571,6 +2609,7 @@ impl AppState {
         changed |= self.toasts.expire(Instant::now());
         changed |= self.settings.esc.expire(Instant::now());
         changed |= self.poll_files(tx);
+        changed |= self.project_icons.landed();
         changed |= self.workbench.settle_change_reveal(tx);
         crate::native_menus::refresh(self);
         if clock - self.mirror_at >= 0.125 {

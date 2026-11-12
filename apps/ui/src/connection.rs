@@ -249,6 +249,23 @@ pub enum Command {
         project_id: domain::ProjectId,
         icon: Option<String>,
     },
+    SetProjectIconImage {
+        project_id: domain::ProjectId,
+        path: Option<String>,
+    },
+    /// One image of a project's checkout, for its avatar or the icon dialog.
+    ReadProjectIcon {
+        generation: u64,
+        project_id: domain::ProjectId,
+        workspace_id: WorkspaceId,
+        path: String,
+    },
+    /// The checkout's files that could be its icon, for the icon dialog.
+    ListIconCandidates {
+        generation: u64,
+        project_id: domain::ProjectId,
+        workspace_id: WorkspaceId,
+    },
     RemoveProject {
         project_id: domain::ProjectId,
         policy: client::RemoveProjectPolicy,
@@ -458,6 +475,17 @@ pub enum UiEvent {
         scope: crate::workbench::Scope,
         path: String,
         result: Result<(String, Arc<[u8]>), String>,
+    },
+    ProjectIcon {
+        generation: u64,
+        project_id: domain::ProjectId,
+        path: String,
+        result: Result<(String, Arc<[u8]>), String>,
+    },
+    IconCandidates {
+        generation: u64,
+        project_id: domain::ProjectId,
+        result: Result<Vec<String>, String>,
     },
     ContentSearch {
         generation: u64,
@@ -1028,6 +1056,42 @@ impl ConnectionHandle {
         icon: Option<String>,
     ) -> Result<(), String> {
         self.send(Command::SetProjectIcon { project_id, icon })
+    }
+
+    pub fn set_project_icon_image(
+        &self,
+        project_id: domain::ProjectId,
+        path: Option<String>,
+    ) -> Result<(), String> {
+        self.send(Command::SetProjectIconImage { project_id, path })
+    }
+
+    pub fn read_project_icon(
+        &self,
+        generation: u64,
+        project_id: domain::ProjectId,
+        workspace_id: WorkspaceId,
+        path: String,
+    ) -> Result<(), String> {
+        self.send(Command::ReadProjectIcon {
+            generation,
+            project_id,
+            workspace_id,
+            path,
+        })
+    }
+
+    pub fn list_icon_candidates(
+        &self,
+        generation: u64,
+        project_id: domain::ProjectId,
+        workspace_id: WorkspaceId,
+    ) -> Result<(), String> {
+        self.send(Command::ListIconCandidates {
+            generation,
+            project_id,
+            workspace_id,
+        })
     }
 
     pub fn remove_project(
@@ -1655,6 +1719,19 @@ fn handle_fixture_command(
             terminal.answer_history();
             wake();
         }
+        Command::ReadProjectIcon {
+            project_id, path, ..
+        } => sink(vec![UiEvent::ProjectIcon {
+            generation,
+            project_id,
+            path,
+            result: Err("a fixture has no checkout to read".into()),
+        }]),
+        Command::ListIconCandidates { project_id, .. } => sink(vec![UiEvent::IconCandidates {
+            generation,
+            project_id,
+            result: Ok(Vec::new()),
+        }]),
         Command::CreateShellSession { workspace_id } => {
             let (label, result) = (
                 "CreateShellSession",
@@ -1985,6 +2062,7 @@ fn handle_fixture_command(
         | Command::RefreshWorkspaceStatus(_)
         | Command::RenameWorkspace { .. }
         | Command::SetProjectIcon { .. }
+        | Command::SetProjectIconImage { .. }
         | Command::RemoveProject { .. }
         | Command::SetWorktreeIgnores { .. }
         | Command::CreatePath { .. }
@@ -3609,6 +3687,68 @@ fn handle_live_command(
                 .map_err(|error| error.to_string());
             live_result(generation, "SetProjectIcon", result, sink, metrics, started);
         }
+        Command::SetProjectIconImage { project_id, path } => {
+            metrics.note_socket_op();
+            let result = client
+                .set_project_icon_image(project_id, path)
+                .map(|()| "set icon image".to_string())
+                .map_err(|error| error.to_string());
+            live_result(
+                generation,
+                "SetProjectIconImage",
+                result,
+                sink,
+                metrics,
+                started,
+            );
+        }
+        Command::ReadProjectIcon {
+            generation: command_generation,
+            project_id,
+            workspace_id,
+            path,
+        } => {
+            if command_generation != generation {
+                return;
+            }
+            metrics.note_socket_op();
+            let result = client
+                .read_image(workspace_id, path.clone())
+                .map_err(|error| error.to_string())
+                .and_then(decode_image);
+            sink(vec![UiEvent::ProjectIcon {
+                generation,
+                project_id,
+                path,
+                result,
+            }]);
+        }
+        Command::ListIconCandidates {
+            generation: command_generation,
+            project_id,
+            workspace_id,
+        } => {
+            if command_generation != generation {
+                return;
+            }
+            metrics.note_socket_op();
+            let result = client
+                .list_files(workspace_id)
+                .map(|tree| {
+                    crate::project_icon::candidates(
+                        tree.entries
+                            .iter()
+                            .filter(|entry| entry.kind == domain::FileKind::File)
+                            .map(|entry| (entry.path.as_str(), entry.ignored)),
+                    )
+                })
+                .map_err(|error| error.to_string());
+            sink(vec![UiEvent::IconCandidates {
+                generation,
+                project_id,
+                result,
+            }]);
+        }
         Command::RemoveProject { project_id, policy } => {
             metrics.note_socket_op();
             let result = client
@@ -4184,6 +4324,9 @@ fn command_label(command: &Command) -> &'static str {
         Command::RefreshWorkspaceStatus(_) => "RefreshWorkspaceStatus",
         Command::RenameWorkspace { .. } => "RenameWorkspace",
         Command::SetProjectIcon { .. } => "SetProjectIcon",
+        Command::SetProjectIconImage { .. } => "SetProjectIconImage",
+        Command::ReadProjectIcon { .. } => "ReadProjectIcon",
+        Command::ListIconCandidates { .. } => "ListIconCandidates",
         Command::RemoveProject { .. } => "RemoveProject",
         Command::SetWorktreeIgnores { .. } => "SetWorktreeIgnores",
         Command::CreatePath { .. } => "CreatePath",
