@@ -22,6 +22,8 @@ pub enum Command {
     NewWorktree,
     /// The planner of a spec run, in the window's checkout.
     RunSpec,
+    /// A pasted pull-request link, opened as if its sidebar row were pressed.
+    ReviewPullRequestLink,
     /// A base, or `"system"`.
     Theme(String),
     NewAgent(domain::AgentProviderId, Option<domain::AgentProfileId>),
@@ -61,6 +63,7 @@ impl Command {
             Command::ToggleSidebar => &glyphs::PANEL_LEFT_OPEN,
             Command::NewWorktree => &glyphs::WORKTREE,
             Command::RunSpec => &glyphs::SPAWN_CHILD,
+            Command::ReviewPullRequestLink => &glyphs::PULL_REQUEST,
             Command::Theme(_) => &glyphs::APPEARANCE,
             Command::RunAction(_) => &glyphs::PLAY,
             Command::Settings(section) => section.icon(),
@@ -305,6 +308,10 @@ fn commands() -> Vec<(String, Command)> {
         ("New Terminal".to_string(), Command::NewShell),
         ("New Worktree".to_string(), Command::NewWorktree),
         ("Run Spec…".to_string(), Command::RunSpec),
+        (
+            "Review Pull Request…".to_string(),
+            Command::ReviewPullRequestLink,
+        ),
         ("Projects".to_string(), Command::Panel(Panel::Projects)),
         ("Files".to_string(), Command::Panel(Panel::Files)),
         ("Find in Files".to_string(), Command::FindInFiles),

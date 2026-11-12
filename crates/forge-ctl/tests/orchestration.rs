@@ -721,7 +721,7 @@ fn session_dispatch_crosses_projects_without_graph_edges_and_waits_by_events() {
     assert_eq!(responses.len(), 8);
     assert_eq!(
         responses[1]["result"]["tools"].as_array().unwrap().len(),
-        53
+        56
     );
     assert_eq!(responses[2]["result"]["structuredContent"]["ok"], true);
     for response in &responses[2..] {
@@ -3258,6 +3258,65 @@ fn spec_runs_launch_a_planner_that_owns_the_coder_launch() {
         text.contains("--provider opencode --role executor --parent self"),
         "{text}"
     );
+
+    let account = |name: &str| {
+        let profile = domain::AgentProfile {
+            id: domain::AgentProfileId::new(),
+            provider_id: domain::AgentProviderId::new("claude"),
+            name: name.into(),
+            executable: None,
+            config_dir: None,
+            args: vec![],
+            created_at: domain::Timestamp::now(),
+        };
+        client
+            .request(Request::SaveAgentProfile {
+                profile: profile.clone(),
+            })
+            .unwrap();
+        profile.id.to_string()
+    };
+    let (work, personal) = (account("Work"), account("Personal"));
+    let accounts = ok(&ctl.run(
+        &[
+            "spec",
+            "run",
+            &spec.to_string_lossy(),
+            "--project",
+            "repo",
+            "--coder-profile",
+            "work",
+            "--planner-profile",
+            &personal,
+        ],
+        &[],
+    ));
+    assert_eq!(accounts["coder"]["profile"], work.as_str());
+    let planner = field(&accounts["planner"], "session_id");
+    let shown = ok(&ctl.run(&["session", "show", &planner], &[]));
+    assert_eq!(shown["agent_profile_id"], personal.as_str());
+    let args = launch_args(&harness, &planner);
+    assert!(
+        args.contains(&format!(
+            "--provider claude --profile {work} --role executor"
+        )),
+        "the brief names the coder's profile by UUID: {args}"
+    );
+    err(
+        &ctl.run(
+            &[
+                "spec",
+                "run",
+                &spec.to_string_lossy(),
+                "--project",
+                "repo",
+                "--coder-profile",
+                "nobody",
+            ],
+            &[],
+        ),
+        4,
+    );
 }
 
 #[test]
@@ -3749,4 +3808,132 @@ fn mcp_request_id_dedupes_a_retry(ctl: &Ctl, run_id: &str) {
         copies, 1,
         "an MCP retry with the same request_id created a second task"
     );
+}
+
+#[test]
+fn external_runs_of_another_account_are_listed_read_adopted_and_policed() {
+    let harness = Harness::new();
+    let repo = init_repo(harness.tmp.path());
+    let running = harness.boot_with(|cfg| cfg.orchestration.cross_profile = "read".into());
+    let client = connect(&running.socket);
+    let workspace = add_project(&client, &repo);
+    let root = workspace_path(&client, &workspace.to_string());
+    let config_dir = harness.tmp.path().join("claude-work");
+    client
+        .request(Request::SaveAgentProfile {
+            profile: domain::AgentProfile {
+                id: domain::AgentProfileId::new(),
+                provider_id: domain::AgentProviderId::new("claude"),
+                name: "Work".into(),
+                executable: None,
+                config_dir: Some(config_dir.clone()),
+                args: vec![],
+                created_at: domain::Timestamp::now(),
+            },
+        })
+        .unwrap();
+    let run = "4f1c2d3e-0000-4000-8000-00000000c0de";
+    let slug: String = root
+        .to_string_lossy()
+        .chars()
+        .map(|c| if c.is_ascii_alphanumeric() { c } else { '-' })
+        .collect();
+    let transcripts = config_dir.join("projects").join(slug);
+    fs::create_dir_all(&transcripts).unwrap();
+    let cwd = root.to_string_lossy();
+    fs::write(
+        transcripts.join(format!("{run}.jsonl")),
+        format!(
+            "{}\n{}\n",
+            json!({ "type": "user", "cwd": cwd, "sessionId": run,
+                "message": { "content": "hello from work" }, "timestamp": "2026-01-01T00:00:00Z" }),
+            json!({ "type": "assistant", "cwd": cwd, "sessionId": run,
+                "message": { "model": "claude-test", "content": [{ "type": "text", "text": "done at work" }] },
+                "timestamp": "2026-01-01T00:00:05Z" }),
+        ),
+    )
+    .unwrap();
+    // This test process stands in for the Claude process that still owns the run.
+    let registry = config_dir.join("sessions");
+    fs::create_dir_all(&registry).unwrap();
+    let entry = registry.join(format!("{}.json", std::process::id()));
+    fs::write(
+        &entry,
+        json!({ "pid": std::process::id(), "sessionId": run }).to_string(),
+    )
+    .unwrap();
+
+    let ctl = Ctl::new(&running.socket);
+    let listed = ok(&ctl.run(&["session", "external", "list", "--profile", "work"], &[]));
+    let runs = listed["external_sessions"].as_array().unwrap();
+    assert_eq!(runs.len(), 1, "{listed}");
+    assert_eq!(runs[0]["session_id"], run);
+    assert_eq!(runs[0]["profile"]["name"], "Work");
+    assert_eq!(runs[0]["live"], true);
+    assert!(ok(&ctl.run(
+        &["session", "external", "list", "--profile", "default"],
+        &[]
+    ))["external_sessions"]
+        .as_array()
+        .unwrap()
+        .is_empty());
+    let read = ok(&ctl.run(&["session", "external", "read", &run[..8]], &[]));
+    assert!(
+        read["text"].as_str().unwrap().contains("hello from work"),
+        "{read}"
+    );
+
+    let live = err(&ctl.run(&["session", "adopt", run], &[]), 5);
+    assert_eq!(live["error"]["details"]["reason"], "live", "{live}");
+
+    let caller = ok(&ctl.run(
+        &[
+            "session",
+            "spawn",
+            "--project",
+            &repo.to_string_lossy(),
+            "--provider",
+            "claude",
+            "--name",
+            "personal",
+        ],
+        &[],
+    ))["session_id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let as_personal = [("FORGE_SESSION_ID", caller.as_str())];
+    let refused = err(
+        &ctl.run(&["session", "adopt", run, "--force"], &as_personal),
+        6,
+    );
+    assert_eq!(refused["error"]["code"], "policy", "{refused}");
+    ok(&ctl.run(&["session", "external", "read", run], &as_personal));
+
+    fs::remove_file(&entry).unwrap();
+    let adopted = ok(&ctl.run(&["session", "adopt", run, "--name", "resumed"], &[]));
+    let adopted_id = adopted["session_id"].as_str().unwrap().to_owned();
+    assert_eq!(adopted["adopted"]["profile"]["name"], "Work");
+    let launched = capture_of(&harness, &format!("session-{adopted_id}"));
+    assert!(launched.contains(&format!("--resume {run}")), "{launched}");
+    let work = ok(&ctl.run(&["session", "list", "--profile", "work"], &[]));
+    let sessions = work["sessions"].as_array().unwrap();
+    assert_eq!(sessions.len(), 1, "{work}");
+    assert_eq!(sessions[0]["id"], adopted_id.as_str());
+    assert_eq!(sessions[0]["profile"]["name"], "Work");
+
+    let send = err(
+        &ctl.run(
+            &["session", "send", &adopted_id, "--text", "hi", "--queue"],
+            &as_personal,
+        ),
+        6,
+    );
+    assert_eq!(send["error"]["code"], "policy", "{send}");
+    let listed_by_personal = ok(&ctl.run(&["session", "list"], &as_personal));
+    assert!(listed_by_personal["sessions"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|s| s["id"] == adopted_id.as_str()));
 }

@@ -1,6 +1,9 @@
 use super::*;
 use client::Store;
-use domain::{ActivityState, Project, Session, SessionKind, SessionRole, SessionState, Workspace};
+use domain::{
+    ActivityState, ExternalSessionEntry, Project, Session, SessionKind, SessionRole, SessionState,
+    Workspace,
+};
 use places::{load, workspace_json};
 use protocol::{PromptDelivery, Signal};
 
@@ -69,6 +72,9 @@ pub(crate) enum SessionCmd {
         /// Only sessions whose process is starting or running.
         #[arg(long)]
         active: bool,
+        /// Profile name or UUID, or `default` for each provider's own login.
+        #[arg(long)]
+        profile: Option<String>,
     },
     Show {
         session: String,
@@ -104,6 +110,50 @@ pub(crate) enum SessionCmd {
         /// Signal the terminal's foreground job, as a typed Ctrl-C would.
         #[arg(long)]
         foreground: bool,
+    },
+    /// Agent runs Forge did not launch, found in every account's transcripts.
+    #[command(subcommand)]
+    External(ExternalCmd),
+    /// Resume a discovered run inside Forge, in its checkout and account.
+    Adopt {
+        /// The provider's own session id, or a unique prefix.
+        session: String,
+        #[arg(long)]
+        provider: Option<String>,
+        /// Which account the run was found in, when the id alone is ambiguous.
+        #[arg(long)]
+        profile: Option<String>,
+        #[arg(long)]
+        name: Option<String>,
+        /// Adopt even while a process still owns the conversation.
+        #[arg(long)]
+        force: bool,
+    },
+}
+
+#[derive(Subcommand)]
+pub(crate) enum ExternalCmd {
+    List {
+        #[arg(long)]
+        project: Option<String>,
+        #[arg(long)]
+        provider: Option<String>,
+        /// Profile name or UUID, or `default`.
+        #[arg(long)]
+        profile: Option<String>,
+    },
+    /// The run's conversation as plain text, newest turn last.
+    Read {
+        /// The provider's own session id, or a unique prefix.
+        session: String,
+        #[arg(long)]
+        provider: Option<String>,
+        #[arg(long)]
+        profile: Option<String>,
+        #[arg(long, value_parser = clap::value_parser!(u32).range(1..))]
+        turns: Option<u32>,
+        #[arg(long)]
+        max_bytes: Option<u32>,
     },
 }
 
@@ -167,6 +217,7 @@ pub(crate) struct Launch {
     pub name: String,
     pub role: RoleArg,
     pub provider: String,
+    pub profile: Option<String>,
     pub effort: Option<String>,
     pub model: Option<String>,
     pub prompt: String,
@@ -185,7 +236,7 @@ impl From<Launch> for SpawnArgs {
                 parent: None,
             },
             provider: Some(launch.provider),
-            profile: None,
+            profile: launch.profile,
             prompt: Some(launch.prompt),
             prompt_file: None,
             context: None,
@@ -279,11 +330,16 @@ pub(crate) fn dispatch(app: &App, client: &Client, cmd: SessionCmd) -> Result<()
             project,
             kind,
             active,
+            profile,
         } => {
             let store = load(app, client)?;
             let project = project
                 .as_deref()
                 .map(|raw| places::project(app, &store, raw).map(|p| p.id))
+                .transpose()?;
+            let accounts = profile
+                .as_deref()
+                .map(|raw| accounts(app, &store, raw))
                 .transpose()?;
             let kind = kind.map(SessionKind::from);
             let sessions: Vec<Value> = store
@@ -294,6 +350,9 @@ pub(crate) fn dispatch(app: &App, client: &Client, cmd: SessionCmd) -> Result<()
                         && (!active || s.state.is_active())
                         && project
                             .is_none_or(|id| project_for(&store, s).is_some_and(|p| p.id == id))
+                        && accounts.as_ref().is_none_or(|accounts| {
+                            s.kind == SessionKind::Agent && accounts.contains(&s.agent_profile_id)
+                        })
                 })
                 .map(|s| candidate(&store, s))
                 .collect();
@@ -303,7 +362,120 @@ pub(crate) fn dispatch(app: &App, client: &Client, cmd: SessionCmd) -> Result<()
         SessionCmd::Show { session } => {
             let store = load(app, client)?;
             let session = resolve(app, &store, &session)?;
-            app.print_ok(serde_json::to_value(session).unwrap_or(Value::Null));
+            let mut value = serde_json::to_value(session).unwrap_or(Value::Null);
+            if let Some(object) = value.as_object_mut() {
+                object.insert(
+                    "profile".into(),
+                    profile_json(&store, session.agent_profile_id),
+                );
+            }
+            app.print_ok(value);
+            Ok(())
+        }
+        SessionCmd::External(ExternalCmd::List {
+            project,
+            provider,
+            profile,
+        }) => {
+            let store = load(app, client)?;
+            let project = project
+                .as_deref()
+                .map(|raw| places::project(app, &store, raw).map(|p| p.id))
+                .transpose()?;
+            let accounts = profile
+                .as_deref()
+                .map(|raw| accounts(app, &store, raw))
+                .transpose()?;
+            let runs: Vec<Value> = external_runs(app, client, project)?
+                .iter()
+                .filter(|run| {
+                    provider
+                        .as_deref()
+                        .is_none_or(|p| run.session.provider.eq_ignore_ascii_case(p))
+                        && accounts
+                            .as_ref()
+                            .is_none_or(|accounts| accounts.contains(&run.session.profile_id))
+                })
+                .map(|run| external_json(&store, run))
+                .collect();
+            app.print_ok(json!({ "external_sessions": runs }));
+            Ok(())
+        }
+        SessionCmd::External(ExternalCmd::Read {
+            session,
+            provider,
+            profile,
+            turns,
+            max_bytes,
+        }) => {
+            let store = load(app, client)?;
+            let run = resolve_external(
+                app,
+                client,
+                &store,
+                &session,
+                provider.as_deref(),
+                profile.as_deref(),
+            )?;
+            let response = app.call(
+                client,
+                Request::GetExternalTranscript {
+                    session_id: run.session.session_id,
+                    provider: run.session.provider,
+                    profile_id: run.session.profile_id,
+                    max_turns: turns,
+                    max_bytes,
+                },
+                false,
+            )?;
+            app.print_ok(flatten(&response));
+            Ok(())
+        }
+        SessionCmd::Adopt {
+            session,
+            provider,
+            profile,
+            name,
+            force,
+        } => {
+            let store = load(app, client)?;
+            let run = resolve_external(
+                app,
+                client,
+                &store,
+                &session,
+                provider.as_deref(),
+                profile.as_deref(),
+            )?;
+            let adopted = external_json(&store, &run);
+            let response = app.call(
+                client,
+                Request::AdoptExternalSession {
+                    session_id: run.session.session_id,
+                    provider: run.session.provider,
+                    profile_id: run.session.profile_id,
+                    title: name,
+                    force,
+                },
+                true,
+            )?;
+            let Response::SessionCreated {
+                session_id,
+                terminal_id,
+            } = response
+            else {
+                return Err(app.fail(
+                    1,
+                    "internal",
+                    "unexpected adopt response",
+                    json!({}),
+                    vec![],
+                ));
+            };
+            app.print_ok(
+                json!({ "session_id": session_id, "terminal_id": terminal_id,
+                "adopted": adopted }),
+            );
             Ok(())
         }
         SessionCmd::Read {
@@ -649,7 +821,127 @@ fn candidate(store: &Store, session: &Session) -> Value {
         "active": session.state.is_active(), "ended": session.state.is_terminal(),
         "exit_code": exit_code, "signal": signal,
         "role": session.role, "parent": session.parent_session_id,
-        "activity": session.activity.state })
+        "activity": session.activity.state, "profile": session_profile(store, session) })
+}
+
+/// `null` for a session bound to no account; `{"id": null, "name": "default"}` for the provider's own login.
+fn profile_json(store: &Store, profile: Option<AgentProfileId>) -> Value {
+    match profile {
+        None => json!({ "id": null, "name": "default" }),
+        Some(id) => json!({ "id": id,
+            "name": store.agent_profiles.iter().find(|p| p.id == id).map(|p| &p.name) }),
+    }
+}
+
+fn session_profile(store: &Store, session: &Session) -> Value {
+    if session.kind == SessionKind::Agent {
+        profile_json(store, session.agent_profile_id)
+    } else {
+        Value::Null
+    }
+}
+
+/// Accounts a `--profile` names: `default`, or every profile matching a UUID or name.
+fn accounts(app: &App, store: &Store, raw: &str) -> Result<Vec<Option<AgentProfileId>>, u8> {
+    if raw.eq_ignore_ascii_case("default") {
+        return Ok(vec![None]);
+    }
+    let matched: Vec<_> = store
+        .agent_profiles
+        .iter()
+        .filter(|p| p.id.to_string() == raw || p.name.eq_ignore_ascii_case(raw))
+        .map(|p| Some(p.id))
+        .collect();
+    if matched.is_empty() {
+        return Err(app.fail(
+            4,
+            "not_found",
+            "profile not found",
+            json!({ "profile": raw }),
+            next(&["forgectl", "providers"]),
+        ));
+    }
+    Ok(matched)
+}
+
+fn external_runs(
+    app: &App,
+    client: &Client,
+    project_id: Option<domain::ProjectId>,
+) -> Result<Vec<ExternalSessionEntry>, u8> {
+    match app.call(client, Request::ListExternalSessions { project_id }, false)? {
+        Response::ExternalSessions(runs) => Ok(runs),
+        _ => Err(app.fail(
+            1,
+            "internal",
+            "unexpected external session response",
+            json!({}),
+            vec![],
+        )),
+    }
+}
+
+fn external_json(store: &Store, run: &ExternalSessionEntry) -> Value {
+    let session = &run.session;
+    let workspace = session
+        .workspace_id
+        .and_then(|id| store.workspaces.iter().find(|w| w.id == id));
+    json!({ "provider": session.provider, "session_id": session.session_id,
+        "profile": profile_json(store, session.profile_id),
+        "project": store.projects.iter().find(|p| p.id == session.project_id).map(|p| &p.name),
+        "project_id": session.project_id, "workspace": session.workspace_id,
+        "cwd": workspace.map(|w| &w.path), "title": session.title, "summary": session.preview,
+        "branch": session.branch, "model": session.model, "turns": session.message_count,
+        "started_at": session.started_at, "updated_at": session.last_activity, "live": run.live })
+}
+
+/// An exact id wins; otherwise a prefix of at least `MIN_ID_PREFIX` characters.
+fn resolve_external(
+    app: &App,
+    client: &Client,
+    store: &Store,
+    raw: &str,
+    provider: Option<&str>,
+    profile: Option<&str>,
+) -> Result<ExternalSessionEntry, u8> {
+    let accounts = profile.map(|raw| accounts(app, store, raw)).transpose()?;
+    let runs: Vec<ExternalSessionEntry> = external_runs(app, client, None)?
+        .into_iter()
+        .filter(|run| {
+            provider.is_none_or(|p| run.session.provider.eq_ignore_ascii_case(p))
+                && accounts
+                    .as_ref()
+                    .is_none_or(|accounts| accounts.contains(&run.session.profile_id))
+        })
+        .collect();
+    let exact: Vec<_> = runs
+        .iter()
+        .filter(|run| run.session.session_id == raw)
+        .collect();
+    let matched = if exact.is_empty() && raw.len() >= domain::orchestration::MIN_ID_PREFIX {
+        runs.iter()
+            .filter(|run| run.session.session_id.starts_with(raw))
+            .collect()
+    } else {
+        exact
+    };
+    match matched.as_slice() {
+        [run] => Ok((*run).clone()),
+        [] => Err(app.fail(
+            4,
+            "not_found",
+            "external session not found",
+            json!({}),
+            next(&["forgectl", "session", "external", "list"]),
+        )),
+        many => Err(app.fail(
+            5,
+            "ambiguous",
+            "external session reference is ambiguous; pass --provider or --profile",
+            json!({ "candidates": many.iter().map(|run| external_json(store, run)).collect::<Vec<_>>() }),
+            next(&["forgectl", "session", "external", "list"]),
+        )),
+    }
 }
 
 fn input(app: &App, text: Option<String>, file: Option<PathBuf>, cap: usize) -> Result<String, u8> {

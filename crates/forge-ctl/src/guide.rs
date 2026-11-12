@@ -19,7 +19,8 @@ const SPEC: &str = "\
 
 A spec run has two agents: a planner owns the spec, the plan and the review; a coder writes the code.
 The spec is a Claude artifact link, a path to a Markdown file, the full text, or - for stdin. Forge never fetches a link: the planner reads an artifact with its own artifact tool.
-Launch a planner: forgectl --json spec run <spec> [--preset claude|mix] [--coder <provider>] [--worktree <branch>] [--rounds 3]
+Launch a planner: forgectl --json spec run <spec> [--preset claude|mix] [--coder <provider>] [--coder-profile <name|uuid>] [--planner-profile <name|uuid>] [--worktree <branch>] [--rounds 3]
+Profiles pick the account: the brief launches the coder with --profile <uuid>, so a renamed profile still resolves.
 - claude: Claude plans at high effort, Claude codes at medium.
 - mix: Claude plans at high effort, Cursor codes; --coder opencode picks OpenCode. Cursor applies an effort only with --coder-model.
 Be the planner yourself: forgectl spec brief <spec> [same options] prints the brief to follow in this session.
@@ -59,7 +60,10 @@ Resolve a session by UUID, UUID prefix (at least 8 characters), exact case-insen
 Report back to the session that launched you: forgectl session send parent --queue --file report.md. It is submitted as soon as the parent is idle.
 Follow sessions: forgectl session watch [<ref>...] [--project <name>] prints one JSON line per state or activity change and ends when the named sessions end.
 Send with --queue rather than --now: --now types without Enter unless the agent is hook-confirmed idle, and the prompt then sits in its input.
-List: forgectl session list [--project <name>] [--kind agent|shell|editor|task] [--active]
+List: forgectl session list [--project <name>] [--kind agent|shell|editor|task] [--active] [--profile <name|id|default>]; each agent row names its profile (account).
+Accounts: sessions launched under any profile are listed and driven here. [orchestration] cross_profile keeps a session to its own account (off), lets it read others (read, the default) or also steer them (full); a refusal exits 6. A caller with no FORGE_SESSION_ID is never limited.
+Runs Forge did not launch: forgectl session external list [--project <name>] [--provider <id>] [--profile <name|id|default>]; forgectl session external read <provider-session-id|prefix> [--turns N]. live is true while a process still owns the run, null when the provider cannot say.
+Take one over: forgectl session adopt <provider-session-id> [--name <title>] resumes it as a Forge agent session in its checkout and account, which then takes send, wait and hooks. It exits 5 while the run is live (two processes would interleave one transcript) unless --force. A Claude session running outside Forge has no input channel: adopt is the supported way to steer it.
 Wait by events: forgectl session wait <ref> --for idle,waiting,exit [--timeout 600]; the first condition to hold wins and `matched` names it. Activity states are agent-only; any session can be waited on for exit. Waiting for idle alone hangs until the timeout when the agent stops to ask something.
 Read evidence: forgectl session read <ref> [--lines N] [--max-bytes N]; forgectl session changes <ref>
 Send to an agent: forgectl session send <ref> --text '...' [--queue|--now] [--no-submit]

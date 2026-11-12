@@ -424,6 +424,9 @@ pub struct OrchestrationConfig {
     /// Register `forgectl mcp` in each writable Claude or OpenCode launch, and
     /// word their prompts as MCP tools. Read-only launches never get it.
     pub mcp: bool,
+    /// `off`, `read` or `full`: what a session may do to another account's
+    /// sessions. Anything else is treated as `off`.
+    pub cross_profile: String,
 }
 
 impl Default for OrchestrationConfig {
@@ -438,6 +441,7 @@ impl Default for OrchestrationConfig {
             agent_may_integrate: "pr".to_owned(),
             keep_closed_runs_days: 30,
             mcp: true,
+            cross_profile: "read".to_owned(),
         }
     }
 }

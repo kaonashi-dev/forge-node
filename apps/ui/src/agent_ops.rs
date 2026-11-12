@@ -61,7 +61,7 @@ pub fn choices(store: &client::Store, prompt_only: bool) -> Vec<Choice> {
             if launchable && (!prompt_only || takes_prompt) {
                 out.push(Choice {
                     key: format!("profile:{}", profile.id),
-                    label: profile.name.clone(),
+                    label: format!("{} · {}", info.descriptor.display_name, profile.name),
                     provider: provider.clone(),
                     profile: Some(profile.id),
                 });

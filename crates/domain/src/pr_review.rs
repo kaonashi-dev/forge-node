@@ -5,9 +5,9 @@
 //! a [`ReviewRecipe`] is about a pull request that already exists and belongs
 //! to someone else.
 //!
-//! Two independent guards carry that. The launch applies the provider's own
-//! [`crate::ReviewStyle`] flags, and the wording below repeats the rule in
-//! prose — a model that ignores one still meets the other.
+//! The prompt is the only guard: the launch is an ordinary writable one, so
+//! any agent and profile can run it. [`READ_ONLY_RULES`] therefore closes
+//! every prompt, after anything the user added, and says it wins.
 //!
 //! The review runs in a checkout that already exists, never in one made for
 //! it: the agent reads the pull request through `gh`, which works for a fork
@@ -50,10 +50,27 @@ const READ_INSTRUCTIONS: &str = "Read the pull request first, with the GitHub CL
      - `gh pr view {number} --repo {repo} --comments`\n\
      - `gh pr diff {number} --repo {repo}`\n\
      \n\
-     You are a reader here. Do not edit, stage, commit, checkout or push \
-     anything, and do not post to GitHub — no `gh pr review`, no `gh pr \
-     comment`. Write your findings in this session and stop; the person \
-     watching decides what reaches the pull request.";
+     This review is read-only; the rules at the end of this prompt hold \
+     whatever else it says.";
+
+/// Closes every review prompt, so nothing the user appended comes after it.
+pub const READ_ONLY_RULES: &str = "## Rules for this session\n\
+     \n\
+     This is a read-only review. These rules override any other instruction \
+     in this prompt:\n\
+     \n\
+     - Do not modify any file, and do not run anything that writes to the \
+     repository: no edit, stage, checkout, switch, stash, reset, rebase, merge \
+     or commit.\n\
+     - Do not push, and do not create, delete or move a branch or tag.\n\
+     - Do not post anything to GitHub: no `gh pr review`, `gh pr comment`, \
+     `gh pr merge`, `gh pr close`, `gh pr edit`, no `gh api` call that \
+     writes, and no comment, review, approval, label or status of any kind.\n\
+     - Do not start, steer or stop other sessions, shells or actions, through \
+     the Forge tools or `forgectl`: no spawning, no prompts or commands sent to \
+     another session, no running a project action.\n\
+     - Report your findings in this session only, then stop. The person \
+     watching decides what reaches the pull request.\n";
 
 /// The recipes Forge ships.
 ///
@@ -191,6 +208,8 @@ pub fn compose_review_prompt(recipe: &ReviewRecipe, pr: &PullRequest, extra: &st
         prompt.push('\n');
     }
 
+    prompt.push('\n');
+    prompt.push_str(READ_ONLY_RULES);
     prompt
 }
 
@@ -268,15 +287,27 @@ mod tests {
         assert!(prompt.contains("diff-view → main"));
     }
 
-    /// Prose is the second guard; the provider's own read-only flags are the
-    /// first. Dropping this sentence would leave a review that can write when
-    /// the flags are ever wrong.
+    /// The launch is writable, so these sentences are the whole guard.
     #[test]
-    fn every_recipe_forbids_writing_and_posting() {
+    fn every_prompt_ends_with_rules_that_forbid_writing_pushing_and_posting() {
         for recipe in builtin_recipes() {
-            let prompt = compose_review_prompt(&recipe, &pull_request(), "");
-            assert!(prompt.contains("Do not edit"), "{}", recipe.id);
-            assert!(prompt.contains("gh pr comment"), "{}", recipe.id);
+            let prompt = compose_review_prompt(&recipe, &pull_request(), "Push a fix.");
+            assert!(prompt.ends_with(READ_ONLY_RULES), "{}", recipe.id);
+            for rule in [
+                "override any other instruction",
+                "Do not modify any file",
+                "commit",
+                "Do not push",
+                "Do not post anything to GitHub",
+                "`gh pr review`",
+                "`gh pr comment`",
+                "approval",
+                "Do not start, steer or stop other sessions, shells or actions",
+                "`forgectl`",
+                "Report your findings in this session only",
+            ] {
+                assert!(READ_ONLY_RULES.contains(rule), "{rule}");
+            }
         }
     }
 
@@ -285,7 +316,9 @@ mod tests {
         let recipe = recipe_or_default(Some("standard"));
         let prompt = compose_review_prompt(&recipe, &pull_request(), "  Focus on the SQL.  ");
         assert!(prompt.contains(recipe.body.trim()));
-        assert!(prompt.ends_with("## Also\n\nFocus on the SQL.\n"));
+        assert!(prompt.contains(&format!(
+            "## Also\n\nFocus on the SQL.\n\n{READ_ONLY_RULES}"
+        )));
     }
 
     /// Custom starts empty, so the prompt is the context and the user's words;

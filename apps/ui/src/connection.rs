@@ -145,6 +145,7 @@ pub enum Command {
     RefreshPullRequests {
         force: bool,
     },
+    FetchPullRequest(crate::pr_url::PullRequestLink),
     DraftCommit {
         workspace_id: WorkspaceId,
     },
@@ -938,6 +939,10 @@ impl ConnectionHandle {
 
     pub fn refresh_pull_requests(&self, force: bool) -> Result<(), String> {
         self.send(Command::RefreshPullRequests { force })
+    }
+
+    pub fn fetch_pull_request(&self, link: crate::pr_url::PullRequestLink) -> Result<(), String> {
+        self.send(Command::FetchPullRequest(link))
     }
 
     pub fn run_action(
@@ -1966,6 +1971,7 @@ fn handle_fixture_command(
         | Command::RunAction { .. }
         | Command::Fetch { .. }
         | Command::RefreshPullRequests { .. }
+        | Command::FetchPullRequest(_)
         | Command::DraftCommit { .. }
         | Command::Commit { .. }
         | Command::StopDaemon { .. }
@@ -3326,6 +3332,7 @@ fn handle_live_command(
                     .create_planner_session(
                         workspace_id,
                         launch.provider,
+                        launch.profile,
                         launch.effort,
                         launch.title.clone(),
                         launch.brief,
@@ -3377,6 +3384,21 @@ fn handle_live_command(
             live_result(
                 generation,
                 "RefreshPullRequests",
+                result,
+                sink,
+                metrics,
+                started,
+            );
+        }
+        Command::FetchPullRequest(link) => {
+            metrics.note_socket_op();
+            let result = client
+                .fetch_pull_request(link.host, link.repository, link.number)
+                .map(|()| "reading".to_string())
+                .map_err(|error| error.to_string());
+            live_result(
+                generation,
+                "FetchPullRequest",
                 result,
                 sink,
                 metrics,
@@ -4138,6 +4160,7 @@ fn command_label(command: &Command) -> &'static str {
         Command::OpenPullRequestWithAgent { .. } => "OpenPullRequestWithAgent",
         Command::RunSpec { .. } => "RunSpec",
         Command::RefreshPullRequests { .. } => "RefreshPullRequests",
+        Command::FetchPullRequest(_) => "FetchPullRequest",
         Command::DraftCommit { .. } => "DraftWithJuva",
         Command::Commit { .. } => "CreateCommit",
         Command::CreateAgent { .. } => "CreateAgentSession",

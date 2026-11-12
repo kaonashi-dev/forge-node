@@ -11,11 +11,12 @@ use domain::orchestration::{BoardEntry, RunView};
 use domain::{
     ActionSuggestion, AgentDescriptor, AgentProfile, AttemptId, BranchCompare, BranchRef,
     ChangeContext, ContextEnvelope, ContextId, DetectionResult, DiffFile, ExternalAgentSession,
-    ExternalTranscript, FileContents, FileTree, ImageContents, JuvaDraft, Project, ProjectAction,
-    ProjectGroup, ProjectId, ProviderUsage, PullRequestState, RebaseState, Remote, RepoActionsFile,
-    RunId, ScrollbackRows, SearchResults, Session, SessionChanges, SessionId, SessionTranscript,
-    ShareAction, ShareCandidate, ShareRule, ShareStatusEntry, TaskId, TerminalId, TerminalSnapshot,
-    UsageAnalytics, Workspace, WorkspaceDiff, WorkspaceId, WorktreeIgnore,
+    ExternalSessionEntry, ExternalTranscript, FileContents, FileTree, ImageContents, JuvaDraft,
+    Project, ProjectAction, ProjectGroup, ProjectId, ProviderUsage, PullRequestState, RebaseState,
+    Remote, RepoActionsFile, RunId, ScrollbackRows, SearchResults, Session, SessionChanges,
+    SessionId, SessionTranscript, ShareAction, ShareCandidate, ShareRule, ShareStatusEntry, TaskId,
+    TerminalId, TerminalSnapshot, UsageAnalytics, Workspace, WorkspaceDiff, WorkspaceId,
+    WorktreeIgnore,
 };
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
@@ -259,6 +260,8 @@ pub enum Response {
     ContextEnvelopes(Vec<ContextEnvelope>),
     /// A discovered run's conversation, answering `GetExternalTranscript`.
     ExternalTranscript(ExternalTranscript),
+    /// Answers `ListExternalSessions`.
+    ExternalSessions(Vec<ExternalSessionEntry>),
     /// One checkout's stopped rebase/merge state, answering `GetRebaseState`,
     /// `ContinueRebase` and `MarkConflictResolved`.
     RebaseState(RebaseState),

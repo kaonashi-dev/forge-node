@@ -1,13 +1,12 @@
-//! Pull requests, and reviewing one with an agent. A review is a read twice
-//! guarded: the launch is read-only, which applies the provider's own review
-//! flags, and the recipe from `domain::pr_review` forbids editing, committing
-//! and posting.
+//! Pull requests, and reviewing one with an agent. The review is read-only by
+//! its prompt (`domain::pr_review`), not by a provider flag, so every agent and
+//! profile that takes a prompt can run it.
 
-use client::ProviderInfo;
-use domain::{AgentProviderId, ProjectId, PullRequest, Workspace, WorkspaceId, WorkspaceKind};
+use domain::{ProjectId, PullRequest, Workspace, WorkspaceId, WorkspaceKind};
 use rune::{El, ScrollSpec, TextEdit, col, row, text};
 use rune_kit::{Button, ButtonVariant, ControlSize, Kit, TextInput};
 
+use crate::agent_ops::Choice;
 use crate::app::AppState;
 
 /// The review being set up: which pull request, recipe and agent.
@@ -16,7 +15,8 @@ pub struct ReviewDialog {
     pub number: u32,
     pub recipe: String,
     pub custom: TextEdit,
-    pub agent: Option<AgentProviderId>,
+    /// An [`agent_ops::Choice`](crate::agent_ops::Choice) key.
+    pub agent: Option<String>,
     pub error: Option<String>,
 }
 
@@ -45,37 +45,20 @@ pub fn review_workspace(
         .map(|workspace| workspace.id)
 }
 
-/// Installed agents that take a first prompt and declare a review mode; one
-/// without such a mode is never offered, so nothing that could write reviews.
 #[must_use]
-pub fn review_agents(providers: &[ProviderInfo]) -> Vec<(AgentProviderId, String)> {
-    providers
-        .iter()
-        .filter(|info| {
-            matches!(
-                info.detection.status,
-                domain::DetectionStatus::Installed { .. }
-            ) && info.descriptor.capabilities.supports_initial_prompt
-                && info.descriptor.review.is_some()
-        })
-        .map(|info| {
-            (
-                info.descriptor.id.clone(),
-                info.descriptor.display_name.clone(),
-            )
-        })
-        .collect()
+pub fn review_agents(store: &client::Store) -> Vec<Choice> {
+    crate::agent_ops::choices(store, true)
 }
 
 impl ReviewDialog {
     #[must_use]
-    pub fn new(pr: &PullRequest, agents: &[(AgentProviderId, String)]) -> Self {
+    pub fn new(pr: &PullRequest, agents: &[Choice]) -> Self {
         Self {
             repository: pr.repository.clone(),
             number: pr.number,
             recipe: domain::pr_review::recipe_or_default(None).id,
             custom: TextEdit::new(""),
-            agent: agents.first().map(|(id, _)| id.clone()),
+            agent: agents.first().map(|row| row.key.clone()),
             error: None,
         }
     }
@@ -370,11 +353,7 @@ pub fn dialog(s: &AppState, k: &Kit, layer: &mut Vec<El>) {
     let Some(review) = &s.review else {
         return;
     };
-    let agents = s
-        .store
-        .as_ref()
-        .map(|store| review_agents(&store.providers))
-        .unwrap_or_default();
+    let agents = s.store.as_ref().map(review_agents).unwrap_or_default();
     let mut recipes = col()
         .key("review-recipes")
         .gap(crate::ds::SPACE_1)
@@ -404,11 +383,11 @@ pub fn dialog(s: &AppState, k: &Kit, layer: &mut Vec<El>) {
         .gap(crate::ds::SPACE_2)
         .role("radiogroup")
         .label("Agent");
-    for (id, name) in &agents {
-        let chosen = id.clone();
+    for choice in &agents {
+        let chosen = choice.key.clone();
         picker = picker.child(
-            Button::new(name.clone())
-                .variant(if review.agent.as_ref() == Some(id) {
+            Button::new(choice.label.clone())
+                .variant(if review.agent.as_deref() == Some(choice.key.as_str()) {
                     ButtonVariant::Outline
                 } else {
                     ButtonVariant::Ghost
@@ -420,7 +399,7 @@ pub fn dialog(s: &AppState, k: &Kit, layer: &mut Vec<El>) {
                     }
                 })
                 .build(k)
-                .key(format!("review-agent-{id}")),
+                .key(format!("review-agent-{}", choice.key)),
         );
     }
     let mut body = col().gap(10.0).child(recipes);
@@ -514,19 +493,40 @@ mod tests {
     }
 
     #[test]
-    fn only_installed_prompt_taking_agents_with_a_review_mode_are_offered() {
+    fn every_prompt_taking_agent_and_visible_profile_is_offered_without_a_review_mode() {
         use crate::test_support::provider;
-        let providers = vec![
+        let profile = |provider: &str, name: &str| domain::AgentProfile {
+            id: domain::AgentProfileId::new(),
+            provider_id: domain::AgentProviderId::new(provider),
+            name: name.into(),
+            executable: None,
+            config_dir: None,
+            args: vec![],
+            created_at: domain::Timestamp::now(),
+        };
+        let mut store = client::Store::new();
+        store.providers = vec![
             provider("claude", true, true, true),
             provider("opencode", true, true, false),
             provider("cursor", true, false, true),
             provider("gone", false, true, true),
         ];
-        let offered: Vec<String> = review_agents(&providers)
+        let work = profile("claude", "Work");
+        let hidden = profile("claude", "Hidden");
+        store.agent_profiles = vec![work, hidden.clone(), profile("opencode", "Personal")];
+        store.app_state = vec![(
+            crate::launch::visibility_key(&format!("profile:{}", hidden.id)),
+            "false".into(),
+        )];
+        let offered: Vec<String> = review_agents(&store)
             .into_iter()
-            .map(|(id, _)| id.to_string())
+            .map(|row| row.label)
             .collect();
-        assert_eq!(offered, vec!["claude"]);
+        assert_eq!(
+            offered,
+            ["claude", "claude · Work", "opencode", "opencode · Personal"],
+            "OpenCode has no review flag and is offered; Cursor takes no prompt; a hidden profile stays hidden"
+        );
     }
 
     #[test]
@@ -541,11 +541,16 @@ mod tests {
             "relations": { "assigned": false, "review_requested": false, "authored": false }
         }))
         .expect("a pull request");
-        let agents = vec![(AgentProviderId::new("claude"), "Claude".to_string())];
+        let agents = vec![Choice {
+            key: "provider:claude".into(),
+            label: "Claude".into(),
+            provider: domain::AgentProviderId::new("claude"),
+            profile: None,
+        }];
         let mut dialog = ReviewDialog::new(&pr, &agents);
         assert_eq!(
-            dialog.agent,
-            Some(AgentProviderId::new("claude")),
+            dialog.agent.as_deref(),
+            Some("provider:claude"),
             "the first agent"
         );
         let prompt = dialog.prompt(&pr).expect("a built-in recipe has a prompt");

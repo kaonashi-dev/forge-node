@@ -45,6 +45,9 @@ pub(crate) struct SpecArgs {
     coder_effort: Option<String>,
     #[arg(long)]
     coder_model: Option<String>,
+    /// Profile (name or UUID) of the coder's provider; the brief names it by UUID.
+    #[arg(long)]
+    coder_profile: Option<String>,
     /// Put the coder in a new worktree on this branch instead of the planner's checkout.
     #[arg(long)]
     worktree: Option<String>,
@@ -74,6 +77,9 @@ pub(crate) struct RunArgs {
     planner_effort: Option<String>,
     #[arg(long)]
     planner_model: Option<String>,
+    /// Profile (name or UUID) of the planner's provider.
+    #[arg(long)]
+    planner_profile: Option<String>,
 }
 
 pub(crate) fn dispatch(app: &App, client: &Client, cmd: SpecCmd) -> Result<(), u8> {
@@ -109,6 +115,11 @@ fn run(app: &App, client: &Client, args: RunArgs) -> Result<(), u8> {
         args.planner_model.as_deref(),
         "planner",
     )?;
+    let planner_profile = args
+        .planner_profile
+        .as_deref()
+        .map(|raw| profile(app, &store, &args.planner, raw, "planner"))
+        .transpose()?;
     let planner = sessions::spawn(
         app,
         client,
@@ -118,6 +129,7 @@ fn run(app: &App, client: &Client, args: RunArgs) -> Result<(), u8> {
             name: format!("{} planner", spec.name),
             role: RoleArg::Planner,
             provider: args.planner,
+            profile: planner_profile,
             effort,
             model: args.planner_model,
             prompt: compose_planner_prompt(&spec),
@@ -181,6 +193,11 @@ fn prepare(
         args.coder_model.as_deref(),
         "coder",
     )?;
+    let coder_profile = args
+        .coder_profile
+        .as_deref()
+        .map(|raw| profile(app, store, &provider, raw, "coder"))
+        .transpose()?;
     let forgectl = std::env::current_exe()
         .and_then(std::fs::canonicalize)
         .unwrap_or_else(|_| PathBuf::from("forgectl"));
@@ -188,6 +205,7 @@ fn prepare(
         source,
         coder: Coder {
             provider,
+            profile: coder_profile,
             effort,
             model: args.coder_model.clone(),
         },
@@ -222,6 +240,27 @@ fn provider<'a>(
     Ok(&info.descriptor)
 }
 
+/// The UUID of `raw`, a profile of `provider` named by UUID or case-insensitive name.
+fn profile(app: &App, store: &Store, provider: &str, raw: &str, role: &str) -> Result<String, u8> {
+    store
+        .agent_profiles
+        .iter()
+        .find(|p| {
+            p.provider_id.as_str() == provider
+                && (p.id.to_string() == raw || p.name.eq_ignore_ascii_case(raw))
+        })
+        .map(|p| p.id.to_string())
+        .ok_or_else(|| {
+            app.fail(
+                4,
+                "not_found",
+                &format!("{role} profile {raw} is not a profile of {provider}"),
+                json!({ "role": role, "provider": provider, "profile": raw }),
+                next(&["forgectl", "providers"]),
+            )
+        })
+}
+
 fn check_agent(
     app: &App,
     store: &Store,
@@ -243,7 +282,8 @@ fn check_agent(
 }
 
 fn coder_json(coder: &Coder) -> Value {
-    json!({ "provider": coder.provider, "effort": coder.effort, "model": coder.model })
+    json!({ "provider": coder.provider, "profile": coder.profile, "effort": coder.effort,
+        "model": coder.model })
 }
 
 fn source_json(source: &SpecSource) -> Value {
@@ -266,6 +306,29 @@ mod tests {
             "forgectl", "spec", "run", "spec.md", "--preset", "mix", "--coder", "opencode"
         ])
         .is_ok());
+        assert!(Cli::try_parse_from([
+            "forgectl",
+            "spec",
+            "run",
+            "spec.md",
+            "--coder-profile",
+            "Work",
+            "--planner-profile",
+            "Personal"
+        ])
+        .is_ok());
+        assert!(
+            Cli::try_parse_from([
+                "forgectl",
+                "spec",
+                "brief",
+                "spec.md",
+                "--planner-profile",
+                "Personal"
+            ])
+            .is_err(),
+            "a brief launches no planner"
+        );
         assert!(Cli::try_parse_from(["forgectl", "spec", "brief", "-", "--rounds", "0"]).is_err());
         assert!(Cli::try_parse_from(["forgectl", "spec", "brief", "x", "--base", "main"]).is_err());
         assert_eq!(Preset::Claude.coder(), ("claude", Some("medium")));

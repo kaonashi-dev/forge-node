@@ -1624,7 +1624,9 @@ impl App {
                 )
             })?,
         };
-        match Client::connect_as(&socket, env!("CARGO_PKG_VERSION"), ClientKind::Cli) {
+        let mut hello = protocol::Hello::new(env!("CARGO_PKG_VERSION"), ClientKind::Cli);
+        hello.caller_session_id = env_session();
+        match Client::connect_with(&socket, hello) {
             Ok(client) => Ok(client),
             Err(ClientError::VersionMismatch { expected, got }) => Err(self.fail(
                 3,

@@ -1351,6 +1351,7 @@ impl SlowClient {
             protocol_version: PROTOCOL_VERSION,
             client_version: "itest-slow".to_string(),
             client_kind: ClientKind::Gui,
+            caller_session_id: None,
         }));
         match slow.recv(Duration::from_secs(10)) {
             Some(DaemonMessage::HelloAck(_)) => {}

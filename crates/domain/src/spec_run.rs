@@ -150,6 +150,8 @@ pub fn agent_refusal(
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Coder {
     pub provider: String,
+    /// A profile UUID, which still resolves after a rename, or a profile name.
+    pub profile: Option<String>,
     pub effort: Option<String>,
     pub model: Option<String>,
 }
@@ -203,9 +205,13 @@ fn source_section(source: &SpecSource) -> String {
 pub fn compose_planner_prompt(run: &SpecRun) -> String {
     let ctl = quote(&run.forgectl.to_string_lossy());
     let mut spawn = format!(
-        "{ctl} --json session spawn --provider {} --role executor",
+        "{ctl} --json session spawn --provider {}",
         quote(&run.coder.provider)
     );
+    if let Some(profile) = &run.coder.profile {
+        spawn.push_str(&format!(" --profile {}", quote(profile)));
+    }
+    spawn.push_str(" --role executor");
     if let Some(effort) = &run.coder.effort {
         spawn.push_str(&format!(" --effort {}", quote(effort)));
     }
@@ -392,6 +398,7 @@ mod tests {
         let brief = compose_planner_prompt(&run(
             Coder {
                 provider: "claude".into(),
+                profile: Some("0198a1b2-0000-7000-8000-000000000001".into()),
                 effort: Some("medium".into()),
                 model: None,
             },
@@ -399,7 +406,7 @@ mod tests {
         ));
         assert!(brief.contains(
             "'/Applications/Forge Node.app/Contents/MacOS/forgectl' --json session spawn \
-             --provider claude --role executor --effort medium --parent self \
+             --provider claude --profile 0198a1b2-0000-7000-8000-000000000001 --role executor --effort medium --parent self \
              --name 'cache'\\''s spec coder' --prompt-file <plan file>"
         ));
         assert!(brief.contains("<<<SPEC\nBuild it\nSPEC>>>"));
@@ -414,6 +421,7 @@ mod tests {
         let mixed = compose_planner_prompt(&run(
             Coder {
                 provider: "cursor".into(),
+                profile: None,
                 effort: Some("high".into()),
                 model: Some("gpt-5".into()),
             },
@@ -431,6 +439,7 @@ mod tests {
         let mut spec = run(
             Coder {
                 provider: "opencode".into(),
+                profile: None,
                 effort: None,
                 model: None,
             },
@@ -442,5 +451,6 @@ mod tests {
         assert!(brief.contains("read_artifact"));
         assert!(!brief.contains("--parent self"));
         assert!(!brief.contains("--effort"));
+        assert!(!brief.contains("--profile"));
     }
 }

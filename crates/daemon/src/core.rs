@@ -869,6 +869,11 @@ impl Daemon {
             Request::GetAppState { key } => self.get_app_state(&key),
             Request::SetAppState { key, value } => self.set_app_state(&key, &value),
             Request::RefreshPullRequests { force } => self.refresh_pull_requests(force),
+            Request::FetchPullRequest {
+                host,
+                repository,
+                number,
+            } => crate::pull_requests::fetch(self, &host, &repository, number),
             Request::GetStats => Ok(Response::DaemonStats(self.collect_stats())),
             Request::GetPaths => Ok(Response::Paths {
                 paths: self.current_forge_paths(),
@@ -982,6 +987,18 @@ impl Daemon {
                 provider,
                 profile_id,
             } => self.delete_external_session(&session_id, &provider, profile_id),
+            Request::ListExternalSessions { project_id } => {
+                crate::cross_profile::list(self, project_id, None)
+            }
+            Request::AdoptExternalSession {
+                session_id,
+                provider,
+                profile_id,
+                title,
+                force,
+            } => {
+                crate::cross_profile::adopt(self, &session_id, &provider, profile_id, title, force)
+            }
             Request::ListFiles { workspace_id } => self.list_files(workspace_id),
             Request::ListDirectory { workspace_id, path } => {
                 self.list_directory(workspace_id, &path)
@@ -1468,15 +1485,7 @@ impl Daemon {
         };
         // Filesystem IO: after the core lock, through the TTL cache.
         let external_agents = if with_history {
-            let orphans = || self.history_orphans(&projects, &worktree_ignores);
-            let mut cache = self
-                .external_agents
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner);
-            if self.external_agents_stale.swap(false, Ordering::AcqRel) {
-                cache.invalidate();
-            }
-            cache.discover(&projects, &workspaces, &agent_profiles, orphans)
+            self.discover_external(&projects, &workspaces, &agent_profiles, &worktree_ignores)
         } else {
             Vec::new()
         };
@@ -2313,6 +2322,30 @@ impl Daemon {
         Ok(Response::Ack)
     }
 
+    pub(crate) fn pull_request_cache(
+        &self,
+    ) -> std::sync::MutexGuard<'_, crate::pull_requests::Cache> {
+        self.pull_requests
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+
+    /// Every project's git root, and the login-shell `PATH` `gh` is found on:
+    /// a GUI launched from Finder has neither Homebrew nor a user bin directory.
+    pub(crate) fn pull_request_inputs(
+        &self,
+    ) -> (Vec<crate::pull_requests::ProjectSource>, Vec<PathBuf>) {
+        self.ensure_env();
+        let mut inner = self.lock();
+        let projects = inner
+            .projects
+            .values()
+            .map(|project| (project.id, project.git_root.clone()))
+            .collect();
+        let env = self.resolved_env(&mut inner);
+        (projects, env.path_entries)
+    }
+
     /// Ack when the refresh *starts*. Coalesces globally: one refresh covers every host.
     fn refresh_pull_requests(self: &Arc<Self>, force: bool) -> Result<Response, ProtocolError> {
         {
@@ -2331,20 +2364,7 @@ impl Daemon {
                 let _guard = PrRefreshingGuard {
                     daemon: Arc::clone(&daemon),
                 };
-                daemon.ensure_env();
-                let (projects, path_entries): (Vec<crate::pull_requests::ProjectSource>, _) = {
-                    let mut inner = daemon.lock();
-                    let projects = inner
-                        .projects
-                        .values()
-                        .map(|project| (project.id, project.git_root.clone()))
-                        .collect();
-                    // `gh` is looked up along the login-shell PATH, not the
-                    // daemon's: a GUI launched from Finder has neither
-                    // Homebrew nor any user bin directory on its own.
-                    let env = daemon.resolved_env(&mut inner);
-                    (projects, env.path_entries)
-                };
+                let (projects, path_entries) = daemon.pull_request_inputs();
                 let query = crate::pull_requests::resolve(projects, &daemon.config.github);
                 let fingerprint = crate::pull_requests::fingerprint(&query, &daemon.config.github);
                 let cached = if force {
@@ -2362,12 +2382,9 @@ impl Daemon {
                         &daemon.config.github,
                         path_entries.clone(),
                     );
-                    daemon
-                        .pull_requests
-                        .lock()
-                        .unwrap_or_else(std::sync::PoisonError::into_inner)
-                        .update(fingerprint, state.clone());
-                    state
+                    let mut cache = daemon.pull_request_cache();
+                    cache.update(fingerprint, state);
+                    cache.snapshot()
                 });
 
                 daemon
@@ -2640,18 +2657,77 @@ impl Daemon {
         Ok(Response::Ack)
     }
 
-    /// Resolve an external run by identity against the last discovery pass.
-    fn find_external(
+    /// Resolve an external run by identity against the last discovery pass,
+    /// running one first on a miss: a CLI snapshot never fills the cache.
+    pub(crate) fn find_external(
         &self,
         session_id: &str,
         provider: &str,
         profile_id: Option<domain::AgentProfileId>,
     ) -> Result<domain::ExternalAgentSession, ProtocolError> {
-        self.external_agents
+        let cached = self
+            .external_agents
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .find(session_id, provider, profile_id)
+            .find(session_id, provider, profile_id);
+        cached
+            .or_else(|| {
+                self.external_sessions().0.into_iter().find(|run| {
+                    run.session_id == session_id
+                        && run.provider == provider
+                        && run.profile_id == profile_id
+                })
+            })
             .ok_or_else(|| ProtocolError::not_found("session"))
+    }
+
+    /// Every discovered run, and the profiles discovery scanned, through the TTL cache.
+    pub(crate) fn external_sessions(
+        &self,
+    ) -> (Vec<domain::ExternalAgentSession>, Vec<AgentProfile>) {
+        let (projects, workspaces, profiles, ignores) = {
+            let inner = self.lock();
+            (
+                inner.projects.values().cloned().collect::<Vec<_>>(),
+                inner.workspaces.values().cloned().collect::<Vec<_>>(),
+                inner.profiles.clone(),
+                inner
+                    .worktree_ignores
+                    .values()
+                    .flatten()
+                    .cloned()
+                    .collect::<Vec<_>>(),
+            )
+        };
+        let runs = self.discover_external(&projects, &workspaces, &profiles, &ignores);
+        (runs, profiles)
+    }
+
+    /// Never under the core lock: a rescan reads transcripts.
+    fn discover_external(
+        &self,
+        projects: &[Project],
+        workspaces: &[Workspace],
+        profiles: &[AgentProfile],
+        ignores: &[WorktreeIgnore],
+    ) -> Vec<domain::ExternalAgentSession> {
+        let orphans = || self.history_orphans(projects, ignores);
+        let mut cache = self
+            .external_agents
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if self.external_agents_stale.swap(false, Ordering::AcqRel) {
+            cache.invalidate();
+        }
+        cache.discover(projects, workspaces, profiles, orphans)
+    }
+
+    pub(crate) fn invalidate_external(&self) {
+        self.external_agents_stale.store(true, Ordering::Release);
+    }
+
+    pub(crate) fn agent_profiles(&self) -> Vec<AgentProfile> {
+        self.lock().profiles.clone()
     }
 
     /// Core lock released before git runs.
@@ -8891,6 +8967,118 @@ mod tests {
         let session = inner.sessions.get_mut(&session_id).expect("session");
         session.last_activity_at =
             Timestamp::from_offset(Timestamp::now().as_offset() - time::Duration::seconds(secs));
+    }
+
+    #[test]
+    fn cross_profile_policy_is_enforced_per_connection_caller() {
+        let refused = |result: &Result<Response, ProtocolError>| {
+            result.as_ref().err().is_some_and(|error| {
+                error
+                    .details
+                    .as_deref()
+                    .is_some_and(|d| d.contains("policy:cross_profile"))
+            })
+        };
+        for (mode, may_read, may_control) in [
+            ("off", false, false),
+            ("read", true, false),
+            ("full", true, true),
+        ] {
+            let mut config = Config::default();
+            config.sessions.term = terminfo::FALLBACK_TERM.to_owned();
+            config.orchestration.cross_profile = mode.to_owned();
+            let (daemon, _tmp, _pty) = test_daemon_with_config(FakePtyBackend::empty(), config);
+            let project = add_project_row(&daemon, "api", None);
+            let workspace = add_workspace_row(&daemon, project, false);
+            let work = Some(AgentProfileId::new());
+            let agent = |profile: Option<AgentProfileId>| {
+                let id = add_session_row(&daemon, workspace, None, SessionState::Running);
+                let mut inner = daemon.lock();
+                let session = inner.sessions.get_mut(&id).expect("session");
+                session.kind = SessionKind::Agent;
+                session.agent_profile_id = profile;
+                id
+            };
+            let caller = agent(work);
+            let sibling = agent(work);
+            let other = agent(None);
+            let shell = add_session_row(&daemon, workspace, None, SessionState::Running);
+            let as_caller = |request: Request| {
+                crate::cross_profile::handle(&daemon, ClientKind::Cli, Some(caller), request)
+            };
+            let read = |session_id| Request::GetSessionChanges { session_id };
+            let control = |session_id| Request::SendSignal {
+                session_id,
+                signal: protocol::Signal::SigInt,
+                foreground: false,
+            };
+
+            assert_eq!(refused(&as_caller(read(other))), !may_read, "{mode} read");
+            assert_eq!(
+                refused(&as_caller(control(other))),
+                !may_control,
+                "{mode} control"
+            );
+            assert!(!refused(&as_caller(control(sibling))), "{mode} own account");
+            assert!(!refused(&as_caller(control(shell))), "{mode} accountless");
+            let context = |source, target, include_transcript| Request::SendContext {
+                source_session_id: source,
+                target_session_id: Some(target),
+                spawn: None,
+                summary: None,
+                instructions: None,
+                include_transcript,
+                max_transcript_bytes: None,
+            };
+            let steering = [
+                Request::RenameSession {
+                    session_id: other,
+                    title: Some("x".into()),
+                },
+                Request::SetSessionRole {
+                    session_id: other,
+                    role: SessionRole::Tester,
+                },
+                Request::CreateChildSession {
+                    parent_session_id: other,
+                    kind: SessionKind::Shell,
+                    provider_id: None,
+                    profile_id: None,
+                    role: SessionRole::Generic,
+                    workspace_policy: domain::ChildWorkspacePolicy::SameWorkspace,
+                    initial_prompt: None,
+                },
+                context(caller, other, false),
+            ];
+            for request in steering {
+                let name = format!("{request:?}");
+                assert_eq!(refused(&as_caller(request)), !may_control, "{mode} {name}");
+            }
+            assert_eq!(
+                refused(&as_caller(context(other, shell, true))),
+                !may_read,
+                "{mode} context reading another account's transcript"
+            );
+            assert!(!refused(&as_caller(context(other, shell, false))));
+            assert!(
+                !refused(&crate::cross_profile::handle(
+                    &daemon,
+                    ClientKind::Cli,
+                    None,
+                    control(other)
+                )),
+                "{mode} human"
+            );
+            let Ok(Response::Snapshot { sessions, .. }) = as_caller(Request::GetSnapshot) else {
+                panic!("snapshot");
+            };
+            assert_eq!(
+                sessions.iter().any(|s| s.id == other),
+                may_read,
+                "{mode} snapshot"
+            );
+            assert!(sessions.iter().any(|s| s.id == shell));
+        }
     }
 
     fn idle_config(warn_secs: u64, stop_secs: u64) -> Config {

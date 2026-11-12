@@ -266,10 +266,10 @@ identity block, and whatever the user added.
 | `name` / `detail` | what the menu entry says, and one line on what picking it does |
 | `body` | the wording sent before the context; empty for `custom`, which is the user's own text and nothing else |
 
-Two independent guards keep a review a read: the launch applies the provider's
-own `ReviewStyle` flags, and every recipe's prompt repeats the rule in prose —
-no editing, no committing, no `gh pr review`. A model that ignores one still
-meets the other.
+The prompt is the guard: the launch is an ordinary writable session, so any
+agent and profile can run it. `READ_ONLY_RULES` closes every prompt, after
+anything the user added, and overrides it — no edits, commits or pushes, and
+nothing posted to GitHub; findings stay in the session.
 
 ### `WorkspaceDiff` (`diff.rs`)
 

@@ -711,3 +711,107 @@ fn a_checkout_that_changed_while_the_agent_drafted_is_not_published() {
         "no branch was made"
     );
 }
+
+fn single_response(repository: &str, number: u32, state: &str) -> String {
+    format!(
+        r#"{{"data":{{"viewer":{{"login":"ForgeUser"}},"repository":{{"nameWithOwner":"{repository}","pullRequest":{{"state":"{state}","number":{number},"title":"Linked","url":"https://github.com/{repository}/pull/{number}","body":"From a link","isDraft":false,"createdAt":"2026-08-24T10:00:00Z","updatedAt":"2026-08-25T12:00:00Z","author":{{"login":"someone"}},"repository":{{"nameWithOwner":"{repository}"}},"baseRefName":"main","headRefName":"linked","additions":1,"deletions":0,"changedFiles":1,"comments":{{"totalCount":0}},"labels":{{"nodes":[]}},"assignees":{{"nodes":[]}},"reviewRequests":{{"nodes":[]}}}}}}}}}}"#
+    )
+}
+
+fn fetched_event(events: &flume::Receiver<DaemonEvent>) -> Option<String> {
+    let event = common::wait_for(events, common::DEADLINE, |event| {
+        matches!(event, DaemonEvent::PullRequestFetched { .. })
+    })
+    .expect("PullRequestFetched event");
+    let DaemonEvent::PullRequestFetched { error, .. } = event else {
+        unreachable!()
+    };
+    error
+}
+
+#[test]
+fn a_pull_request_read_by_url_is_pinned_across_refreshes_and_only_open_ones_are_kept() {
+    let harness = common::Harness::new();
+    let gh = harness.root().join("fake-gh");
+    let counter = harness.root().join("gh-count");
+    write_gh(
+        &gh,
+        &counter,
+        &single_response("Acme/Forge", 99, "OPEN"),
+        0,
+        true,
+    );
+    let repo = github_repo(harness.root(), "forge", "git@github.com:Acme/Forge.git");
+    let daemon = harness.boot_with(|config| {
+        config.github.executable = gh.to_string_lossy().into_owned();
+    });
+    let client = daemon.connect("scenario-pr-by-url");
+    let events = client.events();
+    common::add_main_workspace(&client, &repo);
+
+    let refused = client.request(Request::FetchPullRequest {
+        host: "gitlab.com".into(),
+        repository: "acme/forge".into(),
+        number: 99,
+    });
+    assert!(
+        refused.is_err(),
+        "an unlisted host is refused before gh runs"
+    );
+    for _ in 0..2 {
+        assert_eq!(
+            client
+                .request(Request::FetchPullRequest {
+                    host: "github.com".into(),
+                    repository: "acme/forge".into(),
+                    number: 99,
+                })
+                .expect("fetch ack"),
+            Response::Ack
+        );
+    }
+    let state = pull_request_event(&events, common::DEADLINE);
+    assert_eq!(fetched_event(&events), None);
+    assert_eq!(invocation_count(&counter), 1, "the second read coalesced");
+    let linked = state
+        .pull_requests
+        .iter()
+        .find(|pr| pr.number == 99)
+        .expect("pinned into the broadcast state");
+    assert!(linked.project_id.is_some(), "matched to the Forge project");
+
+    // The listing answers without #99; the pin keeps it.
+    write_gh(&gh, &counter, &complete_response("Acme/Forge"), 0, false);
+    client
+        .request(Request::RefreshPullRequests { force: true })
+        .expect("refresh ack");
+    let refreshed = pull_request_event(&events, common::DEADLINE);
+    let numbers: Vec<u32> = refreshed.pull_requests.iter().map(|pr| pr.number).collect();
+    assert!(
+        numbers.contains(&17) && numbers.contains(&99),
+        "{numbers:?}"
+    );
+    let Response::Snapshot { pull_requests, .. } =
+        client.request(Request::GetSnapshot).expect("snapshot")
+    else {
+        panic!("expected snapshot");
+    };
+    assert!(pull_requests.pull_requests.iter().any(|pr| pr.number == 99));
+
+    write_gh(
+        &gh,
+        &counter,
+        &single_response("Acme/Forge", 98, "MERGED"),
+        0,
+        false,
+    );
+    client
+        .request(Request::FetchPullRequest {
+            host: "github.com".into(),
+            repository: "Acme/Forge".into(),
+            number: 98,
+        })
+        .expect("fetch ack");
+    let error = fetched_event(&events).expect("a merged pull request is refused");
+    assert!(error.contains("merged"), "{error}");
+}

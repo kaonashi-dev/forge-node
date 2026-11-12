@@ -81,3 +81,13 @@ pub struct ExternalAgentSession {
     /// Last recorded activity (falls back to the file's mtime).
     pub last_activity: Timestamp,
 }
+
+/// A discovered run as `ListExternalSessions` reports it.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ExternalSessionEntry {
+    #[serde(flatten)]
+    pub session: ExternalAgentSession,
+    /// Whether a process still owns the conversation; `None` when the provider
+    /// keeps no registry that says so cheaply.
+    pub live: Option<bool>,
+}

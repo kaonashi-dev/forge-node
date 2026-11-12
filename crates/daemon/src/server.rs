@@ -153,6 +153,7 @@ async fn handle_connection(daemon: Arc<Daemon>, stream: UnixStream) -> std::io::
     let Hello {
         protocol_version,
         client_kind,
+        caller_session_id,
         ..
     } = hello;
     if protocol_version != PROTOCOL_VERSION {
@@ -203,7 +204,14 @@ async fn handle_connection(daemon: Arc<Daemon>, stream: UnixStream) -> std::io::
     });
 
     // ---- Read loop: decode requests, dispatch, reply ----
-    let result = read_loop(&daemon, client_id, client_kind, &mut read_half).await;
+    let result = read_loop(
+        &daemon,
+        client_id,
+        client_kind,
+        caller_session_id,
+        &mut read_half,
+    )
+    .await;
 
     // Dropping the channel ends the writer on disconnect.
     daemon.registry().unregister(client_id);
@@ -221,6 +229,7 @@ async fn read_loop(
     daemon: &Arc<Daemon>,
     client_id: ClientId,
     client_kind: ClientKind,
+    caller_session_id: Option<domain::SessionId>,
     read_half: &mut (impl AsyncReadExt + Unpin),
 ) -> std::io::Result<()> {
     let mut in_flight = tokio::task::JoinSet::new();
@@ -314,7 +323,7 @@ async fn read_loop(
                 } else if let Request::AttachTerminal { terminal_id, size } = body {
                     dispatch.attach_client(client_id, terminal_id, size)
                 } else {
-                    dispatch.handle_request_from(client_kind, body)
+                    crate::cross_profile::handle(&dispatch, client_kind, caller_session_id, body)
                 }
             })
             .await
@@ -388,6 +397,7 @@ fn request_name(request: &Request) -> &'static str {
         Request::GetAppState { .. } => "GetAppState",
         Request::SetAppState { .. } => "SetAppState",
         Request::RefreshPullRequests { .. } => "RefreshPullRequests",
+        Request::FetchPullRequest { .. } => "FetchPullRequest",
         Request::GetStats => "GetStats",
         Request::GetPaths => "GetPaths",
         Request::GetConfig => "GetConfig",
@@ -438,6 +448,8 @@ fn request_name(request: &Request) -> &'static str {
         Request::CreateAgentSession { .. } => "CreateAgentSession",
         Request::SendSessionPrompt { .. } => "SendSessionPrompt",
         Request::SendShellCommand { .. } => "SendShellCommand",
+        Request::ListExternalSessions { .. } => "ListExternalSessions",
+        Request::AdoptExternalSession { .. } => "AdoptExternalSession",
         Request::CreateChildSession { .. } => "CreateChildSession",
         Request::KillSession { .. } => "KillSession",
         Request::CloseSession { .. } => "CloseSession",

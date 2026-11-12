@@ -78,6 +78,9 @@
     "session kill",
     "session restart",
     "session close",
+    "session external list",
+    "session external read",
+    "session adopt",
     "spec run",
     "spec brief",
     "mcp",
@@ -110,6 +113,8 @@
     "review start --wait exits 0 only when the run completes; failed, cancelled or interrupted runs exit 1",
     "review start --model and --effort override [review] model and effort; unset uses the provider's own default",
     "mcp serves every agent-facing command as a tool; Forge registers it in writable Claude and OpenCode launches",
+    "[orchestration] cross_profile (off|read|full, default read) bounds what a session may read or steer in another profile; a refusal exits 6 with code policy",
+    "session adopt exits 5 with details.reason live while a process still owns the run, unless --force",
     "pr draft takes the body from --body, --body-file or stdin"
   ]
 }

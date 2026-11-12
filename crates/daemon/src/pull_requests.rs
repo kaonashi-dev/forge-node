@@ -4,7 +4,7 @@
 //! worker thread, then performs at most one `gh api graphql` call per eligible
 //! host. The core mutex is not held during either kind of subprocess work.
 
-use std::collections::{BTreeMap, HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
 use std::hash::{Hash, Hasher};
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
@@ -20,20 +20,38 @@ use crate::config::GithubConfig;
 
 /// A remote listing is reused for one minute when it answers the same query.
 const CACHE_TTL: Duration = Duration::from_secs(60);
+/// Pull requests opened by URL that a listing refresh keeps; the oldest goes first.
+const MAX_PINNED: usize = 8;
 
-/// A completed pull-request refresh.
+/// `(host, owner/name, number)`, lowercased: GitHub matches both case-insensitively.
+type PullRequestKey = (String, String, u32);
+
+fn key_of(host: &str, repository: &str, number: u32) -> PullRequestKey {
+    (
+        host.to_ascii_lowercase(),
+        repository.to_ascii_lowercase(),
+        number,
+    )
+}
+
+/// A completed pull-request refresh, plus the pull requests read one at a time.
 #[derive(Default)]
 pub struct Cache {
     fetched_at: Option<Instant>,
     fingerprint: u64,
     state: PullRequestState,
+    pinned: VecDeque<PullRequest>,
+    fetching: HashSet<PullRequestKey>,
 }
 
 impl Cache {
     /// Return the cached state without resolving Git remotes or invoking `gh`.
     #[must_use]
     pub fn snapshot(&self) -> PullRequestState {
-        self.state.clone()
+        let mut state = self.state.clone();
+        state.pull_requests.extend(self.pinned.iter().cloned());
+        dedupe_and_sort(&mut state.pull_requests);
+        state
     }
 
     /// Return a fresh answer when it was produced for the same query.
@@ -53,12 +71,36 @@ impl Cache {
         self.fetched_at = None;
     }
 
+    /// Keep `pull_request` in every snapshot until [`MAX_PINNED`] newer ones push it out.
+    pub fn pin(&mut self, pull_request: PullRequest) {
+        let key = key_of(
+            &pull_request.host,
+            &pull_request.repository,
+            pull_request.number,
+        );
+        self.pinned
+            .retain(|pinned| key_of(&pinned.host, &pinned.repository, pinned.number) != key);
+        self.pinned.push_back(pull_request);
+        while self.pinned.len() > MAX_PINNED {
+            self.pinned.pop_front();
+        }
+    }
+
+    /// `false` when a read of the same pull request is already in flight.
+    fn begin_fetch(&mut self, key: PullRequestKey) -> bool {
+        self.fetching.insert(key)
+    }
+
+    fn end_fetch(&mut self, key: &PullRequestKey) {
+        self.fetching.remove(key);
+    }
+
     fn fresh_at(&self, fingerprint: u64, now: Instant) -> Option<PullRequestState> {
         let fresh = self.fingerprint == fingerprint
             && self
                 .fetched_at
                 .is_some_and(|at| now.saturating_duration_since(at) < CACHE_TTL);
-        fresh.then(|| self.state.clone())
+        fresh.then(|| self.snapshot())
     }
 
     fn update_at(&mut self, fingerprint: u64, state: PullRequestState, now: Instant) {
@@ -189,6 +231,162 @@ pub(crate) fn resolve(projects: Vec<ProjectSource>, config: &GithubConfig) -> Qu
 fn normalize_configured_host(host: &str) -> Option<String> {
     let host = host.trim().trim_end_matches('.').to_ascii_lowercase();
     (!host.is_empty()).then_some(host)
+}
+
+/// GitHub's own alphabet for owners and repositories, which also keeps a
+/// value from reading as a `gh` flag.
+fn valid_segment(segment: &str) -> bool {
+    !segment.is_empty()
+        && segment.len() <= 100
+        && !segment.starts_with('-')
+        && segment
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'-' | b'_' | b'.'))
+}
+
+/// The repository to ask, or why the request names none Forge may ask.
+pub(crate) fn single_target(
+    host: &str,
+    repository: &str,
+    number: u32,
+    config: &GithubConfig,
+) -> Result<GitHubRepo, String> {
+    let host = normalize_configured_host(host).ok_or("the URL names no host")?;
+    let enterprise = config
+        .enterprise_hosts
+        .iter()
+        .filter_map(|configured| normalize_configured_host(configured))
+        .any(|configured| configured == host);
+    if host != "github.com" && !enterprise {
+        return Err(format!(
+            "{host} is not github.com or a host listed in [github] enterprise_hosts"
+        ));
+    }
+    let Some((owner, name)) = repository.split_once('/') else {
+        return Err("the repository must be owner/name".into());
+    };
+    if !valid_segment(owner) || !valid_segment(name) {
+        return Err("the repository must be owner/name".into());
+    }
+    if number == 0 {
+        return Err("a pull request number starts at 1".into());
+    }
+    Ok(GitHubRepo {
+        host,
+        owner: owner.to_owned(),
+        name: name.to_owned(),
+    })
+}
+
+/// Read one pull request off the core lock, pin it when it is open, and say so.
+///
+/// Acks when the read starts; a second request for the same pull request
+/// while one is in flight coalesces into it.
+pub(crate) fn fetch(
+    daemon: &std::sync::Arc<crate::Daemon>,
+    host: &str,
+    repository: &str,
+    number: u32,
+) -> Result<protocol::Response, protocol::ProtocolError> {
+    let target = single_target(host, repository, number, &daemon.config.github)
+        .map_err(protocol::ProtocolError::invalid_request)?;
+    let key = key_of(&target.host, &target.name_with_owner(), number);
+    if !daemon.pull_request_cache().begin_fetch(key.clone()) {
+        return Ok(protocol::Response::Ack);
+    }
+    let echo = (host.to_owned(), repository.to_owned());
+    let worker = std::sync::Arc::clone(daemon);
+    let guard_key = key.clone();
+    std::thread::Builder::new()
+        .name("forge-pr-fetch".into())
+        .spawn(move || {
+            let _guard = FetchGuard {
+                daemon: std::sync::Arc::clone(&worker),
+                key: guard_key,
+            };
+            let error = fetch_and_pin(&worker, &target, number).err();
+            if error.is_none() {
+                let state = worker.pull_request_cache().snapshot();
+                worker
+                    .registry
+                    .broadcast_domain(protocol::DaemonEvent::PullRequestsUpdated { state });
+            }
+            worker
+                .registry
+                .broadcast_domain(protocol::DaemonEvent::PullRequestFetched {
+                    host: echo.0,
+                    repository: echo.1,
+                    number,
+                    error,
+                });
+        })
+        .map_err(|error| {
+            daemon.pull_request_cache().end_fetch(&key);
+            protocol::ProtocolError::new(
+                protocol::ErrorCode::IoError,
+                format!("cannot start the pull-request read: {error}"),
+            )
+        })?;
+    Ok(protocol::Response::Ack)
+}
+
+/// Releases the coalescing key even when the worker panics.
+struct FetchGuard {
+    daemon: std::sync::Arc<crate::Daemon>,
+    key: PullRequestKey,
+}
+
+impl Drop for FetchGuard {
+    fn drop(&mut self) {
+        self.daemon.pull_request_cache().end_fetch(&self.key);
+    }
+}
+
+fn fetch_and_pin(daemon: &crate::Daemon, target: &GitHubRepo, number: u32) -> Result<(), String> {
+    let (projects, path_entries) = daemon.pull_request_inputs();
+    let config = &daemon.config.github;
+    let cli = config.cli(path_entries);
+    let single = git_service::fetch_pull_request_with_cli(&cli, target, number)
+        .map_err(|error| classify_host_error(&cli, &target.host, &error).1)?;
+    let Some((row, lifecycle)) = single.found else {
+        let detail = single
+            .message
+            .map(|message| format!(": {message}"))
+            .unwrap_or_default();
+        return Err(format!(
+            "{}#{number} on {} was not found, or this GitHub account cannot see it{detail}",
+            target.name_with_owner(),
+            target.host
+        ));
+    };
+    let state = match lifecycle {
+        git_service::PullRequestLifecycle::Open => None,
+        git_service::PullRequestLifecycle::Merged => Some("merged"),
+        git_service::PullRequestLifecycle::Closed => Some("closed"),
+        git_service::PullRequestLifecycle::Unknown => Some("not open"),
+    };
+    if let Some(state) = state {
+        return Err(format!(
+            "{}#{number} is {state}; only an open pull request can be reviewed",
+            row.repository
+        ));
+    }
+    let owners: HashMap<(String, String), ProjectId> = resolve(projects, config)
+        .repositories
+        .into_iter()
+        .map(|eligible| {
+            (
+                (
+                    eligible.repository.host.to_ascii_lowercase(),
+                    eligible.repository.name_with_owner().to_ascii_lowercase(),
+                ),
+                eligible.project_id,
+            )
+        })
+        .collect();
+    let pull_request = map_pull_request(row, single.viewer.as_deref(), &owners)?;
+    daemon.pull_request_cache().pin(pull_request);
+    Ok(())
 }
 
 fn source(
@@ -779,5 +977,105 @@ mod tests {
         assert!(mapped.relations.review_requested);
         assert!(mapped.relations.authored);
         assert_eq!(mapped.updated_at.to_rfc3339(), "2026-08-25T10:00:00Z");
+    }
+
+    fn pinned(repository: &str, number: u32) -> PullRequest {
+        let row = GitHubPullRequest {
+            host: "github.com".into(),
+            repository: repository.into(),
+            number,
+            title: format!("#{number}"),
+            body: String::new(),
+            body_truncated: false,
+            url: format!("https://github.com/{repository}/pull/{number}"),
+            author: "alice".into(),
+            base_ref: "main".into(),
+            head_ref: "topic".into(),
+            is_draft: false,
+            review_decision: None,
+            labels: vec![],
+            assignees: vec![],
+            review_requests: vec![],
+            viewer_review_requested: false,
+            additions: 0,
+            deletions: 0,
+            changed_files: 0,
+            comment_count: 0,
+            created_at: "2026-08-24T10:00:00Z".into(),
+            updated_at: format!("2026-08-24T10:{:02}:00Z", number % 60),
+        };
+        map_pull_request(row, None, &HashMap::new()).expect("valid row")
+    }
+
+    #[test]
+    fn a_pinned_pull_request_survives_a_listing_refresh_up_to_the_bound() {
+        let mut cache = Cache::default();
+        cache.pin(pinned("acme/widgets", 1));
+        cache.update(1, state("listed"));
+        let numbers = |cache: &Cache| -> Vec<u32> {
+            cache
+                .snapshot()
+                .pull_requests
+                .iter()
+                .map(|pr| pr.number)
+                .collect()
+        };
+        assert_eq!(numbers(&cache), [1]);
+        assert_eq!(cache.fresh(1).expect("fresh").pull_requests.len(), 1);
+
+        cache.update(
+            2,
+            PullRequestState {
+                pull_requests: vec![pinned("Acme/Widgets", 1)],
+                ..PullRequestState::default()
+            },
+        );
+        assert_eq!(numbers(&cache), [1], "listed and pinned is one row");
+
+        for number in 2..=(MAX_PINNED as u32 + 1) {
+            cache.pin(pinned("acme/widgets", number));
+        }
+        cache.update(3, state("empty"));
+        let kept = numbers(&cache);
+        assert_eq!(kept.len(), MAX_PINNED);
+        assert!(!kept.contains(&1), "the oldest pin goes first");
+    }
+
+    #[test]
+    fn fetches_coalesce_per_pull_request_case_insensitively() {
+        let mut cache = Cache::default();
+        assert!(cache.begin_fetch(key_of("GitHub.com", "Acme/Widgets", 7)));
+        assert!(!cache.begin_fetch(key_of("github.com", "acme/widgets", 7)));
+        assert!(cache.begin_fetch(key_of("github.com", "acme/widgets", 8)));
+        cache.end_fetch(&key_of("github.com", "acme/widgets", 7));
+        assert!(cache.begin_fetch(key_of("github.com", "acme/widgets", 7)));
+    }
+
+    #[test]
+    fn only_github_and_configured_enterprise_hosts_are_asked() {
+        let config = GithubConfig {
+            enterprise_hosts: vec!["GHE.Example.test".into()],
+            ..GithubConfig::default()
+        };
+        let ok = single_target("GitHub.com", "acme/widgets", 7, &config).expect("github");
+        assert_eq!(
+            (ok.host.as_str(), ok.name_with_owner()),
+            ("github.com", "acme/widgets".into())
+        );
+        assert!(single_target("ghe.example.test", "team/svc", 1, &config).is_ok());
+        for (host, repository, number) in [
+            ("gitlab.com", "acme/widgets", 7),
+            ("github.com.evil.test", "acme/widgets", 7),
+            ("github.com", "acme", 7),
+            ("github.com", "acme/widgets/extra", 7),
+            ("github.com", "-acme/widgets", 7),
+            ("github.com", "acme/wid gets", 7),
+            ("github.com", "acme/widgets", 0),
+        ] {
+            assert!(
+                single_target(host, repository, number, &config).is_err(),
+                "{host} {repository} {number}"
+            );
+        }
     }
 }

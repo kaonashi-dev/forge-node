@@ -235,6 +235,15 @@ pub enum DaemonEvent {
         /// Complete pull-request state after the refresh.
         state: PullRequestState,
     },
+    /// A `FetchPullRequest` ended. On success the pull request is already in
+    /// the state a preceding `PullRequestsUpdated` carried.
+    PullRequestFetched {
+        host: String,
+        repository: String,
+        number: u32,
+        /// Why it is not available: not found, not open, no access, no `gh`.
+        error: Option<String>,
+    },
     /// A watched file changed on disk (ADR-012).
     ///
     /// Emitted so an open editor buffer can offer reload-or-keep rather than
