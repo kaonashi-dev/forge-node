@@ -1211,6 +1211,7 @@ fn tab_switcher(s: &AppState, k: &Kit, layer: &mut Vec<El>) {
         .scroll_margin(12.0)
         .child(list);
     let card = col()
+        .key("tab-switcher")
         .gap(crate::ds::SPACE_1)
         .w(420.0)
         .padding(10.0)
@@ -1237,8 +1238,8 @@ fn tab_switcher(s: &AppState, k: &Kit, layer: &mut Vec<El>) {
             .absolute(0.0, 0.0)
             .w_full()
             .h_full()
-            .pt(72.0)
-            .items_center()
+            .padding(16.0)
+            .center()
             .child(k.elevate(card, &k.elevation.overlay)),
     );
 }

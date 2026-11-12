@@ -129,13 +129,15 @@ impl AppState {
         }
     }
 
-    /// ⌘ went down or up with the pointer still: underline or drop the link.
+    /// Control up commits a held tab switcher; ⌘ down or up with the pointer
+    /// still underlines or drops the link. Either one re-runs the view.
     pub fn terminal_modifiers(&mut self, mods: rune::Mods, tx: &mut Tx) {
+        let mut changed = false;
         if !mods.ctrl && self.tabs.gesture.is_some() {
             self.commit_tab_switcher();
             tx.instant();
+            changed = true;
         }
-        let mut changed = false;
         for idx in 0..self.pane_count() {
             let link = match self.pane(idx).hover {
                 Some((x, y)) if mods.cmd => self.link_under(idx, x, y),
