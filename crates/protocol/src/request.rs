@@ -978,7 +978,7 @@ pub enum Request {
         terminal_id: TerminalId,
         /// Absolute scrollback line index of the first row (0 = oldest).
         from_line: i64,
-        /// Maximum number of rows to return.
+        /// Maximum number of rows to return; the block ends with the history, never in the live screen.
         count: u32,
     },
     /// Deliver a signal to a session's process group → `Ack`.

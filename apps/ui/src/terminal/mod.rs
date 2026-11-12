@@ -42,6 +42,8 @@ pub struct SharedTerminal {
     measure_epoch: AtomicU64,
     grid_epoch: AtomicU64,
     resync_epoch: AtomicU64,
+    /// Bumped once per answered `FetchScrollback`, merged or not.
+    history_epoch: AtomicU64,
     render_epoch: AtomicU64,
     rendered_epoch: AtomicU64,
     notify_enabled: AtomicBool,
@@ -78,6 +80,7 @@ impl SharedTerminal {
             measure_epoch: AtomicU64::new(0),
             grid_epoch: AtomicU64::new(0),
             resync_epoch: AtomicU64::new(0),
+            history_epoch: AtomicU64::new(0),
             render_epoch: AtomicU64::new(0),
             rendered_epoch: AtomicU64::new(0),
             notify_enabled: AtomicBool::new(false),
@@ -275,6 +278,15 @@ impl SharedTerminal {
     #[must_use]
     pub fn resync_epoch(&self) -> u64 {
         self.resync_epoch.load(Ordering::Acquire)
+    }
+
+    #[must_use]
+    pub fn history_epoch(&self) -> u64 {
+        self.history_epoch.load(Ordering::Acquire)
+    }
+
+    pub fn answer_history(&self) {
+        self.history_epoch.fetch_add(1, Ordering::Release);
     }
 
     pub fn request_redraw(&self) {

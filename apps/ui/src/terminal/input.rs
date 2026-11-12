@@ -73,6 +73,7 @@ impl Outbox {
             && ui.fetch_pending != Some(request)
         {
             ui.fetch_pending = Some(request);
+            ui.fetch_epoch = ui.shared.history_epoch();
             self.fetches.push((pane, request));
         }
     }
@@ -218,12 +219,12 @@ pub fn key(
                 Key::Home => i64::MAX / 2,
                 _ => i64::MIN / 2,
             };
+            let target = (ui.scroll as i64 + lines).clamp(0, grid.scrollback_len as i64);
+            ui.scroll = target as usize;
             let viewport = Viewport {
                 grid,
                 scroll: ui.scroll,
             };
-            let target = (ui.scroll as i64 + lines).clamp(0, viewport.max_scroll() as i64);
-            ui.scroll = target as usize;
             let request = missing_history(ui, &viewport);
             out.fetch(idx, request, ui);
             ui.request_frame();
@@ -314,12 +315,12 @@ pub fn wheel(
     if modes.alt_screen {
         return true;
     }
+    let target = (ui.scroll as i64 + lines).clamp(0, grid.scrollback_len as i64);
+    ui.scroll = target as usize;
     let viewport = Viewport {
         grid,
         scroll: ui.scroll,
     };
-    let target = (ui.scroll as i64 + lines).clamp(0, viewport.max_scroll() as i64);
-    ui.scroll = target as usize;
     let request = missing_history(ui, &viewport);
     out.fetch(idx, request, ui);
     ui.request_frame();
@@ -732,6 +733,25 @@ pub fn encode_cursor_move(grid: &CellGrid, row: u16, col: u16, agent: bool) -> O
     Some(encode_key(key, Modifiers::none(), &modes).repeat(steps))
 }
 
+/// Asks for the history rows a scrolled view shows but the replica lacks: rows that
+/// left the live screen are never cached, so output alone can blank a held view.
+pub fn follow_history(idx: usize, ui: &mut TerminalUi, grid: &CellGrid, out: &mut Outbox) -> bool {
+    if ui.fetch_pending.is_some() && ui.shared.history_epoch() != ui.fetch_epoch {
+        ui.fetch_pending = None;
+    }
+    if ui.scroll == 0 || ui.fetch_pending.is_some() {
+        return false;
+    }
+    let viewport = Viewport {
+        grid,
+        scroll: ui.scroll.min(grid.scrollback_len as usize),
+    };
+    let queued = out.fetches.len();
+    let request = missing_history(ui, &viewport);
+    out.fetch(idx, request, ui);
+    out.fetches.len() > queued
+}
+
 fn missing_history(ui: &TerminalUi, viewport: &Viewport<'_>) -> Option<FetchRequest> {
     let top = viewport.top_abs();
     let base = viewport.base();
@@ -749,7 +769,7 @@ fn missing_history(ui: &TerminalUi, viewport: &Viewport<'_>) -> Option<FetchRequ
 mod tests {
     use super::*;
     use crate::terminal::SharedTerminal;
-    use crate::terminal::fixture::{ModeSet, grid};
+    use crate::terminal::fixture::{Feed, HISTORY_LINES, ModeSet, grid};
 
     const CELL: (f32, f32) = (7.0, 14.0);
 
@@ -998,6 +1018,112 @@ mod tests {
         out.fetch(0, again, &mut ui);
         assert_eq!(out.fetches.len(), 1, "coalesced");
         assert!(out.fetches[0].1.from_line < 800);
+    }
+
+    fn covers(request: FetchRequest, abs: i64) -> bool {
+        request.from_line <= abs && abs < request.from_line + i64::from(request.count)
+    }
+
+    #[test]
+    fn a_scroll_asks_for_the_rows_it_lands_on_not_the_ones_it_left() {
+        let mut out = Outbox::default();
+        let (mut ui, grid) = surface(ModeSet::Plain);
+        wheel(
+            0,
+            &mut ui,
+            &grid,
+            &WheelEvent::new(0.0, 300.0 * CELL.1),
+            CELL,
+            &mut out,
+        );
+        assert_eq!(ui.scroll, 300, "past the 200 cached rows");
+        let [(_, request)] = out.fetches[..] else {
+            panic!("one fetch, got {:?}", out.fetches);
+        };
+        assert!(covers(request, HISTORY_LINES as i64 - 300));
+
+        let (mut ui, grid) = surface(ModeSet::Plain);
+        let shift = Mods {
+            shift: true,
+            ..Mods::default()
+        };
+        let mut out = Outbox::default();
+        key_(
+            Key::Home,
+            shift,
+            &mut ui,
+            &grid,
+            &mut out,
+            &mut Effects::default(),
+        );
+        let [(_, request)] = out.fetches[..] else {
+            panic!("one fetch, got {:?}", out.fetches);
+        };
+        assert!(covers(request, 0), "the oldest page");
+    }
+
+    #[test]
+    fn output_under_a_scrolled_view_fetches_the_rows_it_slides_in() {
+        let mut out = Outbox::default();
+        let (mut ui, mut grid) = surface(ModeSet::Plain);
+        ui.scroll = 30;
+        assert!(!follow_history(0, &mut ui, &grid, &mut out), "all cached");
+        // A row that leaves the live screen is never cached by the replica, so
+        // a view held 30 lines up turns blank as 30 lines scroll by.
+        let mut feed = Feed::new(true, false);
+        for _ in 0..30 {
+            let delta = feed.delta(&grid);
+            assert_eq!(grid.apply_delta(&delta), client::DeltaOutcome::Applied);
+        }
+        assert!(follow_history(0, &mut ui, &grid, &mut out));
+        let [(_, request)] = out.fetches[..] else {
+            panic!("one fetch, got {:?}", out.fetches);
+        };
+        assert!(covers(request, HISTORY_LINES as i64));
+        assert!(
+            !follow_history(0, &mut ui, &grid, &mut out),
+            "one block in flight"
+        );
+
+        ui.shared.answer_history();
+        assert!(
+            follow_history(0, &mut ui, &grid, &mut out),
+            "an answer that left the rows missing asks again"
+        );
+        assert_eq!(out.fetches.len(), 2);
+
+        ui.shared.answer_history();
+        ui.scroll = 0;
+        assert!(!follow_history(0, &mut ui, &grid, &mut out), "live screen");
+    }
+
+    #[test]
+    fn an_answered_fetch_lets_the_edge_step_again() {
+        let mut out = Outbox::default();
+        let (mut ui, grid) = surface(ModeSet::Plain);
+        drag(
+            &mut ui,
+            &grid,
+            Press::Down,
+            40.0,
+            10.0 * CELL.1 + 1.0,
+            1,
+            &mut out,
+        );
+        drag(&mut ui, &grid, Press::Move, 40.0, 1.0, 1, &mut out);
+        out.fetch(
+            0,
+            Some(FetchRequest {
+                from_line: 500,
+                count: 512,
+            }),
+            &mut ui,
+        );
+        assert!(!edge(&mut ui, &grid), "waits for the history it asked for");
+        ui.shared.answer_history();
+        assert!(!follow_history(0, &mut ui, &grid, &mut out));
+        assert_eq!(ui.fetch_pending, None, "the answer released it");
+        assert!(edge(&mut ui, &grid));
     }
 
     fn drag(

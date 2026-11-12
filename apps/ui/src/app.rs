@@ -2602,6 +2602,13 @@ impl AppState {
         } else {
             0.016
         };
+        let mut fetched = false;
+        for idx in 0..self.pane_count() {
+            fetched |= self.terminal_follow_history(idx);
+        }
+        if fetched {
+            self.flush_outbox();
+        }
         for idx in 0..self.pane_count() {
             let Some(drag) = self.pane(idx).drag else {
                 continue;
@@ -2623,6 +2630,19 @@ impl AppState {
         }
         tx.wake_after(Duration::from_secs_f64(floor));
         changed
+    }
+
+    fn terminal_follow_history(&mut self, idx: usize) -> bool {
+        if !self.pane_mut(idx).history_moved() {
+            return false;
+        }
+        let shared = Arc::clone(&self.pane(idx).shared);
+        let slot = shared.lock();
+        let Some(grid) = slot.grid.as_ref() else {
+            return false;
+        };
+        let (pane, out) = self.pane_io(idx);
+        input::follow_history(idx, pane, grid, out)
     }
 
     fn terminal_edge_step(&mut self, idx: usize) -> bool {

@@ -6271,10 +6271,17 @@ impl Daemon {
         let start = from_line
             .checked_sub(len)
             .ok_or_else(|| ProtocolError::invalid_request("from_line is out of range"))?;
+        // Stops at the live screen: a client caches these rows by absolute index, and a
+        // screen row cached that way would stand in for the history it later becomes.
         let end = start
             .checked_add(i64::from(count))
-            .ok_or_else(|| ProtocolError::invalid_request("from_line + count is out of range"))?;
-        let rows = rt.engine.rows(start..end);
+            .ok_or_else(|| ProtocolError::invalid_request("from_line + count is out of range"))?
+            .min(0);
+        let rows = if start < end {
+            rt.engine.rows(start..end)
+        } else {
+            Vec::new()
+        };
         Ok(Response::ScrollbackRows(ScrollbackRows {
             snapshot: None,
             generation: rt.engine.scrollback_generation(),
@@ -10529,7 +10536,7 @@ mod tests {
     // ---------------------------------------------------------------
 
     #[test]
-    fn fetch_scrollback_rejects_out_of_range_arguments() {
+    fn fetch_scrollback_rejects_bad_ranges_and_stops_at_the_live_screen() {
         let (daemon, tmp, backend) = test_daemon_with_pty(FakePtyBackend::empty());
         let workspace = seeded_workspace(&daemon, tmp.path());
         daemon
@@ -10561,15 +10568,45 @@ mod tests {
             .expect_err("a negative from_line must be rejected");
         assert_eq!(err.code, ErrorCode::InvalidRequest);
 
-        // A request within the bounds is served.
-        let response = daemon
-            .fetch_scrollback(terminal_id, 0, 4)
-            .expect("an in-range fetch succeeds");
-        let Response::ScrollbackRows(rows) = response else {
-            panic!("expected ScrollbackRows");
+        let fetch = |from_line, count| {
+            let response = daemon
+                .fetch_scrollback(terminal_id, from_line, count)
+                .expect("an in-range fetch succeeds");
+            let Response::ScrollbackRows(block) = response else {
+                panic!("expected ScrollbackRows");
+            };
+            assert_eq!(block.from_line, from_line);
+            block
+                .rows
+                .iter()
+                .map(|row| {
+                    row.cells
+                        .iter()
+                        .map(|cell| cell.text.as_str())
+                        .collect::<String>()
+                })
+                .map(|text| text.trim_end().to_owned())
+                .collect::<Vec<_>>()
         };
-        assert_eq!(rows.rows.len(), 4);
-        assert_eq!(rows.from_line, 0);
+        assert!(fetch(0, 4).is_empty(), "no history yet");
+
+        let output: String = (0..100).map(|n| format!("line {n}\r\n")).collect();
+        daemon.pump_terminal(terminal_id, output.as_bytes(), false);
+        let len = {
+            let inner = daemon.lock();
+            let rt = inner.terminals.get(&terminal_id).expect("live terminal");
+            rt.engine.scrollback_len() as i64
+        };
+        assert!(len > 4, "the output scrolled into history");
+        assert_eq!(fetch(0, 2), ["line 0", "line 1"]);
+        let tail = fetch(len - 2, 512);
+        assert_eq!(
+            tail.len(),
+            2,
+            "a block reaching past history stops before the live screen"
+        );
+        assert_eq!(tail[1], format!("line {}", len - 1));
+        assert!(fetch(len, 4).is_empty());
         backend.set_exited(terminal_core::ExitStatus::default());
     }
 

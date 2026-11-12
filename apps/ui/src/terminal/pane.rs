@@ -131,6 +131,9 @@ pub struct TerminalUi {
     pub last_cell: Option<(u16, u16)>,
     pub wheel_rem: f32,
     pub fetch_pending: Option<FetchRequest>,
+    /// `SharedTerminal::history_epoch` when `fetch_pending` was sent; a change means it was answered.
+    pub fetch_epoch: u64,
+    history_seen: (u64, u64, usize),
     pub mirror: String,
     pub mirror_cursor: String,
     pub mirror_version: u64,
@@ -171,6 +174,8 @@ impl TerminalUi {
             last_cell: None,
             wheel_rem: 0.0,
             fetch_pending: None,
+            fetch_epoch: 0,
+            history_seen: (u64::MAX, u64::MAX, 0),
             mirror: String::new(),
             mirror_cursor: String::new(),
             mirror_version: u64::MAX,
@@ -337,6 +342,7 @@ impl TerminalUi {
         self.preedit.clear();
         self.mirror_version = u64::MAX;
         self.attach_generation = generation;
+        self.fetch_pending = None;
         self.shared.request_redraw();
         let _ = version;
         true
@@ -349,12 +355,25 @@ impl TerminalUi {
         self.mirror.clear();
         self.mirror_cursor.clear();
         self.scroll = 0;
+        self.fetch_pending = None;
         self.selection = None;
         self.preedit.clear();
     }
 
     pub fn request_frame(&self) {
         self.shared.request_redraw();
+    }
+
+    /// Whether the grid, an answered fetch or the scroll changed since the last call.
+    pub fn history_moved(&mut self) -> bool {
+        let seen = (
+            self.shared.grid_epoch(),
+            self.shared.history_epoch(),
+            self.scroll,
+        );
+        let moved = seen != self.history_seen;
+        self.history_seen = seen;
+        moved
     }
 
     /// Rebuild the a11y mirror at most every 125 ms from the current grid and viewport.

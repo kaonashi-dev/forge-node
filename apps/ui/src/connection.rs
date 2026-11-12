@@ -1652,6 +1652,7 @@ fn handle_fixture_command(
                 )
             };
             let _ = terminal.merge_scrollback(generation, terminal_id, &block);
+            terminal.answer_history();
             wake();
         }
         Command::CreateShellSession { workspace_id } => {
@@ -2822,18 +2823,18 @@ fn handle_live_command(
             if command_generation < generation {
                 return;
             }
+            let Some(holder) = terminal.holding(terminal_id) else {
+                return;
+            };
             metrics.note_socket_op();
             match client.fetch_scrollback(terminal_id, from_line, count) {
                 Ok(block) => {
-                    if !terminal.merge_scrollback(generation, terminal_id, &block)
-                        && let Some(split) = terminal.beside()
-                    {
-                        split.merge_scrollback(generation, terminal_id, &block);
-                    }
-                    wake();
+                    holder.merge_scrollback(generation, terminal_id, &block);
                 }
                 Err(error) => eprintln!("forge-ui: FetchScrollback: {error}"),
             }
+            holder.answer_history();
+            wake();
         }
         Command::CreateShellSession { workspace_id } => {
             metrics.note_socket_op();
