@@ -30,10 +30,16 @@ use metrics::MetricsCache;
 /// The row at the default size and spacing: `round(13 × 1.35)`.
 pub const ROW_H: f32 = 18.0;
 /// The gutter at the default size; its line numbers grow with the type.
-pub const GUTTER_W: f32 = 88.0;
+pub const GUTTER_W: f32 = 92.0;
 pub const NUMBER_W: f32 = 40.0;
+pub const GUTTER_PAD: f32 = 6.0;
+/// The git mark's width, and the room between it and the line number.
+pub const MARK_W: f32 = 3.0;
+pub const MARK_GAP: f32 = 8.0;
+/// A 3-point bar is too thin to aim at; a press this close still counts.
+const MARK_SLOP: f32 = 4.0;
 /// The gutter's right edge holds the fold chevron; a press there toggles it.
-pub const FOLD_HIT_W: f32 = 20.0;
+pub const FOLD_HIT_W: f32 = 22.0;
 pub const TEXT_PAD: f32 = 4.0;
 pub const SCROLL_KEY: &str = "editor-scroll";
 /// Rows mounted above and below the visible ones.
@@ -336,6 +342,13 @@ impl EditorUi {
     }
 }
 
+/// Whether a press `x` points into the gutter lands on the git mark.
+#[must_use]
+pub fn on_mark(x: f32, number_w: f32) -> bool {
+    let start = GUTTER_PAD + number_w + MARK_GAP;
+    x >= start - MARK_SLOP && x < start + MARK_W + MARK_SLOP
+}
+
 /// Where the window's first row sits among the rows the document takes.
 #[must_use]
 pub fn visual_base(frame: &EditorFrame) -> u32 {
@@ -485,6 +498,22 @@ pub(crate) fn modifier_bits(mods: rune::Mods) -> u8 {
 
 #[cfg(test)]
 pub(crate) mod tests {
+    #[test]
+    fn a_press_beside_the_number_is_on_the_mark_and_the_number_is_not() {
+        let number_w = NUMBER_W;
+        let mark = GUTTER_PAD + number_w + MARK_GAP;
+        assert!(on_mark(mark + MARK_W / 2.0, number_w));
+        assert!(on_mark(mark - 2.0, number_w), "a near miss still counts");
+        assert!(
+            !on_mark(GUTTER_PAD + number_w - 2.0, number_w),
+            "the number's last digit"
+        );
+        assert!(
+            !on_mark(mark + MARK_W + 6.0, number_w),
+            "the diagnostic dot"
+        );
+    }
+
     use super::*;
     use std::sync::Arc;
 

@@ -830,6 +830,107 @@ mod tests {
     }
 
     #[test]
+    fn a_press_on_a_git_mark_opens_that_line_in_the_diff() {
+        let (mut rt, _rx, id_text) = editor_runtime();
+        click_session(&mut rt, &id_text);
+        rt.update(|s, _| {
+            let id = s.active.expect("the editor");
+            let store = s.store.as_mut().expect("a store");
+            let session = store
+                .sessions
+                .iter_mut()
+                .find(|session| session.id == id)
+                .expect("its session");
+            session.editor = Some(domain::EditorState {
+                path: "src/main.rs".into(),
+                ..domain::EditorState::default()
+            });
+            let lines = [
+                (0, "fn main() {"),
+                (1, "    body();"),
+                (2, "}"),
+                (3, "tail"),
+            ];
+            let mut frame = editor::tests::frame(0, &lines, 4, (0, 0));
+            frame.doc_version = 2;
+            let rows = Arc::make_mut(&mut frame.rows);
+            rows[1].mark = Some(domain::EditorMark::Modified);
+            rows[1].fingerprint = rows[1].content_fingerprint();
+            let _ = s.editor.apply_frame(id, frame);
+        });
+        rt.frame(0.2);
+        let row = rt
+            .elements()
+            .into_iter()
+            .find(|e| e.key.as_deref() == Some("row:1"))
+            .map(|e| e.rect)
+            .expect("the marked row");
+        let number = rt
+            .elements()
+            .into_iter()
+            .find(|e| e.key.as_deref() == Some("row:0"))
+            .map(|e| e.rect)
+            .expect("an unmarked row");
+        let mark_x =
+            row[0] + editor::GUTTER_PAD + rt.state.editor.number_w() + editor::MARK_GAP + 1.0;
+        let y = row[1] + row[3] / 2.0;
+        rt.pointer_down(
+            row[0] + editor::GUTTER_PAD + 4.0,
+            number[1] + number[3] / 2.0,
+        );
+        rt.pointer_up(
+            row[0] + editor::GUTTER_PAD + 4.0,
+            number[1] + number[3] / 2.0,
+        );
+        rt.frame(0.3);
+        assert_eq!(
+            rt.state.workbench.mode,
+            workbench::CenterMode::Session,
+            "a press on a line number is not a press on its mark"
+        );
+        rt.pointer_down(mark_x, y);
+        rt.pointer_up(mark_x, y);
+        rt.frame(0.4);
+        assert_eq!(rt.state.workbench.mode, workbench::CenterMode::Changes);
+
+        let patch = "diff --git a/src/main.rs b/src/main.rs\n--- a/src/main.rs\n+++ b/src/main.rs\n@@ -1,3 +1,3 @@\n fn main() {\n-    old();\n+    body();\n }\n";
+        let file = |path: &str, patch: &str| domain::DiffFile {
+            path: path.into(),
+            status: domain::DiffStatus::Modified,
+            additions: 1,
+            deletions: 1,
+            patch: patch.into(),
+            binary: false,
+            truncated: false,
+        };
+        let other = patch.replace("src/main.rs", "a.rs");
+        rt.update(move |s, tx| {
+            let scope = s.workbench.scope().expect("a scope");
+            s.workbench.apply_diff(
+                scope,
+                Ok(domain::WorkspaceDiff {
+                    workspace_id: scope.workspace,
+                    branch: None,
+                    files: vec![file("a.rs", &other), file("src/main.rs", patch)],
+                    truncated: false,
+                }),
+            );
+            let changes = &s.workbench.changes;
+            let shown = changes.selected.and_then(|index| changes.files.get(index));
+            assert_eq!(
+                shown.map(|file| file.path.as_str()),
+                Some("src/main.rs"),
+                "the marked file, not the first changed one"
+            );
+            assert!(
+                s.workbench.settle_change_reveal(tx),
+                "the marked line is scrolled to"
+            );
+            assert!(!s.workbench.settle_change_reveal(tx), "once");
+        });
+    }
+
+    #[test]
     fn shift_command_g_finds_previous_in_the_editor_instead_of_opening_git() {
         use domain::{EditorInputEvent, EditorKey, editor_modifiers};
         let (mut rt, rx, id_text) = editor_runtime();

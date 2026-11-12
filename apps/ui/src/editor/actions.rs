@@ -363,6 +363,26 @@ impl AppState {
 
     /// Shows `path` in the Files tree, opening each folder above it as its
     /// listing arrives.
+    #[must_use]
+    pub fn marked(&self, line: u32) -> bool {
+        self.editor.frame.as_ref().is_some_and(|frame| {
+            frame
+                .rows
+                .iter()
+                .any(|row| row.line == line && row.mark.is_some())
+        })
+    }
+
+    /// A press on a line's git mark: the file's diff in Changes, at that line.
+    /// The diff is git's against `HEAD` on disk, so unsaved edits are not in it.
+    pub fn open_line_diff(&mut self, line: u32) {
+        let Some(path) = self.active_editor_state().map(|state| state.path.clone()) else {
+            return;
+        };
+        self.show_mode(CenterMode::Changes);
+        self.workbench.reveal_change(path, line + 1);
+    }
+
     pub fn reveal_in_files(&mut self, path: String, tx: &mut Tx) {
         self.show_panel(Panel::Files);
         self.editor.reveal = Some(path);

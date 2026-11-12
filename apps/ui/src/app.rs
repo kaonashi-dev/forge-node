@@ -2571,6 +2571,7 @@ impl AppState {
         changed |= self.toasts.expire(Instant::now());
         changed |= self.settings.esc.expire(Instant::now());
         changed |= self.poll_files(tx);
+        changed |= self.workbench.settle_change_reveal(tx);
         crate::native_menus::refresh(self);
         if clock - self.mirror_at >= 0.125 {
             for idx in 0..self.pane_count() {

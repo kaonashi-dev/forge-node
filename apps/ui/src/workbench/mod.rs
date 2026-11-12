@@ -259,6 +259,14 @@ pub struct ChangedFile {
     diffs: Vec<rune_kit::diff::FileDiff>,
 }
 
+/// `line` is 1-based on the new side; `revision` is the file list it was
+/// asked against, so a path missing from a later list is given up on.
+struct LineReveal {
+    path: String,
+    line: u32,
+    revision: u64,
+}
+
 #[derive(Default)]
 pub struct Changes {
     pub state: DiffState,
@@ -267,6 +275,8 @@ pub struct Changes {
     pub workspace: Option<WorkspaceId>,
     /// The file whose patch `state` shows.
     pub selected: Option<usize>,
+    /// A line to scroll to once its file is selected.
+    reveal: Option<LineReveal>,
     /// Read on every load, never remembered: staging a path is what takes it
     /// off the list, and only git knows.
     pub rebase: Option<domain::RebaseState>,
@@ -943,9 +953,15 @@ impl Workbench {
                     .map(|file| file.path.clone())
                     .collect();
                 let kept = changes
-                    .selected
-                    .and_then(|index| changes.files.get(index))
-                    .map(|file| file.path.clone());
+                    .reveal
+                    .as_ref()
+                    .map(|reveal| reveal.path.clone())
+                    .or_else(|| {
+                        changes
+                            .selected
+                            .and_then(|index| changes.files.get(index))
+                            .map(|file| file.path.clone())
+                    });
                 changes.files = diff
                     .files
                     .into_iter()
@@ -999,6 +1015,44 @@ impl Workbench {
     }
 
     /// Shows one changed file's patch; one file is open at a time.
+    /// Shows `path`'s patch at `line` (1-based, new side): now when the list
+    /// already holds it, otherwise after the next diff read.
+    pub fn reveal_change(&mut self, path: String, line: u32) {
+        self.select_change_path(&path);
+        self.changes.reveal = Some(LineReveal {
+            path,
+            line,
+            revision: self.changes.key_revision,
+        });
+    }
+
+    /// Scrolls the pending reveal into view once its file is selected; drops
+    /// it when Changes is left or a newer list no longer has the path.
+    pub fn settle_change_reveal(&mut self, tx: &mut rune::Tx) -> bool {
+        let changes = &mut self.changes;
+        let Some(reveal) = &changes.reveal else {
+            return false;
+        };
+        if self.mode != CenterMode::Changes {
+            changes.reveal = None;
+            return false;
+        }
+        let shown = changes
+            .selected
+            .and_then(|index| changes.files.get(index))
+            .is_some_and(|file| file.path == reveal.path);
+        if !shown {
+            if changes.loaded && changes.key_revision != reveal.revision {
+                changes.reveal = None;
+            }
+            return false;
+        }
+        let at = rune_kit::diff::LineRef::new(rune_kit::diff::Side::New, reveal.line);
+        changes.state.scroll_to_line(0, at, tx);
+        changes.reveal = None;
+        true
+    }
+
     pub fn select_change_path(&mut self, path: &str) {
         if let Some(index) = self.changes.files.iter().position(|file| file.path == path) {
             self.select_change(index);
