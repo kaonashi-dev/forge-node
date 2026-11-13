@@ -199,7 +199,7 @@ pub enum Command {
     },
     StartReview {
         generation: u64,
-        workspace_id: WorkspaceId,
+        target: domain::ReviewTarget,
         preset: Option<String>,
         tier: Option<domain::Tier>,
         provider: Option<String>,
@@ -219,6 +219,25 @@ pub enum Command {
         review_id: domain::ReviewId,
     },
     CancelReview(domain::ReviewId),
+    SetFindingFeedback {
+        review_id: domain::ReviewId,
+        finding_id: u32,
+        reaction: Option<domain::FindingReaction>,
+    },
+    ClearReviewSuppression {
+        workspace_id: WorkspaceId,
+        suppression: domain::ReviewSuppression,
+    },
+    GetReviewDiff {
+        generation: u64,
+        review_id: domain::ReviewId,
+    },
+    /// Queued for the agent's next idle; `left_out` is only reported back.
+    SendSessionPrompt {
+        session_id: SessionId,
+        text: String,
+        left_out: usize,
+    },
     RestartSession(SessionId),
     /// Deletes a recorded run's transcript from disk, then re-reads the
     /// snapshot: history reaches the client only on a snapshot.
@@ -543,7 +562,12 @@ pub enum UiEvent {
     Review {
         generation: u64,
         workspace_id: WorkspaceId,
-        result: Result<Box<(domain::ReviewRun, Vec<domain::Finding>)>, String>,
+        result: Result<Box<client::ReviewReport>, String>,
+    },
+    ReviewDiff {
+        generation: u64,
+        review_id: domain::ReviewId,
+        result: Result<domain::WorkspaceDiff, String>,
     },
     StorageMigration {
         generation: u64,
@@ -835,7 +859,7 @@ impl ConnectionHandle {
     pub fn start_review(
         &self,
         generation: u64,
-        workspace_id: WorkspaceId,
+        target: domain::ReviewTarget,
         preset: Option<String>,
         tier: Option<domain::Tier>,
         provider: Option<String>,
@@ -843,7 +867,7 @@ impl ConnectionHandle {
     ) -> Result<(), String> {
         self.send(Command::StartReview {
             generation,
-            workspace_id,
+            target,
             preset,
             tier,
             provider,
@@ -880,6 +904,54 @@ impl ConnectionHandle {
 
     pub fn cancel_review(&self, review_id: domain::ReviewId) -> Result<(), String> {
         self.send(Command::CancelReview(review_id))
+    }
+
+    pub fn set_finding_feedback(
+        &self,
+        review_id: domain::ReviewId,
+        finding_id: u32,
+        reaction: Option<domain::FindingReaction>,
+    ) -> Result<(), String> {
+        self.send(Command::SetFindingFeedback {
+            review_id,
+            finding_id,
+            reaction,
+        })
+    }
+
+    pub fn clear_review_suppression(
+        &self,
+        workspace_id: WorkspaceId,
+        suppression: domain::ReviewSuppression,
+    ) -> Result<(), String> {
+        self.send(Command::ClearReviewSuppression {
+            workspace_id,
+            suppression,
+        })
+    }
+
+    pub fn get_review_diff(
+        &self,
+        generation: u64,
+        review_id: domain::ReviewId,
+    ) -> Result<(), String> {
+        self.send(Command::GetReviewDiff {
+            generation,
+            review_id,
+        })
+    }
+
+    pub fn send_session_prompt(
+        &self,
+        session_id: SessionId,
+        text: String,
+        left_out: usize,
+    ) -> Result<(), String> {
+        self.send(Command::SendSessionPrompt {
+            session_id,
+            text,
+            left_out,
+        })
     }
 
     /// Re-enters a recorded conversation: the ordinary agent launch, told
@@ -1948,7 +2020,7 @@ fn handle_fixture_command(
         }
         Command::StartReview {
             generation: command_generation,
-            workspace_id,
+            target,
             ..
         } => {
             if command_generation != generation {
@@ -1956,7 +2028,7 @@ fn handle_fixture_command(
             }
             sink(vec![UiEvent::ReviewStarted {
                 generation,
-                workspace_id,
+                workspace_id: target.workspace_id(),
                 result: Err("the recorded snapshot has no review store".into()),
             }]);
         }
@@ -2009,6 +2081,31 @@ fn handle_fixture_command(
                 metrics,
                 started,
             );
+        }
+        Command::SetFindingFeedback { .. }
+        | Command::ClearReviewSuppression { .. }
+        | Command::SendSessionPrompt { .. } => {
+            fixture_result(
+                generation,
+                command_label(&command),
+                Err("the recorded snapshot has no review store".into()),
+                sink,
+                metrics,
+                started,
+            );
+        }
+        Command::GetReviewDiff {
+            generation: command_generation,
+            review_id,
+        } => {
+            if command_generation != generation {
+                return;
+            }
+            sink(vec![UiEvent::ReviewDiff {
+                generation,
+                review_id,
+                result: Err("the recorded snapshot has no review store".into()),
+            }]);
         }
         Command::RunSpec { .. } => {
             metrics.commands_completed.fetch_add(1, Ordering::Relaxed);
@@ -2416,6 +2513,7 @@ pub(crate) fn fixture_review_config() -> domain::ReviewSettings {
         ],
         rules: Vec::new(),
         errors: Vec::new(),
+        suppressions: Vec::new(),
     }
 }
 
@@ -3254,7 +3352,7 @@ fn handle_live_command(
         }
         Command::StartReview {
             generation: command_generation,
-            workspace_id,
+            target,
             preset,
             tier,
             provider,
@@ -3264,12 +3362,10 @@ fn handle_live_command(
                 return;
             }
             metrics.note_socket_op();
+            let workspace_id = target.workspace_id();
             let result = client
                 .start_review(
-                    domain::ReviewTarget::Workspace {
-                        workspace_id,
-                        base: None,
-                    },
+                    target,
                     tier,
                     provider,
                     preset,
@@ -3343,6 +3439,79 @@ fn handle_live_command(
                 .map(|()| "cancelling".to_string())
                 .map_err(|error| error.to_string());
             live_result(generation, "CancelReview", result, sink, metrics, started);
+        }
+        Command::SetFindingFeedback {
+            review_id,
+            finding_id,
+            reaction,
+        } => {
+            metrics.note_socket_op();
+            let result = client
+                .set_finding_feedback(review_id, finding_id, reaction)
+                .map(|()| "saved".to_string())
+                .map_err(|error| error.to_string());
+            live_result(
+                generation,
+                "SetFindingFeedback",
+                result,
+                sink,
+                metrics,
+                started,
+            );
+        }
+        Command::ClearReviewSuppression {
+            workspace_id,
+            suppression,
+        } => {
+            metrics.note_socket_op();
+            let result = client
+                .clear_review_suppression(workspace_id, suppression)
+                .map(|()| "cleared".to_string())
+                .map_err(|error| error.to_string());
+            live_result(
+                generation,
+                "ClearReviewSuppression",
+                result,
+                sink,
+                metrics,
+                started,
+            );
+        }
+        Command::GetReviewDiff {
+            generation: command_generation,
+            review_id,
+        } => {
+            if command_generation != generation {
+                return;
+            }
+            metrics.note_socket_op();
+            let result = client
+                .get_review_diff(review_id)
+                .map_err(|error| error.to_string());
+            sink(vec![UiEvent::ReviewDiff {
+                generation,
+                review_id,
+                result,
+            }]);
+        }
+        Command::SendSessionPrompt {
+            session_id,
+            text,
+            left_out,
+        } => {
+            metrics.note_socket_op();
+            let result = client
+                .send_session_prompt(session_id, text, client::PromptDelivery::Queue)
+                .map(|queued| crate::code_review::delivery_message(queued, left_out))
+                .map_err(|error| error.to_string());
+            live_result(
+                generation,
+                "SendSessionPrompt",
+                result,
+                sink,
+                metrics,
+                started,
+            );
         }
         Command::DraftCommit { workspace_id } => {
             metrics.note_socket_op();
@@ -4314,6 +4483,10 @@ fn command_label(command: &Command) -> &'static str {
         Command::ListReviews { .. } => "ListReviews",
         Command::GetReview { .. } => "GetReview",
         Command::CancelReview(_) => "CancelReview",
+        Command::SetFindingFeedback { .. } => "SetFindingFeedback",
+        Command::ClearReviewSuppression { .. } => "ClearReviewSuppression",
+        Command::GetReviewDiff { .. } => "GetReviewDiff",
+        Command::SendSessionPrompt { .. } => "SendSessionPrompt",
         Command::StopDaemon { .. } => "StopDaemon",
         Command::FactoryReset => "FactoryReset",
         Command::RefreshAgentDetection => "RefreshAgentDetection",

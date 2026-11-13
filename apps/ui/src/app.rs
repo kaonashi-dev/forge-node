@@ -470,6 +470,7 @@ impl AppState {
         }
         self.editor_store_changed();
         self.sync_project_icons();
+        self.refresh_send_targets();
     }
 
     pub fn apply_events(&mut self, events: Vec<UiEvent>, tx: &mut Tx) {
@@ -1379,7 +1380,11 @@ impl AppState {
         self.show_mode(mode);
     }
 
-    fn pull_request(&self, repository: &str, number: u32) -> Option<&domain::PullRequest> {
+    pub(crate) fn pull_request(
+        &self,
+        repository: &str,
+        number: u32,
+    ) -> Option<&domain::PullRequest> {
         self.store
             .as_ref()?
             .pull_requests
@@ -2438,6 +2443,16 @@ impl AppState {
                 }
                 self.apply_review_report(workspace_id, result)
             }
+            UiEvent::ReviewDiff {
+                generation,
+                review_id,
+                result,
+            } => {
+                if !self.accept_generation(generation) {
+                    return false;
+                }
+                self.apply_review_diff(review_id, result)
+            }
         }
     }
 
@@ -3157,7 +3172,7 @@ impl AppState {
     /// Cmd-Shift-A: the default agent from `ui.default_agent`, a terminal,
     /// or the launch palette when the preference asks or is stale.
     /// The agent "Resolve with AI" hands its prompt to; see `launch::resolver`.
-    fn prompt_agent(
+    pub(crate) fn prompt_agent(
         &self,
     ) -> Result<(domain::AgentProviderId, Option<domain::AgentProfileId>), String> {
         use crate::launch::{Launchables, RESOLVE_AGENT_KEY, parse, resolver, visibility_key};

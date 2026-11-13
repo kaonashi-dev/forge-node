@@ -836,13 +836,19 @@ fn bytecount(haystack: &[u8], needle: u8) -> usize {
     haystack.iter().filter(|byte| **byte == needle).count()
 }
 
-/// `(the newest commits, how many there are)` between `base` and `HEAD`.
+/// [`commits_between`] `base` and `HEAD`.
+#[must_use]
+pub fn commits_since(repo: &Path, base: &str) -> (Vec<CommitEntry>, u32) {
+    commits_between(repo, base, "HEAD")
+}
+
+/// `(the newest commits, how many there are)` in `base..head`.
 ///
 /// The list is capped at [`MAX_SUMMARY_COMMITS`]; the count is not, so a
 /// caller can say "and 40 more" without holding all of them.
 #[must_use]
-pub fn commits_since(repo: &Path, base: &str) -> (Vec<CommitEntry>, u32) {
-    let range = format!("{base}..HEAD");
+pub fn commits_between(repo: &Path, base: &str, head: &str) -> (Vec<CommitEntry>, u32) {
+    let range = format!("{base}..{head}");
     let limit = format!("-n{}", MAX_SUMMARY_COMMITS + 1);
     let args = [
         "log",

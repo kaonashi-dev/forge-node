@@ -1,4 +1,4 @@
-use domain::{Finding, Severity, Verdict};
+use domain::{Finding, ReviewSuppression, Severity, Verdict};
 use sha2::{Digest, Sha256};
 
 use crate::clip;
@@ -37,6 +37,8 @@ pub struct Validated {
     pub low_confidence: u32,
     /// Cut by `max_findings` after dedupe.
     pub trimmed: u32,
+    /// Dropped by the project's feedback suppressions, before `max_findings`.
+    pub suppressed: u32,
 }
 
 /// New-side `(first, last)` line ranges of a unified patch; pure deletions have none.
@@ -70,6 +72,7 @@ pub fn validate(
     files: &[ChangedFile],
     rules: &[Rule],
     resolved: &Resolved,
+    suppressions: &[ReviewSuppression],
 ) -> Result<Validated, String> {
     let mut findings = output.findings;
     findings.truncate(MAX_FINDINGS);
@@ -172,6 +175,8 @@ pub fn validate(
             body: raw.body,
             evidence: raw.evidence,
             suggestion: raw.suggestion,
+            lineage: domain::Lineage::New,
+            reaction: None,
         };
         match kept.iter_mut().find(|other| overlaps(other, &finding)) {
             Some(other) if finding.severity < other.severity => *other = finding,
@@ -186,6 +191,9 @@ pub fn validate(
              their evidence"
         ));
     }
+    let before = kept.len();
+    kept.retain(|finding| !crate::suppress::is_suppressed(finding, suppressions));
+    let suppressed = u32::try_from(before - kept.len()).unwrap_or(u32::MAX);
     kept.sort_by_key(|finding| finding.severity);
     let trimmed =
         u32::try_from(kept.len().saturating_sub(resolved.max_findings)).unwrap_or(u32::MAX);
@@ -207,6 +215,7 @@ pub fn validate(
         total,
         low_confidence,
         trimmed,
+        suppressed,
     })
 }
 

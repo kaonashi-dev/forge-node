@@ -91,6 +91,7 @@ fn evidence_within_three_lines_re_anchors() {
         &changed(),
         &[],
         &resolved(),
+        &[],
     )
     .unwrap();
     assert_eq!(v.findings[0].line, Some(23));
@@ -102,7 +103,7 @@ fn end_line_moves_with_the_anchor_and_never_overflows() {
     let end_of = |end_line| {
         let mut finding = raw(Some(25), "let total = price * qty;");
         finding.end_line = Some(end_line);
-        validate(output(vec![finding]), &changed(), &[], &resolved())
+        validate(output(vec![finding]), &changed(), &[], &resolved(), &[])
             .unwrap()
             .findings[0]
             .end_line
@@ -118,6 +119,7 @@ fn evidence_missing_from_the_file_drops_the_finding() {
         &changed(),
         &[],
         &resolved(),
+        &[],
     )
     .unwrap();
     assert!(v.findings.is_empty());
@@ -136,6 +138,7 @@ fn a_path_outside_the_diff_or_escaping_it_is_dropped() {
         &changed(),
         &[],
         &resolved(),
+        &[],
     )
     .unwrap();
     assert!(v.findings.is_empty());
@@ -146,7 +149,7 @@ fn a_line_outside_every_hunk_becomes_general() {
     let mut findings = vec![raw(Some(2), "fn b() {}"), raw(Some(2), "fn b() {}")];
     findings[1].category = "other".into();
     findings.push(raw(Some(10), "line 10"));
-    let v = validate(output(findings), &changed(), &[], &resolved()).unwrap();
+    let v = validate(output(findings), &changed(), &[], &resolved(), &[]).unwrap();
     let general = v.findings.iter().find(|f| f.evidence == "line 10").unwrap();
     assert_eq!(general.line, None);
     assert_eq!(v.invalid_anchors, 1);
@@ -156,15 +159,17 @@ fn a_line_outside_every_hunk_becomes_general() {
 #[test]
 fn more_than_half_invalid_anchors_fails() {
     let findings = vec![raw(Some(10), "line 10"), raw(Some(2), "fn b() {}")];
-    assert!(validate(output(findings), &changed(), &[], &resolved()).is_ok());
+    assert!(validate(output(findings), &changed(), &[], &resolved(), &[]).is_ok());
     let findings = vec![
         raw(Some(10), "line 10"),
         raw(Some(12), "line 12"),
         raw(Some(2), "fn b() {}"),
     ];
-    assert!(validate(output(findings), &changed(), &[], &resolved())
-        .unwrap_err()
-        .contains("anchor"));
+    assert!(
+        validate(output(findings), &changed(), &[], &resolved(), &[])
+            .unwrap_err()
+            .contains("anchor")
+    );
 }
 
 #[test]
@@ -172,7 +177,7 @@ fn caps_truncate_strings_and_findings() {
     let mut big = raw(Some(2), "fn b() {}");
     big.title = "é".repeat(5000);
     big.suggestion = Some("x".repeat(20_000));
-    let v = validate(output(vec![big]), &changed(), &[], &resolved()).unwrap();
+    let v = validate(output(vec![big]), &changed(), &[], &resolved(), &[]).unwrap();
     assert!(v.findings[0].title.len() <= MAX_TEXT_BYTES);
     assert_eq!(
         v.findings[0].suggestion.as_ref().unwrap().len(),
@@ -186,7 +191,7 @@ fn caps_truncate_strings_and_findings() {
             f
         })
         .collect();
-    let v = validate(output(many), &changed(), &[], &resolved()).unwrap();
+    let v = validate(output(many), &changed(), &[], &resolved(), &[]).unwrap();
     assert_eq!(v.total, MAX_FINDINGS as u32);
 }
 
@@ -195,7 +200,7 @@ fn an_unknown_rule_id_is_cleared() {
     let parsed = parse_output(ANSWER).unwrap();
     let mut style_on = resolved();
     style_on.categories.set("style", true);
-    let v = validate(parsed, &changed(), &[], &style_on).unwrap();
+    let v = validate(parsed, &changed(), &[], &style_on, &[]).unwrap();
     assert_eq!(v.findings[0].rule_id, None);
 }
 
@@ -206,7 +211,7 @@ fn dedupe_keeps_the_highest_severity() {
     let mut high = raw(Some(2), "fn b() {}");
     high.severity = Severity::P0;
     high.end_line = Some(3);
-    let v = validate(output(vec![low, high]), &changed(), &[], &resolved()).unwrap();
+    let v = validate(output(vec![low, high]), &changed(), &[], &resolved(), &[]).unwrap();
     assert_eq!(v.findings.len(), 1);
     assert_eq!(v.findings[0].severity, Severity::P0);
 }
@@ -237,6 +242,8 @@ fn with(severities: &[Severity]) -> Vec<domain::Finding> {
             body: String::new(),
             evidence: String::new(),
             suggestion: None,
+            lineage: domain::Lineage::New,
+            reaction: None,
         })
         .collect()
 }
@@ -331,6 +338,7 @@ fn meta() -> PackMeta {
         head_oid: "abc123".into(),
         base_oid: Some("def456".into()),
         base_ref: "main".into(),
+        pull_request: None,
     }
 }
 
@@ -963,6 +971,7 @@ fn validate_honours_rules() {
         &changed(),
         &rules,
         &resolved(),
+        &[],
     )
     .unwrap();
     let money = v.findings.iter().find(|f| f.category == "logic").unwrap();
@@ -984,6 +993,7 @@ fn validate_honours_rules() {
         &changed(),
         &[],
         &resolved(),
+        &[],
     )
     .unwrap();
     assert_eq!(
@@ -997,7 +1007,7 @@ fn validate_honours_rules() {
 fn validate_does_not_trust_a_line_away_from_its_evidence() {
     let good = raw(Some(2), "fn b() {}");
     let far = raw(Some(22), "fn b() {}");
-    let v = validate(output(vec![good, far]), &changed(), &[], &resolved()).unwrap();
+    let v = validate(output(vec![good, far]), &changed(), &[], &resolved(), &[]).unwrap();
     assert_eq!(v.invalid_anchors, 1);
     assert_eq!(v.findings.len(), 2);
     assert_eq!(v.findings.iter().filter(|f| f.line == Some(2)).count(), 1);
@@ -1023,6 +1033,7 @@ fn validate_drops_disabled_categories_unless_a_rule_backs_them() {
         &changed(),
         &rules,
         &resolved(),
+        &[],
     )
     .unwrap();
     assert_eq!(v.findings.len(), 2, "{:?}", v.findings);
@@ -1047,7 +1058,7 @@ fn validate_orders_by_severity_and_cuts_at_max_findings() {
             ..raw(Some(2), "fn b() {}")
         })
         .collect();
-    let v = validate(output(findings), &changed(), &[], &r).unwrap();
+    let v = validate(output(findings), &changed(), &[], &r, &[]).unwrap();
     let kept: Vec<(Severity, &str)> = v
         .findings
         .iter()
@@ -1111,6 +1122,7 @@ fn validate_drops_findings_below_min_confidence() {
         &changed(),
         &[],
         &r,
+        &[],
     )
     .unwrap();
     assert_eq!(v.findings.len(), 1, "{:?}", v.findings);
@@ -1161,4 +1173,312 @@ fn config_project_docs_defaults_on_and_can_be_turned_off() {
     let (config, notes) = Config::parse("[context]\nproject_docs = \"no\"");
     assert_eq!(config, Config::default());
     assert_eq!(notes.len(), 1, "{notes:?}");
+}
+
+fn lineage_run(
+    workspace_id: domain::WorkspaceId,
+    target: domain::ReviewTarget,
+    preset: &str,
+    branch: Option<&str>,
+) -> domain::ReviewRun {
+    domain::ReviewRun {
+        id: domain::ReviewId::new(),
+        workspace_id,
+        target,
+        head_oid: "h".into(),
+        base_oid: None,
+        tier: Tier::Base,
+        preset: preset.into(),
+        provider: "claude".into(),
+        status: domain::ReviewStatus::Completed,
+        stage: None,
+        summary: String::new(),
+        score: None,
+        verdict: None,
+        error: None,
+        session_id: None,
+        coverage: domain::Coverage::default(),
+        created_at: domain::Timestamp::now(),
+        finished_at: None,
+        branch: branch.map(str::to_owned),
+    }
+}
+
+#[test]
+fn same_lineage_needs_workspace_preset_and_branch_or_pull_request() {
+    let ws = domain::WorkspaceId::new();
+    let target = domain::ReviewTarget::Workspace {
+        workspace_id: ws,
+        base: None,
+    };
+    let pr = |number| domain::ReviewTarget::PullRequest {
+        workspace_id: ws,
+        number,
+        base: None,
+    };
+    let main = lineage_run(ws, target.clone(), "standard", Some("main"));
+    assert!(same_lineage(
+        &main,
+        &lineage_run(ws, target.clone(), "standard", Some("main"))
+    ));
+    assert!(!same_lineage(
+        &main,
+        &lineage_run(ws, target.clone(), "security", Some("main"))
+    ));
+    assert!(!same_lineage(
+        &main,
+        &lineage_run(ws, target.clone(), "standard", Some("feature"))
+    ));
+    let other = domain::WorkspaceId::new();
+    assert!(!same_lineage(
+        &main,
+        &lineage_run(
+            other,
+            domain::ReviewTarget::Workspace {
+                workspace_id: other,
+                base: None
+            },
+            "standard",
+            Some("main")
+        )
+    ));
+    let pr1 = lineage_run(ws, pr(1), "standard", Some("main"));
+    assert!(
+        !same_lineage(&main, &pr1),
+        "a PR run is not the workspace's"
+    );
+    assert!(same_lineage(
+        &pr1,
+        &lineage_run(ws, pr(1), "standard", None)
+    ));
+    assert!(!same_lineage(
+        &pr1,
+        &lineage_run(ws, pr(2), "standard", None)
+    ));
+}
+
+fn printed(fingerprint: &str) -> domain::Finding {
+    let mut finding = with(&[Severity::P1]).remove(0);
+    finding.fingerprint = fingerprint.into();
+    finding
+}
+
+#[test]
+fn mark_lineage_and_resolved_compare_fingerprints() {
+    let previous = vec![printed("a"), printed("b")];
+    let mut current = vec![printed("b"), printed("c")];
+    mark_lineage(&mut current, &previous);
+    assert_eq!(current[0].lineage, domain::Lineage::Persisting);
+    assert_eq!(current[1].lineage, domain::Lineage::New);
+    let gone = crate::lineage::resolved(&previous, &current);
+    assert_eq!(gone.len(), 1);
+    assert_eq!(gone[0].fingerprint, "a");
+
+    let mut alone = vec![printed("x")];
+    mark_lineage(&mut alone, &[]);
+    assert_eq!(alone[0].lineage, domain::Lineage::New);
+    assert!(crate::lineage::resolved(&[], &alone).is_empty());
+}
+
+const DAY: i64 = 86_400;
+const NOW: i64 = 1_800_000_000;
+
+fn feedback(
+    reaction: domain::FindingReaction,
+    rule_id: Option<&str>,
+    category: &str,
+    age_days: i64,
+) -> Feedback {
+    Feedback {
+        fingerprint: format!("{category}-{age_days}"),
+        rule_id: rule_id.map(str::to_owned),
+        category: category.into(),
+        severity: Severity::P1,
+        reaction,
+        created_at: NOW - age_days * DAY,
+    }
+}
+
+fn kinds(list: &[domain::ReviewSuppression]) -> Vec<(domain::SuppressionKind, &str)> {
+    list.iter().map(|s| (s.kind, s.value.as_str())).collect()
+}
+
+use domain::FindingReaction::{Dismiss, Up};
+use domain::SuppressionKind;
+
+#[test]
+fn a_rule_is_suppressed_after_three_recent_dismissals_without_an_up() {
+    let two = vec![
+        feedback(Dismiss, Some("money"), "logic", 1),
+        feedback(Dismiss, Some("money"), "logic", 2),
+    ];
+    assert!(!kinds(&suppressions(&two, NOW)).contains(&(SuppressionKind::Rule, "money")));
+
+    let mut three = two.clone();
+    three.push(feedback(Dismiss, Some("money"), "logic", 29));
+    assert!(kinds(&suppressions(&three, NOW)).contains(&(SuppressionKind::Rule, "money")));
+
+    let mut old = two.clone();
+    old.push(feedback(Dismiss, Some("money"), "logic", 31));
+    assert!(
+        !kinds(&suppressions(&old, NOW)).contains(&(SuppressionKind::Rule, "money")),
+        "a dismissal outside 30 days does not count"
+    );
+
+    let mut liked = three.clone();
+    liked.push(feedback(Up, Some("money"), "logic", 3));
+    assert!(!kinds(&suppressions(&liked, NOW)).contains(&(SuppressionKind::Rule, "money")));
+}
+
+#[test]
+fn style_is_suppressed_after_five_recent_dismissals_without_an_up() {
+    let four: Vec<Feedback> = (0..4)
+        .map(|d| feedback(Dismiss, None, "style", d))
+        .collect();
+    assert!(!kinds(&suppressions(&four, NOW)).contains(&(SuppressionKind::Category, "style")));
+    let mut five = four.clone();
+    five.push(feedback(Dismiss, None, "style", 10));
+    assert!(kinds(&suppressions(&five, NOW)).contains(&(SuppressionKind::Category, "style")));
+    let mut liked = five.clone();
+    liked.push(feedback(Up, None, "style", 1));
+    assert!(!kinds(&suppressions(&liked, NOW)).contains(&(SuppressionKind::Category, "style")));
+
+    let logic: Vec<Feedback> = (0..9)
+        .map(|d| feedback(Dismiss, None, "logic", d))
+        .collect();
+    assert!(!kinds(&suppressions(&logic, NOW))
+        .iter()
+        .any(|(kind, _)| *kind == SuppressionKind::Category));
+}
+
+#[test]
+fn any_dismissal_suppresses_its_fingerprint_at_its_severity() {
+    let list = suppressions(&[feedback(Dismiss, None, "logic", 400)], NOW);
+    let fingerprint = list
+        .iter()
+        .find(|s| s.kind == SuppressionKind::Fingerprint)
+        .expect("a fingerprint suppression");
+    assert_eq!(fingerprint.value, "logic-400");
+    assert_eq!(fingerprint.severity, Some(Severity::P1));
+    assert!(suppressions(&[feedback(Up, None, "logic", 1)], NOW).is_empty());
+}
+
+fn suppression(
+    kind: SuppressionKind,
+    value: &str,
+    severity: Option<Severity>,
+) -> domain::ReviewSuppression {
+    domain::ReviewSuppression {
+        kind,
+        value: value.into(),
+        severity,
+        reason: String::new(),
+    }
+}
+
+#[test]
+fn validation_drops_suppressed_findings_but_never_p0_or_security() {
+    let kept = raw(Some(2), "fn b() {}");
+    let print = fingerprint("src/lib.rs", "logic", None, "fn b() {}");
+    let at = |severity| suppression(SuppressionKind::Fingerprint, &print, Some(severity));
+
+    let v = validate(
+        output(vec![kept.clone()]),
+        &changed(),
+        &[],
+        &resolved(),
+        &[at(Severity::P1)],
+    )
+    .unwrap();
+    assert!(v.findings.is_empty());
+    assert_eq!(v.suppressed, 1);
+
+    let v = validate(
+        output(vec![kept.clone()]),
+        &changed(),
+        &[],
+        &resolved(),
+        &[at(Severity::P2)],
+    )
+    .unwrap();
+    assert_eq!(
+        v.findings.len(),
+        1,
+        "a fingerprint suppresses only its severity"
+    );
+    assert_eq!(v.suppressed, 0);
+
+    let mut p0 = kept.clone();
+    p0.severity = Severity::P0;
+    let v = validate(
+        output(vec![p0]),
+        &changed(),
+        &[],
+        &resolved(),
+        &[
+            at(Severity::P0),
+            suppression(SuppressionKind::Category, "logic", None),
+        ],
+    )
+    .unwrap();
+    assert_eq!(v.findings.len(), 1, "P0 is never suppressed");
+
+    let mut security = kept;
+    security.category = "security".into();
+    let v = validate(
+        output(vec![security]),
+        &changed(),
+        &[],
+        &resolved(),
+        &[suppression(SuppressionKind::Category, "security", None)],
+    )
+    .unwrap();
+    assert_eq!(v.findings.len(), 1, "security is never suppressed");
+}
+
+#[test]
+fn suppressed_findings_do_not_use_up_max_findings() {
+    let mut loud = raw(Some(2), "fn b() {}");
+    loud.severity = Severity::P1;
+    let mut quiet = raw(Some(2), "fn b() {}");
+    quiet.severity = Severity::P2;
+    quiet.category = "performance".into();
+    let mut one = resolved();
+    one.max_findings = 1;
+    let v = validate(
+        output(vec![loud, quiet]),
+        &changed(),
+        &[],
+        &one,
+        &[suppression(SuppressionKind::Category, "logic", None)],
+    )
+    .unwrap();
+    assert_eq!(v.suppressed, 1);
+    assert_eq!(v.trimmed, 0);
+    let categories: Vec<&str> = v.findings.iter().map(|f| f.category.as_str()).collect();
+    assert_eq!(categories, ["performance"]);
+}
+
+#[test]
+fn a_pull_request_pack_says_where_its_head_files_are() {
+    let files = vec![diff_file("src/main.rs", "@@ -1 +1 @@\n+fn main() {}\n")];
+    let (workspace, _) = build_pack(&meta(), &[], &files, &resolved(), &[], &[]);
+    assert!(!workspace.contains("pull request"));
+    let pr = PackMeta {
+        pull_request: Some(7),
+        ..meta()
+    };
+    let (pack, _) = build_pack(&pr, &[], &files, &resolved(), &[], &[]);
+    assert!(pack.contains("This is pull request #7."), "{pack}");
+    assert!(pack.contains("`git show abc123:<path>`"), "{pack}");
+}
+
+#[test]
+fn a_dismissed_finding_that_disappears_is_not_resolved() {
+    let mut hidden = printed("a");
+    hidden.reaction = Some(domain::FindingReaction::Dismiss);
+    let previous = vec![hidden, printed("b")];
+    let gone = crate::lineage::resolved(&previous, &[]);
+    let prints: Vec<&str> = gone.iter().map(|f| f.fingerprint.as_str()).collect();
+    assert_eq!(prints, ["b"], "the user hid `a`; nothing fixed it");
 }

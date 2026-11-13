@@ -88,8 +88,9 @@ pub use pull_request::{
 };
 pub use rebase::{ConflictFile, RebaseState, SequencerOp};
 pub use review::{
-    Coverage, Finding, ReviewPreset, ReviewRule, ReviewRun, ReviewSettings, ReviewStage,
-    ReviewStatus, ReviewTarget, Severity, Tier, Verdict,
+    Coverage, Finding, FindingReaction, Lineage, ReviewPreset, ReviewRule, ReviewRun,
+    ReviewSettings, ReviewStage, ReviewStatus, ReviewSuppression, ReviewTarget, Severity,
+    SuppressionKind, Tier, Verdict,
 };
 pub use session::{
     ActivityEvidence, ActivityState, AgentActivity, EditorFind, EditorFindCommand, EditorState,

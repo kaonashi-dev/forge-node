@@ -111,8 +111,9 @@ pub(crate) struct Inner {
     /// it has; `submit_pull_request_draft` fills the slot instead of
     /// broadcasting. Runtime-only.
     pub(crate) pr_agents: HashMap<SessionId, Option<domain::PullRequestDraft>>,
-    /// Queued or running reviews by workspace; the worker's guard releases its entry.
-    pub(crate) reviews_running: HashMap<WorkspaceId, crate::review::RunningReview>,
+    /// Queued or running reviews by slot: the workspace id, or `<workspace id>#pr<number>`
+    /// for a pull request. The worker's guard releases its entry.
+    pub(crate) reviews_running: HashMap<String, crate::review::RunningReview>,
     /// Reviews asked to stop, including ones a newer head superseded.
     pub(crate) review_cancel: HashSet<domain::ReviewId>,
     /// Coalesces `RefreshPullRequests` globally — one refresh covers every host.
@@ -962,6 +963,16 @@ impl Daemon {
                 workspace_id,
                 limit,
             } => self.list_reviews(workspace_id, limit),
+            Request::GetReviewDiff { review_id } => self.get_review_diff(review_id),
+            Request::SetFindingFeedback {
+                review_id,
+                finding_id,
+                reaction,
+            } => self.set_finding_feedback(review_id, finding_id, reaction),
+            Request::ClearReviewSuppression {
+                workspace_id,
+                suppression,
+            } => self.clear_review_suppression(workspace_id, &suppression),
             Request::GetBranchCompare {
                 workspace_id,
                 base,
@@ -8747,7 +8758,7 @@ fn rebase_state(
     }
 }
 
-fn git_err(e: git_service::GitError) -> ProtocolError {
+pub(crate) fn git_err(e: git_service::GitError) -> ProtocolError {
     use git_service::GitError;
     match e {
         GitError::Conflict { .. } => ProtocolError::conflict(e.to_string()),

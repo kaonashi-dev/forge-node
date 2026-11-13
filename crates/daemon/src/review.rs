@@ -9,8 +9,9 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use domain::{
-    ActivityEvidence, ActivityState, AgentProviderId, ReviewId, ReviewRun, ReviewStage,
-    ReviewStatus, ReviewTarget, SessionId, SessionKind, SessionRole, Tier, Timestamp, WorkspaceId,
+    ActivityEvidence, ActivityState, AgentProviderId, FindingReaction, ProjectId, ReviewId,
+    ReviewRun, ReviewStage, ReviewStatus, ReviewTarget, SessionId, SessionKind, SessionRole, Tier,
+    Timestamp, WorkspaceId,
 };
 use protocol::{DaemonEvent, ErrorCode, ProtocolError, Response};
 
@@ -77,18 +78,34 @@ impl Daemon {
         }
         agents::launch_options::validate(&descriptor, &options)
             .map_err(|error| ProtocolError::invalid_request(error.to_string()))?;
-        let head = git_service::head_commit(&path).ok_or_else(|| {
-            ProtocolError::invalid_request("the workspace has no commit to review")
-        })?;
-        let ReviewTarget::Workspace { base, .. } = &target else {
-            return Err(ProtocolError::invalid_request("unsupported review target"));
+        // A pull request's head is unknown until the worker fetches it, so its
+        // slot and join key leave the head out.
+        let slot = review_slot(&target);
+        let (head, base_ref, branch, target_key) = match &target {
+            ReviewTarget::Workspace { base, .. } => {
+                let head = git_service::head_commit(&path).ok_or_else(|| {
+                    ProtocolError::invalid_request("the workspace has no commit to review")
+                })?;
+                let base_ref = git_service::compare_base(&path, base.as_deref());
+                if let (Some(base), None) = (base, &base_ref) {
+                    return Err(ProtocolError::invalid_request(format!(
+                        "base `{base}` does not name a commit"
+                    )));
+                }
+                let branch = git_service::current_branch(&path).ok().flatten();
+                let key = format!("{head}\0{base_ref:?}");
+                (head, base_ref, branch, key)
+            }
+            ReviewTarget::PullRequest { base, .. } => {
+                if let Some(base) = base {
+                    git_service::validate_branch_name(base).map_err(|error| {
+                        ProtocolError::invalid_request(format!("base `{base}`: {error}"))
+                    })?;
+                }
+                (String::new(), None, None, format!("pr\0{base:?}"))
+            }
+            _ => return Err(ProtocolError::invalid_request("unsupported review target")),
         };
-        let base_ref = git_service::compare_base(&path, base.as_deref());
-        if let (Some(base), None) = (base, &base_ref) {
-            return Err(ProtocolError::invalid_request(format!(
-                "base `{base}` does not name a commit"
-            )));
-        }
         let repo = load_review_dir(&path, &self.config.review.instructions);
         let resolved = review::resolve(
             &repo.config,
@@ -112,14 +129,14 @@ impl Daemon {
         }
         let context = read_context(&path, &resolved.context, &mut notes);
         let key = format!(
-            "{head}\0{base_ref:?}\0{provider}\0{:?}\0{:?}\0{}\0{:?}\0{}",
+            "{target_key}\0{provider}\0{:?}\0{:?}\0{}\0{:?}\0{}",
             options.model, options.effort, resolved.preset, resolved.tier, resolved.instructions
         );
 
         let id = ReviewId::new();
         {
             let mut inner = self.lock();
-            match inner.reviews_running.get(&workspace_id) {
+            match inner.reviews_running.get(&slot) {
                 Some(running)
                     if running.key == key && !inner.review_cancel.contains(&running.id) =>
                 {
@@ -141,7 +158,7 @@ impl Daemon {
             }
             inner
                 .reviews_running
-                .insert(workspace_id, RunningReview { id, key });
+                .insert(slot.clone(), RunningReview { id, key });
         }
 
         let run = ReviewRun {
@@ -166,9 +183,10 @@ impl Daemon {
             },
             created_at: Timestamp::now(),
             finished_at: None,
+            branch,
         };
         if let Err(error) = self.review_store.insert_run(&run) {
-            self.release_review(workspace_id, id);
+            self.release_review(&slot, id);
             return Err(db_err(error));
         }
         self.registry
@@ -181,7 +199,7 @@ impl Daemon {
             .name("forge-review".into())
             .spawn(move || daemon.run_review(run, path, launch, base_ref, &resolved, &context))
             .map_err(|error| {
-                self.release_review(workspace_id, id);
+                self.release_review(&slot, id);
                 queued.status = ReviewStatus::Failed;
                 queued.error = Some(format!("cannot start the review: {error}"));
                 self.finish_review(&mut queued);
@@ -212,7 +230,40 @@ impl Daemon {
             .get(review_id)
             .map_err(db_err)?
             .ok_or_else(|| ProtocolError::not_found("review"))?;
-        Ok(Response::Review { run, findings })
+        let (previous, resolved) = match self.previous_review(&run) {
+            Some((previous, before)) => (Some(previous.id), review::resolved(&before, &findings)),
+            None => (None, Vec::new()),
+        };
+        Ok(Response::Review {
+            run,
+            findings,
+            resolved,
+            previous,
+        })
+    }
+
+    /// The newest completed run of `run`'s lineage created before it, with its
+    /// findings; `None` for a run that has not completed.
+    fn previous_review(&self, run: &ReviewRun) -> Option<(ReviewRun, Vec<domain::Finding>)> {
+        if run.status != ReviewStatus::Completed {
+            return None;
+        }
+        let runs = self
+            .review_store
+            .list(run.workspace_id, MAX_LISTED_REVIEWS)
+            .inspect_err(|error| tracing::warn!(%error, "could not list reviews for lineage"))
+            .ok()?;
+        let previous = runs.into_iter().find(|other| {
+            other.id != run.id
+                && other.status == ReviewStatus::Completed
+                && other.created_at < run.created_at
+                && review::same_lineage(run, other)
+        })?;
+        self.review_store
+            .get(previous.id)
+            .inspect_err(|error| tracing::warn!(%error, "could not read the previous review"))
+            .ok()
+            .flatten()
     }
 
     pub(crate) fn list_reviews(
@@ -232,6 +283,8 @@ impl Daemon {
         workspace_id: WorkspaceId,
     ) -> Result<Response, ProtocolError> {
         let path = self.workspace_path(workspace_id)?;
+        let project = self.workspace_project(workspace_id)?;
+        let feedback = self.review_store.feedback(project).map_err(db_err)?;
         let repo = load_review_dir(&path, &self.config.review.instructions);
         let (default_preset, note) = review::default_preset(&repo.config, &repo.presets);
         let mut errors = repo.problems;
@@ -261,7 +314,94 @@ impl Daemon {
                 })
                 .collect(),
             errors,
+            suppressions: review::suppressions(&feedback, unix_now()),
         }))
+    }
+
+    pub(crate) fn get_review_diff(&self, review_id: ReviewId) -> Result<Response, ProtocolError> {
+        let (run, _) = self
+            .review_store
+            .get(review_id)
+            .map_err(db_err)?
+            .ok_or_else(|| ProtocolError::not_found("review"))?;
+        let no_diff = || ProtocolError::invalid_request("the review has no diff yet");
+        if run.head_oid.is_empty() {
+            return Err(no_diff());
+        }
+        let path = self.workspace_path(run.workspace_id)?;
+        let context = git_service::DIFF_CONTEXT_LINES;
+        let diff = match &run.target {
+            ReviewTarget::PullRequest { .. } => {
+                let base = run.base_oid.as_deref().ok_or_else(no_diff)?;
+                git_service::commit_range_diff(&path, base, &run.head_oid, context)
+            }
+            _ => git_service::working_tree_diff(&path, run.base_oid.as_deref(), context),
+        }
+        .map_err(crate::core::git_err)?;
+        Ok(Response::WorkspaceDiff(domain::WorkspaceDiff {
+            workspace_id: run.workspace_id,
+            branch: diff.branch,
+            files: diff.files.into_iter().map(crate::core::diff_file).collect(),
+            truncated: diff.truncated,
+        }))
+    }
+
+    pub(crate) fn set_finding_feedback(
+        &self,
+        review_id: ReviewId,
+        finding_id: u32,
+        reaction: Option<FindingReaction>,
+    ) -> Result<Response, ProtocolError> {
+        let (mut run, mut findings) = self
+            .review_store
+            .get(review_id)
+            .map_err(db_err)?
+            .ok_or_else(|| ProtocolError::not_found("review"))?;
+        let project = self.workspace_project(run.workspace_id)?;
+        let finding = findings
+            .iter_mut()
+            .find(|finding| finding.id == finding_id)
+            .ok_or_else(|| ProtocolError::not_found("finding"))?;
+        let was_dismissed = finding.reaction == Some(FindingReaction::Dismiss);
+        match reaction {
+            Some(reaction) => self
+                .review_store
+                .set_feedback(project, review_id, finding, reaction),
+            None => self.review_store.clear_feedback(review_id, finding_id),
+        }
+        .map_err(db_err)?;
+        finding.reaction = reaction;
+        if was_dismissed != (reaction == Some(FindingReaction::Dismiss)) && run.score.is_some() {
+            let standing: Vec<domain::Finding> = findings
+                .into_iter()
+                .filter(|finding| finding.reaction != Some(FindingReaction::Dismiss))
+                .collect();
+            let score = review::score(&standing);
+            run.verdict = Some(review::verdict(&standing, score));
+            run.score = Some(score);
+            self.publish_review(&run);
+        }
+        Ok(Response::Ack)
+    }
+
+    pub(crate) fn clear_review_suppression(
+        &self,
+        workspace_id: WorkspaceId,
+        suppression: &domain::ReviewSuppression,
+    ) -> Result<Response, ProtocolError> {
+        let project = self.workspace_project(workspace_id)?;
+        self.review_store
+            .clear_suppression(project, suppression)
+            .map_err(db_err)?;
+        Ok(Response::Ack)
+    }
+
+    fn workspace_project(&self, workspace_id: WorkspaceId) -> Result<ProjectId, ProtocolError> {
+        self.lock()
+            .workspaces
+            .get(&workspace_id)
+            .map(|ws| ws.project_id)
+            .ok_or_else(|| ProtocolError::not_found("workspace"))
     }
 
     fn run_review(
@@ -273,9 +413,9 @@ impl Daemon {
         resolved: &review::Resolved,
         context: &[(String, String)],
     ) {
-        let _guard = ReviewGuard {
+        let guard = ReviewGuard {
             daemon: Arc::clone(&self),
-            workspace_id: run.workspace_id,
+            slot: review_slot(&run.target),
             review_id: run.id,
         };
         let pack_dir = PackDir(
@@ -304,12 +444,14 @@ impl Daemon {
             self.stop_reviewer(session_id);
         }
         match outcome {
-            Ok(findings) => {
+            Ok(mut findings) => {
+                run.status = ReviewStatus::Completed;
+                if let Some((_, before)) = self.previous_review(&run) {
+                    review::mark_lineage(&mut findings, &before);
+                }
                 if let Err(error) = self.review_store.insert_findings(run.id, &findings) {
                     run.status = ReviewStatus::Failed;
                     run.error = Some(format!("could not save the findings: {error}"));
-                } else {
-                    run.status = ReviewStatus::Completed;
                 }
             }
             Err(End::Cancelled) => run.status = ReviewStatus::Cancelled,
@@ -319,7 +461,7 @@ impl Daemon {
             }
         }
         drop(pack_dir);
-        self.release_review(run.workspace_id, run.id);
+        drop(guard);
         self.finish_review(&mut run);
         let cutoff = time::OffsetDateTime::now_utc() - time::Duration::days(KEEP_DAYS);
         if let Err(error) =
@@ -343,30 +485,42 @@ impl Daemon {
         }: Stages<'_>,
     ) -> Result<Vec<domain::Finding>, End> {
         self.review_stage(run, ReviewStage::Diff)?;
-        let merge = base_ref
-            .as_ref()
-            .and_then(|base| git_service::merge_base(path, &[base.clone(), run.head_oid.clone()]));
-        if merge.is_none() {
-            run.coverage
-                .notes
-                .push("no base branch found; reviewed the uncommitted changes only".into());
-        }
-        run.base_oid.clone_from(&merge);
-        let diff =
-            git_service::working_tree_diff(path, merge.as_deref(), git_service::DIFF_CONTEXT_LINES)
+        let pull_request = match &run.target {
+            ReviewTarget::PullRequest { number, base, .. } => Some((*number, base.clone())),
+            _ => None,
+        };
+        let (merge, base_ref, diff, commits) = match pull_request.clone() {
+            Some((number, base)) => self.pull_request_diff(run, path, number, base)?,
+            None => {
+                let merge = base_ref.as_ref().and_then(|base| {
+                    git_service::merge_base(path, &[base.clone(), run.head_oid.clone()])
+                });
+                if merge.is_none() {
+                    run.coverage
+                        .notes
+                        .push("no base branch found; reviewed the uncommitted changes only".into());
+                }
+                let diff = git_service::working_tree_diff(
+                    path,
+                    merge.as_deref(),
+                    git_service::DIFF_CONTEXT_LINES,
+                )
                 .map_err(|error| End::Failed(format!("git diff failed: {error}")))?;
+                let commits = merge
+                    .as_deref()
+                    .map(|merge| git_service::commits_since(path, merge).0)
+                    .unwrap_or_default();
+                (merge, base_ref, diff, commits)
+            }
+        };
+        run.base_oid.clone_from(&merge);
         if diff.files.is_empty() {
             return Err(End::Failed(
-                "nothing to review: the workspace has no changes".into(),
+                "nothing to review: there are no changes".into(),
             ));
         }
-        let commits: Vec<domain::CommitLine> = merge
-            .as_deref()
-            .map(|merge| git_service::commits_since(path, merge).0)
-            .unwrap_or_default()
-            .into_iter()
-            .map(crate::core::commit_line)
-            .collect();
+        let commits: Vec<domain::CommitLine> =
+            commits.into_iter().map(crate::core::commit_line).collect();
         let files: Vec<domain::DiffFile> =
             diff.files.into_iter().map(crate::core::diff_file).collect();
 
@@ -375,6 +529,7 @@ impl Daemon {
             head_oid: run.head_oid.clone(),
             base_oid: merge,
             base_ref: base_ref.unwrap_or_else(|| "HEAD".into()),
+            pull_request: pull_request.as_ref().map(|(number, _)| *number),
         };
         let paths: Vec<&str> = files.iter().map(|file| file.path.as_str()).collect();
         let rules = review::in_scope(&resolved.rules, &paths);
@@ -418,6 +573,20 @@ impl Daemon {
         let output = self.await_answer(run.id, session_id, path, &transcript, &launch.provider)?;
 
         self.review_stage(run, ReviewStage::Validate)?;
+        let suppressions = match self
+            .workspace_project(run.workspace_id)
+            .map_err(|error| error.to_string())
+            .and_then(|project| {
+                self.review_store
+                    .feedback(project)
+                    .map_err(|e| e.to_string())
+            }) {
+            Ok(feedback) => review::suppressions(&feedback, unix_now()),
+            Err(error) => {
+                tracing::warn!(%error, "could not read review feedback; nothing suppressed");
+                Vec::new()
+            }
+        };
         let changed: Vec<review::ChangedFile> = files
             .iter()
             .filter(|file| !file.binary)
@@ -428,13 +597,17 @@ impl Daemon {
                     .findings
                     .iter()
                     .any(|finding| finding.path == file.path)
-                    .then(|| read_inside(path, Path::new(&file.path), MAX_FILE_TEXT_BYTES).ok())
-                    .flatten()
+                    .then(|| match pull_request {
+                        Some(_) => read_blob(path, &run.head_oid, &file.path),
+                        None => read_inside(path, Path::new(&file.path), MAX_FILE_TEXT_BYTES)
+                            .ok()
+                            .flatten(),
+                    })
                     .flatten(),
             })
             .collect();
-        let validated =
-            review::validate(output, &changed, &rules, resolved).map_err(End::Failed)?;
+        let validated = review::validate(output, &changed, &rules, resolved, &suppressions)
+            .map_err(End::Failed)?;
         if validated.trimmed > 0 {
             run.coverage.notes.push(format!(
                 "{} finding(s) past max_findings ({}) were left out",
@@ -447,11 +620,53 @@ impl Daemon {
                 validated.low_confidence, resolved.min_confidence
             ));
         }
+        if validated.suppressed > 0 {
+            run.coverage.notes.push(format!(
+                "{} finding(s) suppressed by feedback",
+                validated.suppressed
+            ));
+        }
         let score = review::score(&validated.findings);
         run.verdict = Some(review::verdict(&validated.findings, score));
         run.score = Some(score);
         run.summary = validated.summary;
         Ok(validated.findings)
+    }
+
+    /// Fetch the pull request's head into a private ref and diff it against its
+    /// merge base with the base branch: `(merge, base ref, diff, commits)`.
+    fn pull_request_diff(
+        &self,
+        run: &mut ReviewRun,
+        path: &Path,
+        number: u32,
+        base: Option<String>,
+    ) -> Result<DiffStage, End> {
+        run.head_oid = git_service::fetch_pull_request(
+            path,
+            number,
+            base.as_deref(),
+            self.config.git.fetch_timeout(),
+        )
+        .map_err(|error| End::Failed(format!("could not fetch pull request #{number}: {error}")))?;
+        let requested = base.map(|base| format!("origin/{base}"));
+        let base_ref = git_service::compare_base(path, requested.as_deref())
+            .ok_or_else(|| End::Failed(format!("pull request #{number}: no base branch found")))?;
+        let merge = git_service::merge_base(path, &[base_ref.clone(), run.head_oid.clone()])
+            .ok_or_else(|| {
+                End::Failed(format!(
+                    "pull request #{number} shares no history with {base_ref}"
+                ))
+            })?;
+        let diff = git_service::commit_range_diff(
+            path,
+            &merge,
+            &run.head_oid,
+            git_service::DIFF_CONTEXT_LINES,
+        )
+        .map_err(|error| End::Failed(format!("git diff failed: {error}")))?;
+        let commits = git_service::commits_between(path, &merge, &run.head_oid).0;
+        Ok((Some(merge), Some(base_ref), diff, commits))
     }
 
     /// Block until the reviewer's transcript holds a parseable answer, it
@@ -560,17 +775,49 @@ impl Daemon {
         self.publish_review(run);
     }
 
-    fn release_review(&self, workspace_id: WorkspaceId, review_id: ReviewId) {
+    fn release_review(&self, slot: &str, review_id: ReviewId) {
         let mut inner = self.lock();
         if inner
             .reviews_running
-            .get(&workspace_id)
+            .get(slot)
             .is_some_and(|running| running.id == review_id)
         {
-            inner.reviews_running.remove(&workspace_id);
+            inner.reviews_running.remove(slot);
         }
         inner.review_cancel.remove(&review_id);
     }
+}
+
+fn unix_now() -> i64 {
+    time::OffsetDateTime::now_utc().unix_timestamp()
+}
+
+/// A workspace has one run in flight, and each of its pull requests one more.
+fn review_slot(target: &ReviewTarget) -> String {
+    match target {
+        ReviewTarget::PullRequest {
+            workspace_id,
+            number,
+            ..
+        } => format!("{workspace_id}#pr{number}"),
+        _ => target.workspace_id().to_string(),
+    }
+}
+
+type DiffStage = (
+    Option<String>,
+    Option<String>,
+    git_service::WorkingTreeDiff,
+    Vec<git_service::CommitEntry>,
+);
+
+/// `<head>:<path>` from the object store, `None` over [`MAX_FILE_TEXT_BYTES`]
+/// or when it cannot be read.
+fn read_blob(repo: &Path, head: &str, path: &str) -> Option<String> {
+    let object = format!("{head}:{path}");
+    let cap = usize::try_from(MAX_FILE_TEXT_BYTES).unwrap_or(usize::MAX);
+    let out = git_service::run_git_bounded(Some(repo), &["cat-file", "blob", &object], cap).ok()?;
+    out.success().then_some(out.stdout)
 }
 
 struct Launch {
@@ -610,14 +857,13 @@ fn read_answer(
 /// from poisoning, so a panicked worker would otherwise hold a slot forever.
 struct ReviewGuard {
     daemon: Arc<Daemon>,
-    workspace_id: WorkspaceId,
+    slot: String,
     review_id: ReviewId,
 }
 
 impl Drop for ReviewGuard {
     fn drop(&mut self) {
-        self.daemon
-            .release_review(self.workspace_id, self.review_id);
+        self.daemon.release_review(&self.slot, self.review_id);
     }
 }
 

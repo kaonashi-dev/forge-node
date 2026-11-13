@@ -8,12 +8,17 @@ use serde::Deserialize;
 
 #[derive(Subcommand)]
 pub(crate) enum ReviewCmd {
-    /// Review a workspace's changes, uncommitted ones included, against its merge base.
+    /// Review a workspace's changes, uncommitted ones included, against its merge
+    /// base, or with `--pr` a pull request's head fetched from `origin`.
     Start {
         /// Workspace UUID or unique prefix. Inside a Forge session, the caller's checkout.
         #[arg(long)]
         workspace: Option<String>,
-        /// Branch or commit to diff against; defaults to the repository's default branch.
+        /// A pull request number; the checkout stays where it is.
+        #[arg(long)]
+        pr: Option<u32>,
+        /// Branch or commit to diff against; with `--pr`, the pull request's base
+        /// branch. Defaults to the repository's default branch.
         #[arg(long)]
         base: Option<String>,
         #[arg(long, value_enum)]
@@ -94,6 +99,7 @@ pub(crate) fn dispatch(app: &App, client: &Client, cmd: ReviewCmd) -> Result<(),
     match cmd {
         ReviewCmd::Start {
             workspace,
+            pr,
             base,
             tier,
             provider,
@@ -105,11 +111,19 @@ pub(crate) fn dispatch(app: &App, client: &Client, cmd: ReviewCmd) -> Result<(),
         } => {
             let store = places::load(app, client)?;
             let workspace = target_workspace(app, &store, workspace.as_deref())?;
-            let start = Request::StartReview {
-                target: ReviewTarget::Workspace {
+            let target = match pr {
+                Some(number) => ReviewTarget::PullRequest {
+                    workspace_id: workspace.id,
+                    number,
+                    base,
+                },
+                None => ReviewTarget::Workspace {
                     workspace_id: workspace.id,
                     base,
                 },
+            };
+            let start = Request::StartReview {
+                target,
                 tier: tier.map(Tier::from),
                 provider,
                 preset,
@@ -278,7 +292,7 @@ fn run_to_end(
         ));
     }
     match app.call(client, Request::GetReview { review_id }, false)? {
-        Response::Review { run, findings } => Ok((run, findings)),
+        Response::Review { run, findings, .. } => Ok((run, findings)),
         _ => Err(app.fail(
             1,
             "internal",

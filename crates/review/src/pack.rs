@@ -67,6 +67,8 @@ pub struct PackMeta {
     pub base_oid: Option<String>,
     /// The ref the base was resolved from, as the user would name it.
     pub base_ref: String,
+    /// Set when the change is a pull request's head rather than the working tree.
+    pub pull_request: Option<u32>,
 }
 
 /// The reviewer's input: project context, the in-scope `rules`, then commits
@@ -101,6 +103,14 @@ pub fn build_pack(
         meta.base_oid.as_deref().unwrap_or("none"),
         meta.base_ref,
     );
+    if let Some(number) = meta.pull_request {
+        let _ = writeln!(
+            pack,
+            "This is pull request #{number}. The working directory is not its head: read a \
+             file as of the head with `git show {}:<path>`.\n",
+            meta.head_oid
+        );
+    }
     for (path, text) in context {
         let (text, redactions) = redact(text);
         coverage.redactions += redactions;

@@ -360,6 +360,7 @@ pub fn changes(s: &AppState, k: &Kit) -> El {
             file.deletions
         )
     });
+    let kit = k.clone();
     let patch = match selected {
         Some(_) if changes.state.files().is_empty() => notice(
             k,
@@ -370,6 +371,9 @@ pub fn changes(s: &AppState, k: &Kit) -> El {
             |s: &AppState| &s.workbench.changes.state,
             |s: &mut AppState| &mut s.workbench.changes.state,
         )
+        .annotation(move |s: &AppState, annotation| {
+            crate::code_review::changes_note(s, &kit, annotation)
+        })
         .build(s, k)
         .key("changes-diff")
         .grow(1.0)

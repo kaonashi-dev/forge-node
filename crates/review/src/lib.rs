@@ -2,13 +2,16 @@
 //! scored review that does not touch a disk, a process or a clock.
 
 mod config;
+mod lineage;
 mod output;
 mod pack;
 mod presets;
 mod rules;
+mod suppress;
 mod validate;
 
 pub use config::{Categories, Config, ContextSettings, Strictness, CATEGORIES};
+pub use lineage::{mark_lineage, resolved, same_lineage};
 pub use output::{parse_output, RawFinding, ReviewOutput, SCHEMA};
 pub use pack::{build_pack, prompt, redact, PackMeta, TierCaps};
 pub use presets::{
@@ -16,6 +19,7 @@ pub use presets::{
     DEFAULT_PRESET, MAX_INSTRUCTIONS_BYTES,
 };
 pub use rules::{in_scope, parse_rules, Rule};
+pub use suppress::{suppressions, Feedback};
 pub use validate::{
     fingerprint, hunks, score, validate, verdict, ChangedFile, Validated, MAX_FINDINGS,
     MAX_SUGGESTION_BYTES, MAX_TEXT_BYTES,

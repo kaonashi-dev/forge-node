@@ -568,6 +568,32 @@ pub const REVIEW_PRESET_STANDARD: &str =
 /// Null for every existing project, which keeps drawing its glyph or initials.
 pub const PROJECT_ICON_IMAGES: &str = "ALTER TABLE projects ADD COLUMN icon_image TEXT;";
 
+/// The branch a run started on and each finding's lineage. A finding's
+/// `resolved` counterpart is computed at read time and never stored.
+pub const REVIEW_LINEAGE: &str = "\
+ALTER TABLE review_runs ADD COLUMN branch TEXT;
+ALTER TABLE review_findings ADD COLUMN lineage TEXT NOT NULL DEFAULT 'new';
+";
+
+/// 👍, 👎 and dismissals of findings, the only input to suppression. No foreign
+/// key to the review tables: a dismissal outlives the run that pruning drops.
+pub const REVIEW_FEEDBACK: &str = "\
+CREATE TABLE review_feedback (
+    review_id   TEXT NOT NULL,
+    finding_id  INTEGER NOT NULL,
+    project_id  TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+    fingerprint TEXT NOT NULL,
+    rule_id     TEXT,
+    category    TEXT NOT NULL,
+    severity    TEXT NOT NULL,
+    reaction    TEXT NOT NULL,
+    created_at  TEXT NOT NULL,
+    PRIMARY KEY (review_id, finding_id)
+);
+
+CREATE INDEX idx_review_feedback_project ON review_feedback (project_id, created_at);
+";
+
 /// The full, ordered migration set. Appended to over time; never reordered.
 #[must_use]
 pub fn migrations() -> Migrations<'static> {
@@ -591,5 +617,7 @@ pub fn migrations() -> Migrations<'static> {
         M::up(REVIEW_PRESET),
         M::up(REVIEW_PRESET_STANDARD),
         M::up(PROJECT_ICON_IMAGES),
+        M::up(REVIEW_LINEAGE),
+        M::up(REVIEW_FEEDBACK),
     ])
 }

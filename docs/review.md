@@ -1,7 +1,8 @@
 # Forge Review
 
-A structured review of one workspace's changes. It is not the GitHub pull-request
-review ([`pr_review.rs`](../apps/ui/src/pr_review.rs)): it runs in the checkout the
+A structured review of one workspace's changes, or of a GitHub pull request's
+head. It is not the agent-recipe pull-request review
+([`pr_review.rs`](../apps/ui/src/pr_review.rs)): it runs in the checkout the
 user is working in, sends a bounded pack to a **read-only** agent session, and
 validates the answer against the diff before anything is shown.
 
@@ -45,7 +46,8 @@ Validation is what makes a finding a finding:
 - an unknown `rule_id` is cleared, a known one caps the finding's severity, and a
   finding in a disabled category without a rule is dropped;
 - `confidence` below the configured `min_confidence` is dropped, overlapping
-  findings dedupe, `max_findings` trims the tail;
+  findings dedupe, the project's feedback suppressions drop what they match
+  (below), and only then `max_findings` trims the tail;
 - if more than half the claimed anchors cannot be confirmed inside the diff,
   the whole answer is rejected — the model reviewed something other than this
   change.
@@ -54,6 +56,71 @@ The summary may carry one mermaid diagram; a suggested fix is capped text, never
 a patch Forge applies. A run that outlives the daemon is metadata: with
 `sessions.persist_history`, its reviewer session comes back `Orphaned` and
 startup still knows it is read-only, from the run's `session_id`.
+
+## Pull requests
+
+`ReviewTarget::PullRequest { number, base }` reviews a pull request from the
+project's existing checkout; nothing moves its `HEAD` or working tree, and no
+scratch worktree is made. The worker fetches `refs/pull/<n>/head` from `origin`
+into `refs/forge/review/<n>/head` (and `base` into `origin/<base>`) through
+`run_git_network`, then diffs the merge base with `origin/<base>` (or the
+default branch) to that head. The pack says the working directory is not the
+head and that head files read with `git show <head>:<path>`; validation reads
+them from the object store the same way, capped like a working-tree read. The
+checkout's own `AGENTS.md` and `.forge/review/` are the instructions: the
+user's, not the pull request's.
+
+A pull-request run has its own in-flight slot, `<workspace>#pr<n>`, so it
+neither joins nor supersedes the workspace's review; its join key leaves out
+the head, which is unknown until the fetch. `base` is checked with
+`check-ref-format --branch` before anything runs. A pull-request run is never
+stale, and Send and Fix are off for it.
+
+## Lineage
+
+A completed run is compared with the newest completed run before it of the same
+workspace and preset, and of the same branch (for a workspace run, the branch at
+the run's start) or the same pull request. Each finding is stored `new` or
+`persisting` by fingerprint; `GetReview` computes `resolved` — the previous
+run's findings this one no longer reports — and names `previous`. Nothing is
+copied between runs.
+
+## Feedback and suppression
+
+`SetFindingFeedback` stores 👍, 👎 or a dismissal in `review_feedback`, keyed by
+run and finding, with the project and the finding's fingerprint, rule, category
+and severity. Rows have no foreign key to the run, so pruning a run keeps its
+feedback. Dismissing (or clearing a dismissal) rescores the run without its
+dismissed findings.
+
+Suppressions are never stored; `review::suppressions` derives them from the
+project's newest 10 000 rows each time:
+
+- a rule with 3 dismissals in the last 30 days and no 👍 for it in that window;
+- `style` with 5 dismissals in 30 days and no 👍;
+- any dismissed fingerprint, only at the severity it was dismissed at.
+
+P0 and `security` findings are never suppressed. What was suppressed is a
+coverage note. `GetReviewConfig` lists the active suppressions;
+`ClearReviewSuppression` deletes the project's dismissals behind one.
+
+## Send and Fix
+
+**Send to agent** (one finding) and **Send all** (every finding not dismissed)
+queue a `SendSessionPrompt` with `when: Queue` for the checkout's live,
+foreground agent that was active last, never a reviewer. A prompt holds whole
+findings within 8 KiB and says how many were left out. **Fix with a new agent**
+launches a writable agent, chosen like *Resolve with AI*, with the same prompt.
+
+## Inline findings
+
+`GetReviewDiff` answers with exactly the range a run reviewed — merge base to
+head for a pull request, the working tree against its merge base for a
+workspace — as a local read that never touches the network. The Review mode's
+**Diff** tab draws it with each standing, anchored finding under its new-side
+line; the Changes view puts the same notes on the live working tree while the
+workspace's latest run is a completed, fresh workspace review. Annotations are
+rebuilt when the report or the shown files change, never per frame.
 
 ## The pack
 
@@ -162,11 +229,14 @@ capability is refused, never downgraded to one that can write —
 
 ## Clients
 
-- `forgectl review start --wait`, `show`, `status`, `cancel`; `rules check`
+- `forgectl review start [--pr <n>] [--base <branch>] --wait`, `show`, `status`,
+  `cancel` (the MCP `review_start` tool takes `pr`); `rules check`
   prints the repository's presets and rules (exit 1 on an invalid file);
   `bench` replays a corpus of reintroduced bugs.
 - The GUI's **Review** mode starts a run, shows stage and progress, groups
-  findings by severity or file, and cancels.
+  findings by severity or file, marks lineage and lists what was resolved, takes
+  feedback, lists suppressions with Undo, sends findings to an agent, and
+  cancels. A pull request's detail view starts a **Forge Review** of it.
 - Wire requests and the `ReviewUpdated` event:
   [protocol.md](./protocol.md). The stored run/findings rows:
   [persistence.md](./persistence.md).

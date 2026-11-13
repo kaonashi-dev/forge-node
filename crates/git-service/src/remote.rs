@@ -104,6 +104,35 @@ pub fn fetch(
     })
 }
 
+/// Fetch pull request `number`'s head from `origin` into
+/// `refs/forge/review/<number>/head`, and `base` into `origin/<base>` when given,
+/// returning the head's oid. The checkout's own `HEAD` and branches are untouched.
+///
+/// # Errors
+/// - [`GitError::InvalidBranchName`] if `base` is not a branch name.
+/// - [`GitError::CommandFailed`] if the fetch fails or the head does not resolve.
+/// - [`GitError::Timeout`] if the fetch outlives `timeout`.
+pub fn fetch_pull_request(
+    repo: &Path,
+    number: u32,
+    base: Option<&str>,
+    timeout: Duration,
+) -> Result<String, GitError> {
+    let head_ref = format!("refs/forge/review/{number}/head");
+    let mut refspecs = vec![format!("+refs/pull/{number}/head:{head_ref}")];
+    if let Some(base) = base {
+        crate::worktree::validate_branch_name(base)?;
+        refspecs.push(format!("+refs/heads/{base}:refs/remotes/origin/{base}"));
+    }
+    let mut args = vec!["fetch", "--no-tags", "origin"];
+    args.extend(refspecs.iter().map(String::as_str));
+    run_git_network(Some(repo), &args, timeout)?.ok(&args)?;
+    let commit = format!("{head_ref}^{{commit}}");
+    let args = ["rev-parse", "--verify", commit.as_str()];
+    let out = run_git(Some(repo), &args)?.ok(&args)?;
+    Ok(out.stdout_trimmed().to_string())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

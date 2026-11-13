@@ -695,6 +695,27 @@ pub enum Request {
         workspace_id: WorkspaceId,
         limit: u32,
     },
+    /// Exactly the range a run reviewed → `Response::WorkspaceDiff`: a pull
+    /// request's merge base to its head, or a workspace's working tree against
+    /// its merge base. Local read, never the network. `NotFound` for an unknown
+    /// review, `InvalidRequest` for a run with no diff yet.
+    GetReviewDiff {
+        review_id: ReviewId,
+    },
+    /// 👍, 👎 or dismiss one finding, `None` clearing it → `Ack`. Dismissing or
+    /// clearing a dismissal rescores the run without it and broadcasts
+    /// `ReviewUpdated`. `NotFound` for an unknown review or finding.
+    SetFindingFeedback {
+        review_id: ReviewId,
+        finding_id: u32,
+        reaction: Option<domain::FindingReaction>,
+    },
+    /// Delete the workspace's project's dismissals behind one of
+    /// `ReviewSettings::suppressions` → `Ack`.
+    ClearReviewSuppression {
+        workspace_id: WorkspaceId,
+        suppression: domain::ReviewSuppression,
+    },
 
     // ----- Sessions -----
     /// Create a plain shell session → `Response::SessionCreated`; the

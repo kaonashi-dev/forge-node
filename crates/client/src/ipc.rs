@@ -117,6 +117,16 @@ pub struct Branches {
     pub default_branch: Option<String>,
 }
 
+/// One run as `GetReview` answers it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ReviewReport {
+    pub run: domain::ReviewRun,
+    pub findings: Vec<domain::Finding>,
+    /// The previous run's findings this one no longer reports.
+    pub resolved: Vec<domain::Finding>,
+    pub previous: Option<domain::ReviewId>,
+}
+
 /// What `RunAction` did.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ActionLaunch {
@@ -695,12 +705,19 @@ impl Client {
 
     /// # Errors
     /// [`ClientError`] on a transport failure or a refusal from the daemon.
-    pub fn get_review(
-        &self,
-        review_id: domain::ReviewId,
-    ) -> Result<(domain::ReviewRun, Vec<domain::Finding>), ClientError> {
+    pub fn get_review(&self, review_id: domain::ReviewId) -> Result<ReviewReport, ClientError> {
         match self.request(Request::GetReview { review_id })? {
-            Response::Review { run, findings } => Ok((run, findings)),
+            Response::Review {
+                run,
+                findings,
+                resolved,
+                previous,
+            } => Ok(ReviewReport {
+                run,
+                findings,
+                resolved,
+                previous,
+            }),
             _ => Err(ClientError::UnexpectedResponse { expected: "Review" }),
         }
     }
@@ -723,6 +740,75 @@ impl Client {
                 expected: "Reviews",
             }),
         }
+    }
+
+    /// Exactly the range a run reviewed.
+    ///
+    /// # Errors
+    /// [`ClientError`] on a transport failure or a refusal from the daemon.
+    pub fn get_review_diff(
+        &self,
+        review_id: domain::ReviewId,
+    ) -> Result<domain::WorkspaceDiff, ClientError> {
+        match self.request(Request::GetReviewDiff { review_id })? {
+            Response::WorkspaceDiff(diff) => Ok(diff),
+            _ => Err(ClientError::UnexpectedResponse {
+                expected: "WorkspaceDiff",
+            }),
+        }
+    }
+
+    /// Paste `text` into an agent session and submit it as `when` allows.
+    /// `true` when it waits for the agent's next idle rather than being delivered now.
+    ///
+    /// # Errors
+    /// [`ClientError`] on a transport failure or a refusal from the daemon.
+    pub fn send_session_prompt(
+        &self,
+        session_id: SessionId,
+        text: String,
+        when: protocol::PromptDelivery,
+    ) -> Result<bool, ClientError> {
+        match self.request(Request::SendSessionPrompt {
+            caller_session_id: None,
+            session_id,
+            text,
+            submit: true,
+            when,
+        })? {
+            Response::PromptDelivery { queued, .. } => Ok(queued),
+            _ => Err(ClientError::UnexpectedResponse {
+                expected: "PromptDelivery",
+            }),
+        }
+    }
+
+    /// # Errors
+    /// [`ClientError`] on a transport failure or a refusal from the daemon.
+    pub fn set_finding_feedback(
+        &self,
+        review_id: domain::ReviewId,
+        finding_id: u32,
+        reaction: Option<domain::FindingReaction>,
+    ) -> Result<(), ClientError> {
+        self.expect_ack(Request::SetFindingFeedback {
+            review_id,
+            finding_id,
+            reaction,
+        })
+    }
+
+    /// # Errors
+    /// [`ClientError`] on a transport failure or a refusal from the daemon.
+    pub fn clear_review_suppression(
+        &self,
+        workspace_id: domain::WorkspaceId,
+        suppression: domain::ReviewSuppression,
+    ) -> Result<(), ClientError> {
+        self.expect_ack(Request::ClearReviewSuppression {
+            workspace_id,
+            suppression,
+        })
     }
 
     /// The checkout's branch against the branch a pull request would target.
