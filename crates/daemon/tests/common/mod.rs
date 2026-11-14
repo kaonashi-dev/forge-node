@@ -482,24 +482,32 @@ pub fn row_text(row: &domain::Row) -> String {
     row.cells.iter().map(|c| c.text.as_str()).collect()
 }
 
-/// Drain terminal deltas until one carries a row whose text matches `pred`.
+/// Drain terminal output until one carries a row whose text matches `pred`.
+///
+/// A resync is the other carrier: a delta that raced the attach snapshot is
+/// withheld until the `AttachAck` is queued and arrives as a fresh snapshot
+/// instead, so watching only deltas misses a one-shot paint.
 pub fn wait_for_row(
     rx: &flume::Receiver<DaemonEvent>,
     timeout: Duration,
     mut pred: impl FnMut(&str) -> bool,
 ) -> Option<String> {
     let mut found = None;
-    wait_for(rx, timeout, |event| match event {
-        DaemonEvent::TerminalDelta { delta, .. } => delta.changed_rows().any(|(_, row)| {
-            let text = row_text(row);
-            if pred(&text) {
-                found = Some(text);
-                true
-            } else {
-                false
-            }
-        }),
-        _ => false,
+    wait_for(rx, timeout, |event| {
+        found = match event {
+            DaemonEvent::TerminalDelta { delta, .. } => delta
+                .changed_rows()
+                .map(|(_, row)| row_text(row))
+                .find(|text| pred(text)),
+            DaemonEvent::TerminalResync { snapshot, .. } => snapshot
+                .scrollback_tail
+                .iter()
+                .chain(snapshot.visible.iter())
+                .map(row_text)
+                .find(|text| pred(text)),
+            _ => None,
+        };
+        found.is_some()
     });
     found
 }
