@@ -1665,7 +1665,9 @@ fn another_socket_cannot_initialize_an_owned_data_directory() {
         .spawn()
         .unwrap();
     let mut status = None;
-    let exited = poll_until(Duration::from_secs(5), || {
+    // A freshly linked debug binary can take seconds to exec under a loaded
+    // `cargo test --workspace`; the refusal itself is immediate once it runs.
+    let exited = poll_until(Duration::from_secs(30), || {
         status = child.try_wait().unwrap();
         status.is_some()
     });
