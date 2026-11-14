@@ -89,7 +89,7 @@ checksum = "320119579fcad9c21884f5c4861d16174d0e06250625266f50fe6898340abefa"
 
 [[package]]
 name = "agents"
-version = "0.1.9"
+version = "0.1.10"
 dependencies = [
  "directories",
  "domain",
@@ -560,7 +560,7 @@ checksum = "f079e83a288787bcd14a6aea84cee5c87a67c5a3e660c30f557a3d24761b3527"
 
 [[package]]
 name = "client"
-version = "0.1.9"
+version = "0.1.10"
 dependencies = [
  "directories",
  "domain",
@@ -802,7 +802,7 @@ dependencies = [
 
 [[package]]
 name = "domain"
-version = "0.1.9"
+version = "0.1.10"
 dependencies = [
  "compact_str",
  "serde",
@@ -826,7 +826,7 @@ checksum = "d8b14ccef22fc6f5a8f4d7d768562a182c04ce9a3b3157b91390b52ddfdf1a76"
 
 [[package]]
 name = "editor-control"
-version = "0.1.9"
+version = "0.1.10"
 dependencies = [
  "rmp-serde",
  "serde",
@@ -2616,7 +2616,7 @@ checksum = "3d595e54a326bc53c1c197b32d295e14b169e3cfeaa8dc82b529f947fba6bcf5"
 
 [[package]]
 name = "protocol"
-version = "0.1.9"
+version = "0.1.10"
 dependencies = [
  "domain",
  "rmp-serde",
@@ -3432,7 +3432,7 @@ dependencies = [
 
 [[package]]
 name = "terminal-input"
-version = "0.1.9"
+version = "0.1.10"
 dependencies = [
  "domain",
 ]
