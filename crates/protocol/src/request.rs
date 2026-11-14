@@ -215,6 +215,16 @@ pub enum Request {
         /// not a single drawable mark (`domain::is_valid_icon`).
         icon: Option<String>,
     },
+    /// Set or clear the picture that stands for a project → `Ack`;
+    /// `ProjectUpdated` broadcast.
+    SetProjectIconImage {
+        project_id: ProjectId,
+        /// A path relative to the project's root, such as its favicon or app
+        /// icon, or `None` to fall back to `icon`. Refused with
+        /// `InvalidRequest` unless it is an image path inside the checkout
+        /// (`domain::is_icon_image_path`) naming a file that exists.
+        path: Option<String>,
+    },
 
     // ----- Workspaces -----
     /// List a project's workspaces →
@@ -684,6 +694,28 @@ pub enum Request {
     ListReviews {
         workspace_id: WorkspaceId,
         limit: u32,
+    },
+    /// Exactly the range a run reviewed → `Response::WorkspaceDiff`: a pull
+    /// request's merge base to its head, or a workspace's merge base to its
+    /// `tree_oid`. Local read, never the network. `NotFound` for an unknown
+    /// review, `InvalidRequest` for a run with no diff yet or no kept tree.
+    GetReviewDiff {
+        review_id: ReviewId,
+    },
+    /// 👍, 👎 or dismiss one finding, `None` clearing it → `Ack`. Dismissing or
+    /// clearing a dismissal rescores the run without it and broadcasts
+    /// `ReviewUpdated`. `NotFound` for an unknown review or finding.
+    SetFindingFeedback {
+        review_id: ReviewId,
+        finding_id: u32,
+        reaction: Option<domain::FindingReaction>,
+    },
+    /// Lift one of `ReviewSettings::suppressions` → `Ack`: a fingerprint's
+    /// dismissals are deleted; a rule's or category's stop counting toward it
+    /// and leave each finding dismissed.
+    ClearReviewSuppression {
+        workspace_id: WorkspaceId,
+        suppression: domain::ReviewSuppression,
     },
 
     // ----- Sessions -----

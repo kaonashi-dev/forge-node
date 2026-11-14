@@ -8,6 +8,7 @@ authors.workspace = true
 
 [dependencies]
 domain.workspace = true
+review.workspace = true
 rusqlite.workspace = true
 rusqlite_migration.workspace = true
 serde.workspace = true

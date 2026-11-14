@@ -23,6 +23,11 @@ pub struct Project {
     /// this field existed decodable.
     #[serde(default)]
     pub icon: Option<String>,
+    /// A picture in the project's own checkout that stands for it — its
+    /// favicon or app icon — as a path relative to `root_path`. Drawn instead
+    /// of `icon` while it reads and decodes; `icon` stays the fallback.
+    #[serde(default)]
+    pub icon_image: Option<String>,
     /// Canonicalized absolute path.
     pub root_path: PathBuf,
     /// `None` if the directory is not inside a Git repository.
@@ -78,6 +83,42 @@ pub fn is_valid_icon(raw: &str) -> bool {
             .any(|c| c.is_whitespace() || c.is_control() || c == '\u{fffc}')
 }
 
+/// The longest [`Project::icon_image`] path accepted, in UTF-8 bytes.
+pub const MAX_ICON_IMAGE_PATH_BYTES: usize = 1024;
+
+/// What an icon image may be: formats a favicon or an app icon ships in that
+/// the GUI can decode.
+pub const ICON_IMAGE_EXTENSIONS: [&str; 6] = ["png", "jpg", "jpeg", "svg", "ico", "icns"];
+
+/// What [`Project::normalize_icon_image`] refuses.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, thiserror::Error)]
+#[error("a project icon image must be a relative path to a .png, .jpg, .svg, .ico or .icns file inside the project")]
+pub struct InvalidIconImage;
+
+/// Whether `raw` names an image inside a checkout: relative, never climbing
+/// out through `..`, and ending in one of [`ICON_IMAGE_EXTENSIONS`].
+///
+/// Only the shape is checked: the daemon still resolves the path inside the
+/// checkout before reading it.
+#[must_use]
+pub fn is_icon_image_path(raw: &str) -> bool {
+    if raw.is_empty()
+        || raw.len() > MAX_ICON_IMAGE_PATH_BYTES
+        || raw.starts_with('/')
+        || raw.chars().any(char::is_control)
+        || raw.split('/').any(|part| part.is_empty() || part == "..")
+    {
+        return false;
+    }
+    raw.rsplit_once('.').is_some_and(|(stem, ext)| {
+        !stem.is_empty()
+            && !stem.ends_with('/')
+            && ICON_IMAGE_EXTENSIONS
+                .iter()
+                .any(|known| ext.eq_ignore_ascii_case(known))
+    })
+}
+
 impl Project {
     /// Whether Git-dependent actions (worktrees, branch/status) are available.
     #[must_use]
@@ -105,6 +146,24 @@ impl Project {
             Ok(Some(raw.to_owned()))
         } else {
             Err(InvalidIcon)
+        }
+    }
+
+    /// The image path to store for `raw`, or `None` to clear it; the same
+    /// trim-then-refuse contract as [`Project::normalize_icon`].
+    ///
+    /// # Errors
+    /// Returns [`InvalidIconImage`] when `raw` is non-empty and fails
+    /// [`is_icon_image_path`].
+    pub fn normalize_icon_image(raw: &str) -> Result<Option<String>, InvalidIconImage> {
+        let raw = raw.trim();
+        if raw.is_empty() {
+            return Ok(None);
+        }
+        if is_icon_image_path(raw) {
+            Ok(Some(raw.to_owned()))
+        } else {
+            Err(InvalidIconImage)
         }
     }
 }
@@ -143,5 +202,39 @@ mod tests {
         assert_eq!(Project::normalize_icon("   "), Ok(None));
         assert_eq!(Project::normalize_icon(" 🦀 "), Ok(Some("🦀".to_owned())));
         assert_eq!(Project::normalize_icon("HP Backend"), Err(InvalidIcon));
+    }
+
+    #[test]
+    fn an_icon_image_is_a_known_image_inside_the_checkout() {
+        for path in [
+            "favicon.ico",
+            "public/favicon.svg",
+            "src-tauri/icons/icon.icns",
+            "Assets.xcassets/AppIcon.appiconset/Icon 1024.PNG",
+        ] {
+            assert!(is_icon_image_path(path), "{path} was refused");
+        }
+        for path in [
+            "",
+            "/etc/favicon.png",
+            "../other/favicon.png",
+            "public/../../favicon.png",
+            "public//favicon.png",
+            ".env",
+            "notes.txt",
+            "icons/.png",
+            "favicon",
+        ] {
+            assert!(!is_icon_image_path(path), "{path:?} was accepted");
+        }
+        assert_eq!(Project::normalize_icon_image("  "), Ok(None));
+        assert_eq!(
+            Project::normalize_icon_image(" public/favicon.svg "),
+            Ok(Some("public/favicon.svg".to_owned()))
+        );
+        assert_eq!(
+            Project::normalize_icon_image("../x.png"),
+            Err(InvalidIconImage)
+        );
     }
 }

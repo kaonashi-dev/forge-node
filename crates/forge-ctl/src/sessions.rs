@@ -1445,6 +1445,7 @@ mod tests {
                 project_group_id: None,
                 name: name.into(),
                 icon: None,
+                icon_image: None,
                 root_path: format!("/dev/{name}").into(),
                 git_root: None,
                 created_at: now,

@@ -194,6 +194,35 @@ impl ReviewStore {
     ) -> Result<usize, DbError> {
         reviews::prune(&self.conn(), workspace, keep, cutoff)
     }
+
+    /// Replaces any earlier reaction to the same finding.
+    pub fn set_feedback(
+        &self,
+        project: domain::ProjectId,
+        review: domain::ReviewId,
+        finding: &domain::Finding,
+        reaction: domain::FindingReaction,
+    ) -> Result<(), DbError> {
+        reviews::set_feedback(&self.conn(), project, review, finding, reaction)
+    }
+
+    pub fn clear_feedback(&self, review: domain::ReviewId, finding: u32) -> Result<(), DbError> {
+        reviews::clear_feedback(&self.conn(), review, finding)
+    }
+
+    /// The project's newest reactions, bounded.
+    pub fn feedback(&self, project: domain::ProjectId) -> Result<Vec<review::Feedback>, DbError> {
+        reviews::feedback(&self.conn(), project)
+    }
+
+    /// Deletes the dismissals behind `suppression`, returning how many.
+    pub fn clear_suppression(
+        &self,
+        project: domain::ProjectId,
+        suppression: &domain::ReviewSuppression,
+    ) -> Result<usize, DbError> {
+        reviews::clear_suppression(&self.conn(), project, suppression)
+    }
 }
 
 impl Db {
@@ -367,7 +396,8 @@ impl Db {
     pub fn reset(&mut self) -> Result<(), DbError> {
         let tx = self.conn.transaction()?;
         tx.execute_batch(
-            "DELETE FROM review_findings;
+            "DELETE FROM review_feedback;
+             DELETE FROM review_findings;
              DELETE FROM review_runs;
              DELETE FROM orchestration_receipts;
              DELETE FROM run_state;

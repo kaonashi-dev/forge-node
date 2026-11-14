@@ -292,6 +292,17 @@ fn review_button(k: &Kit, pr: &PullRequest, variant: ButtonVariant, key: &'stati
         .key(key)
 }
 
+fn forge_review_button(k: &Kit, pr: &PullRequest, key: &'static str) -> El {
+    let repository = pr.repository.clone();
+    let number = pr.number;
+    Button::new("Forge Review")
+        .variant(ButtonVariant::Outline)
+        .control_size(ControlSize::Small)
+        .on_press(move |s: &mut AppState| s.start_pull_request_review(&repository, number))
+        .build(k)
+        .key(key)
+}
+
 fn rail(k: &Kit, pr: &PullRequest) -> El {
     col()
         .key("pr-detail-rail")
@@ -321,6 +332,7 @@ fn rail(k: &Kit, pr: &PullRequest) -> El {
             ButtonVariant::Outline,
             "pr-detail-review",
         ))
+        .child(forge_review_button(k, pr, "pr-detail-forge-review"))
         .child(
             text(
                 "Runs read-only in this checkout. It cannot edit, commit or post; you decide what \
@@ -467,6 +479,7 @@ pub fn view(s: &AppState, k: &Kit) -> El {
                     ButtonVariant::Contrast,
                     "pr-detail-review-main",
                 ))
+                .child(forge_review_button(k, pr, "pr-detail-forge-review-main"))
                 .child(
                     text(format!(
                         "{} · opened {}",

@@ -10,6 +10,7 @@ pub mod csv;
 pub mod decorations;
 pub mod hooks;
 pub mod patch;
+pub mod preview_find;
 pub mod recent;
 pub mod search;
 pub mod search_view;
@@ -258,6 +259,14 @@ pub struct ChangedFile {
     diffs: Vec<rune_kit::diff::FileDiff>,
 }
 
+/// `line` is 1-based on the new side; `revision` is the file list it was
+/// asked against, so a path missing from a later list is given up on.
+struct LineReveal {
+    path: String,
+    line: u32,
+    revision: u64,
+}
+
 #[derive(Default)]
 pub struct Changes {
     pub state: DiffState,
@@ -266,6 +275,8 @@ pub struct Changes {
     pub workspace: Option<WorkspaceId>,
     /// The file whose patch `state` shows.
     pub selected: Option<usize>,
+    /// A line to scroll to once its file is selected.
+    reveal: Option<LineReveal>,
     /// Read on every load, never remembered: staging a path is what takes it
     /// off the list, and only git knows.
     pub rebase: Option<domain::RebaseState>,
@@ -440,6 +451,7 @@ pub struct Files {
     followed: bool,
     /// A preview image had not decoded when the view was last built.
     image_pending: bool,
+    pub find: Option<preview_find::PreviewFind>,
 }
 
 impl Default for Files {
@@ -459,7 +471,25 @@ impl Default for Files {
             follow: None,
             followed: false,
             image_pending: false,
+            find: None,
         }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Shown {
+    Image,
+    Table,
+    TooLarge,
+    Binary,
+    Rendered,
+    Lines,
+}
+
+impl Shown {
+    #[must_use]
+    pub fn searchable(self) -> bool {
+        matches!(self, Shown::Rendered | Shown::Lines)
     }
 }
 
@@ -549,6 +579,7 @@ impl Workbench {
     pub fn preview(&mut self, path: &str) {
         self.files.preview = None;
         self.files.error = None;
+        self.files.find = None;
         self.files.previewing = Some(path.to_string());
         self.read_preview(path);
         self.mode = CenterMode::Files;
@@ -577,6 +608,27 @@ impl Workbench {
         {
             preview.source = !preview.source;
         }
+        self.refresh_find();
+    }
+
+    /// Searches what the preview shows now for the find field's text.
+    pub fn refresh_find(&mut self) {
+        let (Some(find), Some(preview)) = (&mut self.files.find, &self.files.preview) else {
+            return;
+        };
+        let query = find.edit.text.as_str();
+        let (hits, capped) = match preview.shown() {
+            Shown::Rendered => {
+                let (hits, capped) = preview_find::rendered_hits(&preview.text, query);
+                (preview_find::Hits::Rendered(hits), capped)
+            }
+            Shown::Lines => {
+                let (hits, capped) = preview_find::line_hits(&preview.text, &preview.lines, query);
+                (preview_find::Hits::Lines(hits), capped)
+            }
+            _ => (preview_find::Hits::None, false),
+        };
+        find.set_hits(hits, capped);
     }
 
     /// Where git's view of the checkout shows: the Git panel and its diff,
@@ -901,9 +953,15 @@ impl Workbench {
                     .map(|file| file.path.clone())
                     .collect();
                 let kept = changes
-                    .selected
-                    .and_then(|index| changes.files.get(index))
-                    .map(|file| file.path.clone());
+                    .reveal
+                    .as_ref()
+                    .map(|reveal| reveal.path.clone())
+                    .or_else(|| {
+                        changes
+                            .selected
+                            .and_then(|index| changes.files.get(index))
+                            .map(|file| file.path.clone())
+                    });
                 changes.files = diff
                     .files
                     .into_iter()
@@ -954,6 +1012,44 @@ impl Workbench {
             rune_kit::diff::DiffMode::Unified
         });
         self.compare.set_split(split);
+    }
+
+    /// Shows `path`'s patch at `line` (1-based, new side): now when the list
+    /// already holds it, otherwise after the next diff read.
+    pub fn reveal_change(&mut self, path: String, line: u32) {
+        self.select_change_path(&path);
+        self.changes.reveal = Some(LineReveal {
+            path,
+            line,
+            revision: self.changes.key_revision,
+        });
+    }
+
+    /// Scrolls the pending reveal into view once its file is selected; drops
+    /// it when Changes is left or a newer list no longer has the path.
+    pub fn settle_change_reveal(&mut self, tx: &mut rune::Tx) -> bool {
+        let changes = &mut self.changes;
+        let Some(reveal) = &changes.reveal else {
+            return false;
+        };
+        if self.mode != CenterMode::Changes {
+            changes.reveal = None;
+            return false;
+        }
+        let shown = changes
+            .selected
+            .and_then(|index| changes.files.get(index))
+            .is_some_and(|file| file.path == reveal.path);
+        if !shown {
+            if changes.loaded && changes.key_revision != reveal.revision {
+                changes.reveal = None;
+            }
+            return false;
+        }
+        let at = rune_kit::diff::LineRef::new(rune_kit::diff::Side::New, reveal.line);
+        changes.state.scroll_to_line(0, at, tx);
+        changes.reveal = None;
+        true
     }
 
     /// Shows one changed file's patch; one file is open at a time.
@@ -1079,6 +1175,7 @@ impl Workbench {
                     preview.source = old.source;
                 }
                 self.files.preview = Some(preview);
+                self.refresh_find();
             }
             Err(error) if self.files.previewing.as_deref() == Some(path) => {
                 self.files.error = Some(error);
@@ -1335,6 +1432,30 @@ impl Preview {
             binary: false,
             too_large: false,
             highlights: Rc::from(Vec::new()),
+        }
+    }
+
+    /// What the centre draws for this preview.
+    #[must_use]
+    pub fn shown(&self) -> Shown {
+        match self.kind {
+            Some(PreviewKind::Image) => return Shown::Image,
+            Some(PreviewKind::Svg) if !self.source => return Shown::Image,
+            Some(PreviewKind::Csv)
+                if !self.source && !self.too_large && !self.binary && self.table.is_some() =>
+            {
+                return Shown::Table;
+            }
+            _ => {}
+        }
+        if self.too_large {
+            Shown::TooLarge
+        } else if self.binary {
+            Shown::Binary
+        } else if self.is_markdown() && !self.source {
+            Shown::Rendered
+        } else {
+            Shown::Lines
         }
     }
 

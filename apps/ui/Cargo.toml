@@ -28,6 +28,8 @@ ureq = { version = "2.12", default-features = false, features = ["tls"] }
 minisign-verify = "0.2.5"
 tar = "0.4"
 flate2 = "1"
+# Not called directly: enables ICO in the decoder Rune's ImageCache already uses, for favicons.
+image = { version = "0.25", default-features = false, features = ["ico"] }
 semver = "1"
 
 [dev-dependencies]

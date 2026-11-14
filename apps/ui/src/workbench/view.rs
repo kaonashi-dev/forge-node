@@ -2,18 +2,21 @@
 
 use std::borrow::Cow;
 
-use rune::{El, GrowthSpec, ScrollSpec, col, el, icon, rich, row, text};
+use rune::{El, GrowthSpec, ScrollSpec, TextHighlight, col, el, icon, rich, row, text};
 use rune_kit::diff::DiffView;
 use rune_kit::syntax::SyntaxTheme;
 use rune_kit::{
-    Button, ButtonVariant, ControlSize, FileNode, Kit, Markdown, SegmentedControl, TextInput, Tree,
-    TreeItem, TreeStyle,
+    Button, ButtonVariant, ControlSize, FileNode, Highlight, Kit, Markdown, SegmentedControl,
+    TextInput, Tree, TreeItem, TreeStyle,
 };
 
 use super::decorations::Tone;
-use super::{CenterMode, Preview, PreviewKind};
+use super::preview_find::{CURRENT_KEY, Hits, PreviewFind};
+use super::{CenterMode, Preview, PreviewKind, Shown};
 use crate::app::AppState;
+use crate::ds::{IconButtonSize, icon_button};
 use crate::file_icons::FileIcon;
+use crate::glyphs;
 
 const CODE_ROW_H: f32 = 18.0;
 const CSV_ROW_H: f32 = 24.0;
@@ -31,9 +34,7 @@ fn tone_color(k: &Kit, tone: Tone) -> rune::Color {
 }
 
 fn bar(k: &Kit, title: String, detail: String) -> El {
-    let refresh = Button::new("Refresh")
-        .variant(ButtonVariant::GhostMuted)
-        .control_size(ControlSize::Small)
+    let refresh = icon_button(&glyphs::REFRESH, "Refresh", IconButtonSize::Regular)
         .on_press(|s: &mut AppState| s.workbench.refresh())
         .build(k)
         .key("workbench-refresh");
@@ -359,6 +360,7 @@ pub fn changes(s: &AppState, k: &Kit) -> El {
             file.deletions
         )
     });
+    let kit = k.clone();
     let patch = match selected {
         Some(_) if changes.state.files().is_empty() => notice(
             k,
@@ -369,6 +371,9 @@ pub fn changes(s: &AppState, k: &Kit) -> El {
             |s: &AppState| &s.workbench.changes.state,
             |s: &mut AppState| &mut s.workbench.changes.state,
         )
+        .annotation(move |s: &AppState, annotation| {
+            crate::code_review::changes_note(s, &kit, annotation)
+        })
         .build(s, k)
         .key("changes-diff")
         .grow(1.0)
@@ -495,9 +500,10 @@ pub fn files_panel(s: &AppState, k: &Kit) -> El {
 /// its source a toggle away; text when it is none of those.
 pub fn preview(s: &AppState, k: &Kit) -> El {
     let bench = &s.workbench;
+    let find = bench.files.find.as_ref();
     let body = match (&bench.files.preview, &bench.files.error) {
         (_, Some(error)) => notice(k, "files-error", format!("Could not read: {error}")),
-        (Some(preview), None) => preview_view(preview, k),
+        (Some(preview), None) => preview_view(preview, find, k),
         (None, None) => notice(k, "files-hint", "Reading…".into()),
     };
     let shown = bench.files.preview.as_ref();
@@ -508,32 +514,156 @@ pub fn preview(s: &AppState, k: &Kit) -> El {
         _ => "rendered · read only",
     };
     let mut head = bar(k, title, detail.into());
+    let searchable = shown.is_some_and(|preview| preview.shown().searchable());
     if let Some(preview) = with_source {
-        head = head
-            .child(
-                Button::new(if preview.source { "Rendered" } else { "Source" })
-                    .variant(ButtonVariant::GhostMuted)
-                    .control_size(ControlSize::Small)
-                    .on_press(|s: &mut AppState| s.workbench.toggle_source())
-                    .build(k)
-                    .key("preview-source-switch"),
-            )
-            .child(
-                Button::new("Edit")
-                    .variant(ButtonVariant::Outline)
-                    .control_size(ControlSize::Small)
-                    .on_press(|s: &mut AppState| s.edit_previewed())
-                    .build(k)
-                    .key("preview-edit"),
-            );
+        let (eye, eye_label) = if preview.source {
+            (&glyphs::EYE, "Show Rendered")
+        } else {
+            (glyphs::chosen(&glyphs::EYE), "Show Source")
+        };
+        head = head.child(
+            icon_button(eye, eye_label, IconButtonSize::Regular)
+                .help(eye_label)
+                .on_press_tx(|s: &mut AppState, tx| {
+                    s.workbench.toggle_source();
+                    s.reveal_preview_find(tx);
+                })
+                .build(k)
+                .key("preview-source-switch"),
+        );
     }
-    col()
-        .key("files")
+    if searchable {
+        head = head.child(
+            icon_button(&glyphs::SEARCH, "Find", IconButtonSize::Regular)
+                .help("Find")
+                .shortcut("⌘F")
+                .on_press_tx(|s: &mut AppState, tx| {
+                    s.open_preview_find(tx);
+                })
+                .build(k)
+                .key("preview-find"),
+        );
+    }
+    if with_source.is_some() {
+        head = head.child(
+            icon_button(&glyphs::TEXT_CURSOR, "Edit", IconButtonSize::Regular)
+                .help("Edit")
+                .on_press(|s: &mut AppState| s.edit_previewed())
+                .build(k)
+                .key("preview-edit"),
+        );
+    }
+    let mut view = col().key("files").w_full().h_full().min_h(0.0).child(head);
+    if let Some(find) = find.filter(|_| searchable) {
+        view = view.child(find_bar(find, k));
+    }
+    view.child(body)
+}
+
+/// Find in the previewed file, under its header: the field, the count,
+/// previous, next and close.
+fn find_bar(find: &PreviewFind, k: &Kit) -> El {
+    let field = TextInput::new(&find.edit)
+        .label("Find")
+        .placeholder("Find")
+        .leading_icon(&glyphs::SEARCH)
+        .width(Some(240.0))
+        .on_edit(|s: &mut AppState| {
+            &mut s
+                .workbench
+                .files
+                .find
+                .get_or_insert_with(PreviewFind::new)
+                .edit
+        })
+        .on_change(|s: &mut AppState, tx| s.preview_find_typed(tx))
+        .on_key(|s: &mut AppState, ev, tx| s.preview_find_key(ev, tx))
+        .build(k)
+        .key("preview-find-input");
+    let empty = find.hits.is_empty();
+    let step =
+        |glyph: &'static rune::Icon, label: &'static str, key: &'static str, delta: isize| {
+            icon_button(glyph, label, IconButtonSize::Mini)
+                .disabled(empty)
+                .on_press_tx(move |s: &mut AppState, tx| s.step_preview_find(delta, tx))
+                .build(k)
+                .key(key)
+        };
+    row()
+        .key("preview-find-bar")
+        .role("search")
+        .label("Find in file")
         .w_full()
-        .h_full()
-        .min_h(0.0)
-        .child(head)
-        .child(body)
+        .items_center()
+        .justify_end()
+        .px(12.0)
+        .py(4.0)
+        .gap(crate::ds::SPACE_3)
+        .fill(k.c.surface_weak)
+        .child(field)
+        .child(
+            text(find.counter())
+                .key("preview-find-count")
+                .role("status")
+                .font(k.ty.text_xsmall)
+                .color(k.c.text_faint)
+                .w(90.0)
+                .truncate(),
+        )
+        .child(step(
+            &glyphs::CHEVRON_UP,
+            "Previous match",
+            "preview-find-previous",
+            -1,
+        ))
+        .child(step(
+            &glyphs::CHEVRON_DOWN,
+            "Next match",
+            "preview-find-next",
+            1,
+        ))
+        .child(
+            icon_button(&glyphs::CLOSE, "Close find", IconButtonSize::Mini)
+                .on_press(|s: &mut AppState| s.close_preview_find())
+                .build(k)
+                .key("preview-find-close"),
+        )
+}
+
+/// The find colours, from the theme's warning ink: every match, and the
+/// current one with a stronger wash and a ring.
+fn match_colors(k: &Kit) -> (rune::Color, rune::Color, rune::Color) {
+    let ink = k.c.warning.icon;
+    (k.alpha(ink, 0.24), k.alpha(ink, 0.40), ink)
+}
+
+/// The find's highlights on shown line `line`; the current one carries
+/// [`CURRENT_KEY`] so the reveal can centre it.
+fn line_marks(
+    find: &PreviewFind,
+    line: usize,
+    hit_bg: rune::Color,
+    current_bg: rune::Color,
+    ring: rune::Color,
+) -> Vec<TextHighlight> {
+    let Hits::Lines(hits) = &find.hits else {
+        return Vec::new();
+    };
+    let first = hits.partition_point(|(at, _)| *at < line);
+    hits[first..]
+        .iter()
+        .take_while(|(at, _)| *at == line)
+        .enumerate()
+        .map(|(offset, (_, range))| {
+            if first + offset == find.current {
+                TextHighlight::new(range.clone(), current_bg)
+                    .ring(ring, 1.0)
+                    .key(CURRENT_KEY)
+            } else {
+                TextHighlight::new(range.clone(), hit_bg)
+            }
+        })
+        .collect()
 }
 
 fn image_view(image: Option<&Result<rune::Image, String>>, k: &Kit) -> El {
@@ -645,47 +775,55 @@ fn csv_view(k: &Kit, table: &super::csv::CsvTable) -> El {
     view
 }
 
-fn preview_view(preview: &Preview, k: &Kit) -> El {
-    match preview.kind {
-        Some(PreviewKind::Image) => return image_view(preview.image.as_ref(), k),
-        Some(PreviewKind::Svg) if !preview.source => {
-            return image_view(preview.image.as_ref(), k);
-        }
-        Some(PreviewKind::Csv) if !preview.source && !preview.too_large && !preview.binary => {
+fn preview_view(preview: &Preview, find: Option<&PreviewFind>, k: &Kit) -> El {
+    match preview.shown() {
+        Shown::Image => return image_view(preview.image.as_ref(), k),
+        Shown::Table => {
             if let Some(table) = &preview.table {
                 return csv_view(k, table);
             }
         }
-        _ => {}
+        Shown::TooLarge => {
+            return notice(
+                k,
+                "preview-large",
+                "This file is larger than the daemon reads for a preview.".into(),
+            );
+        }
+        Shown::Binary => {
+            return notice(
+                k,
+                "preview-binary",
+                "Binary file; nothing to show as text.".into(),
+            );
+        }
+        Shown::Rendered | Shown::Lines => {}
     }
-    if preview.too_large {
-        return notice(
-            k,
-            "preview-large",
-            "This file is larger than the daemon reads for a preview.".into(),
-        );
-    }
-    if preview.binary {
-        return notice(
-            k,
-            "preview-binary",
-            "Binary file; nothing to show as text.".into(),
-        );
-    }
+    let (hit_bg, current_bg, ring) = match_colors(k);
     let scroller = col()
-        .key("preview-scroll")
+        .key(super::hooks::PREVIEW_SCROLL_KEY)
         .grow(1.0)
         .h_full()
         .min_w(0.0)
         .scroll(ScrollSpec {
             stick_bottom: false,
         });
-    if preview.is_markdown() && !preview.source {
-        return scroller.child(
-            col()
-                .padding(20.0)
-                .child(Markdown::new(preview.text.to_string()).build(k)),
-        );
+    if preview.shown() == Shown::Rendered {
+        let mut markdown = Markdown::new(preview.text.to_string());
+        if let Some((find, Hits::Rendered(hits))) = find.map(|find| (find, &find.hits)) {
+            markdown = markdown.highlights(hits.iter().enumerate().map(|(at, ranges)| {
+                let paint = if at == find.current {
+                    Highlight::current()
+                        .bg(current_bg)
+                        .ring(ring, 1.0)
+                        .key(CURRENT_KEY)
+                } else {
+                    Highlight::new().bg(hit_bg)
+                };
+                (ranges.clone(), paint)
+            }));
+        }
+        return scroller.child(col().padding(20.0).child(markdown.build(k)));
     }
     let count = preview.lines.len() + usize::from(preview.cut);
     let theme = SyntaxTheme::from_kit(k);
@@ -712,6 +850,13 @@ fn preview_view(preview: &Preview, k: &Kit) -> El {
                             .h(CODE_ROW_H);
                     };
                     let spans = theme.spans(&preview.line_highlights(range), 0);
+                    let marks = s
+                        .workbench
+                        .files
+                        .find
+                        .as_ref()
+                        .map(|find| line_marks(find, index, hit_bg, current_bg, ring))
+                        .unwrap_or_default();
                     row()
                         .h(CODE_ROW_H)
                         .items_center()
@@ -726,7 +871,8 @@ fn preview_view(preview: &Preview, k: &Kit) -> El {
                         .child(
                             rich(preview.text[range.clone()].to_string(), spans)
                                 .font(mono)
-                                .color(base),
+                                .color(base)
+                                .text_highlights(marks),
                         )
                 },
             ),
@@ -1269,6 +1415,108 @@ mod tests {
         }
     }
 
+    fn press(rt: &mut Runtime<AppState>, key: rune::Key, mods: rune::Mods) {
+        rt.key(rune::KeyEvent { key, mods });
+        rt.frame(0.5);
+        rt.frame(0.6);
+    }
+
+    fn assert_current_on_screen(rt: &Runtime<AppState>, what: &str) {
+        let rect = |key: &str| {
+            rt.elements()
+                .into_iter()
+                .find(|e| e.key.as_deref() == Some(key))
+                .map(|e| e.rect)
+        };
+        let viewport = rect(super::super::hooks::PREVIEW_SCROLL_KEY).expect("the scroller");
+        let mark = rect(super::CURRENT_KEY).unwrap_or_else(|| panic!("{what} is mounted"));
+        assert!(
+            mark[1] >= viewport[1] && mark[1] + mark[3] <= viewport[1] + viewport[3],
+            "{what} was scrolled to: {mark:?} in {viewport:?}"
+        );
+    }
+
+    fn count(rt: &Runtime<AppState>) -> Option<String> {
+        Some(rt.state.workbench.files.find.as_ref()?.counter())
+    }
+
+    #[test]
+    fn command_f_finds_in_a_rendered_and_a_source_preview() {
+        let store =
+            fixture_store(&Path::new(env!("CARGO_MANIFEST_DIR")).join("fixtures/snapshot.json"))
+                .expect("fixture snapshot decodes");
+        let state = AppState::for_bench(store, Arc::new(Metrics::default()), SharedTerminal::new());
+        let mut rt = Runtime::new(
+            state,
+            crate::ui::view,
+            (1180.0, 760.0),
+            Env {
+                system_dark: true,
+                scale: 1.0,
+            },
+        );
+        let body: String = (0..120).map(|i| format!("Line {i}.\n\n")).collect();
+        let text = format!("# Needle\n\n{body}The last needle.\n");
+        rt.update(move |s, _| {
+            s.show_panel(crate::workbench::Panel::Files);
+            s.workbench.preview("README.md");
+            let workspace = s.workbench.workspace.expect("a workspace");
+            let scope = s.workbench.scope().expect("a scope");
+            s.workbench.apply_file(
+                scope,
+                "README.md",
+                Ok(file("README.md", &text, "markdown", workspace)),
+            );
+        });
+        rt.frame(0.1);
+        rt.frame(0.2);
+        let (x, y) = rt.find("preview-scroll").expect("the preview");
+        rt.pointer_down(x, y);
+        rt.pointer_up(x, y);
+        rt.frame(0.3);
+        let cmd = rune::Mods {
+            cmd: true,
+            ..rune::Mods::default()
+        };
+        press(&mut rt, rune::Key::Command('f'), cmd);
+        assert!(
+            rt.state.workbench.files.find.is_some(),
+            "⌘F over the preview opens its find"
+        );
+        press(
+            &mut rt,
+            rune::Key::Text("NEEDLE".into()),
+            rune::Mods::default(),
+        );
+        assert_eq!(count(&rt).as_deref(), Some("1 of 2"));
+        press(&mut rt, rune::Key::Enter, rune::Mods::default());
+        assert_eq!(count(&rt).as_deref(), Some("2 of 2"));
+        assert_current_on_screen(&rt, "the last rendered match");
+
+        let (x, y) = rt.find("preview-source-switch").expect("the eye");
+        rt.pointer_down(x, y);
+        rt.pointer_up(x, y);
+        for step in 0..30 {
+            rt.frame(0.7 + f64::from(step) / 60.0);
+        }
+        assert!(
+            rt.state
+                .workbench
+                .files
+                .preview
+                .as_ref()
+                .is_some_and(|p| p.source)
+        );
+        assert_eq!(
+            count(&rt).as_deref(),
+            Some("2 of 2"),
+            "the source is searched as lines and keeps its place"
+        );
+        assert_current_on_screen(&rt, "the last source line");
+        press(&mut rt, rune::Key::Escape, rune::Mods::default());
+        assert!(rt.state.workbench.files.find.is_none(), "Escape closes it");
+    }
+
     /// Code and markdown previews both mount; a virtual list without its
     /// growth spec panics at the first commit, so this is the guard.
     #[test]
@@ -1323,9 +1571,20 @@ mod tests {
             rt.elements().into_iter().filter_map(|e| e.key).collect()
         };
         assert!(!keys(&rt).iter().any(|key| key == "preview-lines"));
-        assert!(keys(&rt).iter().any(|key| key == "preview-source-switch"));
-        rt.update(|s, _| s.workbench.toggle_source());
+        for key in ["preview-source-switch", "preview-find", "preview-edit"] {
+            assert!(keys(&rt).iter().any(|shown| shown == key), "{key}");
+        }
+        let eye = rt
+            .elements()
+            .into_iter()
+            .find(|e| e.key.as_deref() == Some("preview-source-switch"))
+            .map(|e| e.rect)
+            .expect("the eye");
+        let (x, y) = (eye[0] + eye[2] / 2.0, eye[1] + eye[3] / 2.0);
+        rt.pointer_down(x, y);
+        rt.pointer_up(x, y);
         rt.frame(0.4);
+        rt.frame(0.5);
         assert!(
             keys(&rt).iter().any(|key| key == "preview-lines"),
             "the source is its lines"

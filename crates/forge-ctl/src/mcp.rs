@@ -574,9 +574,9 @@ fn catalog() -> Vec<Tool> {
             &["task", "cleanup"], json!({ "task": string, "keep_worktree": boolean }))
             .required(&["task"]).positional(&["task"]).roles(NOT_A_WORKER).idempotent(),
         // Forge Review.
-        Tool::new("review_start", "Start a structured, read-only review of a workspace's changes against its merge base. With wait, block until it ends and return its findings.",
+        Tool::new("review_start", "Start a structured, read-only review of a workspace's changes against its merge base, or with pr of that pull request's head against its base branch. With wait, block until it ends and return its findings.",
             &["review", "start"],
-            json!({ "workspace": string, "base": string, "tier": { "type": "string", "enum": ["base", "plus", "apex"] },
+            json!({ "workspace": string, "pr": { "type": "integer", "minimum": 1 }, "base": string, "tier": { "type": "string", "enum": ["base", "plus", "apex"] },
                 "provider": string, "preset": string, "instructions": string, "model": string,
                 "effort": string, "wait": boolean })).roles(NOT_A_WORKER),
         Tool::new("review_show", "A review run and its findings.", &["review", "show"], json!({ "review": string }))
@@ -912,7 +912,7 @@ mod tests {
             ),
             (
                 "review_start",
-                json!({ "workspace": "w", "base": "main", "tier": "plus", "provider": "claude", "preset": "p", "instructions": "--x", "model": "m", "effort": "high", "wait": true }),
+                json!({ "workspace": "w", "pr": 7, "base": "main", "tier": "plus", "provider": "claude", "preset": "p", "instructions": "--x", "model": "m", "effort": "high", "wait": true }),
             ),
             ("review_show", json!({ "review": "r" })),
             ("review_status", json!({ "workspace": "w" })),
@@ -945,6 +945,10 @@ mod tests {
         assert!(matches!(
             parse("inbox", json!({ "ack": ["--ack-all", "m2"] })),
             Command::Inbox { ack, ack_all: false, .. } if ack == ["--ack-all", "m2"]
+        ));
+        assert!(matches!(
+            parse("review_start", json!({ "workspace": "w", "pr": 12, "base": "main" })),
+            Command::Review(crate::review::ReviewCmd::Start { pr: Some(12), base: Some(base), .. }) if base == "main"
         ));
         assert!(matches!(
             parse("task_integrate", json!({ "task": "t", "how": "abort" })),

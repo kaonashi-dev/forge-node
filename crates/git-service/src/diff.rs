@@ -25,7 +25,9 @@ use std::collections::{HashMap, HashSet};
 use std::ops::Range;
 use std::path::Path;
 
-use crate::command::{run_git, run_git_bounded, run_git_prefix, GitError, GitOutput};
+use crate::command::{
+    run_git, run_git_bounded, run_git_prefix, run_git_with_index, GitError, GitOutput,
+};
 use crate::repository::current_branch;
 
 /// Context lines around each hunk.
@@ -152,6 +154,47 @@ pub fn commit_range_diff(
     let revs = [base, head];
     let (entries, truncated) = named_paths(repo, &revs)?;
     assemble(repo, entries, truncated, &revs, true, context)
+}
+
+/// Write `paths` as they are in the working tree, over the checkout's index,
+/// into a tree object, leaving that index untouched; a path left out keeps its
+/// indexed version. [`commit_range_diff`] from a base to the returned oid reads
+/// the change again exactly as it was. `scratch` holds the throwaway index and
+/// is removed before returning.
+///
+/// The tree is unreachable, so a `git gc` may prune it once
+/// `gc.pruneExpire` (two weeks by default) has passed.
+///
+/// # Errors
+/// [`GitError::Io`] if the index cannot be copied, [`GitError::CommandFailed`]
+/// if git refuses a path or the tree.
+pub fn snapshot_tree(repo: &Path, paths: &[&str], scratch: &Path) -> Result<String, GitError> {
+    match crate::command::git_path(repo, "index") {
+        Some(index) => {
+            std::fs::copy(index, scratch)?;
+        }
+        None => {
+            let _ = std::fs::remove_file(scratch);
+        }
+    }
+    let written = write_snapshot(repo, paths, scratch);
+    let _ = std::fs::remove_file(scratch);
+    written
+}
+
+fn write_snapshot(repo: &Path, paths: &[&str], index: &Path) -> Result<String, GitError> {
+    if !paths.is_empty() {
+        let specs: Vec<String> = paths
+            .iter()
+            .map(|path| format!(":(literal){path}"))
+            .collect();
+        let mut args = vec!["add", "-A", "--"];
+        args.extend(specs.iter().map(String::as_str));
+        run_git_with_index(repo, index, &args)?.ok(&args)?;
+    }
+    let args = ["write-tree"];
+    let out = run_git_with_index(repo, index, &args)?.ok(&args)?;
+    Ok(out.stdout_trimmed().to_string())
 }
 
 fn assemble(
@@ -836,13 +879,19 @@ fn bytecount(haystack: &[u8], needle: u8) -> usize {
     haystack.iter().filter(|byte| **byte == needle).count()
 }
 
-/// `(the newest commits, how many there are)` between `base` and `HEAD`.
+/// [`commits_between`] `base` and `HEAD`.
+#[must_use]
+pub fn commits_since(repo: &Path, base: &str) -> (Vec<CommitEntry>, u32) {
+    commits_between(repo, base, "HEAD")
+}
+
+/// `(the newest commits, how many there are)` in `base..head`.
 ///
 /// The list is capped at [`MAX_SUMMARY_COMMITS`]; the count is not, so a
 /// caller can say "and 40 more" without holding all of them.
 #[must_use]
-pub fn commits_since(repo: &Path, base: &str) -> (Vec<CommitEntry>, u32) {
-    let range = format!("{base}..HEAD");
+pub fn commits_between(repo: &Path, base: &str, head: &str) -> (Vec<CommitEntry>, u32) {
+    let range = format!("{base}..{head}");
     let limit = format!("-n{}", MAX_SUMMARY_COMMITS + 1);
     let args = [
         "log",

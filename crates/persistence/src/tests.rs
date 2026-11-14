@@ -23,6 +23,7 @@ fn mk_project(root: &str) -> Project {
         project_group_id: None,
         name: "demo".to_owned(),
         icon: None,
+        icon_image: None,
         root_path: PathBuf::from(root),
         git_root: None,
         created_at: Timestamp::now(),
@@ -95,8 +96,8 @@ fn migrations_apply_and_user_version_advances() {
     // count of applied migrations, and the assertion is what catches a migration
     // that was silently reordered or dropped.
     assert_eq!(
-        version, 18,
-        "eighteen migrations applied => user_version == 18"
+        version, 23,
+        "twenty-three migrations applied => user_version == 23"
     );
 
     for table in [
@@ -119,6 +120,7 @@ fn migrations_apply_and_user_version_advances() {
         "orchestration_receipts",
         "review_runs",
         "review_findings",
+        "review_feedback",
     ] {
         let count: i64 = db
             .conn()
@@ -191,7 +193,7 @@ fn version_two_database_upgrades_existing_projects_into_general() {
         .conn()
         .query_row("PRAGMA user_version", [], |row| row.get(0))
         .unwrap();
-    assert_eq!(version, 18);
+    assert_eq!(version, 23);
 }
 
 /// Migration 6 over a database that already has workspaces: the display_name
@@ -360,6 +362,17 @@ fn version_four_database_upgrades_and_its_projects_have_no_icon() {
             .as_deref(),
         Some("🦀"),
         "the upgraded row takes an icon like any other"
+    );
+    assert_eq!(project.icon_image, None, "nor is an icon image");
+    let mut pictured = iconed;
+    pictured.icon_image = Some("public/favicon.svg".to_owned());
+    db.projects().upsert(&pictured).unwrap();
+    let stored = db.projects().get(project_id).unwrap().unwrap();
+    assert_eq!(stored.icon_image.as_deref(), Some("public/favicon.svg"));
+    assert_eq!(
+        stored.icon.as_deref(),
+        Some("🦀"),
+        "the glyph stays the fallback"
     );
 }
 
@@ -1077,7 +1090,7 @@ fn sessions_schema_is_unchanged() {
         .conn()
         .query_row("PRAGMA user_version", [], |r| r.get(0))
         .unwrap();
-    assert_eq!(version, 18, "the review preset fix is migration 18");
+    assert_eq!(version, 23, "every migration up to the reviewed tree");
 
     let (db, _project, workspace_id) = db_with_workspace();
     let mut session = mk_session(workspace_id, SessionState::Running);
@@ -1215,6 +1228,9 @@ fn reset_clears_every_application_table_and_keeps_the_schema() {
         "attempts",
         "run_state",
         "orchestration_receipts",
+        "review_runs",
+        "review_findings",
+        "review_feedback",
     ] {
         let count: i64 = db
             .conn()
@@ -1228,7 +1244,7 @@ fn reset_clears_every_application_table_and_keeps_the_schema() {
         .conn()
         .query_row("PRAGMA user_version", [], |row| row.get(0))
         .unwrap();
-    assert_eq!(version, 18, "reset retains the migrated schema");
+    assert_eq!(version, 23, "reset retains the migrated schema");
 }
 
 // ---- on-disk open ----------------------------------------------------------
@@ -1655,6 +1671,8 @@ fn mk_run(workspace_id: WorkspaceId, status: domain::ReviewStatus) -> domain::Re
         },
         created_at: Timestamp::now(),
         finished_at: None,
+        branch: Some("feature".into()),
+        tree_oid: None,
     }
 }
 
@@ -1673,6 +1691,8 @@ fn mk_finding(id: u32) -> domain::Finding {
         body: "b".into(),
         evidence: "e".into(),
         suggestion: Some("s".into()),
+        lineage: domain::Lineage::Persisting,
+        reaction: None,
     }
 }
 
@@ -1821,4 +1841,138 @@ fn reset_clears_reviews() {
     store.insert_findings(run.id, &[mk_finding(1)]).unwrap();
     db.reset().unwrap();
     assert!(store.get(run.id).unwrap().is_none());
+}
+
+#[test]
+fn feedback_is_upserted_cleared_read_back_and_outlives_its_run() {
+    let (db, project, ws) = db_with_workspace();
+    let store = db.review_store().unwrap();
+    let run = mk_run(ws, domain::ReviewStatus::Completed);
+    store.insert_run(&run).unwrap();
+    let mut ruled = mk_finding(2);
+    ruled.rule_id = Some("money".into());
+    store
+        .insert_findings(run.id, &[mk_finding(1), ruled.clone()])
+        .unwrap();
+
+    store
+        .set_feedback(project, run.id, &mk_finding(1), domain::FindingReaction::Up)
+        .unwrap();
+    store
+        .set_feedback(
+            project,
+            run.id,
+            &mk_finding(1),
+            domain::FindingReaction::Dismiss,
+        )
+        .unwrap();
+    store
+        .set_feedback(project, run.id, &ruled, domain::FindingReaction::Down)
+        .unwrap();
+    let (_, findings) = store.get(run.id).unwrap().unwrap();
+    let reactions: Vec<_> = findings.iter().map(|f| f.reaction).collect();
+    assert_eq!(
+        reactions,
+        [
+            Some(domain::FindingReaction::Dismiss),
+            Some(domain::FindingReaction::Down)
+        ],
+        "the second reaction replaces the first"
+    );
+    let feedback = store.feedback(project).unwrap();
+    assert_eq!(feedback.len(), 2);
+    let down = feedback
+        .iter()
+        .find(|f| f.reaction == domain::FindingReaction::Down)
+        .unwrap();
+    assert_eq!(down.rule_id.as_deref(), Some("money"));
+    assert_eq!(down.fingerprint, ruled.fingerprint);
+    assert_eq!(down.severity, domain::Severity::P1);
+    assert!((Timestamp::now().as_offset().unix_timestamp() - down.created_at).abs() < 60);
+
+    store.clear_feedback(run.id, 2).unwrap();
+    assert_eq!(store.feedback(project).unwrap().len(), 1);
+
+    let future = Timestamp::from_unix_secs(4_000_000_000).unwrap();
+    assert_eq!(store.prune(ws, 0, future).unwrap(), 1);
+    assert!(store.get(run.id).unwrap().is_none());
+    assert_eq!(
+        store.feedback(project).unwrap().len(),
+        1,
+        "suppressions outlive the pruned run"
+    );
+}
+
+#[test]
+fn lifting_a_rule_keeps_its_findings_dismissed_and_lifting_a_finding_deletes_it() {
+    let (db, project, ws) = db_with_workspace();
+    let store = db.review_store().unwrap();
+    let run = mk_run(ws, domain::ReviewStatus::Completed);
+    store.insert_run(&run).unwrap();
+    let mut findings = Vec::new();
+    for id in 1..=4 {
+        let mut finding = mk_finding(id);
+        finding.rule_id = (id <= 3).then(|| "money".into());
+        finding.category = if id == 4 {
+            "style".into()
+        } else {
+            "logic".into()
+        };
+        findings.push(finding);
+    }
+    for finding in &findings {
+        store
+            .set_feedback(project, run.id, finding, domain::FindingReaction::Dismiss)
+            .unwrap();
+    }
+    let rule = |kind, value: &str, severity| domain::ReviewSuppression {
+        kind,
+        value: value.into(),
+        severity,
+        reason: String::new(),
+    };
+    assert_eq!(
+        store
+            .clear_suppression(project, &rule(domain::SuppressionKind::Rule, "money", None))
+            .unwrap(),
+        3
+    );
+    let after = store.feedback(project).unwrap();
+    assert_eq!(after.len(), 4, "the dismissals stay");
+    assert_eq!(after.iter().filter(|f| !f.counted).count(), 3);
+    assert_eq!(
+        store
+            .clear_suppression(project, &rule(domain::SuppressionKind::Rule, "money", None))
+            .unwrap(),
+        0,
+        "already lifted"
+    );
+    assert_eq!(
+        store
+            .clear_suppression(
+                project,
+                &rule(
+                    domain::SuppressionKind::Fingerprint,
+                    &findings[3].fingerprint,
+                    Some(domain::Severity::P1)
+                )
+            )
+            .unwrap(),
+        1
+    );
+    assert_eq!(store.feedback(project).unwrap().len(), 3);
+    store
+        .set_feedback(
+            project,
+            run.id,
+            &findings[0],
+            domain::FindingReaction::Dismiss,
+        )
+        .unwrap();
+    let again = store.feedback(project).unwrap();
+    assert_eq!(
+        again.iter().filter(|f| f.counted).count(),
+        1,
+        "dismissing again counts again"
+    );
 }

@@ -17,13 +17,23 @@ pub enum ReviewTarget {
         workspace_id: WorkspaceId,
         base: Option<String>,
     },
+    /// A pull request's head, fetched from `origin` into a private ref and
+    /// reviewed against its merge base with `base`, the pull request's base
+    /// branch (or the default branch when `None`). The checkout is not moved.
+    PullRequest {
+        workspace_id: WorkspaceId,
+        number: u32,
+        base: Option<String>,
+    },
 }
 
 impl ReviewTarget {
     #[must_use]
     pub fn workspace_id(&self) -> WorkspaceId {
         match self {
-            Self::Workspace { workspace_id, .. } => *workspace_id,
+            Self::Workspace { workspace_id, .. } | Self::PullRequest { workspace_id, .. } => {
+                *workspace_id
+            }
         }
     }
 }
@@ -91,6 +101,10 @@ pub struct Coverage {
     /// The ids of the project rules that entered the pack.
     #[serde(default)]
     pub rules: Vec<String>,
+    /// Fingerprints the reviewer reported that validation left out, so a
+    /// later run's read does not count them as resolved. At most 200.
+    #[serde(default)]
+    pub withheld: Vec<String>,
 }
 
 /// Compact on purpose: it is what `ReviewUpdated` carries, so it holds no findings.
@@ -117,6 +131,14 @@ pub struct ReviewRun {
     pub coverage: Coverage,
     pub created_at: Timestamp,
     pub finished_at: Option<Timestamp>,
+    /// The workspace's branch when the run started; `None` when detached.
+    #[serde(default)]
+    pub branch: Option<String>,
+    /// A workspace review's working tree, written as a tree object when it was
+    /// reviewed: what `GetReviewDiff` diffs against `base_oid`. `None` for a pull
+    /// request, or when the snapshot could not be written.
+    #[serde(default)]
+    pub tree_oid: Option<String>,
 }
 
 // `score` is a clamped multiple of 0.5, never NaN, so equality is total.
@@ -143,10 +165,51 @@ pub struct Finding {
     /// Copied literally from the new code; what the anchor was checked against.
     pub evidence: String,
     pub suggestion: Option<String>,
+    #[serde(default)]
+    pub lineage: Lineage,
+    /// Read from the feedback table, never stored with the finding.
+    #[serde(default)]
+    pub reaction: Option<FindingReaction>,
 }
 
 // `confidence` is clamped to `0..=1`, never NaN, so equality is total.
 impl Eq for Finding {}
+
+/// Against the previous run of the same lineage; a run with none marks every finding `New`.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Lineage {
+    #[default]
+    New,
+    Persisting,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum FindingReaction {
+    Up,
+    Down,
+    Dismiss,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SuppressionKind {
+    Rule,
+    Category,
+    Fingerprint,
+}
+
+/// Derived from a project's dismissals; never stored.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ReviewSuppression {
+    pub kind: SuppressionKind,
+    /// The rule id, the category or the fingerprint.
+    pub value: String,
+    /// Set for a fingerprint: only a finding at the dismissed severity is suppressed.
+    pub severity: Option<Severity>,
+    pub reason: String,
+}
 
 /// `.forge/review/` of one workspace's working tree, answering `GetReviewConfig`.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -157,6 +220,9 @@ pub struct ReviewSettings {
     pub presets: Vec<ReviewPreset>,
     pub rules: Vec<ReviewRule>,
     pub errors: Vec<String>,
+    /// The workspace's project's, derived from its feedback.
+    #[serde(default)]
+    pub suppressions: Vec<ReviewSuppression>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -214,6 +280,8 @@ mod tests {
             },
             created_at: Timestamp::now(),
             finished_at: None,
+            branch: Some("main".into()),
+            tree_oid: None,
         };
         let json = serde_json::to_value(&run).unwrap();
         assert_eq!(json["tier"], "plus");
@@ -235,6 +303,8 @@ mod tests {
             body: "b".into(),
             evidence: "let x = 1;".into(),
             suggestion: Some("let x = 2;".into()),
+            lineage: Lineage::Persisting,
+            reaction: Some(FindingReaction::Dismiss),
         };
         let json = serde_json::to_value(&finding).unwrap();
         assert_eq!(json["severity"], "P1");

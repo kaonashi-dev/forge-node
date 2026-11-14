@@ -11,7 +11,7 @@ mod metrics;
 mod row;
 mod tone;
 
-pub use atoms::{IconButtonSize, avatar, chip, dot, icon_button, section_header};
+pub use atoms::{IconButtonSize, avatar, avatar_image, chip, dot, icon_button, section_header};
 pub use bars::{Tab, TabShape, toolbar};
 pub use empty::Empty;
 pub use metrics::*;

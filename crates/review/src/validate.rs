@@ -1,4 +1,6 @@
-use domain::{Finding, Severity, Verdict};
+use std::collections::BTreeSet;
+
+use domain::{Finding, ReviewSuppression, Severity, Verdict};
 use sha2::{Digest, Sha256};
 
 use crate::clip;
@@ -37,6 +39,11 @@ pub struct Validated {
     pub low_confidence: u32,
     /// Cut by `max_findings` after dedupe.
     pub trimmed: u32,
+    /// Dropped by the project's feedback suppressions, before `max_findings`.
+    pub suppressed: u32,
+    /// Fingerprints the model reported that did not survive as a finding:
+    /// suppressed, below the floor, past the cap, deduped or unanchorable.
+    pub withheld: Vec<String>,
 }
 
 /// New-side `(first, last)` line ranges of a unified patch; pure deletions have none.
@@ -70,6 +77,7 @@ pub fn validate(
     files: &[ChangedFile],
     rules: &[Rule],
     resolved: &Resolved,
+    suppressions: &[ReviewSuppression],
 ) -> Result<Validated, String> {
     let mut findings = output.findings;
     findings.truncate(MAX_FINDINGS);
@@ -84,8 +92,22 @@ pub fn validate(
                 Some(rule) => raw.severity = raw.severity.max(rule.severity),
                 None => raw.rule_id = None,
             }
-            raw
+            capped(raw)
         })
+        .collect();
+    let reported: BTreeSet<String> = findings
+        .iter()
+        .map(|raw| {
+            fingerprint(
+                &raw.path,
+                &raw.category,
+                raw.rule_id.as_deref(),
+                &raw.evidence,
+            )
+        })
+        .collect();
+    let findings: Vec<RawFinding> = findings
+        .into_iter()
         .filter(|raw| {
             raw.rule_id.is_some() || resolved.categories.get(&raw.category) != Some(false)
         })
@@ -111,7 +133,6 @@ pub fn validate(
         .collect();
 
     for raw in findings {
-        let raw = capped(raw);
         if raw.path.contains("..") || raw.path.starts_with('/') {
             continue;
         }
@@ -172,6 +193,8 @@ pub fn validate(
             body: raw.body,
             evidence: raw.evidence,
             suggestion: raw.suggestion,
+            lineage: domain::Lineage::New,
+            reaction: None,
         };
         match kept.iter_mut().find(|other| overlaps(other, &finding)) {
             Some(other) if finding.severity < other.severity => *other = finding,
@@ -186,6 +209,9 @@ pub fn validate(
              their evidence"
         ));
     }
+    let before = kept.len();
+    kept.retain(|finding| !crate::suppress::is_suppressed(finding, suppressions));
+    let suppressed = u32::try_from(before - kept.len()).unwrap_or(u32::MAX);
     kept.sort_by_key(|finding| finding.severity);
     let trimmed =
         u32::try_from(kept.len().saturating_sub(resolved.max_findings)).unwrap_or(u32::MAX);
@@ -193,6 +219,12 @@ pub fn validate(
     for (id, finding) in kept.iter_mut().enumerate() {
         finding.id = u32::try_from(id + 1).unwrap_or(u32::MAX);
     }
+    let surviving: BTreeSet<&str> = kept.iter().map(|f| f.fingerprint.as_str()).collect();
+    let withheld = reported
+        .iter()
+        .filter(|fingerprint| !surviving.contains(fingerprint.as_str()))
+        .cloned()
+        .collect();
     let summary = match output.diagram {
         Some(diagram) if diagram.trim_start().starts_with("```") => {
             format!("{}\n\n{diagram}", output.summary)
@@ -207,6 +239,8 @@ pub fn validate(
         total,
         low_confidence,
         trimmed,
+        suppressed,
+        withheld,
     })
 }
 

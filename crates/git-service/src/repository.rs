@@ -320,6 +320,13 @@ pub fn commit_exists(repo: &Path, commit: &str) -> bool {
     run_git(Some(repo), &["rev-parse", "--verify", "--quiet", &spec]).is_ok_and(|out| out.success())
 }
 
+/// Whether `oid` names any object in `repo`, a tree as much as a commit.
+#[must_use]
+pub fn object_exists(repo: &Path, oid: &str) -> bool {
+    !oid.starts_with('-')
+        && run_git(Some(repo), &["cat-file", "-e", oid]).is_ok_and(|out| out.success())
+}
+
 /// The common ancestor of every commit in `commits`, or `None` if there is none.
 ///
 /// One subprocess whatever the number of sessions: `merge-base --octopus` is

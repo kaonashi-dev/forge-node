@@ -487,4 +487,34 @@ mod tests {
             TabShape::IconUntilChosen { width: VIEW_TAB_W }
         );
     }
+
+    #[test]
+    fn the_tab_switcher_sits_in_the_middle_of_the_window() {
+        let mut rt = runtime();
+        let tab = rune::KeyEvent {
+            key: rune::Key::Tab,
+            mods: rune::Mods {
+                ctrl: true,
+                ..rune::Mods::default()
+            },
+        };
+        rt.state.global_key(&tab);
+        rt.state.global_key(&tab);
+        rt.invalidate();
+        for step in 0..40 {
+            rt.frame(0.2 + f64::from(step) / 60.0);
+        }
+        let card = rt
+            .elements()
+            .into_iter()
+            .find(|e| e.key.as_deref() == Some("tab-switcher"))
+            .map(|e| e.rect)
+            .expect("the held switcher is shown");
+        let [x, y, w, h] = card;
+        assert!(
+            (x + w / 2.0 - 590.0).abs() < 1.0,
+            "centred across: {card:?}"
+        );
+        assert!((y + h / 2.0 - 380.0).abs() < 1.0, "centred down: {card:?}");
+    }
 }

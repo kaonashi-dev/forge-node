@@ -82,6 +82,24 @@ pub fn avatar(k: &Kit, roles: &Roles, hue: Option<usize>, mark: &str) -> El {
         .a11y_hidden()
 }
 
+/// A project's own picture in the avatar's place, on the same hue edge.
+#[must_use]
+pub fn avatar_image(k: &Kit, roles: &Roles, hue: Option<usize>, image: &rune::Image) -> El {
+    const EDGE: f32 = 0.25;
+    row()
+        .size(AVATAR, AVATAR)
+        .radius(k.radius.sm)
+        .border(1.0, roles.hue(hue).alpha(EDGE))
+        .padding(2.0)
+        .child(
+            el().w_full()
+                .h_full()
+                .radius((k.radius.sm - 2.0).max(0.0))
+                .pixels_fit(image.pixels(), rune::SurfaceFit::Fit),
+        )
+        .a11y_hidden()
+}
+
 /// A section's title in caption type, its count, and one action at the end.
 #[must_use]
 pub fn section_header(k: &Kit, title: &str, count: Option<usize>, action: Option<El>) -> El {

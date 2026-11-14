@@ -364,6 +364,7 @@ mod tests {
             project_group_id: None,
             name: "api".into(),
             icon: None,
+            icon_image: None,
             root_path: PathBuf::from("/repo/api"),
             git_root: Some(PathBuf::from("/repo/api")),
             created_at: domain::Timestamp::now(),

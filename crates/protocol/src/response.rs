@@ -241,10 +241,15 @@ pub enum Response {
     ReviewStarted {
         review_id: domain::ReviewId,
     },
-    /// Answers `GetReview`.
+    /// Answers `GetReview`. `previous` is the newest completed run of the same
+    /// lineage before this one; `resolved` are its findings this run no longer reports.
     Review {
-        run: domain::ReviewRun,
+        run: Box<domain::ReviewRun>,
         findings: Vec<domain::Finding>,
+        #[serde(default)]
+        resolved: Vec<domain::Finding>,
+        #[serde(default)]
+        previous: Option<domain::ReviewId>,
     },
     /// Answers `ListReviews`, newest first.
     Reviews(Vec<domain::ReviewRun>),

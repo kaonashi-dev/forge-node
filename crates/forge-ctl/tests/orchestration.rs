@@ -141,7 +141,8 @@ fn install_fake_agent(bin: &Path, capture: &Path, command: &str, provider: &str,
              \x20 printf 'ATTEMPT=%s\\n' \"$FORGE_ATTEMPT_ID\"\n\
              \x20 printf 'JSON=%s\\n' \"$FORGECTL_JSON\"\n\
              \x20 printf 'ARGS=%s\\n' \"$*\"\n\
-             }} > \"$out\"\n\
+             }} > \"$out.tmp\"\n\
+             /bin/mv \"$out.tmp\" \"$out\"\n\
              printf 'ready %s\\n' \"$FORGE_ATTEMPT_ID\"\n\
              exec /bin/cat\n",
             version = version,
@@ -2986,7 +2987,7 @@ fn launch_args(harness: &Harness, session: &str) -> String {
     poll("agent launch capture", || {
         fs::read_to_string(&path)
             .ok()
-            // ARGS is written last and a multi-line prompt spans several lines.
+            // A multi-line prompt spans several lines; the fake agent renames the file into place.
             .and_then(|text| text.split_once("ARGS=").map(|(_, args)| args.to_owned()))
     })
 }

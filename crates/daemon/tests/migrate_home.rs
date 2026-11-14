@@ -43,6 +43,7 @@ impl Fixture {
             project_group_id: None,
             name: "forge".to_string(),
             icon: None,
+            icon_image: None,
             root_path: repo.path().to_path_buf(),
             git_root: Some(repo.path().to_path_buf()),
             created_at: Timestamp::now(),

@@ -77,7 +77,10 @@ pub use pr_task::{
     agent_prompt, branch_step, effective_system_prompt, BranchFacts, BranchStep, CommitPlan,
     PullRequestDraft, DEFAULT_SYSTEM_PROMPT, MAX_DRAFT_FIELD_BYTES, MAX_PROMPT_PATCH,
 };
-pub use project::{is_valid_icon, InvalidIcon, Project, ProjectGroup, MAX_ICON_CHARS};
+pub use project::{
+    is_icon_image_path, is_valid_icon, InvalidIcon, InvalidIconImage, Project, ProjectGroup,
+    ICON_IMAGE_EXTENSIONS, MAX_ICON_CHARS, MAX_ICON_IMAGE_PATH_BYTES,
+};
 pub use pull_request::{
     PullRequest, PullRequestFailure, PullRequestFailureKind, PullRequestLabel,
     PullRequestRelations, PullRequestSource, PullRequestSourceStatus, PullRequestState,
@@ -85,8 +88,9 @@ pub use pull_request::{
 };
 pub use rebase::{ConflictFile, RebaseState, SequencerOp};
 pub use review::{
-    Coverage, Finding, ReviewPreset, ReviewRule, ReviewRun, ReviewSettings, ReviewStage,
-    ReviewStatus, ReviewTarget, Severity, Tier, Verdict,
+    Coverage, Finding, FindingReaction, Lineage, ReviewPreset, ReviewRule, ReviewRun,
+    ReviewSettings, ReviewStage, ReviewStatus, ReviewSuppression, ReviewTarget, Severity,
+    SuppressionKind, Tier, Verdict,
 };
 pub use session::{
     ActivityEvidence, ActivityState, AgentActivity, EditorFind, EditorFindCommand, EditorState,

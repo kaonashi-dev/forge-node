@@ -4,8 +4,13 @@
 
 use std::time::Instant;
 
+use rune::{KeyEvent, Tx};
+
+use super::preview_find::{self, FieldKey, Hits, PreviewFind};
 use super::{CenterMode, Panel, preview_kind, recent};
 use crate::app::AppState;
+
+pub const PREVIEW_SCROLL_KEY: &str = "preview-scroll";
 
 /// Points an SVG is rasterized to fit; the decoder caps the side anyway.
 const SVG_PT: f32 = 512.0;
@@ -39,6 +44,101 @@ impl AppState {
         };
         if sent.is_ok() {
             self.workbench.show(CenterMode::Session);
+        }
+    }
+
+    /// `path` rendered in the centre, as the file is on disk: unsaved edits
+    /// live only in the editor process.
+    pub fn preview_file(&mut self, path: &str) {
+        self.sync_workbench_workspace();
+        if self.workbench.workspace.is_some() && preview_kind(path).is_some() {
+            self.workbench.preview(path);
+        }
+    }
+
+    /// ⌘F over a preview that shows text: the find bar, or the keyboard back
+    /// in it. False when the centre shows no such preview.
+    pub fn open_preview_find(&mut self, tx: &mut Tx) -> bool {
+        let files = &mut self.workbench.files;
+        if self.workbench.mode != CenterMode::Files
+            || !files
+                .preview
+                .as_ref()
+                .is_some_and(|preview| preview.shown().searchable())
+        {
+            return false;
+        }
+        match &mut files.find {
+            Some(find) => find.refocus(),
+            None => files.find = Some(PreviewFind::new()),
+        }
+        self.workbench.refresh_find();
+        self.reveal_preview_find(tx);
+        true
+    }
+
+    /// ⌘F is unbound in the keymap because the editor takes it; over a
+    /// preview no editor is shown, so the preview answers it.
+    pub fn preview_find_chord(&mut self, ev: &KeyEvent, tx: &mut Tx) -> bool {
+        if self.modal_open() || self.workbench.mode != CenterMode::Files {
+            return false;
+        }
+        if ev.key == rune::Key::Escape && self.workbench.files.find.is_some() {
+            self.close_preview_find();
+            return true;
+        }
+        crate::editor::find::is_reopen(ev) && self.open_preview_find(tx)
+    }
+
+    pub fn preview_find_typed(&mut self, tx: &mut Tx) {
+        if let Some(find) = &mut self.workbench.files.find {
+            find.current = 0;
+        }
+        self.workbench.refresh_find();
+        self.reveal_preview_find(tx);
+    }
+
+    pub fn step_preview_find(&mut self, delta: isize, tx: &mut Tx) {
+        if let Some(find) = &mut self.workbench.files.find {
+            find.step(delta);
+        }
+        self.reveal_preview_find(tx);
+    }
+
+    pub fn close_preview_find(&mut self) {
+        self.workbench.files.find = None;
+    }
+
+    pub fn preview_find_key(&mut self, ev: &KeyEvent, tx: &mut Tx) -> bool {
+        if crate::editor::find::is_reopen(ev) {
+            return self.open_preview_find(tx);
+        }
+        match preview_find::field_key(ev) {
+            Some(FieldKey::Step(delta)) => self.step_preview_find(delta, tx),
+            Some(FieldKey::Close) => self.close_preview_find(),
+            None => return false,
+        }
+        true
+    }
+
+    /// Centres the current match: a virtual source row is mounted first.
+    pub fn reveal_preview_find(&self, tx: &mut Tx) {
+        let Some(find) = &self.workbench.files.find else {
+            return;
+        };
+        match &find.hits {
+            Hits::Rendered(hits) if !hits.is_empty() => {
+                tx.scroll_center_in(PREVIEW_SCROLL_KEY, preview_find::CURRENT_KEY);
+            }
+            Hits::Lines(_) => {
+                if let Some(line) = find.current_line() {
+                    tx.scroll_center_in(
+                        PREVIEW_SCROLL_KEY,
+                        format!("l{line}/{}", preview_find::CURRENT_KEY),
+                    );
+                }
+            }
+            _ => {}
         }
     }
 

@@ -1364,6 +1364,7 @@ name = "persistence"
 version = "0.1.9"
 dependencies = [
  "domain",
+ "review",
  "rusqlite",
  "rusqlite_migration",
  "serde",

@@ -199,7 +199,7 @@ pub enum Command {
     },
     StartReview {
         generation: u64,
-        workspace_id: WorkspaceId,
+        target: domain::ReviewTarget,
         preset: Option<String>,
         tier: Option<domain::Tier>,
         provider: Option<String>,
@@ -219,6 +219,25 @@ pub enum Command {
         review_id: domain::ReviewId,
     },
     CancelReview(domain::ReviewId),
+    SetFindingFeedback {
+        review_id: domain::ReviewId,
+        finding_id: u32,
+        reaction: Option<domain::FindingReaction>,
+    },
+    ClearReviewSuppression {
+        workspace_id: WorkspaceId,
+        suppression: domain::ReviewSuppression,
+    },
+    GetReviewDiff {
+        generation: u64,
+        review_id: domain::ReviewId,
+    },
+    /// Queued for the agent's next idle; `left_out` is only reported back.
+    SendSessionPrompt {
+        session_id: SessionId,
+        text: String,
+        left_out: usize,
+    },
     RestartSession(SessionId),
     /// Deletes a recorded run's transcript from disk, then re-reads the
     /// snapshot: history reaches the client only on a snapshot.
@@ -248,6 +267,23 @@ pub enum Command {
     SetProjectIcon {
         project_id: domain::ProjectId,
         icon: Option<String>,
+    },
+    SetProjectIconImage {
+        project_id: domain::ProjectId,
+        path: Option<String>,
+    },
+    /// One image of a project's checkout, for its avatar or the icon dialog.
+    ReadProjectIcon {
+        generation: u64,
+        project_id: domain::ProjectId,
+        workspace_id: WorkspaceId,
+        path: String,
+    },
+    /// The checkout's files that could be its icon, for the icon dialog.
+    ListIconCandidates {
+        generation: u64,
+        project_id: domain::ProjectId,
+        workspace_id: WorkspaceId,
     },
     RemoveProject {
         project_id: domain::ProjectId,
@@ -459,6 +495,17 @@ pub enum UiEvent {
         path: String,
         result: Result<(String, Arc<[u8]>), String>,
     },
+    ProjectIcon {
+        generation: u64,
+        project_id: domain::ProjectId,
+        path: String,
+        result: Result<(String, Arc<[u8]>), String>,
+    },
+    IconCandidates {
+        generation: u64,
+        project_id: domain::ProjectId,
+        result: Result<Vec<String>, String>,
+    },
     ContentSearch {
         generation: u64,
         scope: crate::workbench::Scope,
@@ -515,7 +562,12 @@ pub enum UiEvent {
     Review {
         generation: u64,
         workspace_id: WorkspaceId,
-        result: Result<Box<(domain::ReviewRun, Vec<domain::Finding>)>, String>,
+        result: Result<Box<client::ReviewReport>, String>,
+    },
+    ReviewDiff {
+        generation: u64,
+        review_id: domain::ReviewId,
+        result: Result<domain::WorkspaceDiff, String>,
     },
     StorageMigration {
         generation: u64,
@@ -807,7 +859,7 @@ impl ConnectionHandle {
     pub fn start_review(
         &self,
         generation: u64,
-        workspace_id: WorkspaceId,
+        target: domain::ReviewTarget,
         preset: Option<String>,
         tier: Option<domain::Tier>,
         provider: Option<String>,
@@ -815,7 +867,7 @@ impl ConnectionHandle {
     ) -> Result<(), String> {
         self.send(Command::StartReview {
             generation,
-            workspace_id,
+            target,
             preset,
             tier,
             provider,
@@ -852,6 +904,54 @@ impl ConnectionHandle {
 
     pub fn cancel_review(&self, review_id: domain::ReviewId) -> Result<(), String> {
         self.send(Command::CancelReview(review_id))
+    }
+
+    pub fn set_finding_feedback(
+        &self,
+        review_id: domain::ReviewId,
+        finding_id: u32,
+        reaction: Option<domain::FindingReaction>,
+    ) -> Result<(), String> {
+        self.send(Command::SetFindingFeedback {
+            review_id,
+            finding_id,
+            reaction,
+        })
+    }
+
+    pub fn clear_review_suppression(
+        &self,
+        workspace_id: WorkspaceId,
+        suppression: domain::ReviewSuppression,
+    ) -> Result<(), String> {
+        self.send(Command::ClearReviewSuppression {
+            workspace_id,
+            suppression,
+        })
+    }
+
+    pub fn get_review_diff(
+        &self,
+        generation: u64,
+        review_id: domain::ReviewId,
+    ) -> Result<(), String> {
+        self.send(Command::GetReviewDiff {
+            generation,
+            review_id,
+        })
+    }
+
+    pub fn send_session_prompt(
+        &self,
+        session_id: SessionId,
+        text: String,
+        left_out: usize,
+    ) -> Result<(), String> {
+        self.send(Command::SendSessionPrompt {
+            session_id,
+            text,
+            left_out,
+        })
     }
 
     /// Re-enters a recorded conversation: the ordinary agent launch, told
@@ -1028,6 +1128,42 @@ impl ConnectionHandle {
         icon: Option<String>,
     ) -> Result<(), String> {
         self.send(Command::SetProjectIcon { project_id, icon })
+    }
+
+    pub fn set_project_icon_image(
+        &self,
+        project_id: domain::ProjectId,
+        path: Option<String>,
+    ) -> Result<(), String> {
+        self.send(Command::SetProjectIconImage { project_id, path })
+    }
+
+    pub fn read_project_icon(
+        &self,
+        generation: u64,
+        project_id: domain::ProjectId,
+        workspace_id: WorkspaceId,
+        path: String,
+    ) -> Result<(), String> {
+        self.send(Command::ReadProjectIcon {
+            generation,
+            project_id,
+            workspace_id,
+            path,
+        })
+    }
+
+    pub fn list_icon_candidates(
+        &self,
+        generation: u64,
+        project_id: domain::ProjectId,
+        workspace_id: WorkspaceId,
+    ) -> Result<(), String> {
+        self.send(Command::ListIconCandidates {
+            generation,
+            project_id,
+            workspace_id,
+        })
     }
 
     pub fn remove_project(
@@ -1655,6 +1791,19 @@ fn handle_fixture_command(
             terminal.answer_history();
             wake();
         }
+        Command::ReadProjectIcon {
+            project_id, path, ..
+        } => sink(vec![UiEvent::ProjectIcon {
+            generation,
+            project_id,
+            path,
+            result: Err("a fixture has no checkout to read".into()),
+        }]),
+        Command::ListIconCandidates { project_id, .. } => sink(vec![UiEvent::IconCandidates {
+            generation,
+            project_id,
+            result: Ok(Vec::new()),
+        }]),
         Command::CreateShellSession { workspace_id } => {
             let (label, result) = (
                 "CreateShellSession",
@@ -1871,7 +2020,7 @@ fn handle_fixture_command(
         }
         Command::StartReview {
             generation: command_generation,
-            workspace_id,
+            target,
             ..
         } => {
             if command_generation != generation {
@@ -1879,7 +2028,7 @@ fn handle_fixture_command(
             }
             sink(vec![UiEvent::ReviewStarted {
                 generation,
-                workspace_id,
+                workspace_id: target.workspace_id(),
                 result: Err("the recorded snapshot has no review store".into()),
             }]);
         }
@@ -1933,6 +2082,31 @@ fn handle_fixture_command(
                 started,
             );
         }
+        Command::SetFindingFeedback { .. }
+        | Command::ClearReviewSuppression { .. }
+        | Command::SendSessionPrompt { .. } => {
+            fixture_result(
+                generation,
+                command_label(&command),
+                Err("the recorded snapshot has no review store".into()),
+                sink,
+                metrics,
+                started,
+            );
+        }
+        Command::GetReviewDiff {
+            generation: command_generation,
+            review_id,
+        } => {
+            if command_generation != generation {
+                return;
+            }
+            sink(vec![UiEvent::ReviewDiff {
+                generation,
+                review_id,
+                result: Err("the recorded snapshot has no review store".into()),
+            }]);
+        }
         Command::RunSpec { .. } => {
             metrics.commands_completed.fetch_add(1, Ordering::Relaxed);
             sink(vec![UiEvent::CommandResult {
@@ -1985,6 +2159,7 @@ fn handle_fixture_command(
         | Command::RefreshWorkspaceStatus(_)
         | Command::RenameWorkspace { .. }
         | Command::SetProjectIcon { .. }
+        | Command::SetProjectIconImage { .. }
         | Command::RemoveProject { .. }
         | Command::SetWorktreeIgnores { .. }
         | Command::CreatePath { .. }
@@ -2338,6 +2513,7 @@ pub(crate) fn fixture_review_config() -> domain::ReviewSettings {
         ],
         rules: Vec::new(),
         errors: Vec::new(),
+        suppressions: Vec::new(),
     }
 }
 
@@ -3176,7 +3352,7 @@ fn handle_live_command(
         }
         Command::StartReview {
             generation: command_generation,
-            workspace_id,
+            target,
             preset,
             tier,
             provider,
@@ -3186,12 +3362,10 @@ fn handle_live_command(
                 return;
             }
             metrics.note_socket_op();
+            let workspace_id = target.workspace_id();
             let result = client
                 .start_review(
-                    domain::ReviewTarget::Workspace {
-                        workspace_id,
-                        base: None,
-                    },
+                    target,
                     tier,
                     provider,
                     preset,
@@ -3265,6 +3439,79 @@ fn handle_live_command(
                 .map(|()| "cancelling".to_string())
                 .map_err(|error| error.to_string());
             live_result(generation, "CancelReview", result, sink, metrics, started);
+        }
+        Command::SetFindingFeedback {
+            review_id,
+            finding_id,
+            reaction,
+        } => {
+            metrics.note_socket_op();
+            let result = client
+                .set_finding_feedback(review_id, finding_id, reaction)
+                .map(|()| "saved".to_string())
+                .map_err(|error| error.to_string());
+            live_result(
+                generation,
+                "SetFindingFeedback",
+                result,
+                sink,
+                metrics,
+                started,
+            );
+        }
+        Command::ClearReviewSuppression {
+            workspace_id,
+            suppression,
+        } => {
+            metrics.note_socket_op();
+            let result = client
+                .clear_review_suppression(workspace_id, suppression)
+                .map(|()| "cleared".to_string())
+                .map_err(|error| error.to_string());
+            live_result(
+                generation,
+                "ClearReviewSuppression",
+                result,
+                sink,
+                metrics,
+                started,
+            );
+        }
+        Command::GetReviewDiff {
+            generation: command_generation,
+            review_id,
+        } => {
+            if command_generation != generation {
+                return;
+            }
+            metrics.note_socket_op();
+            let result = client
+                .get_review_diff(review_id)
+                .map_err(|error| error.to_string());
+            sink(vec![UiEvent::ReviewDiff {
+                generation,
+                review_id,
+                result,
+            }]);
+        }
+        Command::SendSessionPrompt {
+            session_id,
+            text,
+            left_out,
+        } => {
+            metrics.note_socket_op();
+            let result = client
+                .send_session_prompt(session_id, text, client::PromptDelivery::Queue)
+                .map(|queued| crate::code_review::delivery_message(queued, left_out))
+                .map_err(|error| error.to_string());
+            live_result(
+                generation,
+                "SendSessionPrompt",
+                result,
+                sink,
+                metrics,
+                started,
+            );
         }
         Command::DraftCommit { workspace_id } => {
             metrics.note_socket_op();
@@ -3608,6 +3855,68 @@ fn handle_live_command(
                 .map(|()| "set icon".to_string())
                 .map_err(|error| error.to_string());
             live_result(generation, "SetProjectIcon", result, sink, metrics, started);
+        }
+        Command::SetProjectIconImage { project_id, path } => {
+            metrics.note_socket_op();
+            let result = client
+                .set_project_icon_image(project_id, path)
+                .map(|()| "set icon image".to_string())
+                .map_err(|error| error.to_string());
+            live_result(
+                generation,
+                "SetProjectIconImage",
+                result,
+                sink,
+                metrics,
+                started,
+            );
+        }
+        Command::ReadProjectIcon {
+            generation: command_generation,
+            project_id,
+            workspace_id,
+            path,
+        } => {
+            if command_generation != generation {
+                return;
+            }
+            metrics.note_socket_op();
+            let result = client
+                .read_image(workspace_id, path.clone())
+                .map_err(|error| error.to_string())
+                .and_then(decode_image);
+            sink(vec![UiEvent::ProjectIcon {
+                generation,
+                project_id,
+                path,
+                result,
+            }]);
+        }
+        Command::ListIconCandidates {
+            generation: command_generation,
+            project_id,
+            workspace_id,
+        } => {
+            if command_generation != generation {
+                return;
+            }
+            metrics.note_socket_op();
+            let result = client
+                .list_files(workspace_id)
+                .map(|tree| {
+                    crate::project_icon::candidates(
+                        tree.entries
+                            .iter()
+                            .filter(|entry| entry.kind == domain::FileKind::File)
+                            .map(|entry| (entry.path.as_str(), entry.ignored)),
+                    )
+                })
+                .map_err(|error| error.to_string());
+            sink(vec![UiEvent::IconCandidates {
+                generation,
+                project_id,
+                result,
+            }]);
         }
         Command::RemoveProject { project_id, policy } => {
             metrics.note_socket_op();
@@ -4174,6 +4483,10 @@ fn command_label(command: &Command) -> &'static str {
         Command::ListReviews { .. } => "ListReviews",
         Command::GetReview { .. } => "GetReview",
         Command::CancelReview(_) => "CancelReview",
+        Command::SetFindingFeedback { .. } => "SetFindingFeedback",
+        Command::ClearReviewSuppression { .. } => "ClearReviewSuppression",
+        Command::GetReviewDiff { .. } => "GetReviewDiff",
+        Command::SendSessionPrompt { .. } => "SendSessionPrompt",
         Command::StopDaemon { .. } => "StopDaemon",
         Command::FactoryReset => "FactoryReset",
         Command::RefreshAgentDetection => "RefreshAgentDetection",
@@ -4184,6 +4497,9 @@ fn command_label(command: &Command) -> &'static str {
         Command::RefreshWorkspaceStatus(_) => "RefreshWorkspaceStatus",
         Command::RenameWorkspace { .. } => "RenameWorkspace",
         Command::SetProjectIcon { .. } => "SetProjectIcon",
+        Command::SetProjectIconImage { .. } => "SetProjectIconImage",
+        Command::ReadProjectIcon { .. } => "ReadProjectIcon",
+        Command::ListIconCandidates { .. } => "ListIconCandidates",
         Command::RemoveProject { .. } => "RemoveProject",
         Command::SetWorktreeIgnores { .. } => "SetWorktreeIgnores",
         Command::CreatePath { .. } => "CreatePath",

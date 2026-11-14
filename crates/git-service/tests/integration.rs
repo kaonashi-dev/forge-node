@@ -4,9 +4,9 @@
 
 use git_service::command::run_git;
 use git_service::{
-    create, current_branch, default_remote, discover_root, fetch, has_remote, ignored_paths,
-    list_branches, list_refs, list_remotes, list_worktrees, precheck_remove, prune, remove, status,
-    Force, GitError,
+    commit_range_diff, commits_between, create, current_branch, default_remote, discover_root,
+    fetch, fetch_pull_request, has_remote, ignored_paths, list_branches, list_refs, list_remotes,
+    list_worktrees, precheck_remove, prune, remove, snapshot_tree, status, Force, GitError,
 };
 use std::path::Path;
 use tempfile::{tempdir, TempDir};
@@ -627,5 +627,136 @@ fn ignored_paths_reads_past_a_staged_rename_of_a_non_ascii_file() {
             .iter()
             .all(|f| !f.path.contains("renamed") && !f.path.contains("日本語")),
         "a tracked rename is not a sharing candidate: {found:?}"
+    );
+}
+
+fn rev(repo: &Path, rev: &str) -> String {
+    run_git(Some(repo), &["rev-parse", rev])
+        .expect("test setup")
+        .stdout_trimmed()
+        .to_string()
+}
+
+/// A bare `origin` whose `refs/pull/1/head` names a commit no branch holds,
+/// and a clone of it that has never seen that commit.
+fn origin_with_pull_request() -> (TempDir, TempDir, String) {
+    let source = init_repo();
+    setup(source.path(), &["checkout", "-qb", "topic"]);
+    std::fs::write(source.path().join("pr.txt"), "from the pull request\n").expect("test setup");
+    setup(source.path(), &["add", "pr.txt"]);
+    setup(
+        source.path(),
+        &["-c", "commit.gpgsign=false", "commit", "-qm", "pr"],
+    );
+    let head = rev(source.path(), "HEAD");
+    let bare = tempdir().expect("test setup");
+    let bare_path = bare.path().join("origin.git");
+    setup(
+        source.path(),
+        &[
+            "clone",
+            "-q",
+            "--bare",
+            ".",
+            bare_path.to_str().expect("test setup"),
+        ],
+    );
+    setup(&bare_path, &["update-ref", "refs/pull/1/head", &head]);
+    setup(&bare_path, &["branch", "-D", "topic"]);
+    // Cloned while on `topic`, so its HEAD would dangle; a host's names its default branch.
+    setup(&bare_path, &["symbolic-ref", "HEAD", "refs/heads/main"]);
+    let checkout = tempdir().expect("test setup");
+    setup(
+        checkout.path(),
+        &[
+            "clone",
+            "-q",
+            "--no-local",
+            bare_path.to_str().expect("test setup"),
+            ".",
+        ],
+    );
+    (bare, checkout, head)
+}
+
+#[test]
+fn a_pull_request_head_is_fetched_into_a_private_ref() {
+    require_git!();
+    let (_origin, checkout, head) = origin_with_pull_request();
+    let before = rev(checkout.path(), "HEAD");
+    assert!(!run_git(Some(checkout.path()), &["cat-file", "-e", &head])
+        .expect("test setup")
+        .success());
+
+    let timeout = std::time::Duration::from_secs(30);
+    let fetched = fetch_pull_request(checkout.path(), "origin", 1, Some("main"), timeout)
+        .expect("test setup");
+    assert_eq!(fetched.head, head);
+    assert_eq!(rev(checkout.path(), "refs/forge/review/1/head"), head);
+    assert_eq!(
+        rev(checkout.path(), "refs/forge/review/1/base"),
+        fetched.base
+    );
+    assert_eq!(
+        rev(checkout.path(), "HEAD"),
+        before,
+        "the checkout stays put"
+    );
+    let (commits, count) = commits_between(checkout.path(), &fetched.base, &head);
+    assert_eq!(count, 1);
+    assert_eq!(commits[0].subject, "pr");
+
+    let defaulted =
+        fetch_pull_request(checkout.path(), "origin", 1, None, timeout).expect("test setup");
+    assert_eq!(
+        defaulted.base, fetched.base,
+        "no base is the remote's HEAD, read from the remote"
+    );
+
+    for (remote, base) in [
+        ("origin", Some("--upload-pack=x")),
+        ("--upload-pack=x", None),
+    ] {
+        assert!(matches!(
+            fetch_pull_request(checkout.path(), remote, 1, base, timeout),
+            Err(GitError::InvalidBranchName { .. })
+        ));
+    }
+}
+
+#[test]
+fn a_snapshot_keeps_the_reviewed_working_tree_and_leaves_the_index_alone() {
+    require_git!();
+    let repo = init_repo();
+    let p = repo.path();
+    std::fs::write(p.join("README.md"), "hello\nreviewed\n").unwrap();
+    std::fs::write(p.join("new.rs"), "fn new() {}\n").unwrap();
+    std::fs::write(p.join("big.bin"), "left out\n").unwrap();
+    let scratch = tempdir().unwrap();
+    let index = scratch.path().join("index");
+    let tree = snapshot_tree(p, &["README.md", "new.rs"], &index).expect("snapshot");
+    assert!(!index.exists(), "the throwaway index is removed");
+
+    std::fs::write(p.join("README.md"), "hello\nchanged after\n").unwrap();
+    setup(p, &["add", "README.md"]);
+    setup(p, &["-c", "commit.gpgsign=false", "commit", "-m", "later"]);
+
+    let diff = commit_range_diff(p, "HEAD~1", &tree, 3).expect("diff");
+    let paths: Vec<&str> = diff.files.iter().map(|file| file.path.as_str()).collect();
+    assert_eq!(
+        paths,
+        ["README.md", "new.rs"],
+        "a path left out keeps its indexed version"
+    );
+    assert!(
+        diff.files[0].patch.contains("+reviewed"),
+        "{}",
+        diff.files[0].patch
+    );
+    let staged = run_git(Some(p), &["diff", "--cached", "--name-only"]).unwrap();
+    assert_eq!(
+        staged.stdout_trimmed(),
+        "",
+        "the checkout's index is untouched"
     );
 }

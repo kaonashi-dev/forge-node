@@ -187,7 +187,7 @@ fn start(
 
 fn get(client: &client::Client, review_id: ReviewId) -> (ReviewRun, Vec<domain::Finding>) {
     match client.request(Request::GetReview { review_id }) {
-        Ok(Response::Review { run, findings }) => (run, findings),
+        Ok(Response::Review { run, findings, .. }) => (*run, findings),
         other => panic!("expected Review, got {other:?}"),
     }
 }
@@ -1136,4 +1136,500 @@ fn agents_md_is_project_context_unless_the_repository_opts_out() {
     let text = pack(third);
     assert!(!text.contains("AGENTS_MARKER"), "{text}");
     finish(third);
+}
+
+/// A run from start to `Completed`, the reviewer answering whatever
+/// `install_reviewer` last wrote.
+fn review_to_completion(
+    harness: &common::Harness,
+    client: &client::Client,
+    events: &flume::Receiver<DaemonEvent>,
+    target: ReviewTarget,
+) -> ReviewId {
+    let _ = std::fs::remove_file(harness.root().join("written"));
+    let review_id = match client.request(Request::StartReview {
+        target,
+        tier: None,
+        provider: None,
+        preset: None,
+        instructions: None,
+        model: None,
+        effort: None,
+    }) {
+        Ok(Response::ReviewStarted { review_id }) => review_id,
+        other => panic!("expected ReviewStarted, got {other:?}"),
+    };
+    let model = wait_run(events, review_id, |run| run.session_id.is_some());
+    assert!(common::poll_until(common::DEADLINE, || harness
+        .root()
+        .join("written")
+        .exists()));
+    report_idle(client, model.session_id.expect("reviewer"));
+    let done = wait_run(events, review_id, |run| run.status.is_finished());
+    assert_eq!(done.status, ReviewStatus::Completed, "{:?}", done.error);
+    review_id
+}
+
+struct Report {
+    findings: Vec<domain::Finding>,
+    resolved: Vec<domain::Finding>,
+    previous: Option<ReviewId>,
+}
+
+fn report(client: &client::Client, review_id: ReviewId) -> Report {
+    match client.request(Request::GetReview { review_id }) {
+        Ok(Response::Review {
+            findings,
+            resolved,
+            previous,
+            ..
+        }) => Report {
+            findings,
+            resolved,
+            previous,
+        },
+        other => panic!("expected Review, got {other:?}"),
+    }
+}
+
+fn lineage_of(report: &Report, category: &str) -> domain::Lineage {
+    report
+        .findings
+        .iter()
+        .find(|f| f.category == category)
+        .unwrap_or_else(|| panic!("no {category} finding in {:?}", report.findings))
+        .lineage
+}
+
+#[test]
+fn lineage_marks_new_persisting_and_resolved() {
+    let harness = common::Harness::new();
+    let a = finding(2, "P1", "logic", "price + qty");
+    let b = finding(2, "P2", "performance", "price + qty");
+    let c = finding(1, "P2", "bug", "fn total");
+    install_reviewer(&harness, &answer(&[a, b.clone()]), Reviewer::Answers);
+    let repo = seeded_repo();
+    let daemon = boot(&harness);
+    let client = daemon.connect("scenario-review");
+    let events = client.events();
+    let workspace = workspace_at(&client, repo.path());
+    let target = ReviewTarget::Workspace {
+        workspace_id: workspace,
+        base: None,
+    };
+
+    let first = review_to_completion(&harness, &client, &events, target.clone());
+    let one = report(&client, first);
+    assert_eq!(one.previous, None);
+    let diff = review_diff(&client, first);
+    assert_eq!(diff.workspace_id, workspace);
+    let main = diff
+        .files
+        .iter()
+        .find(|f| f.path == "main.rs")
+        .expect("main.rs");
+    assert!(main.patch.contains("+    price + qty"), "{}", main.patch);
+    let reviewed = std::fs::read_to_string(repo.path().join("main.rs")).expect("main.rs");
+    std::fs::write(repo.path().join("main.rs"), "fn later() {}\n").expect("main.rs");
+    std::fs::write(repo.path().join("later.rs"), "fn after() {}\n").expect("later.rs");
+    let again = review_diff(&client, first);
+    assert_eq!(again.files, diff.files, "the reviewed tree, not today's");
+    std::fs::write(repo.path().join("main.rs"), reviewed).expect("main.rs");
+    std::fs::remove_file(repo.path().join("later.rs")).expect("later.rs");
+    assert!(matches!(
+        client.request(Request::GetReviewDiff { review_id: ReviewId::new() }),
+        Err(client::ClientError::Protocol(error)) if error.code == ErrorCode::NotFound
+    ));
+    assert!(one.resolved.is_empty());
+    assert_eq!(lineage_of(&one, "logic"), domain::Lineage::New);
+
+    std::fs::write(repo.path().join("notes.txt"), "moved\n").expect("notes");
+    git(repo.path(), &["add", "notes.txt"]);
+    git(repo.path(), &["commit", "-qm", "move head"]);
+    install_reviewer(&harness, &answer(&[b.clone(), c]), Reviewer::Answers);
+    let second = review_to_completion(&harness, &client, &events, target.clone());
+    let two = report(&client, second);
+    assert_eq!(two.previous, Some(first));
+    assert_eq!(lineage_of(&two, "performance"), domain::Lineage::Persisting);
+    assert_eq!(lineage_of(&two, "bug"), domain::Lineage::New);
+    let resolved: Vec<&str> = two.resolved.iter().map(|f| f.category.as_str()).collect();
+    assert_eq!(resolved, ["logic"]);
+
+    git(repo.path(), &["checkout", "-qb", "feature"]);
+    install_reviewer(&harness, &answer(&[b]), Reviewer::Answers);
+    let third = review_to_completion(&harness, &client, &events, target);
+    let three = report(&client, third);
+    assert_eq!(three.previous, None, "another branch is another lineage");
+    assert_eq!(lineage_of(&three, "performance"), domain::Lineage::New);
+    assert!(three.resolved.is_empty());
+}
+
+fn react(
+    client: &client::Client,
+    review_id: ReviewId,
+    finding_id: u32,
+    reaction: Option<domain::FindingReaction>,
+) {
+    assert_eq!(
+        client
+            .request(Request::SetFindingFeedback {
+                review_id,
+                finding_id,
+                reaction,
+            })
+            .expect("SetFindingFeedback"),
+        Response::Ack
+    );
+}
+
+#[test]
+fn feedback_dismiss_recomputes_score_and_verdict() {
+    let harness = common::Harness::new();
+    install_reviewer(
+        &harness,
+        &answer(&[finding(2, "P0", "logic", "price + qty")]),
+        Reviewer::Answers,
+    );
+    let repo = seeded_repo();
+    let daemon = boot(&harness);
+    let client = daemon.connect("scenario-review");
+    let events = client.events();
+    let workspace = workspace_at(&client, repo.path());
+    let review_id = review_to_completion(
+        &harness,
+        &client,
+        &events,
+        ReviewTarget::Workspace {
+            workspace_id: workspace,
+            base: None,
+        },
+    );
+    let (run, findings) = get(&client, review_id);
+    assert_eq!(run.verdict, Some(Verdict::Block));
+    let id = findings[0].id;
+
+    react(
+        &client,
+        review_id,
+        id,
+        Some(domain::FindingReaction::Dismiss),
+    );
+    let dismissed = wait_run(&events, review_id, |run| run.verdict == Some(Verdict::Ok));
+    assert_eq!(dismissed.score, Some(5.0));
+    let (run, findings) = get(&client, review_id);
+    assert_eq!((run.verdict, run.score), (Some(Verdict::Ok), Some(5.0)));
+    assert_eq!(findings[0].reaction, Some(domain::FindingReaction::Dismiss));
+
+    react(&client, review_id, id, None);
+    wait_run(&events, review_id, |run| {
+        run.verdict == Some(Verdict::Block)
+    });
+    let (run, findings) = get(&client, review_id);
+    assert_eq!((run.verdict, run.score), (Some(Verdict::Block), Some(2.5)));
+    assert_eq!(findings[0].reaction, None);
+
+    assert!(matches!(
+        client.request(Request::SetFindingFeedback {
+            review_id,
+            finding_id: 99,
+            reaction: Some(domain::FindingReaction::Up),
+        }),
+        Err(client::ClientError::Protocol(error)) if error.code == ErrorCode::NotFound
+    ));
+}
+
+fn config(client: &client::Client, workspace_id: WorkspaceId) -> domain::ReviewSettings {
+    match client.request(Request::GetReviewConfig { workspace_id }) {
+        Ok(Response::ReviewConfig(settings)) => settings,
+        other => panic!("expected ReviewConfig, got {other:?}"),
+    }
+}
+
+#[test]
+fn dismissals_suppress_a_rule_until_undone() {
+    let harness = common::Harness::new();
+    let ruled = |category: &str| {
+        let mut value = ruled_finding("money", "P1");
+        value["category"] = category.into();
+        value
+    };
+    install_reviewer(
+        &harness,
+        &answer(&[ruled("logic"), ruled("performance"), ruled("bug")]),
+        Reviewer::Answers,
+    );
+    let repo = seeded_repo();
+    seed_review_dir(repo.path());
+    let daemon = boot(&harness);
+    let client = daemon.connect("scenario-review");
+    let events = client.events();
+    let workspace = workspace_at(&client, repo.path());
+    let target = ReviewTarget::Workspace {
+        workspace_id: workspace,
+        base: None,
+    };
+    let first = review_to_completion(&harness, &client, &events, target.clone());
+    let (_, findings) = get(&client, first);
+    assert_eq!(findings.len(), 3);
+    assert!(config(&client, workspace).suppressions.is_empty());
+    for finding in &findings {
+        react(
+            &client,
+            first,
+            finding.id,
+            Some(domain::FindingReaction::Dismiss),
+        );
+    }
+    let suppressions = config(&client, workspace).suppressions;
+    let rule = suppressions
+        .iter()
+        .find(|s| s.kind == domain::SuppressionKind::Rule)
+        .cloned()
+        .expect("the rule is suppressed");
+    assert_eq!(rule.value, "money");
+
+    install_reviewer(
+        &harness,
+        &answer(&[ruled("naming"), finding(2, "P2", "performance", "qty")]),
+        Reviewer::Answers,
+    );
+    let second = review_to_completion(&harness, &client, &events, target);
+    let (run, findings) = get(&client, second);
+    let lineage = report(&client, second);
+    assert_eq!(lineage.previous, Some(first));
+    assert!(
+        lineage.resolved.is_empty(),
+        "dismissed findings were hidden, not resolved: {:?}",
+        lineage.resolved
+    );
+    assert!(findings.iter().all(|f| f.rule_id.is_none()), "{findings:?}");
+    assert!(
+        run.coverage
+            .notes
+            .iter()
+            .any(|note| note == "1 finding(s) suppressed by feedback"),
+        "{:?}",
+        run.coverage.notes
+    );
+
+    assert_eq!(
+        client
+            .request(Request::ClearReviewSuppression {
+                workspace_id: workspace,
+                suppression: rule,
+            })
+            .expect("ClearReviewSuppression"),
+        Response::Ack
+    );
+    let left = config(&client, workspace).suppressions;
+    assert!(
+        !left.iter().any(|s| s.kind == domain::SuppressionKind::Rule),
+        "{left:?}"
+    );
+    assert!(
+        left.iter()
+            .any(|s| s.kind == domain::SuppressionKind::Fingerprint),
+        "each finding dismissed under the rule stays dismissed: {left:?}"
+    );
+}
+
+fn rev_parse(repo: &Path, rev: &str) -> String {
+    let out = Command::new("git")
+        .arg("-C")
+        .arg(repo)
+        .args(["rev-parse", rev])
+        .output()
+        .expect("git rev-parse");
+    String::from_utf8_lossy(&out.stdout).trim().to_owned()
+}
+
+const PR_FILE: &str = "fn pr_only() -> u32 {\n    40 + 2\n}\n";
+
+/// A bare `origin` whose `refs/pull/1/head` adds `pr.rs` on a commit no branch
+/// holds, a `--no-local` clone of it that has never seen that commit, and the
+/// commit's oid.
+fn pull_request_checkout() -> (tempfile::TempDir, tempfile::TempDir, String) {
+    let source = seeded_repo();
+    git(source.path(), &["checkout", "-q", "--", "main.rs"]);
+    git(source.path(), &["checkout", "-qb", "topic"]);
+    std::fs::write(source.path().join("pr.rs"), PR_FILE).expect("pr.rs");
+    git(source.path(), &["add", "pr.rs"]);
+    git(source.path(), &["commit", "-qm", "add pr_only"]);
+    let head = rev_parse(source.path(), "HEAD");
+    let origin = tempfile::tempdir_in("/tmp").expect("origin");
+    let bare = origin.path().join("origin.git");
+    git(
+        source.path(),
+        &["clone", "-q", "--bare", ".", bare.to_str().expect("utf-8")],
+    );
+    git(&bare, &["update-ref", "refs/pull/1/head", &head]);
+    git(&bare, &["branch", "-D", "topic"]);
+    // Cloned while on `topic`, so its HEAD would dangle; a host's names its default branch.
+    git(&bare, &["symbolic-ref", "HEAD", "refs/heads/main"]);
+    let checkout = tempfile::tempdir_in("/tmp").expect("checkout");
+    git(
+        checkout.path(),
+        &[
+            "clone",
+            "-q",
+            "--no-local",
+            bare.to_str().expect("utf-8"),
+            ".",
+        ],
+    );
+    git(checkout.path(), &["config", "user.email", "t@example.com"]);
+    git(checkout.path(), &["config", "user.name", "T"]);
+    (origin, checkout, head)
+}
+
+#[test]
+fn a_pull_request_is_reviewed_from_its_fetched_head() {
+    let harness = common::Harness::new();
+    let mut pr_finding = finding(2, "P1", "logic", "40 + 2");
+    pr_finding["path"] = "pr.rs".into();
+    install_reviewer(&harness, &answer(&[pr_finding]), Reviewer::Answers);
+    let (_origin, checkout, pr_head) = pull_request_checkout();
+    let head_before = rev_parse(checkout.path(), "HEAD");
+    let porcelain_before = porcelain(checkout.path());
+    let daemon = boot(&harness);
+    let client = daemon.connect("scenario-review");
+    let events = client.events();
+    let workspace = workspace_at(&client, checkout.path());
+
+    let review_id = review_to_completion(
+        &harness,
+        &client,
+        &events,
+        ReviewTarget::PullRequest {
+            workspace_id: workspace,
+            number: 1,
+            base: Some("main".into()),
+        },
+    );
+    let (run, findings) = get(&client, review_id);
+    assert_eq!(run.head_oid, pr_head);
+    assert_eq!(run.coverage.included, ["pr.rs"]);
+    assert_eq!(findings.len(), 1, "{findings:?}");
+    assert_eq!(
+        (findings[0].path.as_str(), findings[0].line),
+        ("pr.rs", Some(2))
+    );
+    let diff = review_diff(&client, review_id);
+    let paths: Vec<&str> = diff.files.iter().map(|f| f.path.as_str()).collect();
+    assert_eq!(
+        paths,
+        ["pr.rs"],
+        "the reviewed range, not the clean working tree"
+    );
+    assert!(
+        diff.files[0].patch.contains("+    40 + 2"),
+        "{}",
+        diff.files[0].patch
+    );
+    assert_eq!(rev_parse(checkout.path(), "HEAD"), head_before);
+    assert_eq!(porcelain(checkout.path()), porcelain_before);
+}
+
+#[test]
+fn a_pull_request_is_fetched_from_the_only_remote_against_its_default_branch() {
+    let harness = common::Harness::new();
+    let mut pr_finding = finding(2, "P1", "logic", "40 + 2");
+    pr_finding["path"] = "pr.rs".into();
+    install_reviewer(&harness, &answer(&[pr_finding]), Reviewer::Answers);
+    let (_origin, checkout, pr_head) = pull_request_checkout();
+    git(checkout.path(), &["remote", "rename", "origin", "upstream"]);
+    let daemon = boot(&harness);
+    let client = daemon.connect("scenario-review");
+    let events = client.events();
+    let workspace = workspace_at(&client, checkout.path());
+
+    let review_id = review_to_completion(
+        &harness,
+        &client,
+        &events,
+        ReviewTarget::PullRequest {
+            workspace_id: workspace,
+            number: 1,
+            base: None,
+        },
+    );
+    let (run, _) = get(&client, review_id);
+    assert_eq!(run.head_oid, pr_head);
+    assert_eq!(
+        run.base_oid.as_deref(),
+        Some(rev_parse(checkout.path(), "upstream/main").as_str())
+    );
+    let paths: Vec<String> = review_diff(&client, review_id)
+        .files
+        .into_iter()
+        .map(|file| file.path)
+        .collect();
+    assert_eq!(paths, ["pr.rs"]);
+}
+
+#[test]
+fn a_pull_request_with_an_invalid_base_is_refused() {
+    let harness = common::Harness::new();
+    install_reviewer(&harness, "", Reviewer::Silent);
+    let repo = seeded_repo();
+    let daemon = boot(&harness);
+    let client = daemon.connect("scenario-review");
+    let workspace = workspace_at(&client, repo.path());
+    for base in ["--upload-pack=x", "bad..name"] {
+        let refused = client.request(Request::StartReview {
+            target: ReviewTarget::PullRequest {
+                workspace_id: workspace,
+                number: 1,
+                base: Some(base.into()),
+            },
+            tier: None,
+            provider: None,
+            preset: None,
+            instructions: None,
+            model: None,
+            effort: None,
+        });
+        assert!(
+            matches!(&refused, Err(client::ClientError::Protocol(error)) if error.code == ErrorCode::InvalidRequest),
+            "{base}: {refused:?}"
+        );
+    }
+}
+
+fn review_diff(client: &client::Client, review_id: ReviewId) -> domain::WorkspaceDiff {
+    match client.request(Request::GetReviewDiff { review_id }) {
+        Ok(Response::WorkspaceDiff(diff)) => diff,
+        other => panic!("expected WorkspaceDiff, got {other:?}"),
+    }
+}
+
+#[test]
+fn a_finding_prompt_reaches_an_idle_agent_and_queues_for_a_busy_one() {
+    let harness = common::Harness::new();
+    install_reviewer(&harness, "", Reviewer::Silent);
+    let repo = seeded_repo();
+    let daemon = boot(&harness);
+    let client = daemon.connect("scenario-review");
+    let events = client.events();
+    let workspace = workspace_at(&client, repo.path());
+    let (agent, _) = common::create_agent_session(&client, &events, workspace, "claude");
+
+    client
+        .request(Request::ReportAgentActivity {
+            session_id: agent,
+            state: ActivityState::Working,
+            source: "test".into(),
+        })
+        .expect("ReportAgentActivity");
+    let queued = client
+        .send_session_prompt(agent, "Fix main.rs:2".into(), client::PromptDelivery::Queue)
+        .expect("SendSessionPrompt");
+    assert!(queued, "a working agent gets the prompt at its next idle");
+    report_idle(&client, agent);
+    // Submitting the queued prompt makes the agent busy again until its hook says otherwise.
+    report_idle(&client, agent);
+    let queued = client
+        .send_session_prompt(agent, "Fix it again".into(), client::PromptDelivery::Queue)
+        .expect("SendSessionPrompt");
+    assert!(!queued, "an idle agent takes it now");
 }

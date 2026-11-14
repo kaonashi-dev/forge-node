@@ -111,8 +111,9 @@ pub(crate) struct Inner {
     /// it has; `submit_pull_request_draft` fills the slot instead of
     /// broadcasting. Runtime-only.
     pub(crate) pr_agents: HashMap<SessionId, Option<domain::PullRequestDraft>>,
-    /// Queued or running reviews by workspace; the worker's guard releases its entry.
-    pub(crate) reviews_running: HashMap<WorkspaceId, crate::review::RunningReview>,
+    /// Queued or running reviews by slot: the workspace id, or `<workspace id>#pr<number>`
+    /// for a pull request. The worker's guard releases its entry.
+    pub(crate) reviews_running: HashMap<String, crate::review::RunningReview>,
     /// Reviews asked to stop, including ones a newer head superseded.
     pub(crate) review_cancel: HashSet<domain::ReviewId>,
     /// Coalesces `RefreshPullRequests` globally — one refresh covers every host.
@@ -906,6 +907,9 @@ impl Daemon {
             Request::SetProjectIcon { project_id, icon } => {
                 self.set_project_icon(project_id, icon.as_deref())
             }
+            Request::SetProjectIconImage { project_id, path } => {
+                self.set_project_icon_image(project_id, path.as_deref())
+            }
 
             Request::ListWorkspaces { project_id } => self.list_workspaces(project_id),
             Request::CreateWorktree {
@@ -959,6 +963,16 @@ impl Daemon {
                 workspace_id,
                 limit,
             } => self.list_reviews(workspace_id, limit),
+            Request::GetReviewDiff { review_id } => self.get_review_diff(review_id),
+            Request::SetFindingFeedback {
+                review_id,
+                finding_id,
+                reaction,
+            } => self.set_finding_feedback(review_id, finding_id, reaction),
+            Request::ClearReviewSuppression {
+                workspace_id,
+                suppression,
+            } => self.clear_review_suppression(workspace_id, &suppression),
             Request::GetBranchCompare {
                 workspace_id,
                 base,
@@ -1880,6 +1894,7 @@ impl Daemon {
                 .map(|s| s.to_string_lossy().into_owned())
                 .unwrap_or_else(|| root.display().to_string()),
             icon: None,
+            icon_image: None,
             root_path: root.clone(),
             git_root: git_root.clone(),
             created_at: now,
@@ -2154,6 +2169,40 @@ impl Daemon {
             .cloned()
             .ok_or_else(|| ProtocolError::not_found("project"))?;
         project.icon = icon;
+        inner.db.projects().upsert(&project).map_err(db_err)?;
+        inner.projects.insert(project_id, project.clone());
+        drop(inner);
+        self.registry
+            .broadcast_domain(DaemonEvent::ProjectUpdated(project));
+        Ok(Response::Ack)
+    }
+
+    fn set_project_icon_image(
+        &self,
+        project_id: ProjectId,
+        path: Option<&str>,
+    ) -> Result<Response, ProtocolError> {
+        let invalid = |message: String| ProtocolError::new(ErrorCode::InvalidRequest, message);
+        let path = match path {
+            Some(raw) => Project::normalize_icon_image(raw).map_err(|e| invalid(e.to_string()))?,
+            None => None,
+        };
+        if let Some(relative) = &path {
+            let root = self
+                .lock()
+                .projects
+                .get(&project_id)
+                .map(|project| project.root_path.clone())
+                .ok_or_else(|| ProtocolError::not_found("project"))?;
+            fs_service::check_image(&root, relative).map_err(|e| invalid(e.to_string()))?;
+        }
+        let mut inner = self.lock();
+        let mut project = inner
+            .projects
+            .get(&project_id)
+            .cloned()
+            .ok_or_else(|| ProtocolError::not_found("project"))?;
+        project.icon_image = path;
         inner.db.projects().upsert(&project).map_err(db_err)?;
         inner.projects.insert(project_id, project.clone());
         drop(inner);
@@ -8709,7 +8758,7 @@ fn rebase_state(
     }
 }
 
-fn git_err(e: git_service::GitError) -> ProtocolError {
+pub(crate) fn git_err(e: git_service::GitError) -> ProtocolError {
     use git_service::GitError;
     match e {
         GitError::Conflict { .. } => ProtocolError::conflict(e.to_string()),
@@ -8887,6 +8936,7 @@ mod tests {
             project_group_id: None,
             name: name.to_string(),
             icon: None,
+            icon_image: None,
             // Deliberately non-existent unless the caller says otherwise.
             root_path: root.unwrap_or_else(|| PathBuf::from(format!("/nonexistent/forge/{id}"))),
             git_root: None,
@@ -11568,6 +11618,44 @@ mod tests {
             Some("🦀"),
             "a refused pick must not clear the icon that was there"
         );
+    }
+
+    #[test]
+    fn a_project_icon_image_must_be_an_image_in_its_checkout() {
+        let (daemon, tmp) = test_daemon();
+        let root = tmp.path().join("site");
+        std::fs::create_dir_all(root.join("public")).expect("mkdir");
+        std::fs::write(root.join("public/favicon.svg"), "<svg/>").expect("favicon");
+        std::fs::write(tmp.path().join("outside.png"), "png").expect("outside");
+        let project = add_project_row(&daemon, "site", Some(root));
+        daemon.set_project_icon(project, Some("🦀")).expect("glyph");
+
+        daemon
+            .set_project_icon_image(project, Some(" public/favicon.svg "))
+            .expect("the favicon");
+        let stored = daemon
+            .lock()
+            .db
+            .projects()
+            .get(project)
+            .expect("read project")
+            .expect("project row");
+        assert_eq!(stored.icon_image.as_deref(), Some("public/favicon.svg"));
+        assert_eq!(stored.icon.as_deref(), Some("🦀"), "the glyph stays");
+
+        for refused in ["public/missing.png", "../outside.png", ".env"] {
+            let error = daemon
+                .set_project_icon_image(project, Some(refused))
+                .expect_err(refused);
+            assert_eq!(error.code, ErrorCode::InvalidRequest, "{refused}");
+        }
+        assert_eq!(
+            daemon.lock().projects[&project].icon_image.as_deref(),
+            Some("public/favicon.svg"),
+            "a refused path keeps the picture that was there"
+        );
+        daemon.set_project_icon_image(project, None).expect("clear");
+        assert_eq!(daemon.lock().projects[&project].icon_image, None);
     }
 
     #[test]

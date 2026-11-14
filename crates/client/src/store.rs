@@ -687,6 +687,7 @@ mod tests {
             project_group_id: None,
             name: name.to_string(),
             icon: None,
+            icon_image: None,
             root_path: PathBuf::from(format!("/home/dev/{name}")),
             git_root: None,
             created_at: Timestamp::now(),

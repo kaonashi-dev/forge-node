@@ -16,13 +16,13 @@ pub use paths::{resolve_socket, socket_path, SocketPathError, SocketQuery, MAX_S
 
 pub use domain::{DirectoryListing, SymlinkTarget};
 pub use ipc::{
-    ActionLaunch, ActionSuggestions, Branches, Client, ClientError, DaemonInfo, SendContextResult,
-    StopSessions,
+    ActionLaunch, ActionSuggestions, Branches, Client, ClientError, DaemonInfo, ReviewReport,
+    SendContextResult, StopSessions,
 };
 pub use protocol::{
-    DaemonEvent, DaemonStats, EditorSurface, ErrorCode, ForgePaths, Layout, ProtocolCodecError,
-    ProtocolError, ProviderInfo, RemoveProjectPolicy, Request, Response, SendContextSpawn,
-    PROTOCOL_VERSION,
+    DaemonEvent, DaemonStats, EditorSurface, ErrorCode, ForgePaths, Layout, PromptDelivery,
+    ProtocolCodecError, ProtocolError, ProviderInfo, RemoveProjectPolicy, Request, Response,
+    SendContextSpawn, PROTOCOL_VERSION,
 };
 pub use store::{CellGrid, DeltaOutcome, EventOutcome, Store};
 pub use terminal_input::{

@@ -18,7 +18,8 @@ use super::aria;
 use super::metrics::{self, RowMetrics};
 use super::theme::{self, EditorPalette};
 use super::{
-    EditorUi, FOLD_HIT_W, ROW_H, SCROLL_KEY, TEXT_PAD, conflict, content_rows, find, visual_base,
+    EditorUi, FOLD_HIT_W, GUTTER_PAD, MARK_GAP, MARK_W, ROW_H, SCROLL_KEY, TEXT_PAD, conflict,
+    content_rows, find, visual_base,
 };
 use crate::app::AppState;
 
@@ -38,18 +39,18 @@ pub fn pane(s: &AppState, k: &Kit) -> El {
     let aria = aria::editor_aria(editor);
     let announcement = aria::editor_announcement(editor);
     // The label already names the file; the header would say it twice.
-    let header = row()
+    let mut header = row()
         .key("editor-header")
         .w_full()
         .h(HEADER_H)
         .items_center()
         .px(12.0)
         .gap(10.0)
-        .a11y_hidden()
         .child(
             text(path.to_string())
                 .font(k.ty.small_medium)
-                .color(palette.foreground),
+                .color(palette.foreground)
+                .a11y_hidden(),
         )
         .child(
             text(aria::editor_mark(editor))
@@ -58,13 +59,33 @@ pub fn pane(s: &AppState, k: &Kit) -> El {
                     palette.git_modified
                 } else {
                     palette.gutter_foreground
-                }),
+                })
+                .a11y_hidden(),
         )
         .child(
             text(aria::editor_details(editor, path))
                 .font(k.ty.text_xsmall)
-                .color(palette.gutter_foreground),
+                .color(palette.gutter_foreground)
+                .grow(1.0)
+                .a11y_hidden(),
         );
+    if let Some(state) = editor.filter(|state| {
+        crate::workbench::preview_kind(&state.path)
+            .is_some_and(crate::workbench::PreviewKind::has_source)
+    }) {
+        let path = state.path.clone();
+        header = header.child(
+            crate::ds::icon_button(
+                &crate::glyphs::EYE,
+                "Show Rendered",
+                crate::ds::IconButtonSize::Mini,
+            )
+            .help("Show Rendered")
+            .on_press(move |s: &mut AppState| s.preview_file(&path))
+            .build(k)
+            .key("editor-preview"),
+        );
+    }
     let body = match &ui.frame {
         Some(frame) => scroller(ui, frame, palette),
         None => col()
@@ -631,9 +652,6 @@ fn range_spans(
     spans
 }
 
-/// The git mark's width: Zed's thin bar at the gutter's edge.
-const MARK_W: f32 = 3.0;
-
 fn gutter_view(line_row: &EditorRow, active: bool, palette: EditorPalette, ty: Ty) -> El {
     let line = line_row.line;
     let (mark, diagnostic, fold) = (line_row.mark, line_row.diagnostic, line_row.fold);
@@ -668,6 +686,11 @@ fn gutter_view(line_row: &EditorRow, active: bool, palette: EditorPalette, ty: T
         } else {
             el().w(MARK_W).h(ty.row_h).fill(mark_color(mark, palette))
         };
+        let bar = if mark.is_some() {
+            bar.cursor(Cursor::Pointer)
+        } else {
+            bar
+        };
         let dot = el()
             .size(6.0, 6.0)
             .radius(3.0)
@@ -690,12 +713,11 @@ fn gutter_view(line_row: &EditorRow, active: bool, palette: EditorPalette, ty: T
             .w(ty.gutter_w)
             .h(ty.row_h)
             .items_center()
-            .px(6.0)
-            .gap(crate::ds::SPACE_2)
+            .px(GUTTER_PAD)
             .child(number)
-            .child(bar)
-            .child(dot)
-            .child(chevron)
+            .child(bar.ml(MARK_GAP))
+            .child(dot.ml(crate::ds::SPACE_2))
+            .child(chevron.ml(crate::ds::SPACE_2))
     })
 }
 
@@ -764,8 +786,13 @@ impl AppState {
         }
         let gutter_w = self.editor.gutter_w();
         if drag.x < gutter_w {
-            if foldable && drag.phase == Phase::Down && drag.x >= gutter_w - FOLD_HIT_W {
+            if drag.phase != Phase::Down {
+                return;
+            }
+            if foldable && drag.x >= gutter_w - FOLD_HIT_W {
                 self.editor.queue(EditorInputEvent::ToggleFold { line });
+            } else if crate::editor::on_mark(drag.x, self.editor.number_w()) && self.marked(line) {
+                self.open_line_diff(line);
             }
             return;
         }
