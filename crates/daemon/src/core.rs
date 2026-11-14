@@ -6415,8 +6415,8 @@ impl Daemon {
         force_emit: bool,
         eof: bool,
     ) -> crate::terminal::PumpStatus {
-        let subscribed = self.registry.has_subscribers(terminal_id);
         let mut next_wake = None;
+        let subscribed;
 
         let mut reply = None;
         let bell;
@@ -6426,6 +6426,10 @@ impl Daemon {
 
         {
             let mut inner = self.lock();
+            // Read under the core lock with the attach that subscribes: sampled
+            // before it, a paint that lands after the attach snapshot is fed and
+            // then dropped with no delta and no wake to publish it.
+            subscribed = self.registry.has_subscribers(terminal_id);
             let Some(rt) = inner.terminals.get_mut(&terminal_id) else {
                 return crate::terminal::PumpStatus {
                     subscribed,
@@ -12363,6 +12367,57 @@ mod tests {
             DaemonMessage::Event(DaemonEvent::TerminalDelta { delta, .. }) if delta.seq == 5
         ));
         assert_eq!(state(&daemon), (5, 10));
+    }
+
+    /// An attach that lands between the subscriber check and the feed must not
+    /// strand that paint: the bytes are in the grid, but nothing will ever wake
+    /// the PTY thread to publish a delta for them.
+    #[test]
+    fn a_paint_racing_an_attach_is_published_not_stranded() {
+        let (daemon, tmp, _backend) = test_daemon_with_pty(FakePtyBackend::empty());
+        let workspace = seeded_workspace(&daemon, tmp.path());
+        daemon
+            .create_session(
+                workspace,
+                SessionKind::Shell,
+                None,
+                None,
+                None,
+                SessionRole::Generic,
+                None,
+                None,
+                false,
+            )
+            .expect("create shell session");
+        let terminal_id = only_session(&daemon)
+            .terminal_id
+            .expect("a running session has a terminal");
+        let client = ClientId::new();
+        let rx = daemon.registry.register(client);
+
+        // Hold the core lock so the pump's subscriber check lands before the
+        // subscription and its feed lands after it, which is the attach window.
+        let guard = daemon.lock();
+        let pump = {
+            let daemon = Arc::clone(&daemon);
+            std::thread::spawn(move || daemon.pump_terminal(terminal_id, b"first paint\r\n", false))
+        };
+        std::thread::sleep(Duration::from_millis(100));
+        daemon.registry.subscribe(client, terminal_id);
+        drop(guard);
+
+        assert!(
+            pump.join().expect("pump thread"),
+            "a subscriber is watching"
+        );
+        let painted = std::iter::from_fn(|| rx.try_recv().ok()).any(|message| {
+            matches!(
+                message,
+                DaemonMessage::Event(DaemonEvent::TerminalDelta { delta, .. })
+                    if delta.changed_rows().any(|(_, row)| row_text(row).contains("first paint"))
+            )
+        });
+        assert!(painted, "the first paint must reach the attaching client");
     }
 
     // ---------------------------------------------------------------
