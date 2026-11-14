@@ -60,19 +60,14 @@ jobs:
       - name: Gate
         run: scripts/dev check
 
-      # The Rune updater trusts the key the Tauri updater used, whose secret half
-      # is stored the Tauri way: base64 of a password-protected minisign key.
-      # package-macos signs with `minisign -W`, so the password is removed here.
-      - name: Updater key from the Tauri signing secrets
+      # Installed apps refuse a tarball signed by any key but UPDATER_PUBKEY, so
+      # a mismatched secret fails here instead of shipping an uninstallable update.
+      - name: Updater key matches the app
         env:
-          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
-          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+          FORGE_UPDATER_KEY: ${{ secrets.FORGE_UPDATER_KEY }}
         run: |
           key="$RUNNER_TEMP/updater.key"
-          printf '%s' "$TAURI_SIGNING_PRIVATE_KEY" | base64 -d >"$key"
-          printf '%s\n' "$TAURI_SIGNING_PRIVATE_KEY_PASSWORD" | minisign -C -W -s "$key" >/dev/null
-          # Installed apps refuse a tarball signed by any other key, so a
-          # mismatch fails the release instead of shipping an uninstallable update.
+          printf '%s\n' "$FORGE_UPDATER_KEY" >"$key"
           pubkey="$(awk -F'"' '/pub const UPDATER_PUBKEY/{print $2}' apps/ui/src/updates.rs | base64 -d | sed -n 2p)"
           echo probe >"$RUNNER_TEMP/probe"
           minisign -S -W -s "$key" -m "$RUNNER_TEMP/probe" >/dev/null
