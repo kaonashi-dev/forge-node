@@ -101,6 +101,10 @@ pub struct Coverage {
     /// The ids of the project rules that entered the pack.
     #[serde(default)]
     pub rules: Vec<String>,
+    /// Fingerprints the reviewer reported that validation left out, so a
+    /// later run's read does not count them as resolved. At most 200.
+    #[serde(default)]
+    pub withheld: Vec<String>,
 }
 
 /// Compact on purpose: it is what `ReviewUpdated` carries, so it holds no findings.
@@ -130,6 +134,11 @@ pub struct ReviewRun {
     /// The workspace's branch when the run started; `None` when detached.
     #[serde(default)]
     pub branch: Option<String>,
+    /// A workspace review's working tree, written as a tree object when it was
+    /// reviewed: what `GetReviewDiff` diffs against `base_oid`. `None` for a pull
+    /// request, or when the snapshot could not be written.
+    #[serde(default)]
+    pub tree_oid: Option<String>,
 }
 
 // `score` is a clamped multiple of 0.5, never NaN, so equality is total.
@@ -272,6 +281,7 @@ mod tests {
             created_at: Timestamp::now(),
             finished_at: None,
             branch: Some("main".into()),
+            tree_oid: None,
         };
         let json = serde_json::to_value(&run).unwrap();
         assert_eq!(json["tier"], "plus");

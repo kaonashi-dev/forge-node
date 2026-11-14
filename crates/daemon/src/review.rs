@@ -184,6 +184,7 @@ impl Daemon {
             created_at: Timestamp::now(),
             finished_at: None,
             branch,
+            tree_oid: None,
         };
         if let Err(error) = self.review_store.insert_run(&run) {
             self.release_review(&slot, id);
@@ -231,11 +232,14 @@ impl Daemon {
             .map_err(db_err)?
             .ok_or_else(|| ProtocolError::not_found("review"))?;
         let (previous, resolved) = match self.previous_review(&run) {
-            Some((previous, before)) => (Some(previous.id), review::resolved(&before, &findings)),
+            Some((previous, before)) => (
+                Some(previous.id),
+                review::resolved(&before, &findings, &run.coverage.withheld),
+            ),
             None => (None, Vec::new()),
         };
         Ok(Response::Review {
-            run,
+            run: Box::new(run),
             findings,
             resolved,
             previous,
@@ -330,14 +334,25 @@ impl Daemon {
         }
         let path = self.workspace_path(run.workspace_id)?;
         let context = git_service::DIFF_CONTEXT_LINES;
-        let diff = match &run.target {
-            ReviewTarget::PullRequest { .. } => {
-                let base = run.base_oid.as_deref().ok_or_else(no_diff)?;
-                git_service::commit_range_diff(&path, base, &run.head_oid, context)
-            }
-            _ => git_service::working_tree_diff(&path, run.base_oid.as_deref(), context),
+        let (base, head) = match &run.target {
+            ReviewTarget::PullRequest { .. } => (
+                run.base_oid.as_deref().ok_or_else(no_diff)?,
+                run.head_oid.as_str(),
+            ),
+            _ => (
+                run.base_oid.as_deref().unwrap_or(&run.head_oid),
+                run.tree_oid.as_deref().ok_or_else(|| {
+                    ProtocolError::invalid_request("the reviewed working tree was not kept")
+                })?,
+            ),
+        };
+        if !git_service::object_exists(&path, head) {
+            return Err(ProtocolError::invalid_request(
+                "the reviewed tree is no longer in the repository",
+            ));
         }
-        .map_err(crate::core::git_err)?;
+        let diff = git_service::commit_range_diff(&path, base, head, context)
+            .map_err(crate::core::git_err)?;
         Ok(Response::WorkspaceDiff(domain::WorkspaceDiff {
             workspace_id: run.workspace_id,
             branch: diff.branch,
@@ -510,6 +525,16 @@ impl Daemon {
                     .as_deref()
                     .map(|merge| git_service::commits_since(path, merge).0)
                     .unwrap_or_default();
+                run.tree_oid = snapshot(path, &diff, pack_dir)
+                    .inspect_err(|error| {
+                        tracing::warn!(%error, "could not snapshot the reviewed working tree");
+                    })
+                    .ok();
+                if run.tree_oid.is_none() {
+                    run.coverage
+                        .notes
+                        .push("the reviewed working tree was not kept for a later diff".into());
+                }
                 (merge, base_ref, diff, commits)
             }
         };
@@ -597,11 +622,14 @@ impl Daemon {
                     .findings
                     .iter()
                     .any(|finding| finding.path == file.path)
-                    .then(|| match pull_request {
-                        Some(_) => read_blob(path, &run.head_oid, &file.path),
-                        None => read_inside(path, Path::new(&file.path), MAX_FILE_TEXT_BYTES)
-                            .ok()
-                            .flatten(),
+                    .then(|| match (pull_request.is_some(), &run.tree_oid) {
+                        (true, _) => read_blob(path, &run.head_oid, &file.path),
+                        (false, Some(tree)) => read_blob(path, tree, &file.path),
+                        (false, None) => {
+                            read_inside(path, Path::new(&file.path), MAX_FILE_TEXT_BYTES)
+                                .ok()
+                                .flatten()
+                        }
                     })
                     .flatten(),
             })
@@ -626,6 +654,7 @@ impl Daemon {
                 validated.suppressed
             ));
         }
+        run.coverage.withheld = validated.withheld;
         let score = review::score(&validated.findings);
         run.verdict = Some(review::verdict(&validated.findings, score));
         run.score = Some(score);
@@ -642,17 +671,19 @@ impl Daemon {
         number: u32,
         base: Option<String>,
     ) -> Result<DiffStage, End> {
-        run.head_oid = git_service::fetch_pull_request(
+        let (remote, known_base) = self.pull_request_remote(path, run.workspace_id, number)?;
+        let base = base.or(known_base);
+        let fetched = git_service::fetch_pull_request(
             path,
+            &remote,
             number,
             base.as_deref(),
             self.config.git.fetch_timeout(),
         )
         .map_err(|error| End::Failed(format!("could not fetch pull request #{number}: {error}")))?;
-        let requested = base.map(|base| format!("origin/{base}"));
-        let base_ref = git_service::compare_base(path, requested.as_deref())
-            .ok_or_else(|| End::Failed(format!("pull request #{number}: no base branch found")))?;
-        let merge = git_service::merge_base(path, &[base_ref.clone(), run.head_oid.clone()])
+        run.head_oid = fetched.head;
+        let base_ref = format!("{remote}/{}", base.as_deref().unwrap_or("HEAD"));
+        let merge = git_service::merge_base(path, &[fetched.base, run.head_oid.clone()])
             .ok_or_else(|| {
                 End::Failed(format!(
                     "pull request #{number} shares no history with {base_ref}"
@@ -667,6 +698,56 @@ impl Daemon {
         .map_err(|error| End::Failed(format!("git diff failed: {error}")))?;
         let commits = git_service::commits_between(path, &merge, &run.head_oid).0;
         Ok((Some(merge), Some(base_ref), diff, commits))
+    }
+
+    /// The remote whose repository the cached pull request `number` belongs to,
+    /// with its base branch, or else the remote the pull-request listing reads
+    /// (`origin`, or the only one there is) with no base known.
+    fn pull_request_remote(
+        &self,
+        path: &Path,
+        workspace: WorkspaceId,
+        number: u32,
+    ) -> Result<(String, Option<String>), End> {
+        let remotes = git_service::list_remotes(path)
+            .map_err(|error| End::Failed(format!("could not list the remotes: {error}")))?;
+        let project = self.workspace_project(workspace).ok();
+        let mut known: Vec<domain::PullRequest> = self
+            .pull_request_cache()
+            .snapshot()
+            .pull_requests
+            .into_iter()
+            .filter(|pr| {
+                pr.number == number && (pr.project_id.is_none() || pr.project_id == project)
+            })
+            .collect();
+        known.sort_by_key(|pr| pr.project_id.is_none());
+        let hosting = known.iter().find_map(|pr| {
+            remotes.iter().find_map(|(name, url)| {
+                let repo = git_service::parse_remote_url(url)?;
+                (repo.host.eq_ignore_ascii_case(&pr.host)
+                    && repo.name_with_owner().eq_ignore_ascii_case(&pr.repository))
+                .then(|| {
+                    (
+                        name.clone(),
+                        (!pr.base_ref.is_empty()).then(|| pr.base_ref.clone()),
+                    )
+                })
+            })
+        });
+        if let Some(hosting) = hosting {
+            return Ok(hosting);
+        }
+        remotes
+            .iter()
+            .find(|(name, _)| name == "origin")
+            .or_else(|| remotes.first())
+            .map(|(name, _)| (name.clone(), None))
+            .ok_or_else(|| {
+                End::Failed(format!(
+                    "pull request #{number}: the checkout has no remote"
+                ))
+            })
     }
 
     /// Block until the reviewer's transcript holds a parseable answer, it
@@ -810,6 +891,24 @@ type DiffStage = (
     git_service::WorkingTreeDiff,
     Vec<git_service::CommitEntry>,
 );
+
+/// Keeps what a workspace review saw so `GetReviewDiff` can show it after the
+/// checkout moves on. A patch dropped for its size, or a binary, is left out:
+/// its content would be written into the object store for no patch.
+fn snapshot(
+    path: &Path,
+    diff: &git_service::WorkingTreeDiff,
+    pack_dir: &Path,
+) -> Result<String, git_service::GitError> {
+    let paths: Vec<&str> = diff
+        .files
+        .iter()
+        .filter(|file| !file.truncated && !file.binary)
+        .map(|file| file.path.as_str())
+        .collect();
+    std::fs::create_dir_all(pack_dir)?;
+    git_service::snapshot_tree(path, &paths, &pack_dir.join("index"))
+}
 
 /// `<head>:<path>` from the object store, `None` over [`MAX_FILE_TEXT_BYTES`]
 /// or when it cannot be read.

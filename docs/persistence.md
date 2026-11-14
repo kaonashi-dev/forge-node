@@ -186,19 +186,20 @@ ignoring case because a chip and a palette entry name an action by label. A
 run's session (`SessionKind::Task`) is an ordinary `sessions` row; which action
 it runs is runtime-only.
 
-## Schema (v16 — `REVIEWS`, v20, v21)
+## Schema (v16 — `REVIEWS`, v20–v23)
 
 ```sql
 review_runs     (id PK, workspace_id FK→workspaces ON DELETE CASCADE, target,
                  head_oid, base_oid, tier, preset, provider, status, stage, summary,
                  score, verdict, error, session_id, coverage, created_at,
-                 finished_at, branch)
+                 finished_at, branch, tree_oid)
 review_findings (review_id → review_runs ON DELETE CASCADE, id, fingerprint,
                  path, line, end_line, severity, category, rule_id, confidence,
                  title, body, evidence, suggestion, lineage)
                 PRIMARY KEY (review_id, id)
 review_feedback (review_id, finding_id, project_id FK→projects ON DELETE CASCADE,
-                 fingerprint, rule_id, category, severity, reaction, created_at)
+                 fingerprint, rule_id, category, severity, reaction, created_at,
+                 counted)
                 PRIMARY KEY (review_id, finding_id), INDEX (project_id, created_at)
 ```
 
@@ -220,7 +221,11 @@ at read time, never copied. `REVIEW_FEEDBACK` (v21) holds 👍, 👎 and
 dismissals. It has no foreign key to the review tables on purpose: a dismissal
 outlives the run pruning drops, because suppressions are derived from these
 rows (`review::suppressions`) and never stored. `Finding.reaction` is read from
-it, not a findings column.
+it, not a findings column. `REVIEW_FEEDBACK_COUNTED` (v22) adds
+`counted`: lifting a rule's or `style`'s suppression clears it on the dismissals
+behind it, so they stop counting while each finding stays dismissed.
+`REVIEW_TREE` (v23) adds `tree_oid`, the oid of the tree a workspace run's
+working tree was written to; the diff itself is still never stored.
 
 ## Repositories (`repositories/`)
 

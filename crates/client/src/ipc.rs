@@ -713,7 +713,7 @@ impl Client {
                 resolved,
                 previous,
             } => Ok(ReviewReport {
-                run,
+                run: *run,
                 findings,
                 resolved,
                 previous,

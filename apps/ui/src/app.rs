@@ -1794,6 +1794,7 @@ impl AppState {
                 self.editor.autosave.reset();
                 self.workbench.reconnected();
                 self.project_icons.forget_reads();
+                crate::code_review::reconnected(self);
                 self.session_changes.loading = false;
                 self.usage.pending = None;
                 if self.workbench.mode == CenterMode::SessionChanges {
@@ -1852,7 +1853,13 @@ impl AppState {
                 if let client::DaemonEvent::FileChanged { workspace_id, path } = event.as_ref() {
                     self.workbench
                         .file_changed(*workspace_id, path, Instant::now());
-                    return self.workbench.mode == CenterMode::Search;
+                    let icon = self.icon_owner(*workspace_id, path);
+                    if let Some(project) = icon {
+                        let narrowed = (!path.is_empty()).then_some(path.as_str());
+                        self.project_icons.forget(project, narrowed);
+                        self.sync_project_icons();
+                    }
+                    return self.workbench.mode == CenterMode::Search || icon.is_some();
                 }
                 if let client::DaemonEvent::EditorFrame { session_id, frame } = *event {
                     if let Some(offset) = self.editor.apply_frame(session_id, frame) {
@@ -2626,6 +2633,7 @@ impl AppState {
         changed |= self.poll_files(tx);
         changed |= self.project_icons.landed();
         changed |= self.workbench.settle_change_reveal(tx);
+        changed |= self.settle_review_reveal(tx);
         crate::native_menus::refresh(self);
         if clock - self.mirror_at >= 0.125 {
             for idx in 0..self.pane_count() {

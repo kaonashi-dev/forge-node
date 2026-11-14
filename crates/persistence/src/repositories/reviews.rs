@@ -14,7 +14,7 @@ use crate::db::DbError;
 use crate::repositories::{id_from_str, ts_from_opt, ts_from_str, ts_to_str};
 
 const RUN_COLUMNS: &str = "id, workspace_id, target, head_oid, base_oid, tier, provider, status, \
-     stage, summary, score, verdict, error, session_id, coverage, created_at, finished_at, preset, branch";
+     stage, summary, score, verdict, error, session_id, coverage, created_at, finished_at, preset, branch, tree_oid";
 
 const FINDING_COLUMNS: &str = "id, fingerprint, path, line, end_line, severity, category, \
      rule_id, confidence, title, body, evidence, suggestion, lineage";
@@ -22,7 +22,7 @@ const FINDING_COLUMNS: &str = "id, fingerprint, path, line, end_line, severity, 
 pub fn insert_run(conn: &Connection, run: &ReviewRun) -> Result<(), DbError> {
     conn.prepare_cached(&format!(
         "INSERT INTO review_runs ({RUN_COLUMNS}) \
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19)"
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20)"
     ))?
     .execute(params![
         run.id.to_string(),
@@ -44,6 +44,7 @@ pub fn insert_run(conn: &Connection, run: &ReviewRun) -> Result<(), DbError> {
         run.finished_at.as_ref().map(ts_to_str),
         run.preset,
         run.branch,
+        run.tree_oid,
     ])?;
     Ok(())
 }
@@ -53,7 +54,7 @@ pub fn update_run(conn: &Connection, run: &ReviewRun) -> Result<(), DbError> {
     conn.prepare_cached(
         "UPDATE review_runs SET base_oid = ?2, status = ?3, stage = ?4, summary = ?5, \
          score = ?6, verdict = ?7, error = ?8, session_id = ?9, coverage = ?10, \
-         finished_at = ?11, head_oid = ?12 WHERE id = ?1",
+         finished_at = ?11, head_oid = ?12, tree_oid = ?13 WHERE id = ?1",
     )?
     .execute(params![
         run.id.to_string(),
@@ -68,6 +69,7 @@ pub fn update_run(conn: &Connection, run: &ReviewRun) -> Result<(), DbError> {
         json(&run.coverage)?,
         run.finished_at.as_ref().map(ts_to_str),
         run.head_oid,
+        run.tree_oid,
     ])?;
     Ok(())
 }
@@ -201,7 +203,7 @@ pub fn set_feedback(
     conn.prepare_cached(
         "INSERT INTO review_feedback (review_id, finding_id, project_id, fingerprint, rule_id, \
          category, severity, reaction, created_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9) \
-         ON CONFLICT (review_id, finding_id) DO UPDATE SET reaction = ?8, created_at = ?9",
+         ON CONFLICT (review_id, finding_id) DO UPDATE SET reaction = ?8, created_at = ?9, counted = 1",
     )?
     .execute(params![
         review.to_string(),
@@ -226,7 +228,7 @@ pub fn clear_feedback(conn: &Connection, review: ReviewId, finding: u32) -> Resu
 /// The project's newest [`MAX_FEEDBACK_ROWS`] reactions.
 pub fn feedback(conn: &Connection, project: ProjectId) -> Result<Vec<review::Feedback>, DbError> {
     let mut stmt = conn.prepare_cached(
-        "SELECT fingerprint, rule_id, category, severity, reaction, created_at \
+        "SELECT fingerprint, rule_id, category, severity, reaction, created_at, counted \
          FROM review_feedback WHERE project_id = ?1 ORDER BY created_at DESC LIMIT ?2",
     )?;
     let rows = stmt.query_map(params![project.to_string(), MAX_FEEDBACK_ROWS], |row| {
@@ -237,10 +239,11 @@ pub fn feedback(conn: &Connection, project: ProjectId) -> Result<Vec<review::Fee
             row.get::<_, String>(3)?,
             row.get::<_, String>(4)?,
             row.get::<_, String>(5)?,
+            row.get::<_, bool>(6)?,
         ))
     })?;
     rows.map(|row| {
-        let (fingerprint, rule_id, category, severity, reaction, created_at) = row?;
+        let (fingerprint, rule_id, category, severity, reaction, created_at, counted) = row?;
         Ok(review::Feedback {
             fingerprint,
             rule_id,
@@ -248,13 +251,15 @@ pub fn feedback(conn: &Connection, project: ProjectId) -> Result<Vec<review::Fee
             severity: parse_tag("Severity", &severity, SEVERITIES)?,
             reaction: parse_tag("FindingReaction", &reaction, REACTIONS)?,
             created_at: ts_from_str(&created_at)?.as_offset().unix_timestamp(),
+            counted,
         })
     })
     .collect()
 }
 
-/// Deletes the project's dismissals that produce `suppression`; a fingerprint's
-/// go at every severity.
+/// Lifts `suppression`: a fingerprint's dismissals are deleted at every
+/// severity, so the finding comes back; a rule's or a category's stop counting
+/// toward it, and each finding they dismissed stays dismissed.
 pub fn clear_suppression(
     conn: &Connection,
     project: ProjectId,
@@ -265,10 +270,13 @@ pub fn clear_suppression(
         SuppressionKind::Category => "category",
         SuppressionKind::Fingerprint => "fingerprint",
     };
+    let filter = format!("project_id = ?1 AND reaction = ?2 AND {column} = ?3");
+    let sql = match suppression.kind {
+        SuppressionKind::Fingerprint => format!("DELETE FROM review_feedback WHERE {filter}"),
+        _ => format!("UPDATE review_feedback SET counted = 0 WHERE {filter} AND counted = 1"),
+    };
     Ok(conn.execute(
-        &format!(
-            "DELETE FROM review_feedback WHERE project_id = ?1 AND reaction = ?2 AND {column} = ?3"
-        ),
+        &sql,
         params![
             project.to_string(),
             reaction_tag(FindingReaction::Dismiss),
@@ -321,6 +329,7 @@ fn run_from_row(row: &Row<'_>) -> rusqlite::Result<Result<ReviewRun, DbError>> {
     let error: Option<String> = row.get(12)?;
     let preset: String = row.get(17)?;
     let branch: Option<String> = row.get(18)?;
+    let tree_oid: Option<String> = row.get(19)?;
     Ok((|| {
         #[allow(
             clippy::cast_possible_truncation,
@@ -353,6 +362,7 @@ fn run_from_row(row: &Row<'_>) -> rusqlite::Result<Result<ReviewRun, DbError>> {
             created_at: ts_from_str(&created_at)?,
             finished_at: ts_from_opt(finished_at)?,
             branch,
+            tree_oid,
         })
     })())
 }

@@ -61,10 +61,12 @@ startup still knows it is read-only, from the run's `session_id`.
 
 `ReviewTarget::PullRequest { number, base }` reviews a pull request from the
 project's existing checkout; nothing moves its `HEAD` or working tree, and no
-scratch worktree is made. The worker fetches `refs/pull/<n>/head` from `origin`
-into `refs/forge/review/<n>/head` (and `base` into `origin/<base>`) through
-`run_git_network`, then diffs the merge base with `origin/<base>` (or the
-default branch) to that head. The pack says the working directory is not the
+scratch worktree is made. The worker fetches from the remote whose URL names the
+pull request's repository (from the pull-request cache), else from the remote
+the listing reads (`origin`, or the only one), in one `run_git_network` fetch:
+`refs/pull/<n>/head` into `refs/forge/review/<n>/head` and `base` (the cached
+pull request's base, else the remote's `HEAD`) into `refs/forge/review/<n>/base`.
+It diffs their merge base to that head. The pack says the working directory is not the
 head and that head files read with `git show <head>:<path>`; validation reads
 them from the object store the same way, capped like a working-tree read. The
 checkout's own `AGENTS.md` and `.forge/review/` are the instructions: the
@@ -82,8 +84,10 @@ A completed run is compared with the newest completed run before it of the same
 workspace and preset, and of the same branch (for a workspace run, the branch at
 the run's start) or the same pull request. Each finding is stored `new` or
 `persisting` by fingerprint; `GetReview` computes `resolved` — the previous
-run's findings this one no longer reports — and names `previous`. Nothing is
-copied between runs.
+run's findings this one no longer reports — and names `previous`. A fingerprint
+the reviewer reported but validation left out (suppressed, below the floor, past
+`max_findings`) is kept in `Coverage::withheld`, so it is not counted as
+resolved. Nothing is copied between runs.
 
 ## Feedback and suppression
 
@@ -102,7 +106,9 @@ project's newest 10 000 rows each time:
 
 P0 and `security` findings are never suppressed. What was suppressed is a
 coverage note. `GetReviewConfig` lists the active suppressions;
-`ClearReviewSuppression` deletes the project's dismissals behind one.
+`ClearReviewSuppression` lifts one: a fingerprint's dismissals are deleted, so
+the finding comes back; a rule's or `style`'s stop counting toward it, and
+each finding they dismissed stays dismissed.
 
 ## Send and Fix
 
@@ -115,8 +121,11 @@ launches a writable agent, chosen like *Resolve with AI*, with the same prompt.
 ## Inline findings
 
 `GetReviewDiff` answers with exactly the range a run reviewed — merge base to
-head for a pull request, the working tree against its merge base for a
-workspace — as a local read that never touches the network. The Review mode's
+head for a pull request; for a workspace, its merge base to `tree_oid`, the
+working tree written as a tree object through a throwaway index when it was
+reviewed (a patch dropped for size, and a binary, are left out of it) — as a
+local read that never touches the network. The tree is unreachable, so a
+`git gc` past `gc.pruneExpire` can remove it; the read then says so. The Review mode's
 **Diff** tab draws it with each standing, anchored finding under its new-side
 line; the Changes view puts the same notes on the live working tree while the
 workspace's latest run is a completed, fresh workspace review. Annotations are
@@ -236,7 +245,10 @@ capability is refused, never downgraded to one that can write —
 - The GUI's **Review** mode starts a run, shows stage and progress, groups
   findings by severity or file, marks lineage and lists what was resolved, takes
   feedback, lists suppressions with Undo, sends findings to an agent, and
-  cancels. A pull request's detail view starts a **Forge Review** of it.
+  cancels. A pull request's detail view starts a **Forge Review** of it. A
+  checkout's workspace review and each pull request's keep their own lane in
+  the tab; one landing never replaces another, and a pull-request finding's
+  location opens the reviewed diff, not the checkout's file.
 - Wire requests and the `ReviewUpdated` event:
   [protocol.md](./protocol.md). The stored run/findings rows:
   [persistence.md](./persistence.md).

@@ -42,6 +42,24 @@ pub enum ReviewView {
     Diff,
 }
 
+/// One of a checkout's review slots: the daemon runs a workspace review and
+/// each pull request's side by side, so neither replaces the other here.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub enum Lane {
+    Workspace,
+    PullRequest(u32),
+}
+
+#[must_use]
+pub fn lane(target: &ReviewTarget) -> Lane {
+    match target {
+        ReviewTarget::PullRequest { number, .. } => Lane::PullRequest(*number),
+        _ => Lane::Workspace,
+    }
+}
+
+type Slot = (WorkspaceId, Lane);
+
 pub struct Report {
     pub run: ReviewId,
     pub findings: Vec<Finding>,
@@ -71,8 +89,11 @@ struct ChangesKey {
 
 pub struct CodeReview {
     pub workspace: Option<WorkspaceId>,
-    pub latest: HashMap<WorkspaceId, ReviewRun>,
-    pub reports: HashMap<WorkspaceId, Report>,
+    pub latest: HashMap<Slot, ReviewRun>,
+    pub reports: HashMap<Slot, Report>,
+    /// The lane each checkout's Review tab shows; a run of another lane
+    /// landing never switches it.
+    pub shown: HashMap<WorkspaceId, Lane>,
     pub configs: HashMap<WorkspaceId, ReviewSettings>,
     pub errors: HashMap<WorkspaceId, String>,
     pub grouping: Grouping,
@@ -88,6 +109,9 @@ pub struct CodeReview {
     pub show_resolved: bool,
     pub diff: Option<ReviewedDiff>,
     pub diff_state: DiffState,
+    /// A pull-request finding's `(path, line)` to scroll the Diff tab to once
+    /// the reviewed diff holds it: the checkout's own file is not that head.
+    pub reveal: Option<(String, u32)>,
     /// Bumped whenever a report or a reaction changes, so annotations are
     /// rebuilt then and never per frame.
     pub revision: u64,
@@ -103,6 +127,7 @@ impl Default for CodeReview {
             workspace: None,
             latest: HashMap::new(),
             reports: HashMap::new(),
+            shown: HashMap::new(),
             configs: HashMap::new(),
             errors: HashMap::new(),
             grouping: Grouping::Severity,
@@ -118,10 +143,56 @@ impl Default for CodeReview {
             show_resolved: false,
             diff: None,
             diff_state: DiffState::default(),
+            reveal: None,
             revision: 0,
             changes_key: None,
             send_to: HashMap::new(),
         }
+    }
+}
+
+impl CodeReview {
+    #[must_use]
+    pub fn shown_lane(&self, workspace: WorkspaceId) -> Lane {
+        self.shown
+            .get(&workspace)
+            .copied()
+            .unwrap_or(Lane::Workspace)
+    }
+
+    #[must_use]
+    pub fn shown_run(&self, workspace: WorkspaceId) -> Option<&ReviewRun> {
+        self.latest.get(&(workspace, self.shown_lane(workspace)))
+    }
+
+    /// The shown run's report, never an older run's of the same lane.
+    #[must_use]
+    pub fn shown_report(&self, workspace: WorkspaceId) -> Option<&Report> {
+        let run = self.shown_run(workspace)?;
+        self.reports
+            .get(&(workspace, lane(&run.target)))
+            .filter(|report| report.run == run.id)
+    }
+
+    /// The workspace review's report the Changes view annotates with.
+    #[must_use]
+    pub fn workspace_report(&self, workspace: WorkspaceId) -> Option<&Report> {
+        self.reports.get(&(workspace, Lane::Workspace))
+    }
+
+    fn lanes(&self, workspace: WorkspaceId) -> Vec<Lane> {
+        let mut lanes: Vec<Lane> = self
+            .latest
+            .keys()
+            .filter(|(owner, _)| *owner == workspace)
+            .map(|(_, lane)| *lane)
+            .collect();
+        lanes.sort_unstable();
+        lanes
+    }
+
+    fn knows(&self, workspace: WorkspaceId) -> bool {
+        self.latest.keys().any(|(owner, _)| *owner == workspace)
     }
 }
 
@@ -191,9 +262,14 @@ pub fn is_pull_request(run: &ReviewRun) -> bool {
 
 #[must_use]
 pub fn target_label(target: &ReviewTarget) -> String {
-    match target {
-        ReviewTarget::PullRequest { number, .. } => format!("PR #{number}"),
-        _ => "Workspace".into(),
+    lane_label(lane(target))
+}
+
+#[must_use]
+pub fn lane_label(lane: Lane) -> String {
+    match lane {
+        Lane::PullRequest(number) => format!("PR #{number}"),
+        Lane::Workspace => "Workspace".into(),
     }
 }
 
@@ -247,7 +323,7 @@ pub fn send_target(
 }
 
 /// Whole findings, in order, within `budget` bytes, and how many did not fit.
-/// Empty when none fits.
+/// Empty when none fits or none is given; [`empty_prompt_reason`] tells which.
 #[must_use]
 pub fn findings_prompt(findings: &[&Finding], budget: usize) -> (String, usize) {
     let mut prompt = PROMPT_HEAD.to_string();
@@ -291,6 +367,15 @@ pub fn standing_prompt(findings: &[Finding]) -> (String, usize) {
         .filter(|finding| finding.reaction != Some(FindingReaction::Dismiss))
         .collect();
     findings_prompt(&standing, PROMPT_BUDGET)
+}
+
+#[must_use]
+pub fn empty_prompt_reason(left_out: usize) -> &'static str {
+    if left_out == 0 {
+        "No finding is left to send: none was reported, or every one is dismissed."
+    } else {
+        "The findings are longer than one prompt can carry."
+    }
 }
 
 #[must_use]
@@ -462,6 +547,15 @@ pub fn refresh(s: &mut AppState) {
     sync(s);
 }
 
+/// Replies asked on the old connection are dropped as stale, so what was
+/// waiting on one is asked again on the next sync.
+pub fn reconnected(s: &mut AppState) {
+    s.code_review.report_asked.clear();
+    if s.code_review.diff.as_ref().is_some_and(|diff| !diff.loaded) {
+        s.code_review.diff = None;
+    }
+}
+
 fn sync(s: &mut AppState) {
     let Some(workspace) = s.code_review.workspace else {
         return;
@@ -482,7 +576,7 @@ fn sync(s: &mut AppState) {
             s.code_review.errors.insert(workspace, error);
         }
     }
-    if !s.code_review.latest.contains_key(&workspace)
+    if !s.code_review.knows(workspace)
         && s.code_review.asked_list.get(&workspace) != Some(&generation)
     {
         s.code_review.asked_list.insert(workspace, generation);
@@ -494,25 +588,35 @@ fn sync(s: &mut AppState) {
             s.code_review.errors.insert(workspace, error);
         }
     }
-    if let Some(run) = s.code_review.latest.get(&workspace).cloned()
-        && run.status == ReviewStatus::Completed
-        && s.code_review
+    let shown = s.code_review.shown_lane(workspace);
+    let mut lanes = vec![shown];
+    if shown != Lane::Workspace {
+        lanes.push(Lane::Workspace);
+    }
+    for lane in lanes {
+        let Some(run) = s.code_review.latest.get(&(workspace, lane)) else {
+            continue;
+        };
+        let (run, completed) = (run.id, run.status == ReviewStatus::Completed);
+        let read = s
+            .code_review
             .reports
-            .get(&workspace)
-            .is_none_or(|report| report.run != run.id)
-        && s.code_review.report_asked.insert(run.id)
-    {
+            .get(&(workspace, lane))
+            .is_some_and(|report| report.run == run);
+        if !completed || read || !s.code_review.report_asked.insert(run) {
+            continue;
+        }
         let result = match &s.connection {
-            Some(connection) => connection.get_review(generation, workspace, run.id),
+            Some(connection) => connection.get_review(generation, workspace, run),
             None => Err("The client worker is still starting.".to_string()),
         };
         if let Err(error) = result {
-            s.code_review.report_asked.remove(&run.id);
+            s.code_review.report_asked.remove(&run);
             s.code_review.errors.insert(workspace, error);
         }
     }
     if s.code_review.view == ReviewView::Diff
-        && let Some(run) = s.code_review.latest.get(&workspace)
+        && let Some(run) = s.code_review.shown_run(workspace)
         && run.status == ReviewStatus::Completed
         && s.code_review
             .diff
@@ -562,7 +666,7 @@ fn sync_annotations(s: &mut AppState) {
 
     let changes = &s.workbench.changes;
     let review = changes.workspace.and_then(|workspace| {
-        let run = s.code_review.latest.get(&workspace)?;
+        let run = s.code_review.latest.get(&(workspace, Lane::Workspace))?;
         let head = s.store.as_ref().and_then(|store| {
             store
                 .workspaces
@@ -570,7 +674,7 @@ fn sync_annotations(s: &mut AppState) {
                 .find(|candidate| candidate.id == workspace)
                 .and_then(|row| row.status.head.as_deref())
         });
-        let report = s.code_review.reports.get(&workspace)?;
+        let report = s.code_review.workspace_report(workspace)?;
         (annotates_changes(run, head) && report.run == run.id).then_some(run.id)
     });
     let key = ChangesKey {
@@ -675,6 +779,7 @@ impl AppState {
         match result {
             Ok(()) => {
                 self.code_review.starting = true;
+                self.code_review.shown.insert(workspace, Lane::Workspace);
                 self.code_review.errors.remove(&workspace);
             }
             Err(error) => {
@@ -687,7 +792,7 @@ impl AppState {
         let Some(workspace) = self.code_review.workspace else {
             return;
         };
-        let Some(run) = self.code_review.latest.get(&workspace) else {
+        let Some(run) = self.code_review.shown_run(workspace) else {
             return;
         };
         let result = match &self.connection {
@@ -700,10 +805,10 @@ impl AppState {
     }
 
     pub fn apply_review_run(&mut self, run: &ReviewRun) {
-        if supersedes(self.code_review.latest.get(&run.workspace_id), run) {
-            self.code_review
-                .latest
-                .insert(run.workspace_id, run.clone());
+        let slot = (run.workspace_id, lane(&run.target));
+        if supersedes(self.code_review.latest.get(&slot), run) {
+            self.code_review.latest.insert(slot, run.clone());
+            self.code_review.shown.entry(slot.0).or_insert(slot.1);
             self.refresh_send_targets();
         }
         self.code_review.starting = false;
@@ -759,8 +864,8 @@ impl AppState {
     ) -> bool {
         match result {
             Ok(runs) => {
-                if let Some(newest) = runs.first() {
-                    self.apply_review_run(newest);
+                for run in &runs {
+                    self.apply_review_run(run);
                 }
             }
             Err(error) => {
@@ -784,7 +889,7 @@ impl AppState {
                     previous,
                 } = *report;
                 self.code_review.reports.insert(
-                    workspace,
+                    (workspace, lane(&run.target)),
                     Report {
                         run: run.id,
                         findings,
@@ -847,7 +952,8 @@ impl AppState {
             return;
         };
         if !ok {
-            self.code_review.reports.remove(&workspace);
+            let lane = self.code_review.shown_lane(workspace);
+            self.code_review.reports.remove(&(workspace, lane));
             self.code_review.report_asked.clear();
         }
         if let Some(connection) = &self.connection
@@ -896,13 +1002,45 @@ impl AppState {
         true
     }
 
+    /// Scrolls the Diff tab to a pull-request finding once the reviewed diff
+    /// has loaded; dropped when the tab is left or the file is not in it.
+    pub fn settle_review_reveal(&mut self, tx: &mut rune::Tx) -> bool {
+        let review = &mut self.code_review;
+        let Some((path, line)) = &review.reveal else {
+            return false;
+        };
+        if self.workbench.mode != CenterMode::Review || review.view != ReviewView::Diff {
+            review.reveal = None;
+            return false;
+        }
+        let Some(diff) = review.diff.as_ref().filter(|diff| diff.loaded) else {
+            return false;
+        };
+        let file = diff.paths.iter().position(|known| known == path);
+        if let Some(file) = file {
+            let at = LineRef::new(Side::New, *line);
+            review.diff_state.scroll_to_line(file, at, tx);
+        }
+        review.reveal = None;
+        file.is_some()
+    }
+
     /// Toggles `reaction` on one finding of the report on screen: pressing the
     /// active reaction clears it.
     pub fn react_to_finding(&mut self, finding_id: u32, reaction: FindingReaction) {
         let Some(workspace) = self.code_review.workspace else {
             return;
         };
-        let Some(report) = self.code_review.reports.get_mut(&workspace) else {
+        let Some(run) = self.code_review.shown_run(workspace).map(|run| run.id) else {
+            return;
+        };
+        let lane = self.code_review.shown_lane(workspace);
+        let Some(report) = self
+            .code_review
+            .reports
+            .get_mut(&(workspace, lane))
+            .filter(|report| report.run == run)
+        else {
             return;
         };
         let Some(finding) = report.findings.iter_mut().find(|f| f.id == finding_id) else {
@@ -960,12 +1098,16 @@ impl AppState {
             .store
             .as_ref()
             .map_or(&[][..], |store| store.sessions.as_slice());
-        self.code_review.send_to = self
+        let workspaces: HashSet<WorkspaceId> = self
             .code_review
             .latest
             .keys()
+            .map(|(workspace, _)| *workspace)
+            .collect();
+        self.code_review.send_to = workspaces
+            .into_iter()
             .filter_map(|workspace| {
-                send_target(sessions, *workspace, &reviewers).map(|target| (*workspace, target))
+                send_target(sessions, workspace, &reviewers).map(|target| (workspace, target))
             })
             .collect();
     }
@@ -977,8 +1119,8 @@ impl AppState {
             return;
         };
         let (Some(run), Some(report)) = (
-            self.code_review.latest.get(&workspace),
-            self.code_review.reports.get(&workspace),
+            self.code_review.shown_run(workspace),
+            self.code_review.shown_report(workspace),
         ) else {
             return;
         };
@@ -997,10 +1139,8 @@ impl AppState {
             None => standing_prompt(&report.findings),
         };
         if text.is_empty() {
-            self.toasts.danger(
-                "Nothing was sent",
-                "The findings are longer than one prompt can carry.",
-            );
+            self.toasts
+                .danger("Nothing was sent", empty_prompt_reason(left_out));
             return;
         }
         let result = match &self.connection {
@@ -1018,8 +1158,8 @@ impl AppState {
             return;
         };
         let (Some(run), Some(report)) = (
-            self.code_review.latest.get(&workspace),
-            self.code_review.reports.get(&workspace),
+            self.code_review.shown_run(workspace),
+            self.code_review.shown_report(workspace),
         ) else {
             return;
         };
@@ -1028,10 +1168,8 @@ impl AppState {
         }
         let (prompt, left_out) = standing_prompt(&report.findings);
         if prompt.is_empty() {
-            self.toasts.danger(
-                "No agent was started",
-                "The findings are longer than one prompt can carry.",
-            );
+            self.toasts
+                .danger("No agent was started", empty_prompt_reason(left_out));
             return;
         }
         let (provider, profile) = match self.prompt_agent() {
@@ -1104,6 +1242,9 @@ impl AppState {
             None => Err("The client worker is still starting.".to_string()),
         };
         open(self, workspace);
+        self.code_review
+            .shown
+            .insert(workspace, Lane::PullRequest(number));
         match result {
             Ok(()) => self.code_review.starting = true,
             Err(error) => {
@@ -1417,7 +1558,7 @@ fn dismissed_row(k: &Kit, finding: &Finding) -> El {
 
 fn finding_row(
     k: &Kit,
-    workspace: WorkspaceId,
+    run: &ReviewRun,
     finding: &Finding,
     lineage: bool,
     send: Option<&'static str>,
@@ -1427,6 +1568,8 @@ fn finding_row(
     }
     let line = finding.line;
     let path = finding.path.clone();
+    let workspace = run.workspace_id;
+    let pull_request = is_pull_request(run);
     let open = Button::new(match line {
         Some(line) => format!("{path}:{line}"),
         None => path.clone(),
@@ -1434,6 +1577,11 @@ fn finding_row(
     .variant(ButtonVariant::GhostMuted)
     .control_size(ControlSize::Small)
     .on_press(move |s: &mut AppState| {
+        if pull_request {
+            s.code_review.view = ReviewView::Diff;
+            s.code_review.reveal = Some((path.clone(), line.unwrap_or(1)));
+            return;
+        }
         if let Some(connection) = &s.connection {
             let _ = connection.open_editor_at(workspace, path.clone(), line.unwrap_or(1));
         }
@@ -1584,12 +1732,14 @@ fn resolved_group(s: &AppState, k: &Kit, report: &Report) -> El {
 
 fn findings(s: &AppState, k: &Kit, run: &ReviewRun) -> El {
     let workspace = run.workspace_id;
-    let Some(report) = s.code_review.reports.get(&workspace) else {
+    let Some(report) = s
+        .code_review
+        .reports
+        .get(&(workspace, lane(&run.target)))
+        .filter(|report| report.run == run.id)
+    else {
         return col();
     };
-    if report.run != run.id {
-        return col();
-    }
     let lineage = report.previous.is_some();
     let send = s.send_destination(run).err();
     let groups = group_findings(&report.findings, s.code_review.grouping);
@@ -1630,7 +1780,7 @@ fn findings(s: &AppState, k: &Kit, run: &ReviewRun) -> El {
     for (key, group) in groups {
         body = body.child(section(k, key));
         for finding in group {
-            body = body.child(finding_row(k, workspace, finding, lineage, send));
+            body = body.child(finding_row(k, run, finding, lineage, send));
         }
     }
     if !report.resolved.is_empty() {
@@ -1681,7 +1831,7 @@ pub fn changes_note(s: &AppState, k: &Kit, annotation: &Annotation) -> El {
         .workbench
         .changes
         .workspace
-        .and_then(|workspace| s.code_review.reports.get(&workspace));
+        .and_then(|workspace| s.code_review.workspace_report(workspace));
     note_for(k, report, annotation)
 }
 
@@ -1708,7 +1858,7 @@ fn reviewed_diff(s: &AppState, k: &Kit) -> El {
         let report = s
             .code_review
             .workspace
-            .and_then(|workspace| s.code_review.reports.get(&workspace));
+            .and_then(|workspace| s.code_review.shown_report(workspace));
         note_for(&kit, report, annotation)
     })
     .key("review-diff")
@@ -1772,6 +1922,15 @@ fn suppressions(s: &AppState, k: &Kit, workspace: WorkspaceId) -> El {
 fn report_actions(s: &AppState, k: &Kit, run: &ReviewRun) -> El {
     let send = s.send_destination(run).err();
     let fix_blocked = is_pull_request(run);
+    let standing = s
+        .code_review
+        .shown_report(run.workspace_id)
+        .is_some_and(|report| {
+            report
+                .findings
+                .iter()
+                .any(|finding| finding.reaction != Some(FindingReaction::Dismiss))
+        });
     let mut actions = row()
         .key("review-actions")
         .w_full()
@@ -1802,7 +1961,7 @@ fn report_actions(s: &AppState, k: &Kit, run: &ReviewRun) -> El {
             Button::new("Send all")
                 .variant(ButtonVariant::Outline)
                 .control_size(ControlSize::Small)
-                .disabled(send.is_some())
+                .disabled(send.is_some() || !standing)
                 .on_press(|s: &mut AppState| s.send_findings(None))
                 .build(k)
                 .key("review-send-all"),
@@ -1811,7 +1970,7 @@ fn report_actions(s: &AppState, k: &Kit, run: &ReviewRun) -> El {
             Button::new("Fix with a new agent")
                 .variant(ButtonVariant::Outline)
                 .control_size(ControlSize::Small)
-                .disabled(fix_blocked)
+                .disabled(fix_blocked || !standing)
                 .on_press(|s: &mut AppState| s.fix_with_agent())
                 .build(k)
                 .key("review-fix"),
@@ -1867,7 +2026,7 @@ pub fn view(s: &AppState, k: &Kit) -> El {
             .find(|candidate| candidate.id == workspace)
     });
     let head = workspace_row.and_then(|row| row.status.head.as_deref());
-    let run = s.code_review.latest.get(&workspace);
+    let run = s.code_review.shown_run(workspace);
     let error = s.code_review.errors.get(&workspace);
     let mut top = row()
         .key("review-head")
@@ -1884,6 +2043,24 @@ pub fn view(s: &AppState, k: &Kit) -> El {
                 .color(k.c.text_muted)
                 .truncate()
                 .min_w(0.0),
+        );
+    }
+    let lanes = s.code_review.lanes(workspace);
+    if lanes.len() > 1 {
+        let labels: Vec<String> = lanes.iter().map(|lane| lane_label(*lane)).collect();
+        let shown = s.code_review.shown_lane(workspace);
+        let at = lanes.iter().position(|lane| *lane == shown);
+        top = top.child(
+            SegmentedControl::new(&labels, at)
+                .label("Review")
+                .fit()
+                .on_pick(move |s: &mut AppState, index: usize, _| {
+                    if let Some(lane) = lanes.get(index) {
+                        s.code_review.shown.insert(workspace, *lane);
+                    }
+                })
+                .build(k)
+                .key("review-lanes"),
         );
     }
     top = top.child(el().grow(1.0)).child(
@@ -2051,6 +2228,7 @@ mod tests {
             created_at: Timestamp::now(),
             finished_at: finished.then(Timestamp::now),
             branch: Some("main".into()),
+            tree_oid: None,
         }
     }
 
@@ -2364,8 +2542,9 @@ mod tests {
         );
         let before = state.code_review.revision;
         state.react_to_finding(1, FindingReaction::Dismiss);
-        let reaction =
-            |state: &AppState| state.code_review.reports[&workspace].findings[0].reaction;
+        let reaction = |state: &AppState| {
+            state.code_review.reports[&(workspace, Lane::Workspace)].findings[0].reaction
+        };
         assert_eq!(reaction(&state), Some(FindingReaction::Dismiss));
         assert!(state.code_review.revision > before, "annotations rebuild");
         state.react_to_finding(1, FindingReaction::Dismiss);
@@ -2664,5 +2843,124 @@ mod tests {
         store.sessions.retain(|session| session.id != target.id);
         state.apply_events(vec![snapshot(store)], &mut rune::Tx::default());
         assert_eq!(state.code_review.send_to.get(&workspace), None);
+    }
+
+    fn pull_request(workspace: WorkspaceId, number: u32) -> ReviewTarget {
+        ReviewTarget::PullRequest {
+            workspace_id: workspace,
+            number,
+            base: None,
+        }
+    }
+
+    #[test]
+    fn a_pull_request_review_keeps_its_own_lane_beside_the_workspace_one() {
+        let (mut state, workspace) = fixture_state();
+        let mine = completed(workspace, workspace_target(workspace));
+        with_report(
+            &mut state,
+            &mine,
+            vec![finding(1, "a.rs", Some(2), Severity::P1)],
+            Vec::new(),
+            None,
+        );
+        let theirs = completed(workspace, pull_request(workspace, 7));
+        with_report(
+            &mut state,
+            &theirs,
+            vec![finding(2, "b.rs", Some(4), Severity::P2)],
+            Vec::new(),
+            None,
+        );
+        let review = &state.code_review;
+        assert_eq!(
+            review.lanes(workspace),
+            [Lane::Workspace, Lane::PullRequest(7)]
+        );
+        assert_eq!(
+            review.shown_run(workspace).map(|run| run.id),
+            Some(mine.id),
+            "a run landing in another lane does not switch the tab"
+        );
+        assert_eq!(
+            review.workspace_report(workspace).map(|r| r.run),
+            Some(mine.id)
+        );
+
+        state
+            .code_review
+            .shown
+            .insert(workspace, Lane::PullRequest(7));
+        assert_eq!(
+            state.code_review.shown_report(workspace).map(|r| r.run),
+            Some(theirs.id)
+        );
+        assert_eq!(
+            state.code_review.workspace_report(workspace).map(|r| r.run),
+            Some(mine.id),
+            "the Changes view keeps the workspace review's findings"
+        );
+        let shown = keys(state);
+        assert!(has(&shown, "review-lanes"), "{shown:?}");
+    }
+
+    #[test]
+    fn a_reviewed_diff_lost_to_a_reconnect_is_asked_again() {
+        let (mut state, workspace) = fixture_state();
+        let run = completed(workspace, workspace_target(workspace));
+        with_report(&mut state, &run, Vec::new(), Vec::new(), None);
+        state.code_review.view = ReviewView::Diff;
+        state.sync_review();
+        assert!(state.code_review.diff.as_ref().is_some_and(|d| !d.loaded));
+        reconnected(&mut state);
+        assert!(state.code_review.diff.is_none());
+        state.sync_review();
+        assert_eq!(state.code_review.diff.as_ref().map(|d| d.run), Some(run.id));
+    }
+
+    #[test]
+    fn no_standing_finding_is_not_reported_as_too_long() {
+        assert_eq!(findings_prompt(&[], PROMPT_BUDGET), (String::new(), 0));
+        assert_ne!(empty_prompt_reason(0), empty_prompt_reason(1));
+        assert!(empty_prompt_reason(0).contains("dismissed"));
+    }
+
+    #[test]
+    fn a_pull_request_finding_scrolls_the_reviewed_diff_to_its_line() {
+        let (mut state, workspace) = fixture_state();
+        let run = completed(workspace, pull_request(workspace, 7));
+        with_report(
+            &mut state,
+            &run,
+            vec![finding(1, "a.rs", Some(2), Severity::P1)],
+            Vec::new(),
+            None,
+        );
+        state.code_review.view = ReviewView::Diff;
+        state.code_review.reveal = Some(("a.rs".into(), 2));
+        state.sync_review();
+        let mut tx = rune::Tx::default();
+        assert!(!state.settle_review_reveal(&mut tx), "waits for the diff");
+        assert!(state.code_review.reveal.is_some());
+        let patch = "diff --git a/a.rs b/a.rs\n--- a/a.rs\n+++ b/a.rs\n@@ -1,2 +1,3 @@\n one\n+two\n three\n";
+        assert!(state.apply_review_diff(
+            run.id,
+            Ok(domain::WorkspaceDiff {
+                workspace_id: workspace,
+                branch: None,
+                files: vec![domain::DiffFile {
+                    path: "a.rs".into(),
+                    status: domain::DiffStatus::Modified,
+                    additions: 1,
+                    deletions: 0,
+                    binary: false,
+                    truncated: false,
+                    patch: patch.into(),
+                }],
+                truncated: false,
+            }),
+        ));
+        assert!(state.settle_review_reveal(&mut tx));
+        assert!(state.code_review.reveal.is_none());
     }
 }

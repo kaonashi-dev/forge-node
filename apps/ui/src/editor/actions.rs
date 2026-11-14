@@ -361,8 +361,6 @@ impl AppState {
         });
     }
 
-    /// Shows `path` in the Files tree, opening each folder above it as its
-    /// listing arrives.
     #[must_use]
     pub fn marked(&self, line: u32) -> bool {
         self.editor.frame.as_ref().is_some_and(|frame| {
@@ -383,6 +381,8 @@ impl AppState {
         self.workbench.reveal_change(path, line + 1);
     }
 
+    /// Shows `path` in the Files tree, opening each folder above it as its
+    /// listing arrives.
     pub fn reveal_in_files(&mut self, path: String, tx: &mut Tx) {
         self.show_panel(Panel::Files);
         self.editor.reveal = Some(path);

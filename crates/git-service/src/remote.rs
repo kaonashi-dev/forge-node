@@ -104,33 +104,59 @@ pub fn fetch(
     })
 }
 
-/// Fetch pull request `number`'s head from `origin` into
-/// `refs/forge/review/<number>/head`, and `base` into `origin/<base>` when given,
-/// returning the head's oid. The checkout's own `HEAD` and branches are untouched.
+/// A pull request's head and base, fetched into private refs.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct FetchedPullRequest {
+    pub head: String,
+    pub base: String,
+}
+
+/// Fetch pull request `number`'s head from `remote` into
+/// `refs/forge/review/<number>/head`, and `base` (the remote's `HEAD` when
+/// `None`) into `refs/forge/review/<number>/base`, in one fetch. The checkout's
+/// own `HEAD`, branches and remote-tracking refs are untouched.
 ///
 /// # Errors
-/// - [`GitError::InvalidBranchName`] if `base` is not a branch name.
-/// - [`GitError::CommandFailed`] if the fetch fails or the head does not resolve.
+/// - [`GitError::InvalidBranchName`] if `remote` looks like an option or `base`
+///   is not a branch name.
+/// - [`GitError::CommandFailed`] if the fetch fails or a ref does not resolve.
 /// - [`GitError::Timeout`] if the fetch outlives `timeout`.
 pub fn fetch_pull_request(
     repo: &Path,
+    remote: &str,
     number: u32,
     base: Option<&str>,
     timeout: Duration,
-) -> Result<String, GitError> {
-    let head_ref = format!("refs/forge/review/{number}/head");
-    let mut refspecs = vec![format!("+refs/pull/{number}/head:{head_ref}")];
+) -> Result<FetchedPullRequest, GitError> {
+    if remote.is_empty() || remote.starts_with('-') {
+        return Err(GitError::InvalidBranchName {
+            branch: remote.to_string(),
+            reason: "remote name may not be empty or start with '-'".to_string(),
+        });
+    }
     if let Some(base) = base {
         crate::worktree::validate_branch_name(base)?;
-        refspecs.push(format!("+refs/heads/{base}:refs/remotes/origin/{base}"));
     }
-    let mut args = vec!["fetch", "--no-tags", "origin"];
+    let head_ref = format!("refs/forge/review/{number}/head");
+    let base_ref = format!("refs/forge/review/{number}/base");
+    let base_source = base.map_or_else(|| "HEAD".to_string(), |base| format!("refs/heads/{base}"));
+    let refspecs = [
+        format!("+refs/pull/{number}/head:{head_ref}"),
+        format!("+{base_source}:{base_ref}"),
+    ];
+    let mut args = vec!["fetch", "--no-tags", "--", remote];
     args.extend(refspecs.iter().map(String::as_str));
     run_git_network(Some(repo), &args, timeout)?.ok(&args)?;
-    let commit = format!("{head_ref}^{{commit}}");
-    let args = ["rev-parse", "--verify", commit.as_str()];
-    let out = run_git(Some(repo), &args)?.ok(&args)?;
-    Ok(out.stdout_trimmed().to_string())
+    let resolve = |name: &str| -> Result<String, GitError> {
+        let commit = format!("{name}^{{commit}}");
+        let args = ["rev-parse", "--verify", commit.as_str()];
+        let out = run_git(Some(repo), &args)?.ok(&args)?;
+        Ok(out.stdout_trimmed().to_string())
+    };
+    Ok(FetchedPullRequest {
+        head: resolve(&head_ref)?,
+        base: resolve(&base_ref)?,
+    })
 }
 
 #[cfg(test)]

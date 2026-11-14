@@ -696,9 +696,9 @@ pub enum Request {
         limit: u32,
     },
     /// Exactly the range a run reviewed → `Response::WorkspaceDiff`: a pull
-    /// request's merge base to its head, or a workspace's working tree against
-    /// its merge base. Local read, never the network. `NotFound` for an unknown
-    /// review, `InvalidRequest` for a run with no diff yet.
+    /// request's merge base to its head, or a workspace's merge base to its
+    /// `tree_oid`. Local read, never the network. `NotFound` for an unknown
+    /// review, `InvalidRequest` for a run with no diff yet or no kept tree.
     GetReviewDiff {
         review_id: ReviewId,
     },
@@ -710,8 +710,9 @@ pub enum Request {
         finding_id: u32,
         reaction: Option<domain::FindingReaction>,
     },
-    /// Delete the workspace's project's dismissals behind one of
-    /// `ReviewSettings::suppressions` → `Ack`.
+    /// Lift one of `ReviewSettings::suppressions` → `Ack`: a fingerprint's
+    /// dismissals are deleted; a rule's or category's stop counting toward it
+    /// and leave each finding dismissed.
     ClearReviewSuppression {
         workspace_id: WorkspaceId,
         suppression: domain::ReviewSuppression,

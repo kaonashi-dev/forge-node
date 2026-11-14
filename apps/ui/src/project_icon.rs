@@ -194,6 +194,14 @@ impl ProjectIcons {
         }
     }
 
+    /// Drops `project`'s pictures, read or in flight, so the next sync reads
+    /// them from disk again; `path` narrows it to one file.
+    pub fn forget(&mut self, project: ProjectId, path: Option<&str>) {
+        self.images.retain(|(owner, known), _| {
+            *owner != project || path.is_some_and(|path| path != known)
+        });
+    }
+
     /// A reconnect drops the answers in flight; they are asked again.
     pub fn forget_reads(&mut self) {
         self.images.retain(|_, slot| slot.is_some());
@@ -235,6 +243,22 @@ impl AppState {
                 Some((project.id, main(project.id)?, path))
             })
             .collect();
+        let open = self
+            .menus
+            .prompt
+            .as_ref()
+            .and_then(|prompt| match prompt.ask {
+                crate::menus::Ask::SetIcon(project) => Some(project),
+                _ => None,
+            });
+        if self
+            .project_icons
+            .picker
+            .as_ref()
+            .is_some_and(|picker| Some(picker.project) != open)
+        {
+            self.project_icons.picker = None;
+        }
         if let Some(Picker {
             project,
             candidates: Some(Ok(paths)),
@@ -246,6 +270,27 @@ impl AppState {
         for (project, workspace, path) in self.project_icons.take_reads(wanted) {
             let _ = connection.read_project_icon(self.generation, project, workspace, path);
         }
+    }
+
+    /// The project whose picture `path` of `workspace` is, when that is its
+    /// main checkout; an empty path, a lost-events rescan, matches any picture.
+    pub(crate) fn icon_owner(&self, workspace: WorkspaceId, path: &str) -> Option<ProjectId> {
+        let store = self.store.as_ref()?;
+        let checkout = store
+            .workspaces
+            .iter()
+            .find(|w| w.id == workspace && w.kind == WorkspaceKind::Main)?;
+        store
+            .projects
+            .iter()
+            .find(|project| project.id == checkout.project_id)
+            .filter(|project| {
+                project
+                    .icon_image
+                    .as_deref()
+                    .is_some_and(|icon| path.is_empty() || icon == path)
+            })
+            .map(|project| project.id)
     }
 
     /// Asks for the files of `project`'s checkout that could be its icon.
@@ -263,6 +308,7 @@ impl AppState {
                 .is_ok(),
             _ => false,
         };
+        self.project_icons.forget(project, None);
         self.project_icons.picker = Some(Picker {
             project,
             candidates: (!asked).then(|| Ok(Vec::new())),
@@ -355,5 +401,25 @@ mod tests {
         );
         assert!(icons.apply(project, "favicon.svg".into(), Err("gone".into())));
         assert!(icons.failed(project, "favicon.svg"));
+    }
+
+    #[test]
+    fn a_forgotten_picture_is_read_again() {
+        let mut icons = ProjectIcons::default();
+        let (project, workspace) = (ProjectId::new(), WorkspaceId::new());
+        let wanted = || {
+            vec![
+                (project, workspace, "favicon.svg".to_string()),
+                (project, workspace, "logo.png".to_string()),
+            ]
+        };
+        assert_eq!(icons.take_reads(wanted()).len(), 2);
+        assert!(icons.apply(project, "favicon.svg".into(), Err("old".into())));
+        icons.forget(project, Some("favicon.svg"));
+        let again = icons.take_reads(wanted());
+        assert_eq!(again.len(), 1, "only the changed file");
+        assert_eq!(again[0].2, "favicon.svg");
+        icons.forget(project, None);
+        assert_eq!(icons.take_reads(wanted()).len(), 2);
     }
 }

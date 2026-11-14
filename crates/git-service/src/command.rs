@@ -210,6 +210,7 @@ pub fn run_git(repo: Option<&Path>, args: &[&str]) -> Result<GitOutput, GitError
         args,
         GIT_TIMEOUT,
         false,
+        None,
         Capture::Drain(MAX_CAPTURE_BYTES),
     )
     .map(|(output, _)| output)
@@ -236,6 +237,7 @@ pub fn run_git_bounded(
         args,
         GIT_TIMEOUT,
         false,
+        None,
         Capture::Refuse(limit.min(MAX_CAPTURE_BYTES)),
     )
     .map(|(output, _)| output)
@@ -261,8 +263,29 @@ pub fn run_git_prefix(
         args,
         GIT_TIMEOUT,
         false,
+        None,
         Capture::Prefix(limit.min(MAX_CAPTURE_BYTES)),
     )
+}
+
+/// [`run_git`] against the index at `index` instead of the checkout's own.
+///
+/// # Errors
+/// As [`run_git`].
+pub(crate) fn run_git_with_index(
+    repo: &Path,
+    index: &Path,
+    args: &[&str],
+) -> Result<GitOutput, GitError> {
+    run_git_inner(
+        Some(repo),
+        args,
+        GIT_TIMEOUT,
+        false,
+        Some(index),
+        Capture::Drain(MAX_CAPTURE_BYTES),
+    )
+    .map(|(output, _)| output)
 }
 
 /// How much of a command's output is held.
@@ -304,6 +327,7 @@ pub fn run_git_network(
         args,
         timeout,
         true,
+        None,
         Capture::Refuse(MAX_CAPTURE_BYTES),
     )
     .map(|(output, _)| output)
@@ -314,6 +338,7 @@ fn run_git_inner(
     args: &[&str],
     timeout: Duration,
     network: bool,
+    index: Option<&Path>,
     capture: Capture,
 ) -> Result<(GitOutput, bool), GitError> {
     use std::os::unix::process::CommandExt as _;
@@ -346,6 +371,9 @@ fn run_git_inner(
         // `run_gh` already does exactly this.
         .process_group(0);
 
+    if let Some(index) = index {
+        cmd.env("GIT_INDEX_FILE", index);
+    }
     if network {
         // `GIT_TERMINAL_PROMPT` does not reach `ssh`; these do.
         cmd.env("GIT_SSH_COMMAND", SSH_BATCH_COMMAND)

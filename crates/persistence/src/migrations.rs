@@ -594,6 +594,15 @@ CREATE TABLE review_feedback (
 CREATE INDEX idx_review_feedback_project ON review_feedback (project_id, created_at);
 ";
 
+/// Whether a dismissal still counts toward its rule's and `style`'s thresholds.
+/// Lifting either suppression clears it and leaves the finding itself dismissed.
+pub const REVIEW_FEEDBACK_COUNTED: &str =
+    "ALTER TABLE review_feedback ADD COLUMN counted INTEGER NOT NULL DEFAULT 1;";
+
+/// The tree a workspace review's working tree was written to: an oid, never
+/// the diff itself.
+pub const REVIEW_TREE: &str = "ALTER TABLE review_runs ADD COLUMN tree_oid TEXT;";
+
 /// The full, ordered migration set. Appended to over time; never reordered.
 #[must_use]
 pub fn migrations() -> Migrations<'static> {
@@ -619,5 +628,7 @@ pub fn migrations() -> Migrations<'static> {
         M::up(PROJECT_ICON_IMAGES),
         M::up(REVIEW_LINEAGE),
         M::up(REVIEW_FEEDBACK),
+        M::up(REVIEW_FEEDBACK_COUNTED),
+        M::up(REVIEW_TREE),
     ])
 }

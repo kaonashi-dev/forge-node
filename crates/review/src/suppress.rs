@@ -16,6 +16,9 @@ pub struct Feedback {
     pub reaction: FindingReaction,
     /// Unix seconds.
     pub created_at: i64,
+    /// Whether a dismissal still counts toward its rule's and `style`'s
+    /// thresholds; its fingerprint is suppressed either way.
+    pub counted: bool,
 }
 
 /// A rule with 3 dismissals in the last 30 days and no 👍 in them, `style`
@@ -29,7 +32,7 @@ pub fn suppressions(feedback: &[Feedback], now_unix: i64) -> Vec<ReviewSuppressi
     let mut style_liked = false;
     for f in feedback.iter().filter(recent) {
         match f.reaction {
-            FindingReaction::Dismiss => {
+            FindingReaction::Dismiss if f.counted => {
                 if let Some(rule) = &f.rule_id {
                     *rule_dismissals.entry(rule).or_default() += 1;
                 }
@@ -43,7 +46,7 @@ pub fn suppressions(feedback: &[Feedback], now_unix: i64) -> Vec<ReviewSuppressi
                 }
                 style_liked |= f.category == STYLE;
             }
-            FindingReaction::Down => {}
+            FindingReaction::Dismiss | FindingReaction::Down => {}
         }
     }
     let mut list: Vec<ReviewSuppression> = rule_dismissals

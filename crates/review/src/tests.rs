@@ -1201,6 +1201,7 @@ fn lineage_run(
         created_at: domain::Timestamp::now(),
         finished_at: None,
         branch: branch.map(str::to_owned),
+        tree_oid: None,
     }
 }
 
@@ -1270,14 +1271,14 @@ fn mark_lineage_and_resolved_compare_fingerprints() {
     mark_lineage(&mut current, &previous);
     assert_eq!(current[0].lineage, domain::Lineage::Persisting);
     assert_eq!(current[1].lineage, domain::Lineage::New);
-    let gone = crate::lineage::resolved(&previous, &current);
+    let gone = crate::lineage::resolved(&previous, &current, &[]);
     assert_eq!(gone.len(), 1);
     assert_eq!(gone[0].fingerprint, "a");
 
     let mut alone = vec![printed("x")];
     mark_lineage(&mut alone, &[]);
     assert_eq!(alone[0].lineage, domain::Lineage::New);
-    assert!(crate::lineage::resolved(&[], &alone).is_empty());
+    assert!(crate::lineage::resolved(&[], &alone, &[]).is_empty());
 }
 
 const DAY: i64 = 86_400;
@@ -1296,6 +1297,7 @@ fn feedback(
         severity: Severity::P1,
         reaction,
         created_at: NOW - age_days * DAY,
+        counted: true,
     }
 }
 
@@ -1361,6 +1363,25 @@ fn any_dismissal_suppresses_its_fingerprint_at_its_severity() {
     assert_eq!(fingerprint.value, "logic-400");
     assert_eq!(fingerprint.severity, Some(Severity::P1));
     assert!(suppressions(&[feedback(Up, None, "logic", 1)], NOW).is_empty());
+}
+
+#[test]
+fn an_uncounted_dismissal_suppresses_its_finding_but_not_its_rule() {
+    let uncounted: Vec<Feedback> = (1..=3)
+        .map(|d| Feedback {
+            counted: false,
+            ..feedback(Dismiss, Some("money"), "style", d)
+        })
+        .collect();
+    let suppressed = suppressions(&uncounted, NOW);
+    let list = kinds(&suppressed);
+    assert!(!list.contains(&(SuppressionKind::Rule, "money")));
+    assert_eq!(
+        list.iter()
+            .filter(|(kind, _)| *kind == SuppressionKind::Fingerprint)
+            .count(),
+        3
+    );
 }
 
 fn suppression(
@@ -1460,6 +1481,48 @@ fn suppressed_findings_do_not_use_up_max_findings() {
 }
 
 #[test]
+fn what_validation_hides_is_withheld_and_never_resolved() {
+    let suppressed = raw(Some(2), "fn b() {}");
+    let mut kept = raw(Some(23), "let total = price * qty;");
+    kept.category = "performance".into();
+    let mut trimmed = raw(Some(2), "fn b() {}");
+    trimmed.category = "naming".into();
+    trimmed.severity = Severity::P2;
+    let mut low = raw(Some(2), "fn b() {}");
+    low.category = "docs".into();
+    low.confidence = 0.1;
+    let mut one = resolved();
+    one.max_findings = 1;
+    let print = |raw: &RawFinding| fingerprint(&raw.path, &raw.category, None, &raw.evidence);
+    let previous: Vec<domain::Finding> = [&suppressed, &kept, &trimmed, &low]
+        .into_iter()
+        .map(|raw| printed(&print(raw)))
+        .collect();
+    let v = validate(
+        output(vec![
+            suppressed.clone(),
+            kept.clone(),
+            trimmed.clone(),
+            low.clone(),
+        ]),
+        &changed(),
+        &[],
+        &one,
+        &[suppression(
+            SuppressionKind::Fingerprint,
+            &print(&suppressed),
+            Some(Severity::P1),
+        )],
+    )
+    .unwrap();
+    let mut expected = vec![print(&suppressed), print(&trimmed), print(&low)];
+    expected.sort();
+    assert_eq!(v.withheld, expected);
+    assert_eq!(v.findings.len(), 1);
+    assert!(crate::lineage::resolved(&previous, &v.findings, &v.withheld).is_empty());
+}
+
+#[test]
 fn a_pull_request_pack_says_where_its_head_files_are() {
     let files = vec![diff_file("src/main.rs", "@@ -1 +1 @@\n+fn main() {}\n")];
     let (workspace, _) = build_pack(&meta(), &[], &files, &resolved(), &[], &[]);
@@ -1478,7 +1541,7 @@ fn a_dismissed_finding_that_disappears_is_not_resolved() {
     let mut hidden = printed("a");
     hidden.reaction = Some(domain::FindingReaction::Dismiss);
     let previous = vec![hidden, printed("b")];
-    let gone = crate::lineage::resolved(&previous, &[]);
+    let gone = crate::lineage::resolved(&previous, &[], &[]);
     let prints: Vec<&str> = gone.iter().map(|f| f.fingerprint.as_str()).collect();
     assert_eq!(prints, ["b"], "the user hid `a`; nothing fixed it");
 }

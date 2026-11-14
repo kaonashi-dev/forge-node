@@ -31,10 +31,15 @@ pub fn mark_lineage(current: &mut [Finding], previous: &[Finding]) {
 }
 
 /// The previous run's findings that the current run no longer reports. A dismissed
-/// one is left out: its absence is the user hiding it, not a fix.
+/// one is left out, and so is one in `withheld`: the reviewer still reported it
+/// and validation hid it, which is not a fix either.
 #[must_use]
-pub fn resolved(previous: &[Finding], current: &[Finding]) -> Vec<Finding> {
-    let now: HashSet<&str> = current.iter().map(|f| f.fingerprint.as_str()).collect();
+pub fn resolved(previous: &[Finding], current: &[Finding], withheld: &[String]) -> Vec<Finding> {
+    let now: HashSet<&str> = current
+        .iter()
+        .map(|f| f.fingerprint.as_str())
+        .chain(withheld.iter().map(String::as_str))
+        .collect();
     previous
         .iter()
         .filter(|f| {

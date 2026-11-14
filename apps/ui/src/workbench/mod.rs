@@ -1014,7 +1014,6 @@ impl Workbench {
         self.compare.set_split(split);
     }
 
-    /// Shows one changed file's patch; one file is open at a time.
     /// Shows `path`'s patch at `line` (1-based, new side): now when the list
     /// already holds it, otherwise after the next diff read.
     pub fn reveal_change(&mut self, path: String, line: u32) {
@@ -1053,6 +1052,7 @@ impl Workbench {
         true
     }
 
+    /// Shows one changed file's patch; one file is open at a time.
     pub fn select_change_path(&mut self, path: &str) {
         if let Some(index) = self.changes.files.iter().position(|file| file.path == path) {
             self.select_change(index);

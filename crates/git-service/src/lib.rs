@@ -23,7 +23,7 @@ pub use command::{
     GIT_NETWORK_TIMEOUT, GIT_TIMEOUT,
 };
 pub use diff::{
-    change_summary, commit_count, commit_range_diff, commits_between, commits_since,
+    change_summary, commit_count, commit_range_diff, commits_between, commits_since, snapshot_tree,
     working_tree_diff, ChangeSummaryLine, CommitEntry, FileChange, FileDiff, SummaryOfChanges,
     WorkingTreeDiff, DIFF_CONTEXT_LINES, MAX_DIFF_BYTES, MAX_DIFF_FILES, MAX_FILE_PATCH_BYTES,
     MAX_SUMMARY_COMMITS,
@@ -41,12 +41,14 @@ pub use rebase::{
     abort as abort_sequencer, continue_sequencer, mark_resolved, state as sequencer_state,
     Conflict, Continued, Sequencer, SequencerState, MAX_CONFLICTS,
 };
-pub use remote::{default_remote, fetch, fetch_pull_request, has_remote, FetchOutcome};
+pub use remote::{
+    default_remote, fetch, fetch_pull_request, has_remote, FetchOutcome, FetchedPullRequest,
+};
 pub use repository::{
     commit_exists, common_dir, compare_base, current_branch, default_branch, discover_root,
     head_commit, ignored_paths, is_tracked, list_branches, list_refs, list_remotes, list_worktrees,
-    merge_base, set_local_excludes, short_commit, status, IgnoredPath, RefEntry, RepoStatus,
-    WorktreeEntry,
+    merge_base, object_exists, set_local_excludes, short_commit, status, IgnoredPath, RefEntry,
+    RepoStatus, WorktreeEntry,
 };
 pub use worktree::{
     create, move_worktree, precheck_remove, prune, remove, sequencer_in_progress, slugify,

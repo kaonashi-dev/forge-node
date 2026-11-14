@@ -96,8 +96,8 @@ fn migrations_apply_and_user_version_advances() {
     // count of applied migrations, and the assertion is what catches a migration
     // that was silently reordered or dropped.
     assert_eq!(
-        version, 21,
-        "twenty-one migrations applied => user_version == 21"
+        version, 23,
+        "twenty-three migrations applied => user_version == 23"
     );
 
     for table in [
@@ -193,7 +193,7 @@ fn version_two_database_upgrades_existing_projects_into_general() {
         .conn()
         .query_row("PRAGMA user_version", [], |row| row.get(0))
         .unwrap();
-    assert_eq!(version, 21);
+    assert_eq!(version, 23);
 }
 
 /// Migration 6 over a database that already has workspaces: the display_name
@@ -1090,7 +1090,7 @@ fn sessions_schema_is_unchanged() {
         .conn()
         .query_row("PRAGMA user_version", [], |r| r.get(0))
         .unwrap();
-    assert_eq!(version, 21, "every migration up to review feedback");
+    assert_eq!(version, 23, "every migration up to the reviewed tree");
 
     let (db, _project, workspace_id) = db_with_workspace();
     let mut session = mk_session(workspace_id, SessionState::Running);
@@ -1244,7 +1244,7 @@ fn reset_clears_every_application_table_and_keeps_the_schema() {
         .conn()
         .query_row("PRAGMA user_version", [], |row| row.get(0))
         .unwrap();
-    assert_eq!(version, 21, "reset retains the migrated schema");
+    assert_eq!(version, 23, "reset retains the migrated schema");
 }
 
 // ---- on-disk open ----------------------------------------------------------
@@ -1672,6 +1672,7 @@ fn mk_run(workspace_id: WorkspaceId, status: domain::ReviewStatus) -> domain::Re
         created_at: Timestamp::now(),
         finished_at: None,
         branch: Some("feature".into()),
+        tree_oid: None,
     }
 }
 
@@ -1903,7 +1904,7 @@ fn feedback_is_upserted_cleared_read_back_and_outlives_its_run() {
 }
 
 #[test]
-fn clearing_a_suppression_deletes_the_dismissals_behind_it() {
+fn lifting_a_rule_keeps_its_findings_dismissed_and_lifting_a_finding_deletes_it() {
     let (db, project, ws) = db_with_workspace();
     let store = db.review_store().unwrap();
     let run = mk_run(ws, domain::ReviewStatus::Completed);
@@ -1936,6 +1937,16 @@ fn clearing_a_suppression_deletes_the_dismissals_behind_it() {
             .unwrap(),
         3
     );
+    let after = store.feedback(project).unwrap();
+    assert_eq!(after.len(), 4, "the dismissals stay");
+    assert_eq!(after.iter().filter(|f| !f.counted).count(), 3);
+    assert_eq!(
+        store
+            .clear_suppression(project, &rule(domain::SuppressionKind::Rule, "money", None))
+            .unwrap(),
+        0,
+        "already lifted"
+    );
     assert_eq!(
         store
             .clear_suppression(
@@ -1949,5 +1960,19 @@ fn clearing_a_suppression_deletes_the_dismissals_behind_it() {
             .unwrap(),
         1
     );
-    assert!(store.feedback(project).unwrap().is_empty());
+    assert_eq!(store.feedback(project).unwrap().len(), 3);
+    store
+        .set_feedback(
+            project,
+            run.id,
+            &findings[0],
+            domain::FindingReaction::Dismiss,
+        )
+        .unwrap();
+    let again = store.feedback(project).unwrap();
+    assert_eq!(
+        again.iter().filter(|f| f.counted).count(),
+        1,
+        "dismissing again counts again"
+    );
 }

@@ -187,7 +187,7 @@ fn start(
 
 fn get(client: &client::Client, review_id: ReviewId) -> (ReviewRun, Vec<domain::Finding>) {
     match client.request(Request::GetReview { review_id }) {
-        Ok(Response::Review { run, findings, .. }) => (run, findings),
+        Ok(Response::Review { run, findings, .. }) => (*run, findings),
         other => panic!("expected Review, got {other:?}"),
     }
 }
@@ -1229,6 +1229,13 @@ fn lineage_marks_new_persisting_and_resolved() {
         .find(|f| f.path == "main.rs")
         .expect("main.rs");
     assert!(main.patch.contains("+    price + qty"), "{}", main.patch);
+    let reviewed = std::fs::read_to_string(repo.path().join("main.rs")).expect("main.rs");
+    std::fs::write(repo.path().join("main.rs"), "fn later() {}\n").expect("main.rs");
+    std::fs::write(repo.path().join("later.rs"), "fn after() {}\n").expect("later.rs");
+    let again = review_diff(&client, first);
+    assert_eq!(again.files, diff.files, "the reviewed tree, not today's");
+    std::fs::write(repo.path().join("main.rs"), reviewed).expect("main.rs");
+    std::fs::remove_file(repo.path().join("later.rs")).expect("later.rs");
     assert!(matches!(
         client.request(Request::GetReviewDiff { review_id: ReviewId::new() }),
         Err(client::ClientError::Protocol(error)) if error.code == ErrorCode::NotFound
@@ -1414,7 +1421,16 @@ fn dismissals_suppress_a_rule_until_undone() {
             .expect("ClearReviewSuppression"),
         Response::Ack
     );
-    assert!(config(&client, workspace).suppressions.is_empty());
+    let left = config(&client, workspace).suppressions;
+    assert!(
+        !left.iter().any(|s| s.kind == domain::SuppressionKind::Rule),
+        "{left:?}"
+    );
+    assert!(
+        left.iter()
+            .any(|s| s.kind == domain::SuppressionKind::Fingerprint),
+        "each finding dismissed under the rule stays dismissed: {left:?}"
+    );
 }
 
 fn rev_parse(repo: &Path, rev: &str) -> String {
@@ -1448,6 +1464,8 @@ fn pull_request_checkout() -> (tempfile::TempDir, tempfile::TempDir, String) {
     );
     git(&bare, &["update-ref", "refs/pull/1/head", &head]);
     git(&bare, &["branch", "-D", "topic"]);
+    // Cloned while on `topic`, so its HEAD would dangle; a host's names its default branch.
+    git(&bare, &["symbolic-ref", "HEAD", "refs/heads/main"]);
     let checkout = tempfile::tempdir_in("/tmp").expect("checkout");
     git(
         checkout.path(),
@@ -1510,6 +1528,43 @@ fn a_pull_request_is_reviewed_from_its_fetched_head() {
     );
     assert_eq!(rev_parse(checkout.path(), "HEAD"), head_before);
     assert_eq!(porcelain(checkout.path()), porcelain_before);
+}
+
+#[test]
+fn a_pull_request_is_fetched_from_the_only_remote_against_its_default_branch() {
+    let harness = common::Harness::new();
+    let mut pr_finding = finding(2, "P1", "logic", "40 + 2");
+    pr_finding["path"] = "pr.rs".into();
+    install_reviewer(&harness, &answer(&[pr_finding]), Reviewer::Answers);
+    let (_origin, checkout, pr_head) = pull_request_checkout();
+    git(checkout.path(), &["remote", "rename", "origin", "upstream"]);
+    let daemon = boot(&harness);
+    let client = daemon.connect("scenario-review");
+    let events = client.events();
+    let workspace = workspace_at(&client, checkout.path());
+
+    let review_id = review_to_completion(
+        &harness,
+        &client,
+        &events,
+        ReviewTarget::PullRequest {
+            workspace_id: workspace,
+            number: 1,
+            base: None,
+        },
+    );
+    let (run, _) = get(&client, review_id);
+    assert_eq!(run.head_oid, pr_head);
+    assert_eq!(
+        run.base_oid.as_deref(),
+        Some(rev_parse(checkout.path(), "upstream/main").as_str())
+    );
+    let paths: Vec<String> = review_diff(&client, review_id)
+        .files
+        .into_iter()
+        .map(|file| file.path)
+        .collect();
+    assert_eq!(paths, ["pr.rs"]);
 }
 
 #[test]

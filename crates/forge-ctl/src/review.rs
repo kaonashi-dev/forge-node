@@ -292,7 +292,7 @@ fn run_to_end(
         ));
     }
     match app.call(client, Request::GetReview { review_id }, false)? {
-        Response::Review { run, findings, .. } => Ok((run, findings)),
+        Response::Review { run, findings, .. } => Ok((*run, findings)),
         _ => Err(app.fail(
             1,
             "internal",
