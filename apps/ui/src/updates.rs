@@ -17,7 +17,7 @@ use crate::app::AppState;
 
 pub const ENDPOINT: &str =
     "https://github.com/kaonashi-dev/forge-node/releases/latest/download/latest-rune.json";
-pub const UPDATER_PUBKEY: &str = "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDNCRjAzMEJBQTgwQTRCNDcKUldSSFN3cW91akR3TzhkUVZ5WU5zU1hKNjkxL3lEZTV0NjVKdVNEYnhWTzhFcHVhR3BoT2JEY0wK";
+pub const UPDATER_PUBKEY: &str = "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXkgN0Y2Q0E2MDgxMjY0RTc0QgpSV1JMNTJRU0NLWnNmOFlhVTFEQldjTk1VLzJYOEFQaTg1eWZFRkI5RXVlck5XbithSklzaWg0UQo=";
 pub const CHECK_INTERVAL: Duration = Duration::from_secs(6 * 60 * 60);
 pub const LAUNCH_DELAY: Duration = Duration::from_secs(30);
 pub const MAX_MANIFEST_BYTES: u64 = 1024 * 1024;

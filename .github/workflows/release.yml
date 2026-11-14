@@ -60,9 +60,22 @@ jobs:
       - name: Gate
         run: scripts/dev check
 
-      - name: Build the signed bundle and updater artifact
+      # Installed apps refuse a tarball signed by any key but UPDATER_PUBKEY, so
+      # a mismatched secret fails here instead of shipping an uninstallable update.
+      - name: Updater key matches the app
         env:
           FORGE_UPDATER_KEY: ${{ secrets.FORGE_UPDATER_KEY }}
+        run: |
+          key="$RUNNER_TEMP/updater.key"
+          printf '%s\n' "$FORGE_UPDATER_KEY" >"$key"
+          pubkey="$(awk -F'"' '/pub const UPDATER_PUBKEY/{print $2}' apps/ui/src/updates.rs | base64 -d | sed -n 2p)"
+          echo probe >"$RUNNER_TEMP/probe"
+          minisign -S -W -s "$key" -m "$RUNNER_TEMP/probe" >/dev/null
+          minisign -V -P "$pubkey" -m "$RUNNER_TEMP/probe" >/dev/null
+          echo "FORGE_UPDATER_KEY_PATH=$key" >>"$GITHUB_ENV"
+
+      - name: Build the signed bundle and updater artifact
+        env:
           FORGE_CODESIGN_IDENTITY: ${{ secrets.FORGE_CODESIGN_IDENTITY }}
           FORGE_NOTARY_PROFILE: ${{ secrets.FORGE_NOTARY_PROFILE }}
         run: scripts/package-macos --updater --zip

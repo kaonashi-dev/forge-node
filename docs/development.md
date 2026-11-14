@@ -109,10 +109,13 @@ executable = "/path/to/forge-node/target/debug/forge-editor"
   `local`). It is a manual helper; release CI invokes `scripts/package-macos`
   directly.
 - `scripts/release-manifest` writes `latest-rune.json`, the updater feed.
-- Release secrets: `FORGE_UPDATER_KEY` (the minisign secret key),
-  `FORGE_CODESIGN_IDENTITY` and `FORGE_NOTARY_PROFILE`. The updater key is read
-  from `FORGE_UPDATER_KEY_PATH` (default
-  `$XDG_CONFIG_HOME/forge-node/updater.key`) when packaging locally.
+- Release secrets: `FORGE_UPDATER_KEY` is the updater's password-free minisign
+  secret key; the release workflow checks it against `UPDATER_PUBKEY` in
+  `apps/ui/src/updates.rs` before packaging, so the two change together.
+  `FORGE_CODESIGN_IDENTITY` and `FORGE_NOTARY_PROFILE` are optional; without
+  them the bundle is ad-hoc signed and not notarized. Locally, `package-macos`
+  reads a password-free key from `FORGE_UPDATER_KEY` or `FORGE_UPDATER_KEY_PATH`
+  (default `$XDG_CONFIG_HOME/forge-node/updater.key`).
 
 ## Where to change what
 
