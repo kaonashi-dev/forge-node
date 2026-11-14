@@ -57,21 +57,28 @@
 
 ## Screenshots
 
-**Code view** — a workspace file tree and integrated Rust editor, with shell
-and agent sessions available in the tab bar.
+**Code view** — the workspace file tree, revealed at the open file, beside the
+integrated `forge-editor`.
 
-<img width="1680" height="1050" alt="Forge Node Code view showing a file tree, Rust editor, and terminal and agent tabs" src="https://github.com/user-attachments/assets/c28d3ae3-8956-4fa0-aba4-d1dff6812118" />
+<img width="1680" height="1050" alt="Forge Node Files view with the daemon crate expanded and idle.rs open in the integrated editor" src="docs/screenshots/code-view.png" />
 
 **Agent launcher** — start a terminal, a detected agent CLI, or a saved launch
-profile from the **+** menu. Custom profile names are not additional built-in
+profile from the New Session palette (<kbd>⇧⌘A</kbd>). Profiles such as
+*Opus* and *Sonnet* are launch settings for a provider, not additional
 providers.
 
-<img width="1680" height="1050" alt="Claude Code running in Forge Node with the terminal, agent and launch profile menu open" src="https://github.com/user-attachments/assets/d6195ce3-1c20-4545-8fca-5a165102cf55" />
+<img width="1680" height="1050" alt="Claude Code answering in Forge Node with the New Session palette open, listing agents, launch profiles and a terminal" src="docs/screenshots/agent-launcher.png" />
 
-**Agent settings** — choose your default agent, inspect detected CLI versions,
-enable providers, and manage launch profiles.
+**Agents in parallel** — Claude Code, Cursor CLI and OpenCode working in two
+repositories at once, one of them in its own worktree. Each session sits under
+the checkout it runs in.
 
-<img width="1680" height="1050" alt="Forge Node Agents settings showing the default agent selector, five detected providers and a custom OpenCode launch profile" src="https://github.com/user-attachments/assets/8dece9f5-81c0-4432-8659-c7de7d3edd4a" />
+<img width="1680" height="1050" alt="Forge Node session tree with Cursor CLI on techne, OpenCode in a feat/request-timeouts worktree and Claude Code on forge-node, showing OpenCode's finished plan" src="docs/screenshots/agents.png" />
+
+**Agent settings** — choose your default agent, inspect detected CLI versions
+and paths, show or hide providers, and manage launch profiles.
+
+<img width="1680" height="1050" alt="Forge Node Agents settings showing the default agent choices, three detected providers and two launch profiles" src="docs/screenshots/agent-settings.png" />
 
 
 ## Install
