@@ -7,6 +7,7 @@ mod common;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::OnceLock;
+use std::time::Duration;
 
 use domain::{
     ActivityState, ReviewId, ReviewRun, ReviewStage, ReviewStatus, ReviewTarget, Severity, Verdict,
@@ -1601,6 +1602,52 @@ fn review_diff(client: &client::Client, review_id: ReviewId) -> domain::Workspac
         Ok(Response::WorkspaceDiff(diff)) => diff,
         other => panic!("expected WorkspaceDiff, got {other:?}"),
     }
+}
+
+#[test]
+fn a_hook_repeating_the_agents_state_broadcasts_nothing() {
+    let harness = common::Harness::new();
+    install_reviewer(&harness, "", Reviewer::Silent);
+    let repo = seeded_repo();
+    let daemon = boot(&harness);
+    let client = daemon.connect("scenario-review");
+    let events = client.events();
+    let workspace = workspace_at(&client, repo.path());
+    let (agent, _) = common::create_agent_session(&client, &events, workspace, "claude");
+    let working = || {
+        client
+            .request(Request::ReportAgentActivity {
+                session_id: agent,
+                state: ActivityState::Working,
+                source: "test".into(),
+            })
+            .expect("ReportAgentActivity");
+    };
+    let next_activity = || {
+        let event = common::wait_for(
+            &events,
+            Duration::from_secs(10),
+            |event| matches!(event, DaemonEvent::SessionUpdated(s) if s.id == agent),
+        );
+        match event {
+            Some(DaemonEvent::SessionUpdated(session)) => session.activity.state,
+            other => panic!("expected the agent's SessionUpdated, got {other:?}"),
+        }
+    };
+    working();
+    common::wait_for(&events, Duration::from_secs(10), |event| {
+        matches!(event, DaemonEvent::SessionUpdated(s)
+            if s.id == agent && s.activity.state == ActivityState::Working)
+    })
+    .expect("the agent goes to work");
+    working();
+    working();
+    report_idle(&client, agent);
+    assert_eq!(
+        next_activity(),
+        ActivityState::Idle,
+        "broadcasts arrive in order, so a repeated Working would have come first"
+    );
 }
 
 #[test]

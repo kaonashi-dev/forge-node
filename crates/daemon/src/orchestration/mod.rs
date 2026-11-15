@@ -660,7 +660,11 @@ fn report_activity(
             .or_default()
             .typed_this_idle = false;
     }
-    let snapshot = inner.sessions.get(&session_id).cloned();
+    // A provider reports the state it is already in on every tool call; the
+    // same session again would only make every client rebuild its rows.
+    let snapshot = changed
+        .then(|| inner.sessions.get(&session_id).cloned())
+        .flatten();
     let queued = inner
         .ledger
         .pointer
