@@ -36,6 +36,7 @@ mod project_icon;
 mod project_ops;
 mod projects;
 mod rail;
+mod review_subject;
 mod session_changes;
 mod session_label;
 mod settings;

@@ -14,10 +14,12 @@ use rune::{El, ScrollSpec, TextEdit, col, el, row, text};
 use rune_kit::diff::{Annotation, DiffState, DiffView, LineRef, Side};
 use rune_kit::{
     Button, ButtonVariant, ControlSize, Kit, Markdown, Progress, RadioGroup, RadioItem,
-    SegmentedControl, TextArea,
+    SegmentedControl, TextArea, TextInput,
 };
 
 use crate::app::AppState;
+use crate::pr_url::PullRequestLink;
+use crate::review_subject::{Resolution, Subject};
 use crate::workbench::CenterMode;
 
 mod model;
@@ -142,6 +144,13 @@ pub struct CodeReview {
     pub tier: Option<Tier>,
     pub provider: Option<String>,
     pub instructions: TextEdit,
+    pub subject: Subject,
+    pub pull_request: TextEdit,
+    /// The link last copied out of the instructions, so switching back to the
+    /// changes is not undone by the next keystroke.
+    pub detected: Option<PullRequestLink>,
+    /// A linked pull request the daemon is reading before the review starts.
+    pub awaiting: Option<PullRequestLink>,
     pub starting: bool,
     pub asked_config: HashMap<WorkspaceId, u64>,
     pub asked_list: HashMap<WorkspaceId, u64>,
@@ -180,6 +189,10 @@ impl Default for CodeReview {
             tier: None,
             provider: None,
             instructions: TextEdit::new(""),
+            subject: Subject::Changes,
+            pull_request: TextEdit::new(""),
+            detected: None,
+            awaiting: None,
             starting: false,
             asked_config: HashMap::new(),
             asked_list: HashMap::new(),
@@ -657,24 +670,167 @@ impl AppState {
             return;
         };
         let instructions = (!instructions.is_empty()).then_some(instructions);
+        let target = match self.code_review.subject {
+            Subject::Changes => ReviewTarget::Workspace {
+                workspace_id: workspace,
+                base: None,
+            },
+            Subject::PullRequest => match self.pull_request_target(workspace) {
+                Some(target) => target,
+                None => return,
+            },
+        };
+        self.send_review(
+            target,
+            Some(preset),
+            self.code_review.tier,
+            Some(provider),
+            instructions,
+        );
+    }
+
+    /// `None` when the review cannot start yet: the reason is on screen, or a
+    /// linked pull request is being read first.
+    fn pull_request_target(&mut self, workspace: WorkspaceId) -> Option<ReviewTarget> {
+        let reference = match crate::review_subject::parse(&self.code_review.pull_request.text) {
+            Ok(reference) => reference,
+            Err(error) => {
+                self.code_review.errors.insert(workspace, error);
+                return None;
+            }
+        };
+        let resolution = match self.store.as_ref() {
+            Some(store) => crate::review_subject::resolve(
+                &reference,
+                &store.pull_requests.pull_requests,
+                &store.workspaces,
+                workspace,
+            ),
+            None => Resolution::Refused("Not connected to the daemon.".into()),
+        };
+        let problem = match resolution {
+            Resolution::Ready(target) => {
+                return Some(ReviewTarget::PullRequest {
+                    workspace_id: target.workspace,
+                    number: target.number,
+                    base: target.base,
+                });
+            }
+            Resolution::Refused(problem) => problem,
+            Resolution::Unlisted(link) => match &self.connection {
+                Some(connection) => match connection.fetch_pull_request(link.clone()) {
+                    Ok(()) => {
+                        self.code_review.awaiting = Some(link);
+                        self.code_review.errors.remove(&workspace);
+                        return None;
+                    }
+                    Err(error) => error,
+                },
+                None => "The client worker is still starting.".into(),
+            },
+        };
+        self.code_review.errors.insert(workspace, problem);
+        None
+    }
+
+    /// `PullRequestFetched` for the link a review is waiting on: start it now
+    /// that the daemon knows which repository the pull request lives in.
+    pub fn review_link_fetched(
+        &mut self,
+        host: &str,
+        repository: &str,
+        number: u32,
+        error: Option<String>,
+    ) {
+        let Some(link) = self.code_review.awaiting.clone() else {
+            return;
+        };
+        if !link.is(host, repository, number) {
+            return;
+        }
+        self.code_review.awaiting = None;
+        let listed = self.store.as_ref().is_some_and(|store| {
+            store
+                .pull_requests
+                .pull_requests
+                .iter()
+                .any(|pr| link.names(pr))
+        });
+        let problem = match error {
+            Some(error) => Some(error),
+            None if listed => None,
+            None => Some("GitHub answered, but the pull request did not arrive; try again.".into()),
+        };
+        match (problem, self.code_review.workspace) {
+            (None, _) if self.code_review.subject == Subject::PullRequest => {
+                self.start_code_review();
+            }
+            (None, _) => {}
+            (Some(problem), Some(workspace)) => {
+                self.code_review.errors.insert(workspace, problem);
+            }
+            (Some(_), None) => {}
+        }
+    }
+
+    /// The daemon refused to read the awaited link, e.g. a host not in `[github]`.
+    pub fn review_link_refused(&mut self, message: &str) {
+        if self.code_review.awaiting.take().is_none() {
+            return;
+        }
+        if let Some(workspace) = self.code_review.workspace {
+            self.code_review
+                .errors
+                .insert(workspace, message.to_owned());
+        }
+    }
+
+    /// Copies a pull-request link typed into the instructions into the subject,
+    /// once per link, so the target is visible before the review starts.
+    pub fn review_instructions_edited(&mut self) {
+        let found = crate::review_subject::find_link(&self.code_review.instructions.text);
+        let Some(link) = found else {
+            return;
+        };
+        if self.code_review.detected.as_ref() == Some(&link) {
+            return;
+        }
+        self.code_review.pull_request = TextEdit::new(format!(
+            "https://{}/{}/pull/{}",
+            link.host, link.repository, link.number
+        ));
+        self.code_review.subject = Subject::PullRequest;
+        self.code_review.detected = Some(link);
+    }
+
+    fn send_review(
+        &mut self,
+        target: ReviewTarget,
+        preset: Option<String>,
+        tier: Option<Tier>,
+        provider: Option<String>,
+        instructions: Option<String>,
+    ) {
+        let workspace = target.workspace_id();
+        let shown = lane(&target);
         let result = match &self.connection {
             Some(connection) => connection.start_review(
                 self.generation,
-                ReviewTarget::Workspace {
-                    workspace_id: workspace,
-                    base: None,
-                },
-                Some(preset),
-                self.code_review.tier,
-                Some(provider),
+                target,
+                preset,
+                tier,
+                provider,
                 instructions,
             ),
             None => Err("The client worker is still starting.".to_string()),
         };
+        if self.code_review.workspace != Some(workspace) {
+            open(self, workspace);
+        }
+        self.code_review.shown.insert(workspace, shown);
         match result {
             Ok(()) => {
                 self.code_review.starting = true;
-                self.code_review.shown.insert(workspace, Lane::Workspace);
                 self.code_review.errors.remove(&workspace);
             }
             Err(error) => {
@@ -1129,31 +1285,18 @@ impl AppState {
                 .first()
                 .map(|(id, _)| id.to_string())
         });
-        let result = match &self.connection {
-            Some(connection) => connection.start_review(
-                self.generation,
-                ReviewTarget::PullRequest {
-                    workspace_id: workspace,
-                    number,
-                    base,
-                },
-                None,
-                None,
-                provider,
-                None,
-            ),
-            None => Err("The client worker is still starting.".to_string()),
-        };
         open(self, workspace);
-        self.code_review
-            .shown
-            .insert(workspace, Lane::PullRequest(number));
-        match result {
-            Ok(()) => self.code_review.starting = true,
-            Err(error) => {
-                self.code_review.errors.insert(workspace, error);
-            }
-        }
+        self.send_review(
+            ReviewTarget::PullRequest {
+                workspace_id: workspace,
+                number,
+                base,
+            },
+            None,
+            None,
+            provider,
+            None,
+        );
     }
 }
 
@@ -1175,6 +1318,7 @@ fn setup(s: &AppState, k: &Kit) -> El {
     let config = s.code_review.configs.get(&workspace);
     let offered = &s.code_review.offered;
     let mut body = col().key("review-setup").w_full().gap(crate::ds::SPACE_4);
+    body = body.child(subject(s, k));
     if offered.is_empty() {
         body = body.child(note(k, "No installed agent can run a Forge Review."));
     }
@@ -1273,6 +1417,7 @@ fn setup(s: &AppState, k: &Kit) -> El {
             .label("Extra instructions")
             .placeholder("What should the agent look for?")
             .on_edit(|s: &mut AppState| &mut s.code_review.instructions)
+            .on_change(|s: &mut AppState, _| s.review_instructions_edited())
             .build(k)
             .key("review-instructions")
             .h(80.0),
@@ -1281,26 +1426,84 @@ fn setup(s: &AppState, k: &Kit) -> El {
     let ready = config.is_some()
         && !offered.is_empty()
         && !s.code_review.starting
-        && (!custom || !s.code_review.instructions.text.trim().is_empty());
+        && s.code_review.awaiting.is_none()
+        && (!custom || !s.code_review.instructions.text.trim().is_empty())
+        && (s.code_review.subject == Subject::Changes
+            || !s.code_review.pull_request.text.trim().is_empty());
     body = body.child(
         row()
             .w_full()
             .gap(crate::ds::SPACE_4)
             .child(el().grow(1.0))
             .child(
-                Button::new(if s.code_review.starting {
-                    "Starting…"
-                } else {
-                    "Review changes"
-                })
-                .variant(ButtonVariant::Contrast)
-                .disabled(!ready)
-                .on_press(|s: &mut AppState| s.start_code_review())
-                .build(k)
-                .key("review-start"),
+                Button::new(start_label(&s.code_review))
+                    .variant(ButtonVariant::Contrast)
+                    .disabled(!ready)
+                    .on_press(|s: &mut AppState| s.start_code_review())
+                    .build(k)
+                    .key("review-start"),
             ),
     );
     body
+}
+
+fn start_label(review: &CodeReview) -> String {
+    if review.starting {
+        return "Starting…".into();
+    }
+    if let Some(link) = &review.awaiting {
+        return format!("Reading #{}…", link.number);
+    }
+    match review.subject {
+        Subject::Changes => "Review changes".into(),
+        Subject::PullRequest => match crate::review_subject::parse(&review.pull_request.text) {
+            Ok(crate::review_subject::Reference::Number(number)) => format!("Review PR #{number}"),
+            Ok(crate::review_subject::Reference::Link(link)) => {
+                format!("Review PR #{}", link.number)
+            }
+            Err(_) => "Review pull request".into(),
+        },
+    }
+}
+
+fn subject(s: &AppState, k: &Kit) -> El {
+    let review = &s.code_review;
+    let mut what = RadioGroup::new().label("What to review");
+    for (label, detail, choice) in [
+        (
+            "Changes in this checkout",
+            "The working tree against its base branch, uncommitted changes included.",
+            Subject::Changes,
+        ),
+        (
+            "A pull request",
+            "Its head against its base, fetched without moving this checkout.",
+            Subject::PullRequest,
+        ),
+    ] {
+        what = what.item(
+            RadioItem::new(label, review.subject == choice)
+                .description(detail)
+                .on_select(move |s: &mut AppState| s.code_review.subject = choice),
+        );
+    }
+    let mut column = col()
+        .key("review-subject")
+        .w_full()
+        .gap(crate::ds::SPACE_3)
+        .child(what.build(k).key("review-subject-kind"));
+    if review.subject == Subject::PullRequest {
+        column = column.child(
+            TextInput::new(&review.pull_request)
+                .label("Pull request")
+                .placeholder("96, #96 or https://github.com/owner/repo/pull/96")
+                .width(None)
+                .on_edit(|s: &mut AppState| &mut s.code_review.pull_request)
+                .build(k)
+                .key("review-pull-request"),
+        );
+    }
+    column
 }
 
 fn tier_index(tier: Option<Tier>) -> Option<usize> {
@@ -2772,6 +2975,115 @@ mod tests {
         assert!(
             !state.code_review.errors.contains_key(&workspace),
             "the second sync did not ask again"
+        );
+    }
+
+    fn connected(state: &mut AppState) -> flume::Receiver<crate::connection::Command> {
+        let (handle, rx) = crate::connection::ConnectionHandle::test_handle(std::sync::Arc::new(
+            crate::connection::Metrics::default(),
+        ));
+        state.connection = Some(handle);
+        state.code_review.provider = Some("claude".into());
+        rx
+    }
+
+    fn list(state: &mut AppState, workspace: WorkspaceId, repository: &str, number: u32) {
+        let store = state.store.as_mut().unwrap();
+        let project = store
+            .workspaces
+            .iter()
+            .find(|row| row.id == workspace)
+            .map(|row| row.project_id);
+        store
+            .pull_requests
+            .pull_requests
+            .push(crate::review_subject::listed_pr(
+                project, repository, number,
+            ));
+    }
+
+    fn started(rx: &flume::Receiver<crate::connection::Command>) -> ReviewTarget {
+        match rx.try_recv() {
+            Ok(crate::connection::Command::StartReview { target, .. }) => target,
+            other => panic!("expected StartReview, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn a_link_in_the_instructions_reviews_that_pull_request_not_the_changes() {
+        let (mut state, workspace) = fixture_state();
+        let rx = connected(&mut state);
+        list(&mut state, workspace, "acme/forge", 96);
+        state.code_review.instructions =
+            TextEdit::new("Review this pr https://github.com/acme/forge/pull/96");
+        state.review_instructions_edited();
+        assert_eq!(state.code_review.subject, Subject::PullRequest);
+
+        state.start_code_review();
+        assert_eq!(
+            started(&rx),
+            ReviewTarget::PullRequest {
+                workspace_id: workspace,
+                number: 96,
+                base: Some("main".into()),
+            }
+        );
+        assert_eq!(
+            state.code_review.shown_lane(workspace),
+            Lane::PullRequest(96)
+        );
+
+        state.code_review.subject = Subject::Changes;
+        state.code_review.instructions.text.push_str(" carefully");
+        state.review_instructions_edited();
+        assert_eq!(
+            state.code_review.subject,
+            Subject::Changes,
+            "the same link does not undo choosing the changes again"
+        );
+    }
+
+    #[test]
+    fn an_unlisted_link_is_read_before_its_review_starts() {
+        let (mut state, workspace) = fixture_state();
+        let rx = connected(&mut state);
+        state.code_review.subject = Subject::PullRequest;
+        state.code_review.pull_request = TextEdit::new("https://github.com/acme/forge/pull/5");
+        state.start_code_review();
+        let Ok(crate::connection::Command::FetchPullRequest(link)) = rx.try_recv() else {
+            panic!("expected FetchPullRequest");
+        };
+        assert_eq!(link.number, 5);
+        assert!(state.code_review.awaiting.is_some());
+
+        list(&mut state, workspace, "acme/forge", 5);
+        state.review_link_fetched("github.com", "Acme/Forge", 5, None);
+        assert!(state.code_review.awaiting.is_none());
+        assert!(matches!(
+            started(&rx),
+            ReviewTarget::PullRequest { number: 5, .. }
+        ));
+    }
+
+    #[test]
+    fn a_bare_number_is_read_from_this_checkout_and_a_bad_one_never_starts() {
+        let (mut state, workspace) = fixture_state();
+        let rx = connected(&mut state);
+        state.code_review.subject = Subject::PullRequest;
+        state.code_review.pull_request = TextEdit::new("main");
+        state.start_code_review();
+        assert!(rx.try_recv().is_err());
+        assert!(state.code_review.errors.contains_key(&workspace));
+
+        state.code_review.pull_request = TextEdit::new("#12");
+        state.start_code_review();
+        assert_eq!(
+            started(&rx),
+            ReviewTarget::PullRequest {
+                workspace_id: workspace,
+                number: 12,
+                base: None,
+            }
         );
     }
 }

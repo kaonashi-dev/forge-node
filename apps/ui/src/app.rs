@@ -1917,6 +1917,7 @@ impl AppState {
                         error,
                     } => {
                         self.pr_link_fetched(host, repository, *number, error.clone());
+                        self.review_link_fetched(host, repository, *number, error.clone());
                         return true;
                     }
                     client::DaemonEvent::EditorFocusRequested { session_id, .. } => {
@@ -2365,6 +2366,7 @@ impl AppState {
                 }
                 if label == "FetchPullRequest" && !ok {
                     self.pr_link_refused(&message);
+                    self.review_link_refused(&message);
                 }
                 if label == "RefreshPullRequests" && !ok && self.pr_refreshing {
                     self.pr_refreshing = false;
