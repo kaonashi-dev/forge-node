@@ -451,7 +451,10 @@ fn reviews_coalesce_cap_at_two_and_a_newer_head_wins() {
     let second = start(&client, ws[1], None).expect("second");
     assert_eq!(start(&client, ws[2], None), Err(ErrorCode::Conflict));
 
-    git(repos[0].path(), &["commit", "-qam", "move head"]);
+    git(
+        repos[0].path(),
+        &["commit", "--allow-empty", "-qm", "move head"],
+    );
     assert_eq!(
         start(&client, ws[0], None),
         Err(ErrorCode::Conflict),
@@ -469,7 +472,8 @@ fn reviews_coalesce_cap_at_two_and_a_newer_head_wins() {
     client
         .request(Request::CancelReview { review_id: newer })
         .expect("cancel");
-    wait_run(&events, newer, |run| run.status.is_finished());
+    let newer = wait_run(&events, newer, |run| run.status.is_finished());
+    assert_eq!(newer.status, ReviewStatus::Cancelled, "{:?}", newer.error);
     let restarted = start(&client, ws[1], None).expect("a cancelled run must not be joined");
     assert_ne!(restarted, second);
     client
