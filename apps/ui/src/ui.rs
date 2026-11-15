@@ -469,6 +469,7 @@ fn terminal_surface(s: &AppState, k: &Kit) -> El {
         // A terminal is text, not a card: fading it in puts the effect slot in an
         // Rgba16Float layer, and the glyphs are unreadable while it fades.
         .transition(rune::Transition::none())
+        .motion_intent(rune::MotionIntent::CUT)
         .child(body)
 }
 
@@ -592,9 +593,11 @@ fn pane_header(s: &AppState, k: &Kit, idx: usize) -> El {
         .window_drag()
         .child(mark)
         .child(
+            // It changes with the terminal under it, which cuts rather than fades.
             text(title)
                 .role("heading")
                 .font(k.ty.ui)
+                .motion_intent(rune::MotionIntent::CUT)
                 .color(if focused {
                     k.c.text_base
                 } else {

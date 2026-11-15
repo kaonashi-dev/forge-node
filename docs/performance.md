@@ -540,6 +540,9 @@ commits up to 8 times a second (its accessibility mirror refreshes every
   `ds::working`), never a `Rotation` like rune-kit's `Loader`, which asks for
   every vsync and kept the whole window painting at the display's refresh
   rate while any agent was busy.
+- `the_window_moves_without_pops_jumps_or_blinks` (`apps/ui/src/motion_audit.rs`)
+  is the window's motion gate; a deliberate cut carries
+  `MotionIntent::CUT`, and an allow row says why.
 
 Measure with `RUNE_COMMIT_BUDGET_MS=8` (prints every commit over budget with
 its view/layout/apply split), `scripts/dev ui run --bench`,

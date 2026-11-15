@@ -59,7 +59,6 @@ fn crumbs(key: &str, strip_h: f32) -> El {
         .role("navigation")
         .label("Location")
         .h(strip_h)
-        .transition(rune::Transition::none())
         .gap(ds::SPACE_4)
         .px(ds::SPACE_4)
         .center_y()

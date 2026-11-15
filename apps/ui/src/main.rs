@@ -19,6 +19,8 @@ mod keymap;
 mod launch;
 mod menus;
 mod modal;
+#[cfg(test)]
+mod motion_audit;
 mod native_menus;
 mod open_pr;
 mod pages;
