@@ -298,7 +298,11 @@ fn forge_review_button(k: &Kit, pr: &PullRequest, key: &'static str) -> El {
     Button::new("Forge Review")
         .variant(ButtonVariant::Outline)
         .control_size(ControlSize::Small)
-        .on_press(move |s: &mut AppState| s.start_pull_request_review(&repository, number))
+        .on_press(move |s: &mut AppState| {
+            if let Err(error) = s.open_pull_request_review(&repository, number) {
+                s.toasts.danger("Forge Review did not open", error);
+            }
+        })
         .build(k)
         .key(key)
 }

@@ -130,6 +130,15 @@ struct ChangesKey {
     revision: u64,
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PinnedPullRequest {
+    pub workspace: WorkspaceId,
+    pub repository: String,
+    pub number: u32,
+    pub title: String,
+    pub base: Option<String>,
+}
+
 pub struct CodeReview {
     pub workspace: Option<WorkspaceId>,
     pub latest: HashMap<Slot, ReviewRun>,
@@ -151,7 +160,12 @@ pub struct CodeReview {
     pub detected: Option<PullRequestLink>,
     /// A linked pull request the daemon is reading before the review starts.
     pub awaiting: Option<PullRequestLink>,
+    /// Set when the tab was opened for one pull request: it replaces the
+    /// what-to-review choice until the person asks to change it.
+    pub pinned: Option<PinnedPullRequest>,
     pub starting: bool,
+    /// The run this window started, until its reviewer session is shown.
+    pub follow: Option<ReviewId>,
     pub asked_config: HashMap<WorkspaceId, u64>,
     pub asked_list: HashMap<WorkspaceId, u64>,
     pub report_asked: HashSet<ReviewId>,
@@ -193,7 +207,9 @@ impl Default for CodeReview {
             pull_request: TextEdit::new(""),
             detected: None,
             awaiting: None,
+            pinned: None,
             starting: false,
+            follow: None,
             asked_config: HashMap::new(),
             asked_list: HashMap::new(),
             report_asked: HashSet::new(),
@@ -253,6 +269,46 @@ impl CodeReview {
 
     fn knows(&self, workspace: WorkspaceId) -> bool {
         self.latest.keys().any(|(owner, _)| *owner == workspace)
+    }
+
+    #[must_use]
+    pub fn pinned_to(&self, workspace: WorkspaceId) -> Option<&PinnedPullRequest> {
+        self.pinned
+            .as_ref()
+            .filter(|pin| pin.workspace == workspace)
+    }
+
+    /// The lane the start button would run in, `None` while the typed pull
+    /// request does not parse.
+    fn target_lane(&self, workspace: WorkspaceId) -> Option<Lane> {
+        if let Some(pin) = self.pinned_to(workspace) {
+            return Some(Lane::PullRequest(pin.number));
+        }
+        match self.subject {
+            Subject::Changes => Some(Lane::Workspace),
+            Subject::PullRequest => match crate::review_subject::parse(&self.pull_request.text) {
+                Ok(crate::review_subject::Reference::Number(number)) => {
+                    Some(Lane::PullRequest(number))
+                }
+                Ok(crate::review_subject::Reference::Link(link)) => {
+                    Some(Lane::PullRequest(link.number))
+                }
+                Err(_) => None,
+            },
+        }
+    }
+
+    /// Whether pressing start again would send a second review of the same
+    /// target; the running one has to be cancelled first.
+    #[must_use]
+    pub fn busy(&self, workspace: WorkspaceId) -> bool {
+        self.starting
+            || self.awaiting.is_some()
+            || self.follow.is_some()
+            || self
+                .target_lane(workspace)
+                .and_then(|lane| self.latest.get(&(workspace, lane)))
+                .is_some_and(running)
     }
 }
 
@@ -440,6 +496,7 @@ fn running(run: &ReviewRun) -> bool {
 }
 
 pub fn open(s: &mut AppState, workspace: WorkspaceId) {
+    s.code_review.pinned = None;
     s.code_review.workspace = Some(workspace);
     s.code_review.errors.remove(&workspace);
     s.inspect(workspace, CenterMode::Review);
@@ -460,6 +517,7 @@ pub fn refresh(s: &mut AppState) {
 /// Replies asked on the old connection are dropped as stale, so what was
 /// waiting on one is asked again on the next sync.
 pub fn reconnected(s: &mut AppState) {
+    s.code_review.starting = false;
     s.code_review.report_asked.clear();
     if s.code_review.diff.as_ref().is_some_and(|diff| !diff.loaded) {
         s.code_review.diff = None;
@@ -670,12 +728,20 @@ impl AppState {
             return;
         };
         let instructions = (!instructions.is_empty()).then_some(instructions);
-        let target = match self.code_review.subject {
-            Subject::Changes => ReviewTarget::Workspace {
+        let target = match (
+            self.code_review.pinned_to(workspace),
+            self.code_review.subject,
+        ) {
+            (Some(pin), _) => ReviewTarget::PullRequest {
+                workspace_id: workspace,
+                number: pin.number,
+                base: pin.base.clone(),
+            },
+            (None, Subject::Changes) => ReviewTarget::Workspace {
                 workspace_id: workspace,
                 base: None,
             },
-            Subject::PullRequest => match self.pull_request_target(workspace) {
+            (None, Subject::PullRequest) => match self.pull_request_target(workspace) {
                 Some(target) => target,
                 None => return,
             },
@@ -788,6 +854,9 @@ impl AppState {
     /// Copies a pull-request link typed into the instructions into the subject,
     /// once per link, so the target is visible before the review starts.
     pub fn review_instructions_edited(&mut self) {
+        if self.code_review.pinned.is_some() {
+            return;
+        }
         let found = crate::review_subject::find_link(&self.code_review.instructions.text);
         let Some(link) = found else {
             return;
@@ -867,9 +936,27 @@ impl AppState {
             }
             self.refresh_send_targets();
         }
-        self.code_review.starting = false;
+        if self.code_review.follow == Some(run.id) {
+            self.follow_reviewer(run.workspace_id, run.session_id, run.status.is_finished());
+        }
         if self.code_review.workspace == Some(run.workspace_id) {
             self.code_review.errors.remove(&run.workspace_id);
+        }
+    }
+
+    /// The reviewer session only exists once the diff and pack stages are
+    /// done, so the switch waits for it. A person who has left the Review tab
+    /// meanwhile keeps where they are: their keystrokes must not land in it.
+    fn follow_reviewer(&mut self, workspace: WorkspaceId, session: Option<SessionId>, ended: bool) {
+        if let Some(session) = session {
+            self.code_review.follow = None;
+            if self.workbench.mode == CenterMode::Review
+                && self.code_review.workspace == Some(workspace)
+            {
+                self.focus_session(session);
+            }
+        } else if ended {
+            self.code_review.follow = None;
         }
     }
 
@@ -968,8 +1055,18 @@ impl AppState {
     ) -> bool {
         self.code_review.starting = false;
         match result {
-            Ok(_) => {
+            Ok(id) => {
                 self.code_review.errors.remove(&workspace);
+                self.code_review.follow = Some(id);
+                let landed = self
+                    .code_review
+                    .latest
+                    .values()
+                    .find(|run| run.id == id)
+                    .map(|run| (run.workspace_id, run.session_id, run.status.is_finished()));
+                if let Some((workspace, session, ended)) = landed {
+                    self.follow_reviewer(workspace, session, ended);
+                }
             }
             Err(error) => {
                 self.code_review.errors.insert(workspace, error);
@@ -1258,13 +1355,22 @@ impl AppState {
         }
     }
 
-    /// Forge Review of a pull request's head, in the checkout `review_workspace`
-    /// picks; the checkout itself is not moved.
-    pub fn start_pull_request_review(&mut self, repository: &str, number: u32) {
+    /// The Review tab set up for one listed pull request, in the checkout
+    /// `review_workspace` picks; nothing starts until the person presses it.
+    ///
+    /// # Errors
+    /// A sentence for the person when the pull request is not listed or no
+    /// checkout of its repository is open.
+    pub fn open_pull_request_review(
+        &mut self,
+        repository: &str,
+        number: u32,
+    ) -> Result<(), String> {
         let Some(pr) = self.pull_request(repository, number) else {
-            return;
+            return Err(format!(
+                "{repository}#{number} is not listed yet; refresh and try again."
+            ));
         };
-        let base = (!pr.base_ref.is_empty()).then(|| pr.base_ref.clone());
         let workspace = self.store.as_ref().and_then(|store| {
             crate::pr_review::review_workspace(
                 &store.workspaces,
@@ -1273,30 +1379,30 @@ impl AppState {
             )
         });
         let Some(workspace) = workspace else {
-            self.toasts.danger(
-                "Forge Review did not start",
-                "No checkout of this repository is open here.",
-            );
+            return Err(format!("No checkout of {repository} is open here."));
+        };
+        let pin = PinnedPullRequest {
+            workspace,
+            repository: pr.repository.clone(),
+            number,
+            title: pr.title.clone(),
+            base: (!pr.base_ref.is_empty()).then(|| pr.base_ref.clone()),
+        };
+        open(self, workspace);
+        self.code_review.pinned = Some(pin);
+        self.code_review
+            .shown
+            .insert(workspace, Lane::PullRequest(number));
+        Ok(())
+    }
+
+    /// Back to the what-to-review choice, with the pinned pull request filled in.
+    pub fn unpin_review(&mut self) {
+        let Some(pin) = self.code_review.pinned.take() else {
             return;
         };
-        let provider = self.code_review.provider.clone().or_else(|| {
-            self.code_review
-                .offered
-                .first()
-                .map(|(id, _)| id.to_string())
-        });
-        open(self, workspace);
-        self.send_review(
-            ReviewTarget::PullRequest {
-                workspace_id: workspace,
-                number,
-                base,
-            },
-            None,
-            None,
-            provider,
-            None,
-        );
+        self.code_review.subject = Subject::PullRequest;
+        self.code_review.pull_request = TextEdit::new(format!("#{}", pin.number));
     }
 }
 
@@ -1318,7 +1424,11 @@ fn setup(s: &AppState, k: &Kit) -> El {
     let config = s.code_review.configs.get(&workspace);
     let offered = &s.code_review.offered;
     let mut body = col().key("review-setup").w_full().gap(crate::ds::SPACE_4);
-    body = body.child(subject(s, k));
+    let pinned = s.code_review.pinned_to(workspace);
+    body = body.child(match pinned {
+        Some(pin) => pinned_subject(k, pin),
+        None => subject(s, k),
+    });
     if offered.is_empty() {
         body = body.child(note(k, "No installed agent can run a Forge Review."));
     }
@@ -1423,36 +1533,50 @@ fn setup(s: &AppState, k: &Kit) -> El {
             .h(80.0),
     );
     let custom = s.code_review.preset.as_deref() == Some(CUSTOM_PRESET);
+    let busy = s.code_review.busy(workspace);
     let ready = config.is_some()
         && !offered.is_empty()
-        && !s.code_review.starting
-        && s.code_review.awaiting.is_none()
+        && !busy
         && (!custom || !s.code_review.instructions.text.trim().is_empty())
-        && (s.code_review.subject == Subject::Changes
+        && (pinned.is_some()
+            || s.code_review.subject == Subject::Changes
             || !s.code_review.pull_request.text.trim().is_empty());
+    let mut actions = row()
+        .w_full()
+        .gap(crate::ds::SPACE_4)
+        .items_center()
+        .child(el().grow(1.0));
+    if busy {
+        actions = actions.child(crate::ui::busy(s, k));
+    }
     body = body.child(
-        row()
-            .w_full()
-            .gap(crate::ds::SPACE_4)
-            .child(el().grow(1.0))
-            .child(
-                Button::new(start_label(&s.code_review))
-                    .variant(ButtonVariant::Contrast)
-                    .disabled(!ready)
-                    .on_press(|s: &mut AppState| s.start_code_review())
-                    .build(k)
-                    .key("review-start"),
-            ),
+        actions.child(
+            Button::new(start_label(&s.code_review, workspace))
+                .variant(ButtonVariant::Contrast)
+                .disabled(!ready)
+                .on_press(|s: &mut AppState| s.start_code_review())
+                .build(k)
+                .key("review-start"),
+        ),
     );
     body
 }
 
-fn start_label(review: &CodeReview) -> String {
+fn start_label(review: &CodeReview, workspace: WorkspaceId) -> String {
     if review.starting {
         return "Starting…".into();
     }
     if let Some(link) = &review.awaiting {
         return format!("Reading #{}…", link.number);
+    }
+    if review.follow.is_some() {
+        return "Starting the reviewer…".into();
+    }
+    if review.busy(workspace) {
+        return "Reviewing…".into();
+    }
+    if let Some(pin) = review.pinned_to(workspace) {
+        return format!("Review PR #{}", pin.number);
     }
     match review.subject {
         Subject::Changes => "Review changes".into(),
@@ -1504,6 +1628,48 @@ fn subject(s: &AppState, k: &Kit) -> El {
         );
     }
     column
+}
+
+fn pinned_subject(k: &Kit, pin: &PinnedPullRequest) -> El {
+    col()
+        .key("review-pinned")
+        .w_full()
+        .gap(crate::ds::SPACE_2)
+        .child(note(k, "Reviewing"))
+        .child(
+            row()
+                .w_full()
+                .gap(crate::ds::SPACE_3)
+                .items_center()
+                .child(
+                    text(format!("#{}", pin.number))
+                        .font(k.ty.mono)
+                        .color(k.c.text_muted),
+                )
+                .child(
+                    text(pin.title.clone())
+                        .font(k.ty.small_medium)
+                        .color(k.c.text_base)
+                        .truncate()
+                        .min_w(0.0)
+                        .grow(1.0),
+                )
+                .child(
+                    Button::new("Review something else")
+                        .variant(ButtonVariant::GhostMuted)
+                        .control_size(ControlSize::Small)
+                        .on_press(|s: &mut AppState| s.unpin_review())
+                        .build(k)
+                        .key("review-unpin"),
+                ),
+        )
+        .child(note(
+            k,
+            format!(
+                "{} · its head against its base, fetched without moving this checkout.",
+                pin.repository
+            ),
+        ))
 }
 
 fn tier_index(tier: Option<Tier>) -> Option<usize> {
@@ -2142,7 +2308,8 @@ pub fn view(s: &AppState, k: &Kit) -> El {
         );
     }
     let lanes = s.code_review.lanes(workspace);
-    if lanes.len() > 1 {
+    let pinned = s.code_review.pinned_to(workspace);
+    if lanes.len() > 1 && pinned.is_none() {
         let labels: Vec<String> = lanes.iter().map(|lane| lane_label(*lane)).collect();
         let shown = s.code_review.shown_lane(workspace);
         let at = lanes.iter().position(|lane| *lane == shown);
@@ -2241,8 +2408,12 @@ pub fn view(s: &AppState, k: &Kit) -> El {
             body = body.child(coverage(k, run));
         }
         None => {
+            let empty = match pinned {
+                Some(pin) => format!("No review of PR #{} yet.", pin.number),
+                None => "No review of this workspace yet.".into(),
+            };
             body = body.child(
-                text("No review of this workspace yet.")
+                text(empty)
                     .key("review-empty")
                     .font(k.ty.small)
                     .color(k.c.text_faint),
@@ -3085,5 +3256,112 @@ mod tests {
                 base: None,
             }
         );
+    }
+
+    #[test]
+    fn a_pull_request_opened_for_review_is_pinned_and_starts_only_when_pressed() {
+        let (mut state, workspace) = fixture_state();
+        let rx = connected(&mut state);
+        list(&mut state, workspace, "acme/forge", 96);
+        state
+            .open_pull_request_review("acme/forge", 96)
+            .expect("a checkout of acme/forge is open");
+        assert!(rx.try_recv().is_err(), "opening it starts nothing");
+        assert_eq!(
+            state.code_review.shown_lane(workspace),
+            Lane::PullRequest(96)
+        );
+
+        state.code_review.instructions = TextEdit::new("see https://github.com/acme/forge/pull/7");
+        state.review_instructions_edited();
+        state.start_code_review();
+        assert_eq!(
+            started(&rx),
+            ReviewTarget::PullRequest {
+                workspace_id: workspace,
+                number: 96,
+                base: Some("main".into()),
+            },
+            "a link in the instructions never moves a pinned review"
+        );
+
+        state.unpin_review();
+        assert_eq!(state.code_review.subject, Subject::PullRequest);
+        assert_eq!(state.code_review.pull_request.text, "#96");
+    }
+
+    #[test]
+    fn a_pinned_review_drops_the_choice_of_what_to_review() {
+        let (mut state, workspace) = fixture_state();
+        list(&mut state, workspace, "acme/forge", 96);
+        state
+            .open_pull_request_review("acme/forge", 96)
+            .expect("a checkout of acme/forge is open");
+        let keys = keys(state);
+        assert!(has(&keys, "review-pinned"), "{keys:?}");
+        assert!(!has(&keys, "review-subject-kind"));
+        assert!(has(&keys, "review-presets"));
+    }
+
+    #[test]
+    fn the_start_stays_busy_until_the_reviewer_session_is_shown() {
+        let (mut state, workspace) = fixture_state();
+        let _rx = connected(&mut state);
+        let reviewer = state
+            .rows
+            .iter()
+            .find(|row| row.workspace_id == workspace)
+            .map(|row| row.id)
+            .expect("the fixture checkout has a session");
+        state.start_code_review();
+        assert!(state.code_review.busy(workspace));
+
+        let id = ReviewId::new();
+        assert!(state.review_started(workspace, Ok(id)));
+        let mut live = run(id, Some(ReviewStage::Pack), false);
+        live.workspace_id = workspace;
+        live.target = workspace_target(workspace);
+        state.apply_review_run(&live);
+        assert!(state.code_review.busy(workspace), "no reviewer to show yet");
+        assert_eq!(state.workbench.mode, CenterMode::Review);
+
+        live.stage = Some(ReviewStage::Model);
+        live.session_id = Some(reviewer);
+        state.apply_review_run(&live);
+        assert_eq!(state.workbench.mode, CenterMode::Session);
+        assert_eq!(state.active, Some(reviewer));
+        assert!(
+            state.code_review.busy(workspace),
+            "a running review of the same target is not started twice"
+        );
+
+        live.status = ReviewStatus::Completed;
+        live.finished_at = Some(Timestamp::now());
+        state.apply_review_run(&live);
+        assert!(!state.code_review.busy(workspace));
+    }
+
+    #[test]
+    fn a_reviewer_that_lands_after_the_person_left_review_does_not_take_focus() {
+        let (mut state, workspace) = fixture_state();
+        let _rx = connected(&mut state);
+        let reviewer = state
+            .rows
+            .iter()
+            .find(|row| row.workspace_id == workspace)
+            .map(|row| row.id)
+            .expect("the fixture checkout has a session");
+        state.start_code_review();
+        let id = ReviewId::new();
+        assert!(state.review_started(workspace, Ok(id)));
+        state.show_mode(CenterMode::Changes);
+
+        let mut live = run(id, Some(ReviewStage::Model), false);
+        live.workspace_id = workspace;
+        live.target = workspace_target(workspace);
+        live.session_id = Some(reviewer);
+        state.apply_review_run(&live);
+        assert_eq!(state.workbench.mode, CenterMode::Changes);
+        assert_eq!(state.code_review.follow, None);
     }
 }

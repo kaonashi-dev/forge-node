@@ -1,12 +1,11 @@
-//! Review Pull Request…: a pasted link opens the same detail a sidebar row
-//! opens. One the daemon has not listed is read first, off this thread.
+//! Review Pull Request…: a pasted link opens Forge Review set up for that pull
+//! request. One the daemon has not listed is read first, off this thread.
 
 use rune::{El, TextEdit, col, text};
 use rune_kit::{Button, ButtonVariant, Kit, TextInput};
 
 use crate::app::AppState;
 use crate::pr_url::PullRequestLink;
-use crate::workbench::Panel;
 
 pub struct LinkDialog {
     pub url: TextEdit,
@@ -46,7 +45,7 @@ impl AppState {
                 return;
             }
         };
-        if self.open_listed(&link) {
+        if self.review_listed(&link) {
             return;
         }
         let Some(dialog) = self.pr_link.as_mut() else {
@@ -65,21 +64,28 @@ impl AppState {
         }
     }
 
-    /// The press on the sidebar row, with the Pull Requests view brought forward.
-    fn open_listed(&mut self, link: &PullRequestLink) -> bool {
-        let Some(key) = self.store.as_ref().and_then(|store| {
+    /// `false` while the daemon has not listed the pull request; a refusal to
+    /// open its review stays in the dialog.
+    fn review_listed(&mut self, link: &PullRequestLink) -> bool {
+        let Some((repository, number)) = self.store.as_ref().and_then(|store| {
             store
                 .pull_requests
                 .pull_requests
                 .iter()
                 .find(|pr| link.names(pr))
-                .map(crate::pr_filters::key)
+                .map(|pr| (pr.repository.clone(), pr.number))
         }) else {
             return false;
         };
-        self.pr_link = None;
-        self.show_panel(Panel::PullRequests);
-        self.open_pr_detail(key);
+        match self.open_pull_request_review(&repository, number) {
+            Ok(()) => self.pr_link = None,
+            Err(error) => {
+                if let Some(dialog) = self.pr_link.as_mut() {
+                    dialog.pending = None;
+                    dialog.error = Some(error);
+                }
+            }
+        }
         true
     }
 
@@ -103,7 +109,7 @@ impl AppState {
         }
         let error = match error {
             Some(error) => Some(error),
-            None if self.open_listed(&link) => None,
+            None if self.review_listed(&link) => None,
             None => Some("GitHub answered, but the pull request did not arrive; try again.".into()),
         };
         if let (Some(error), Some(dialog)) = (error, self.pr_link.as_mut()) {
@@ -132,8 +138,8 @@ pub fn dialog(s: &AppState, k: &Kit, layer: &mut Vec<El>) {
             "Reading {}#{} from {}…",
             link.repository, link.number, link.host
         ),
-        (None, None) => "Opens the pull request's details, where Review starts a read-only \
-                         agent review."
+        (None, None) => "Opens Forge Review for it, where you choose what to ask for, the tier \
+                         and the agent before it starts."
             .into(),
     };
     let body = col()

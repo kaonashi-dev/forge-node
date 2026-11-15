@@ -3541,10 +3541,14 @@ mod tests {
         );
     }
 
-    fn linked_pr(repository: &str, number: u32) -> domain::PullRequest {
+    fn linked_pr(
+        project: Option<domain::ProjectId>,
+        repository: &str,
+        number: u32,
+    ) -> domain::PullRequest {
         let at = domain::Timestamp::parse_rfc3339("2026-01-01T00:00:00Z").unwrap();
         domain::PullRequest {
-            project_id: None,
+            project_id: project,
             repository: repository.into(),
             host: "github.com".into(),
             number,
@@ -3580,29 +3584,56 @@ mod tests {
         state.submit_pr_link();
     }
 
+    fn first_checkout(state: &AppState) -> (WorkspaceId, Option<domain::ProjectId>) {
+        let workspace = &state.store.as_ref().expect("store").workspaces[0];
+        (workspace.id, Some(workspace.project_id))
+    }
+
+    fn pinned_number(state: &AppState) -> Option<u32> {
+        state.code_review.pinned.as_ref().map(|pin| pin.number)
+    }
+
     #[test]
-    fn a_listed_pull_request_link_opens_its_detail_like_the_sidebar_row() {
+    fn a_listed_pull_request_link_opens_forge_review_pinned_to_it() {
+        let mut state = state();
+        let (workspace, project) = first_checkout(&state);
+        state
+            .store
+            .as_mut()
+            .expect("store")
+            .pull_requests
+            .pull_requests = vec![linked_pr(project, "Acme/Widgets", 7)];
+        paste_link(&mut state, "https://github.com/acme/widgets/pull/7/files");
+        assert!(state.pr_link.is_none());
+        assert_eq!(state.workbench.mode, CenterMode::Review);
+        assert_eq!(state.code_review.workspace, Some(workspace));
+        assert_eq!(pinned_number(&state), Some(7));
+    }
+
+    #[test]
+    fn a_listed_pull_request_without_a_checkout_here_keeps_the_dialog() {
         let mut state = state();
         state
             .store
             .as_mut()
             .expect("store")
             .pull_requests
-            .pull_requests = vec![linked_pr("Acme/Widgets", 7)];
-        state.workbench.panel = Panel::Files;
-        paste_link(&mut state, "https://github.com/acme/widgets/pull/7/files");
-        assert!(state.pr_link.is_none());
-        assert_eq!(state.workbench.panel, Panel::PullRequests);
-        assert_eq!(state.workbench.mode, CenterMode::PrDetail);
-        assert_eq!(
-            state.workbench.pr_detail.as_deref(),
-            Some("github.com/Acme/Widgets#7")
+            .pull_requests = vec![linked_pr(None, "Acme/Widgets", 7)];
+        paste_link(&mut state, "https://github.com/acme/widgets/pull/7");
+        let dialog = state.pr_link.as_ref().expect("the dialog stays");
+        assert!(
+            dialog
+                .error
+                .as_deref()
+                .is_some_and(|error| error.contains("No checkout"))
         );
+        assert_eq!(pinned_number(&state), None);
     }
 
     #[test]
     fn an_unlisted_pull_request_link_waits_for_the_daemon_then_opens_or_says_why() {
         let mut state = state();
+        let (_, project) = first_checkout(&state);
         let (handle, rx) = ConnectionHandle::test_handle(Arc::new(Metrics::default()));
         state.connection = Some(handle);
         paste_link(&mut state, "not a link");
@@ -3627,7 +3658,7 @@ mod tests {
             vec![
                 daemon(client::DaemonEvent::PullRequestsUpdated {
                     state: domain::PullRequestState {
-                        pull_requests: vec![linked_pr("Acme/Widgets", 9)],
+                        pull_requests: vec![linked_pr(project, "Acme/Widgets", 9)],
                         ..domain::PullRequestState::default()
                     },
                 }),
@@ -3642,10 +3673,7 @@ mod tests {
             &mut tx,
         );
         assert!(state.pr_link.is_none());
-        assert_eq!(
-            state.workbench.pr_detail.as_deref(),
-            Some("github.com/Acme/Widgets#9")
-        );
+        assert_eq!(pinned_number(&state), Some(9));
 
         paste_link(&mut state, "https://github.com/acme/widgets/pull/10");
         let _ = rx.try_recv();
