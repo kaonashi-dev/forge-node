@@ -90,7 +90,7 @@ pub use rebase::{ConflictFile, RebaseState, SequencerOp};
 pub use review::{
     Coverage, Finding, FindingReaction, Lineage, ReviewPreset, ReviewRule, ReviewRun,
     ReviewSettings, ReviewStage, ReviewStatus, ReviewSuppression, ReviewTarget, Severity,
-    SuppressionKind, Tier, Verdict,
+    SuppressionKind, Tier, Verdict, CUSTOM_PRESET,
 };
 pub use session::{
     ActivityEvidence, ActivityState, AgentActivity, EditorFind, EditorFindCommand, EditorState,

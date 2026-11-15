@@ -182,12 +182,29 @@ pub fn snapshot_tree(repo: &Path, paths: &[&str], scratch: &Path) -> Result<Stri
     written
 }
 
+fn literal(paths: &[&str]) -> Vec<String> {
+    paths
+        .iter()
+        .map(|path| format!(":(literal){path}"))
+        .collect()
+}
+
+/// `add -A` refuses a pathspec that matches nothing, and a path in neither
+/// the working tree nor the index is already absent from the tree.
 fn write_snapshot(repo: &Path, paths: &[&str], index: &Path) -> Result<String, GitError> {
-    if !paths.is_empty() {
-        let specs: Vec<String> = paths
-            .iter()
-            .map(|path| format!(":(literal){path}"))
-            .collect();
+    let (mut present, gone): (Vec<&str>, Vec<&str>) = paths
+        .iter()
+        .partition(|path| repo.join(path).symlink_metadata().is_ok());
+    if !gone.is_empty() {
+        let specs = literal(&gone);
+        let mut args = vec!["ls-files", "-z", "--cached", "--"];
+        args.extend(specs.iter().map(String::as_str));
+        let out = run_git_with_index(repo, index, &args)?.ok(&args)?;
+        let indexed: Vec<&str> = out.stdout.split('\0').collect();
+        present.extend(gone.into_iter().filter(|path| indexed.contains(path)));
+    }
+    if !present.is_empty() {
+        let specs = literal(&present);
         let mut args = vec!["add", "-A", "--"];
         args.extend(specs.iter().map(String::as_str));
         run_git_with_index(repo, index, &args)?.ok(&args)?;

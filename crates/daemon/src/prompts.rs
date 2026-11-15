@@ -5,12 +5,10 @@ use domain::{
     ActivityEvidence, ActivityState, ContextEnvelope, ContextId, SessionId, SessionKind,
     TerminalId, Timestamp,
 };
-use protocol::{ErrorCode, PromptDelivery, ProtocolError, Response};
+use protocol::{ErrorCode, PromptDelivery, ProtocolError, Response, MAX_PROMPT_BYTES};
 use terminal_core::TerminalEngine;
 
 use crate::{core::Inner, Daemon};
-
-pub const MAX_PROMPT_BYTES: usize = 8_192;
 
 #[derive(Clone)]
 pub(crate) struct PendingPrompt {

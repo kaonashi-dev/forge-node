@@ -215,12 +215,12 @@ impl ReviewStore {
         reviews::feedback(&self.conn(), project)
     }
 
-    /// Deletes the dismissals behind `suppression`, returning how many.
+    /// Lifts `suppression`, returning the runs whose findings it restored.
     pub fn clear_suppression(
         &self,
         project: domain::ProjectId,
         suppression: &domain::ReviewSuppression,
-    ) -> Result<usize, DbError> {
+    ) -> Result<Vec<domain::ReviewId>, DbError> {
         reviews::clear_suppression(&self.conn(), project, suppression)
     }
 }

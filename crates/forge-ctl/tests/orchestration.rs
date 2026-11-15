@@ -3422,9 +3422,10 @@ fn a_child_reports_to_its_parent_and_watch_follows_it_until_it_ends() {
     assert_eq!(lines.last().unwrap()["ended"], true);
 }
 
-/// The test daemon finds a reviewer's transcript through its own
-/// `CLAUDE_CONFIG_DIR`, a process-wide variable, so the review tests share one
-/// store; Forge's per-run session ids keep the files apart.
+/// This harness' login shell sets no `CLAUDE_CONFIG_DIR`, so the process-wide
+/// one set here is what reaches the reviewer's launch environment, and so the
+/// daemon's transcript lookup. The review tests share the store; Forge's
+/// per-run session ids keep the files apart.
 fn review_store() -> &'static Path {
     static STORE: std::sync::OnceLock<PathBuf> = std::sync::OnceLock::new();
     STORE.get_or_init(|| {
@@ -3437,7 +3438,7 @@ fn review_store() -> &'static Path {
 /// Replace the harness' fake `claude` with a reviewer that writes `answer` as
 /// its last assistant message, then exits (`block = false`) or waits.
 fn install_reviewer(harness: &Harness, answer: &str, block: bool) {
-    let store = review_store();
+    review_store();
     let record = json!({
         "type": "assistant",
         "message": {"role": "assistant", "content": [{"type": "text", "text": answer}]},
@@ -3454,11 +3455,10 @@ fn install_reviewer(harness: &Harness, answer: &str, block: bool) {
              for a in \"$@\"; do [ \"$prev\" = --session-id ] && id=$a; prev=$a; done\n\
              printf '%s\\n' \"$*\" > {args}\n\
              slug=$(printf '%s' \"$FORGE_WORKSPACE\" | /usr/bin/tr -c 'A-Za-z0-9' '-')\n\
-             dir={store}/projects/$slug\n\
+             dir=\"$CLAUDE_CONFIG_DIR/projects/$slug\"\n\
              /bin/mkdir -p \"$dir\"\n\
              /bin/cat {answer} > \"$dir/$id.jsonl\"\n\
              {tail}\n",
-            store = sh_quote(&store.to_string_lossy()),
             answer = sh_quote(&answer_file.to_string_lossy()),
             args = sh_quote(&harness.tmp.path().join("args").to_string_lossy()),
             tail = if block { "exec /bin/cat" } else { "exit 0" },
@@ -3618,6 +3618,24 @@ fn review_bench_reports_a_hit_for_a_reintroduced_bug() {
         String::from_utf8_lossy(&worktrees.stdout).lines().count(),
         1
     );
+}
+
+#[test]
+fn review_bench_refuses_a_corpus_over_its_cap_without_reading_it() {
+    let harness = Harness::new();
+    let corpus = harness.tmp.path().join("corpus.toml");
+    fs::File::create(&corpus)
+        .unwrap()
+        .set_len(64 << 20)
+        .unwrap();
+    let running = harness.boot();
+    let ctl = Ctl::new(&running.socket);
+
+    let refused = err(
+        &ctl.run(&["review", "bench", &corpus.to_string_lossy()], &[]),
+        2,
+    );
+    assert_eq!(refused["error"]["code"], "usage", "{refused}");
 }
 
 /// Every committed bench case still prepares: its commit exists and its fix

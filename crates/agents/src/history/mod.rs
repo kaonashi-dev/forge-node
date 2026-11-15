@@ -1313,10 +1313,17 @@ pub fn read_transcript(
 
 /// The transcript of a run launched in `cwd` with a caller-minted session id,
 /// at the one path the provider writes it to, without a discovery scan.
-/// `None` until the file exists, for an id that is not a plain file stem, and
-/// for every provider but Claude.
+/// `config_dir` is the provider's config directory in the run's launch
+/// environment, `~/.claude` when it set none; the daemon's own environment is
+/// not that of the run. `None` until the file exists, for an id that is not a
+/// plain file stem, and for every provider but Claude.
 #[must_use]
-pub fn minted_transcript(provider: &str, cwd: &Path, session_id: &str) -> Option<PathBuf> {
+pub fn minted_transcript(
+    provider: &str,
+    config_dir: Option<&Path>,
+    cwd: &Path,
+    session_id: &str,
+) -> Option<PathBuf> {
     if provider != CLAUDE_PROVIDER
         || session_id.is_empty()
         || !session_id
@@ -1325,7 +1332,10 @@ pub fn minted_transcript(provider: &str, cwd: &Path, session_id: &str) -> Option
     {
         return None;
     }
-    let store = default_dir(&home_dir()?, "CLAUDE_CONFIG_DIR", ".claude");
+    let store = match config_dir {
+        Some(dir) => dir.to_path_buf(),
+        None => home_dir()?.join(".claude"),
+    };
     claude_transcript_in(&store, cwd, session_id)
 }
 
@@ -2733,8 +2743,30 @@ mod tests {
             claude_transcript_in(store.path(), cwd.path(), id),
             Some(dir.join(format!("{id}.jsonl")))
         );
-        assert_eq!(minted_transcript("cursor", cwd.path(), id), None);
-        assert_eq!(minted_transcript(CLAUDE_PROVIDER, cwd.path(), "../x"), None);
+        let store = Some(store.path());
+        assert_eq!(minted_transcript("cursor", store, cwd.path(), id), None);
+        assert_eq!(
+            minted_transcript(CLAUDE_PROVIDER, store, cwd.path(), "../x"),
+            None
+        );
+    }
+
+    #[test]
+    fn a_minted_transcript_is_read_from_the_launch_config_dir() {
+        let launched = tempfile::tempdir().unwrap();
+        let cwd = tempfile::tempdir().unwrap();
+        let id = "0190a8f2-0000-7000-8000-000000000002";
+        let canonical = std::fs::canonicalize(cwd.path()).unwrap();
+        let dir = launched
+            .path()
+            .join("projects")
+            .join(claude_slug(&canonical));
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join(format!("{id}.jsonl")), "").unwrap();
+        assert_eq!(
+            minted_transcript(CLAUDE_PROVIDER, Some(launched.path()), cwd.path(), id),
+            Some(dir.join(format!("{id}.jsonl")))
+        );
     }
 
     #[test]

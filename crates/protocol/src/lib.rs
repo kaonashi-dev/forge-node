@@ -42,6 +42,9 @@ pub use response::{DaemonStats, ProviderInfo, Response, SessionsByState};
 /// into `ClientError::VersionMismatch`. N/N-1 compatibility is not supported.
 pub const PROTOCOL_VERSION: u32 = 41;
 
+/// The most one `SendSessionPrompt` or `SendShellCommand` may carry, in bytes.
+pub const MAX_PROMPT_BYTES: usize = 8_192;
+
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[non_exhaustive]
 #[allow(

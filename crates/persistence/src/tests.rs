@@ -1935,7 +1935,8 @@ fn lifting_a_rule_keeps_its_findings_dismissed_and_lifting_a_finding_deletes_it(
         store
             .clear_suppression(project, &rule(domain::SuppressionKind::Rule, "money", None))
             .unwrap(),
-        3
+        [],
+        "every finding stays dismissed, so no run changes"
     );
     let after = store.feedback(project).unwrap();
     assert_eq!(after.len(), 4, "the dismissals stay");
@@ -1944,8 +1945,16 @@ fn lifting_a_rule_keeps_its_findings_dismissed_and_lifting_a_finding_deletes_it(
         store
             .clear_suppression(project, &rule(domain::SuppressionKind::Rule, "money", None))
             .unwrap(),
-        0,
-        "already lifted"
+        []
+    );
+    assert_eq!(
+        store
+            .feedback(project)
+            .unwrap()
+            .iter()
+            .filter(|f| !f.counted)
+            .count(),
+        3
     );
     assert_eq!(
         store
@@ -1958,7 +1967,7 @@ fn lifting_a_rule_keeps_its_findings_dismissed_and_lifting_a_finding_deletes_it(
                 )
             )
             .unwrap(),
-        1
+        [run.id]
     );
     assert_eq!(store.feedback(project).unwrap().len(), 3);
     store
@@ -1975,4 +1984,16 @@ fn lifting_a_rule_keeps_its_findings_dismissed_and_lifting_a_finding_deletes_it(
         1,
         "dismissing again counts again"
     );
+}
+
+#[test]
+fn findings_whose_commit_fails_are_rolled_back() {
+    let (db, _, _) = db_with_workspace();
+    let conn = db.conn();
+    // Deferred, the missing run is only noticed by COMMIT.
+    conn.execute_batch("PRAGMA defer_foreign_keys = ON;")
+        .unwrap();
+    let orphan = domain::ReviewId::new();
+    assert!(crate::repositories::reviews::insert_findings(conn, orphan, &[mk_finding(1)]).is_err());
+    assert!(conn.is_autocommit(), "the transaction was rolled back");
 }

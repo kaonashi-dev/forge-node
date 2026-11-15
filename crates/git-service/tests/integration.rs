@@ -4,9 +4,10 @@
 
 use git_service::command::run_git;
 use git_service::{
-    commit_range_diff, commits_between, create, current_branch, default_remote, discover_root,
-    fetch, fetch_pull_request, has_remote, ignored_paths, list_branches, list_refs, list_remotes,
-    list_worktrees, precheck_remove, prune, remove, snapshot_tree, status, Force, GitError,
+    commit_range_diff, commits_between, create, current_branch, default_remote,
+    delete_pull_request_refs, discover_root, fetch, fetch_pull_request, has_remote, ignored_paths,
+    list_branches, list_refs, list_remotes, list_worktrees, precheck_remove, prune, remove,
+    snapshot_tree, status, working_tree_diff, Force, GitError,
 };
 use std::path::Path;
 use tempfile::{tempdir, TempDir};
@@ -689,12 +690,12 @@ fn a_pull_request_head_is_fetched_into_a_private_ref() {
         .success());
 
     let timeout = std::time::Duration::from_secs(30);
-    let fetched = fetch_pull_request(checkout.path(), "origin", 1, Some("main"), timeout)
+    let fetched = fetch_pull_request(checkout.path(), "origin", 1, "r1", Some("main"), timeout)
         .expect("test setup");
     assert_eq!(fetched.head, head);
-    assert_eq!(rev(checkout.path(), "refs/forge/review/1/head"), head);
+    assert_eq!(rev(checkout.path(), "refs/forge/review/1/r1/head"), head);
     assert_eq!(
-        rev(checkout.path(), "refs/forge/review/1/base"),
+        rev(checkout.path(), "refs/forge/review/1/r1/base"),
         fetched.base
     );
     assert_eq!(
@@ -707,7 +708,7 @@ fn a_pull_request_head_is_fetched_into_a_private_ref() {
     assert_eq!(commits[0].subject, "pr");
 
     let defaulted =
-        fetch_pull_request(checkout.path(), "origin", 1, None, timeout).expect("test setup");
+        fetch_pull_request(checkout.path(), "origin", 1, "r2", None, timeout).expect("test setup");
     assert_eq!(
         defaulted.base, fetched.base,
         "no base is the remote's HEAD, read from the remote"
@@ -718,7 +719,7 @@ fn a_pull_request_head_is_fetched_into_a_private_ref() {
         ("--upload-pack=x", None),
     ] {
         assert!(matches!(
-            fetch_pull_request(checkout.path(), remote, 1, base, timeout),
+            fetch_pull_request(checkout.path(), remote, 1, "r3", base, timeout),
             Err(GitError::InvalidBranchName { .. })
         ));
     }
@@ -759,4 +760,92 @@ fn a_snapshot_keeps_the_reviewed_working_tree_and_leaves_the_index_alone() {
         "",
         "the checkout's index is untouched"
     );
+}
+
+#[test]
+fn a_snapshot_keeps_deletions_and_renames() {
+    require_git!();
+    let repo = init_repo();
+    let p = repo.path();
+    for name in ["committed.txt", "staged.txt", "unstaged.txt", "old.txt"] {
+        std::fs::write(p.join(name), format!("{name}\n")).unwrap();
+    }
+    setup(p, &["add", "."]);
+    setup(p, &["-c", "commit.gpgsign=false", "commit", "-m", "files"]);
+    let base = run_git(Some(p), &["rev-parse", "HEAD"]).unwrap();
+    let base = base.stdout_trimmed().to_owned();
+    setup(p, &["rm", "-q", "committed.txt"]);
+    setup(p, &["mv", "old.txt", "new.txt"]);
+    setup(
+        p,
+        &[
+            "-c",
+            "commit.gpgsign=false",
+            "commit",
+            "-m",
+            "delete and rename",
+        ],
+    );
+    setup(p, &["rm", "-q", "staged.txt"]);
+    std::fs::remove_file(p.join("unstaged.txt")).unwrap();
+
+    let reviewed = working_tree_diff(p, Some(&base), 3).expect("diff");
+    let paths: Vec<&str> = reviewed
+        .files
+        .iter()
+        .map(|file| file.path.as_str())
+        .collect();
+    let scratch = tempdir().unwrap();
+    let tree = snapshot_tree(p, &paths, &scratch.path().join("index")).expect("snapshot");
+
+    let again = commit_range_diff(p, &base, &tree, 3).expect("diff");
+    let shown: Vec<(&str, git_service::FileChange)> = again
+        .files
+        .iter()
+        .map(|file| (file.path.as_str(), file.status))
+        .collect();
+    let expected: Vec<(&str, git_service::FileChange)> = reviewed
+        .files
+        .iter()
+        .map(|file| (file.path.as_str(), file.status))
+        .collect();
+    assert_eq!(shown, expected);
+    for gone in ["committed.txt", "staged.txt", "unstaged.txt", "old.txt"] {
+        assert!(
+            shown.contains(&(gone, git_service::FileChange::Deleted)),
+            "{gone}: {shown:?}"
+        );
+    }
+    assert!(
+        shown.contains(&("new.txt", git_service::FileChange::Added)),
+        "{shown:?}"
+    );
+}
+
+#[test]
+fn a_review_fetch_leaves_remote_tracking_refs_and_its_refs_can_be_deleted() {
+    require_git!();
+    let (origin, checkout, head) = origin_with_pull_request();
+    let tracking = rev(checkout.path(), "refs/remotes/origin/main");
+    setup(
+        &origin.path().join("origin.git"),
+        &["update-ref", "refs/heads/main", &head],
+    );
+    let timeout = std::time::Duration::from_secs(30);
+    fetch_pull_request(checkout.path(), "origin", 1, "r1", Some("main"), timeout).expect("fetch");
+    assert_eq!(
+        rev(checkout.path(), "refs/remotes/origin/main"),
+        tracking,
+        "the configured refspec does not apply"
+    );
+
+    delete_pull_request_refs(checkout.path(), 1, "r1").expect("delete");
+    for name in ["refs/forge/review/1/r1/head", "refs/forge/review/1/r1/base"] {
+        assert!(!run_git(
+            Some(checkout.path()),
+            &["rev-parse", "--verify", "--quiet", name]
+        )
+        .expect("rev-parse")
+        .success());
+    }
 }

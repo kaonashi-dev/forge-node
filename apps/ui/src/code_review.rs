@@ -14,19 +14,21 @@ use rune::{El, ScrollSpec, TextEdit, col, el, row, text};
 use rune_kit::diff::{Annotation, DiffState, DiffView, LineRef, Side};
 use rune_kit::{
     Button, ButtonVariant, ControlSize, Kit, Markdown, Progress, RadioGroup, RadioItem,
-    SegmentedControl, TextArea,
+    SegmentedControl, TextArea, TextInput,
 };
 
 use crate::app::AppState;
+use crate::pr_url::PullRequestLink;
+use crate::review_subject::{Resolution, Subject};
 use crate::workbench::CenterMode;
 
-pub const CUSTOM_PRESET: &str = "custom";
+mod model;
 
-/// What the daemon accepts in one `SendSessionPrompt`.
-pub const PROMPT_BUDGET: usize = 8_192;
-
-const PROMPT_HEAD: &str = "Forge Review found these issues in your changes. Fix each one, or say \
-                           why it is not a problem:\n\n";
+pub use client::CUSTOM_PRESET;
+pub use client::MAX_PROMPT_BYTES as PROMPT_BUDGET;
+use model::{
+    STAGES, annotations, findings_prompt, group_findings, is_stale, standing_prompt, supersedes,
+};
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum Grouping {
@@ -65,6 +67,47 @@ pub struct Report {
     pub findings: Vec<Finding>,
     pub resolved: Vec<Finding>,
     pub previous: Option<ReviewId>,
+    /// `findings` grouped by `grouped_by`, as indices into it.
+    groups: Vec<(String, Vec<usize>)>,
+    grouped_by: Grouping,
+    /// A finding's index by its id as an annotation names it.
+    by_id: HashMap<String, usize>,
+}
+
+impl Report {
+    fn new(
+        run: ReviewId,
+        findings: Vec<Finding>,
+        resolved: Vec<Finding>,
+        previous: Option<ReviewId>,
+        grouping: Grouping,
+    ) -> Self {
+        let by_id = findings
+            .iter()
+            .enumerate()
+            .map(|(at, finding)| (finding.id.to_string(), at))
+            .collect();
+        Self {
+            groups: group_findings(&findings, grouping),
+            grouped_by: grouping,
+            run,
+            findings,
+            resolved,
+            previous,
+            by_id,
+        }
+    }
+
+    fn regroup(&mut self, grouping: Grouping) {
+        if self.grouped_by != grouping {
+            self.groups = group_findings(&self.findings, grouping);
+            self.grouped_by = grouping;
+        }
+    }
+
+    fn finding(&self, annotation: &Annotation) -> Option<&Finding> {
+        self.findings.get(*self.by_id.get(annotation.id.as_str())?)
+    }
 }
 
 /// The range one run reviewed, as the Diff tab draws it.
@@ -87,6 +130,15 @@ struct ChangesKey {
     revision: u64,
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PinnedPullRequest {
+    pub workspace: WorkspaceId,
+    pub repository: String,
+    pub number: u32,
+    pub title: String,
+    pub base: Option<String>,
+}
+
 pub struct CodeReview {
     pub workspace: Option<WorkspaceId>,
     pub latest: HashMap<Slot, ReviewRun>,
@@ -101,7 +153,19 @@ pub struct CodeReview {
     pub tier: Option<Tier>,
     pub provider: Option<String>,
     pub instructions: TextEdit,
+    pub subject: Subject,
+    pub pull_request: TextEdit,
+    /// The link last copied out of the instructions, so switching back to the
+    /// changes is not undone by the next keystroke.
+    pub detected: Option<PullRequestLink>,
+    /// A linked pull request the daemon is reading before the review starts.
+    pub awaiting: Option<PullRequestLink>,
+    /// Set when the tab was opened for one pull request: it replaces the
+    /// what-to-review choice until the person asks to change it.
+    pub pinned: Option<PinnedPullRequest>,
     pub starting: bool,
+    /// The run this window started, until its reviewer session is shown.
+    pub follow: Option<ReviewId>,
     pub asked_config: HashMap<WorkspaceId, u64>,
     pub asked_list: HashMap<WorkspaceId, u64>,
     pub report_asked: HashSet<ReviewId>,
@@ -119,6 +183,10 @@ pub struct CodeReview {
     /// Each reviewed workspace's `send_target`, recomputed when the sessions or
     /// the runs change, never per frame.
     pub send_to: HashMap<WorkspaceId, SessionId>,
+    /// `reviewers` of the store's providers, recomputed when they change.
+    pub offered: Vec<(AgentProviderId, String)>,
+    /// Each checkout's lanes in order, extended when a run of a new lane lands.
+    lanes: HashMap<WorkspaceId, Vec<Lane>>,
 }
 
 impl Default for CodeReview {
@@ -135,7 +203,13 @@ impl Default for CodeReview {
             tier: None,
             provider: None,
             instructions: TextEdit::new(""),
+            subject: Subject::Changes,
+            pull_request: TextEdit::new(""),
+            detected: None,
+            awaiting: None,
+            pinned: None,
             starting: false,
+            follow: None,
             asked_config: HashMap::new(),
             asked_list: HashMap::new(),
             report_asked: HashSet::new(),
@@ -147,6 +221,8 @@ impl Default for CodeReview {
             revision: 0,
             changes_key: None,
             send_to: HashMap::new(),
+            offered: Vec::new(),
+            lanes: HashMap::new(),
         }
     }
 }
@@ -180,79 +256,60 @@ impl CodeReview {
         self.reports.get(&(workspace, Lane::Workspace))
     }
 
-    fn lanes(&self, workspace: WorkspaceId) -> Vec<Lane> {
-        let mut lanes: Vec<Lane> = self
-            .latest
-            .keys()
-            .filter(|(owner, _)| *owner == workspace)
-            .map(|(_, lane)| *lane)
-            .collect();
-        lanes.sort_unstable();
-        lanes
+    fn lanes(&self, workspace: WorkspaceId) -> &[Lane] {
+        self.lanes.get(&workspace).map_or(&[], Vec::as_slice)
+    }
+
+    fn set_grouping(&mut self, grouping: Grouping) {
+        self.grouping = grouping;
+        for report in self.reports.values_mut() {
+            report.regroup(grouping);
+        }
     }
 
     fn knows(&self, workspace: WorkspaceId) -> bool {
         self.latest.keys().any(|(owner, _)| *owner == workspace)
     }
-}
 
-const SEVERITIES: [Severity; 3] = [Severity::P0, Severity::P1, Severity::P2];
-const STAGES: [ReviewStage; 4] = [
-    ReviewStage::Diff,
-    ReviewStage::Pack,
-    ReviewStage::Model,
-    ReviewStage::Validate,
-];
+    #[must_use]
+    pub fn pinned_to(&self, workspace: WorkspaceId) -> Option<&PinnedPullRequest> {
+        self.pinned
+            .as_ref()
+            .filter(|pin| pin.workspace == workspace)
+    }
 
-/// Findings grouped: severity groups are most
-/// severe first; file groups are sorted by path and line. Empty groups drop.
-#[must_use]
-pub fn group_findings(findings: &[Finding], by: Grouping) -> Vec<(String, Vec<&Finding>)> {
-    match by {
-        Grouping::Severity => SEVERITIES
-            .iter()
-            .map(|severity| {
-                let mut group: Vec<&Finding> = findings
-                    .iter()
-                    .filter(|finding| finding.severity == *severity)
-                    .collect();
-                group.sort_by(|a, b| {
-                    a.path
-                        .cmp(&b.path)
-                        .then_with(|| a.line.unwrap_or(0).cmp(&b.line.unwrap_or(0)))
-                });
-                (format!("{severity:?}"), group)
-            })
-            .filter(|(_, group)| !group.is_empty())
-            .collect(),
-        Grouping::File => {
-            let mut paths: Vec<&str> = findings
-                .iter()
-                .map(|finding| finding.path.as_str())
-                .collect();
-            paths.sort_unstable();
-            paths.dedup();
-            paths
-                .into_iter()
-                .map(|path| {
-                    let mut group: Vec<&Finding> = findings
-                        .iter()
-                        .filter(|finding| finding.path == path)
-                        .collect();
-                    group.sort_by_key(|finding| finding.line.unwrap_or(0));
-                    (path.to_string(), group)
-                })
-                .collect()
+    /// The lane the start button would run in, `None` while the typed pull
+    /// request does not parse.
+    fn target_lane(&self, workspace: WorkspaceId) -> Option<Lane> {
+        if let Some(pin) = self.pinned_to(workspace) {
+            return Some(Lane::PullRequest(pin.number));
+        }
+        match self.subject {
+            Subject::Changes => Some(Lane::Workspace),
+            Subject::PullRequest => match crate::review_subject::parse(&self.pull_request.text) {
+                Ok(crate::review_subject::Reference::Number(number)) => {
+                    Some(Lane::PullRequest(number))
+                }
+                Ok(crate::review_subject::Reference::Link(link)) => {
+                    Some(Lane::PullRequest(link.number))
+                }
+                Err(_) => None,
+            },
         }
     }
-}
 
-/// An unmeasured head is not evidence the checkout moved, and a pull
-/// request's head is not the checkout's.
-#[must_use]
-pub fn is_stale(run: &ReviewRun, head: Option<&str>) -> bool {
-    matches!(run.target, ReviewTarget::Workspace { .. })
-        && head.is_some_and(|head| head != run.head_oid)
+    /// Whether pressing start again would send a second review of the same
+    /// target; the running one has to be cancelled first.
+    #[must_use]
+    pub fn busy(&self, workspace: WorkspaceId) -> bool {
+        self.starting
+            || self.awaiting.is_some()
+            || self.follow.is_some()
+            || self
+                .target_lane(workspace)
+                .and_then(|lane| self.latest.get(&(workspace, lane)))
+                .is_some_and(running)
+    }
 }
 
 #[must_use]
@@ -282,25 +339,6 @@ pub fn annotates_changes(run: &ReviewRun, head: Option<&str>) -> bool {
         && !is_stale(run, head)
 }
 
-/// One annotation per anchored, standing finding, on the new side of the file
-/// at its index in `file_paths`.
-#[must_use]
-pub fn annotations(findings: &[Finding], file_paths: &[&str]) -> Vec<Annotation> {
-    findings
-        .iter()
-        .filter(|finding| finding.reaction != Some(FindingReaction::Dismiss))
-        .filter_map(|finding| {
-            let line = finding.line?;
-            let file = file_paths.iter().position(|path| *path == finding.path)?;
-            Some(Annotation::new(
-                file,
-                LineRef::new(Side::New, line),
-                finding.id.to_string(),
-            ))
-        })
-        .collect()
-}
-
 /// The workspace's live agent that was active last, never a reviewer or a
 /// background one.
 #[must_use]
@@ -320,53 +358,6 @@ pub fn send_target(
         })
         .max_by_key(|session| session.last_activity_at)
         .map(|session| session.id)
-}
-
-/// Whole findings, in order, within `budget` bytes, and how many did not fit.
-/// Empty when none fits or none is given; [`empty_prompt_reason`] tells which.
-#[must_use]
-pub fn findings_prompt(findings: &[&Finding], budget: usize) -> (String, usize) {
-    let mut prompt = PROMPT_HEAD.to_string();
-    let mut left_out = 0;
-    for finding in findings {
-        let mut block = format!(
-            "- [{:?}] {}{} — {}\n  {}\n",
-            finding.severity,
-            finding.path,
-            finding
-                .line
-                .map(|line| format!(":{line}"))
-                .unwrap_or_default(),
-            finding.title,
-            finding.body.replace('\n', "\n  "),
-        );
-        if let Some(suggestion) = &finding.suggestion {
-            block.push_str(&format!(
-                "  Suggestion:\n  {}\n",
-                suggestion.replace('\n', "\n  ")
-            ));
-        }
-        block.push('\n');
-        if prompt.len() + block.len() <= budget {
-            prompt.push_str(&block);
-        } else {
-            left_out += 1;
-        }
-    }
-    if left_out == findings.len() {
-        return (String::new(), left_out);
-    }
-    (prompt, left_out)
-}
-
-/// Every finding that is not dismissed, as one prompt within [`PROMPT_BUDGET`].
-#[must_use]
-pub fn standing_prompt(findings: &[Finding]) -> (String, usize) {
-    let standing: Vec<&Finding> = findings
-        .iter()
-        .filter(|finding| finding.reaction != Some(FindingReaction::Dismiss))
-        .collect();
-    findings_prompt(&standing, PROMPT_BUDGET)
 }
 
 #[must_use]
@@ -389,31 +380,6 @@ pub fn delivery_message(queued: bool, left_out: usize) -> String {
         message.push_str(&format!(" · {left_out} finding(s) left out to fit 8 KiB"));
     }
     message
-}
-
-fn progress(run: &ReviewRun) -> usize {
-    if run.finished_at.is_some() {
-        return STAGES.len() + 1;
-    }
-    run.stage.map_or(0, |stage| {
-        STAGES
-            .iter()
-            .position(|known| *known == stage)
-            .map_or(1, |at| at + 1)
-    })
-}
-
-/// Whether `next` replaces `current`: a newer run wins, and an earlier read of
-/// the same run never undoes a later one.
-#[must_use]
-pub fn supersedes(current: Option<&ReviewRun>, next: &ReviewRun) -> bool {
-    let Some(current) = current else {
-        return true;
-    };
-    if current.id != next.id {
-        return next.id > current.id;
-    }
-    progress(next) >= progress(current)
 }
 
 #[must_use]
@@ -530,6 +496,7 @@ fn running(run: &ReviewRun) -> bool {
 }
 
 pub fn open(s: &mut AppState, workspace: WorkspaceId) {
+    s.code_review.pinned = None;
     s.code_review.workspace = Some(workspace);
     s.code_review.errors.remove(&workspace);
     s.inspect(workspace, CenterMode::Review);
@@ -550,6 +517,7 @@ pub fn refresh(s: &mut AppState) {
 /// Replies asked on the old connection are dropped as stale, so what was
 /// waiting on one is asked again on the next sync.
 pub fn reconnected(s: &mut AppState) {
+    s.code_review.starting = false;
     s.code_review.report_asked.clear();
     if s.code_review.diff.as_ref().is_some_and(|diff| !diff.loaded) {
         s.code_review.diff = None;
@@ -611,7 +579,6 @@ fn sync(s: &mut AppState) {
             None => Err("The client worker is still starting.".to_string()),
         };
         if let Err(error) = result {
-            s.code_review.report_asked.remove(&run);
             s.code_review.errors.insert(workspace, error);
         }
     }
@@ -727,11 +694,10 @@ impl AppState {
             return;
         };
         let provider = self.code_review.provider.clone().or_else(|| {
-            self.store.as_ref().and_then(|store| {
-                reviewers(&store.providers)
-                    .first()
-                    .map(|(id, _)| id.to_string())
-            })
+            self.code_review
+                .offered
+                .first()
+                .map(|(id, _)| id.to_string())
         });
         let preset = self
             .code_review
@@ -762,24 +728,178 @@ impl AppState {
             return;
         };
         let instructions = (!instructions.is_empty()).then_some(instructions);
+        let target = match (
+            self.code_review.pinned_to(workspace),
+            self.code_review.subject,
+        ) {
+            (Some(pin), _) => ReviewTarget::PullRequest {
+                workspace_id: workspace,
+                number: pin.number,
+                base: pin.base.clone(),
+            },
+            (None, Subject::Changes) => ReviewTarget::Workspace {
+                workspace_id: workspace,
+                base: None,
+            },
+            (None, Subject::PullRequest) => match self.pull_request_target(workspace) {
+                Some(target) => target,
+                None => return,
+            },
+        };
+        self.send_review(
+            target,
+            Some(preset),
+            self.code_review.tier,
+            Some(provider),
+            instructions,
+        );
+    }
+
+    /// `None` when the review cannot start yet: the reason is on screen, or a
+    /// linked pull request is being read first.
+    fn pull_request_target(&mut self, workspace: WorkspaceId) -> Option<ReviewTarget> {
+        let reference = match crate::review_subject::parse(&self.code_review.pull_request.text) {
+            Ok(reference) => reference,
+            Err(error) => {
+                self.code_review.errors.insert(workspace, error);
+                return None;
+            }
+        };
+        let resolution = match self.store.as_ref() {
+            Some(store) => crate::review_subject::resolve(
+                &reference,
+                &store.pull_requests.pull_requests,
+                &store.workspaces,
+                workspace,
+            ),
+            None => Resolution::Refused("Not connected to the daemon.".into()),
+        };
+        let problem = match resolution {
+            Resolution::Ready(target) => {
+                return Some(ReviewTarget::PullRequest {
+                    workspace_id: target.workspace,
+                    number: target.number,
+                    base: target.base,
+                });
+            }
+            Resolution::Refused(problem) => problem,
+            Resolution::Unlisted(link) => match &self.connection {
+                Some(connection) => match connection.fetch_pull_request(link.clone()) {
+                    Ok(()) => {
+                        self.code_review.awaiting = Some(link);
+                        self.code_review.errors.remove(&workspace);
+                        return None;
+                    }
+                    Err(error) => error,
+                },
+                None => "The client worker is still starting.".into(),
+            },
+        };
+        self.code_review.errors.insert(workspace, problem);
+        None
+    }
+
+    /// `PullRequestFetched` for the link a review is waiting on: start it now
+    /// that the daemon knows which repository the pull request lives in.
+    pub fn review_link_fetched(
+        &mut self,
+        host: &str,
+        repository: &str,
+        number: u32,
+        error: Option<String>,
+    ) {
+        let Some(link) = self.code_review.awaiting.clone() else {
+            return;
+        };
+        if !link.is(host, repository, number) {
+            return;
+        }
+        self.code_review.awaiting = None;
+        let listed = self.store.as_ref().is_some_and(|store| {
+            store
+                .pull_requests
+                .pull_requests
+                .iter()
+                .any(|pr| link.names(pr))
+        });
+        let problem = match error {
+            Some(error) => Some(error),
+            None if listed => None,
+            None => Some("GitHub answered, but the pull request did not arrive; try again.".into()),
+        };
+        match (problem, self.code_review.workspace) {
+            (None, _) if self.code_review.subject == Subject::PullRequest => {
+                self.start_code_review();
+            }
+            (None, _) => {}
+            (Some(problem), Some(workspace)) => {
+                self.code_review.errors.insert(workspace, problem);
+            }
+            (Some(_), None) => {}
+        }
+    }
+
+    /// The daemon refused to read the awaited link, e.g. a host not in `[github]`.
+    pub fn review_link_refused(&mut self, message: &str) {
+        if self.code_review.awaiting.take().is_none() {
+            return;
+        }
+        if let Some(workspace) = self.code_review.workspace {
+            self.code_review
+                .errors
+                .insert(workspace, message.to_owned());
+        }
+    }
+
+    /// Copies a pull-request link typed into the instructions into the subject,
+    /// once per link, so the target is visible before the review starts.
+    pub fn review_instructions_edited(&mut self) {
+        if self.code_review.pinned.is_some() {
+            return;
+        }
+        let found = crate::review_subject::find_link(&self.code_review.instructions.text);
+        let Some(link) = found else {
+            return;
+        };
+        if self.code_review.detected.as_ref() == Some(&link) {
+            return;
+        }
+        self.code_review.pull_request = TextEdit::new(format!(
+            "https://{}/{}/pull/{}",
+            link.host, link.repository, link.number
+        ));
+        self.code_review.subject = Subject::PullRequest;
+        self.code_review.detected = Some(link);
+    }
+
+    fn send_review(
+        &mut self,
+        target: ReviewTarget,
+        preset: Option<String>,
+        tier: Option<Tier>,
+        provider: Option<String>,
+        instructions: Option<String>,
+    ) {
+        let workspace = target.workspace_id();
+        let shown = lane(&target);
         let result = match &self.connection {
             Some(connection) => connection.start_review(
                 self.generation,
-                ReviewTarget::Workspace {
-                    workspace_id: workspace,
-                    base: None,
-                },
-                Some(preset),
-                self.code_review.tier,
-                Some(provider),
+                target,
+                preset,
+                tier,
+                provider,
                 instructions,
             ),
             None => Err("The client worker is still starting.".to_string()),
         };
+        if self.code_review.workspace != Some(workspace) {
+            open(self, workspace);
+        }
+        self.code_review.shown.insert(workspace, shown);
         match result {
             Ok(()) => {
                 self.code_review.starting = true;
-                self.code_review.shown.insert(workspace, Lane::Workspace);
                 self.code_review.errors.remove(&workspace);
             }
             Err(error) => {
@@ -809,11 +929,34 @@ impl AppState {
         if supersedes(self.code_review.latest.get(&slot), run) {
             self.code_review.latest.insert(slot, run.clone());
             self.code_review.shown.entry(slot.0).or_insert(slot.1);
+            let lanes = self.code_review.lanes.entry(slot.0).or_default();
+            if !lanes.contains(&slot.1) {
+                lanes.push(slot.1);
+                lanes.sort_unstable();
+            }
             self.refresh_send_targets();
         }
-        self.code_review.starting = false;
+        if self.code_review.follow == Some(run.id) {
+            self.follow_reviewer(run.workspace_id, run.session_id, run.status.is_finished());
+        }
         if self.code_review.workspace == Some(run.workspace_id) {
             self.code_review.errors.remove(&run.workspace_id);
+        }
+    }
+
+    /// The reviewer session only exists once the diff and pack stages are
+    /// done, so the switch waits for it. A person who has left the Review tab
+    /// meanwhile keeps where they are: their keystrokes must not land in it.
+    fn follow_reviewer(&mut self, workspace: WorkspaceId, session: Option<SessionId>, ended: bool) {
+        if let Some(session) = session {
+            self.code_review.follow = None;
+            if self.workbench.mode == CenterMode::Review
+                && self.code_review.workspace == Some(workspace)
+            {
+                self.focus_session(session);
+            }
+        } else if ended {
+            self.code_review.follow = None;
         }
     }
 
@@ -833,11 +976,7 @@ impl AppState {
                 if current && remembered.is_none() {
                     self.code_review.preset = Some(config.default_preset.clone());
                 }
-                let offered: Vec<(AgentProviderId, String)> = self
-                    .store
-                    .as_ref()
-                    .map(|store| reviewers(&store.providers))
-                    .unwrap_or_default();
+                let offered = &self.code_review.offered;
                 if current
                     && !self
                         .code_review
@@ -890,19 +1029,19 @@ impl AppState {
                 } = *report;
                 self.code_review.reports.insert(
                     (workspace, lane(&run.target)),
-                    Report {
-                        run: run.id,
+                    Report::new(
+                        run.id,
                         findings,
                         resolved,
                         previous,
-                    },
+                        self.code_review.grouping,
+                    ),
                 );
                 self.code_review.revision += 1;
                 self.apply_review_run(&run);
                 self.code_review.errors.remove(&workspace);
             }
             Err(error) => {
-                self.code_review.report_asked.clear();
                 self.code_review.errors.insert(workspace, error);
             }
         }
@@ -916,8 +1055,18 @@ impl AppState {
     ) -> bool {
         self.code_review.starting = false;
         match result {
-            Ok(_) => {
+            Ok(id) => {
                 self.code_review.errors.remove(&workspace);
+                self.code_review.follow = Some(id);
+                let landed = self
+                    .code_review
+                    .latest
+                    .values()
+                    .find(|run| run.id == id)
+                    .map(|run| (run.workspace_id, run.session_id, run.status.is_finished()));
+                if let Some((workspace, session, ended)) = landed {
+                    self.follow_reviewer(workspace, session, ended);
+                }
             }
             Err(error) => {
                 self.code_review.errors.insert(workspace, error);
@@ -1087,6 +1236,14 @@ impl AppState {
             .ok_or("No running agent in this checkout to send to.")
     }
 
+    pub(crate) fn refresh_reviewers(&mut self) {
+        self.code_review.offered = self
+            .store
+            .as_ref()
+            .map(|store| reviewers(&store.providers))
+            .unwrap_or_default();
+    }
+
     pub(crate) fn refresh_send_targets(&mut self) {
         let reviewers: Vec<SessionId> = self
             .code_review
@@ -1198,13 +1355,22 @@ impl AppState {
         }
     }
 
-    /// Forge Review of a pull request's head, in the checkout `review_workspace`
-    /// picks; the checkout itself is not moved.
-    pub fn start_pull_request_review(&mut self, repository: &str, number: u32) {
+    /// The Review tab set up for one listed pull request, in the checkout
+    /// `review_workspace` picks; nothing starts until the person presses it.
+    ///
+    /// # Errors
+    /// A sentence for the person when the pull request is not listed or no
+    /// checkout of its repository is open.
+    pub fn open_pull_request_review(
+        &mut self,
+        repository: &str,
+        number: u32,
+    ) -> Result<(), String> {
         let Some(pr) = self.pull_request(repository, number) else {
-            return;
+            return Err(format!(
+                "{repository}#{number} is not listed yet; refresh and try again."
+            ));
         };
-        let base = (!pr.base_ref.is_empty()).then(|| pr.base_ref.clone());
         let workspace = self.store.as_ref().and_then(|store| {
             crate::pr_review::review_workspace(
                 &store.workspaces,
@@ -1213,44 +1379,30 @@ impl AppState {
             )
         });
         let Some(workspace) = workspace else {
-            self.toasts.danger(
-                "Forge Review did not start",
-                "No checkout of this repository is open here.",
-            );
-            return;
+            return Err(format!("No checkout of {repository} is open here."));
         };
-        let provider = self.code_review.provider.clone().or_else(|| {
-            self.store.as_ref().and_then(|store| {
-                reviewers(&store.providers)
-                    .first()
-                    .map(|(id, _)| id.to_string())
-            })
-        });
-        let result = match &self.connection {
-            Some(connection) => connection.start_review(
-                self.generation,
-                ReviewTarget::PullRequest {
-                    workspace_id: workspace,
-                    number,
-                    base,
-                },
-                None,
-                None,
-                provider,
-                None,
-            ),
-            None => Err("The client worker is still starting.".to_string()),
+        let pin = PinnedPullRequest {
+            workspace,
+            repository: pr.repository.clone(),
+            number,
+            title: pr.title.clone(),
+            base: (!pr.base_ref.is_empty()).then(|| pr.base_ref.clone()),
         };
         open(self, workspace);
+        self.code_review.pinned = Some(pin);
         self.code_review
             .shown
             .insert(workspace, Lane::PullRequest(number));
-        match result {
-            Ok(()) => self.code_review.starting = true,
-            Err(error) => {
-                self.code_review.errors.insert(workspace, error);
-            }
-        }
+        Ok(())
+    }
+
+    /// Back to the what-to-review choice, with the pinned pull request filled in.
+    pub fn unpin_review(&mut self) {
+        let Some(pin) = self.code_review.pinned.take() else {
+            return;
+        };
+        self.code_review.subject = Subject::PullRequest;
+        self.code_review.pull_request = TextEdit::new(format!("#{}", pin.number));
     }
 }
 
@@ -1270,12 +1422,13 @@ fn setup(s: &AppState, k: &Kit) -> El {
         return col();
     };
     let config = s.code_review.configs.get(&workspace);
-    let offered: Vec<(AgentProviderId, String)> = s
-        .store
-        .as_ref()
-        .map(|store| reviewers(&store.providers))
-        .unwrap_or_default();
+    let offered = &s.code_review.offered;
     let mut body = col().key("review-setup").w_full().gap(crate::ds::SPACE_4);
+    let pinned = s.code_review.pinned_to(workspace);
+    body = body.child(match pinned {
+        Some(pin) => pinned_subject(k, pin),
+        None => subject(s, k),
+    });
     if offered.is_empty() {
         body = body.child(note(k, "No installed agent can run a Forge Review."));
     }
@@ -1314,7 +1467,7 @@ fn setup(s: &AppState, k: &Kit) -> El {
             .key("review-tier"),
         );
         let mut agents = RadioGroup::new().label("Agent");
-        for (id, name) in &offered {
+        for (id, name) in offered {
             let chosen = s.code_review.provider.as_deref() == Some(id.as_str());
             let id = id.to_string();
             agents = agents.item(RadioItem::new(name.clone(), chosen).on_select(
@@ -1374,34 +1527,149 @@ fn setup(s: &AppState, k: &Kit) -> El {
             .label("Extra instructions")
             .placeholder("What should the agent look for?")
             .on_edit(|s: &mut AppState| &mut s.code_review.instructions)
+            .on_change(|s: &mut AppState, _| s.review_instructions_edited())
             .build(k)
             .key("review-instructions")
             .h(80.0),
     );
     let custom = s.code_review.preset.as_deref() == Some(CUSTOM_PRESET);
+    let busy = s.code_review.busy(workspace);
     let ready = config.is_some()
         && !offered.is_empty()
-        && !s.code_review.starting
-        && (!custom || !s.code_review.instructions.text.trim().is_empty());
+        && !busy
+        && (!custom || !s.code_review.instructions.text.trim().is_empty())
+        && (pinned.is_some()
+            || s.code_review.subject == Subject::Changes
+            || !s.code_review.pull_request.text.trim().is_empty());
+    let mut actions = row()
+        .w_full()
+        .gap(crate::ds::SPACE_4)
+        .items_center()
+        .child(el().grow(1.0));
+    if busy {
+        actions = actions.child(crate::ui::busy(s, k));
+    }
     body = body.child(
-        row()
-            .w_full()
-            .gap(crate::ds::SPACE_4)
-            .child(el().grow(1.0))
-            .child(
-                Button::new(if s.code_review.starting {
-                    "Starting…"
-                } else {
-                    "Review changes"
-                })
+        actions.child(
+            Button::new(start_label(&s.code_review, workspace))
                 .variant(ButtonVariant::Contrast)
                 .disabled(!ready)
                 .on_press(|s: &mut AppState| s.start_code_review())
                 .build(k)
                 .key("review-start"),
-            ),
+        ),
     );
     body
+}
+
+fn start_label(review: &CodeReview, workspace: WorkspaceId) -> String {
+    if review.starting {
+        return "Starting…".into();
+    }
+    if let Some(link) = &review.awaiting {
+        return format!("Reading #{}…", link.number);
+    }
+    if review.follow.is_some() {
+        return "Starting the reviewer…".into();
+    }
+    if review.busy(workspace) {
+        return "Reviewing…".into();
+    }
+    if let Some(pin) = review.pinned_to(workspace) {
+        return format!("Review PR #{}", pin.number);
+    }
+    match review.subject {
+        Subject::Changes => "Review changes".into(),
+        Subject::PullRequest => match crate::review_subject::parse(&review.pull_request.text) {
+            Ok(crate::review_subject::Reference::Number(number)) => format!("Review PR #{number}"),
+            Ok(crate::review_subject::Reference::Link(link)) => {
+                format!("Review PR #{}", link.number)
+            }
+            Err(_) => "Review pull request".into(),
+        },
+    }
+}
+
+fn subject(s: &AppState, k: &Kit) -> El {
+    let review = &s.code_review;
+    let mut what = RadioGroup::new().label("What to review");
+    for (label, detail, choice) in [
+        (
+            "Changes in this checkout",
+            "The working tree against its base branch, uncommitted changes included.",
+            Subject::Changes,
+        ),
+        (
+            "A pull request",
+            "Its head against its base, fetched without moving this checkout.",
+            Subject::PullRequest,
+        ),
+    ] {
+        what = what.item(
+            RadioItem::new(label, review.subject == choice)
+                .description(detail)
+                .on_select(move |s: &mut AppState| s.code_review.subject = choice),
+        );
+    }
+    let mut column = col()
+        .key("review-subject")
+        .w_full()
+        .gap(crate::ds::SPACE_3)
+        .child(what.build(k).key("review-subject-kind"));
+    if review.subject == Subject::PullRequest {
+        column = column.child(
+            TextInput::new(&review.pull_request)
+                .label("Pull request")
+                .placeholder("96, #96 or https://github.com/owner/repo/pull/96")
+                .width(None)
+                .on_edit(|s: &mut AppState| &mut s.code_review.pull_request)
+                .build(k)
+                .key("review-pull-request"),
+        );
+    }
+    column
+}
+
+fn pinned_subject(k: &Kit, pin: &PinnedPullRequest) -> El {
+    col()
+        .key("review-pinned")
+        .w_full()
+        .gap(crate::ds::SPACE_2)
+        .child(note(k, "Reviewing"))
+        .child(
+            row()
+                .w_full()
+                .gap(crate::ds::SPACE_3)
+                .items_center()
+                .child(
+                    text(format!("#{}", pin.number))
+                        .font(k.ty.mono)
+                        .color(k.c.text_muted),
+                )
+                .child(
+                    text(pin.title.clone())
+                        .font(k.ty.small_medium)
+                        .color(k.c.text_base)
+                        .truncate()
+                        .min_w(0.0)
+                        .grow(1.0),
+                )
+                .child(
+                    Button::new("Review something else")
+                        .variant(ButtonVariant::GhostMuted)
+                        .control_size(ControlSize::Small)
+                        .on_press(|s: &mut AppState| s.unpin_review())
+                        .build(k)
+                        .key("review-unpin"),
+                ),
+        )
+        .child(note(
+            k,
+            format!(
+                "{} · its head against its base, fetched without moving this checkout.",
+                pin.repository
+            ),
+        ))
 }
 
 fn tier_index(tier: Option<Tier>) -> Option<usize> {
@@ -1742,7 +2010,6 @@ fn findings(s: &AppState, k: &Kit, run: &ReviewRun) -> El {
     };
     let lineage = report.previous.is_some();
     let send = s.send_destination(run).err();
-    let groups = group_findings(&report.findings, s.code_review.grouping);
     let mut body = col()
         .key("review-findings")
         .w_full()
@@ -1768,19 +2035,19 @@ fn findings(s: &AppState, k: &Kit, run: &ReviewRun) -> El {
                     .variant(ButtonVariant::GhostMuted)
                     .control_size(ControlSize::Small)
                     .on_press(|s: &mut AppState| {
-                        s.code_review.grouping = match s.code_review.grouping {
+                        s.code_review.set_grouping(match s.code_review.grouping {
                             Grouping::Severity => Grouping::File,
                             Grouping::File => Grouping::Severity,
-                        };
+                        });
                     })
                     .build(k)
                     .key("review-grouping"),
                 ),
         );
-    for (key, group) in groups {
-        body = body.child(section(k, key));
-        for finding in group {
-            body = body.child(finding_row(k, run, finding, lineage, send));
+    for (key, group) in &report.groups {
+        body = body.child(section(k, key.clone()));
+        for at in group {
+            body = body.child(finding_row(k, run, &report.findings[*at], lineage, send));
         }
     }
     if !report.resolved.is_empty() {
@@ -1816,12 +2083,7 @@ pub fn finding_note(k: &Kit, finding: &Finding) -> El {
 
 fn note_for(k: &Kit, report: Option<&Report>, annotation: &Annotation) -> El {
     report
-        .and_then(|report| {
-            report
-                .findings
-                .iter()
-                .find(|finding| finding.id.to_string() == annotation.id)
-        })
+        .and_then(|report| report.finding(annotation))
         .map_or_else(col, |finding| finding_note(k, finding))
 }
 
@@ -2046,7 +2308,8 @@ pub fn view(s: &AppState, k: &Kit) -> El {
         );
     }
     let lanes = s.code_review.lanes(workspace);
-    if lanes.len() > 1 {
+    let pinned = s.code_review.pinned_to(workspace);
+    if lanes.len() > 1 && pinned.is_none() {
         let labels: Vec<String> = lanes.iter().map(|lane| lane_label(*lane)).collect();
         let shown = s.code_review.shown_lane(workspace);
         let at = lanes.iter().position(|lane| *lane == shown);
@@ -2055,8 +2318,8 @@ pub fn view(s: &AppState, k: &Kit) -> El {
                 .label("Review")
                 .fit()
                 .on_pick(move |s: &mut AppState, index: usize, _| {
-                    if let Some(lane) = lanes.get(index) {
-                        s.code_review.shown.insert(workspace, *lane);
+                    if let Some(lane) = s.code_review.lanes(workspace).get(index).copied() {
+                        s.code_review.shown.insert(workspace, lane);
                     }
                 })
                 .build(k)
@@ -2145,8 +2408,12 @@ pub fn view(s: &AppState, k: &Kit) -> El {
             body = body.child(coverage(k, run));
         }
         None => {
+            let empty = match pinned {
+                Some(pin) => format!("No review of PR #{} yet.", pin.number),
+                None => "No review of this workspace yet.".into(),
+            };
             body = body.child(
-                text("No review of this workspace yet.")
+                text(empty)
                     .key("review-empty")
                     .font(k.ty.small)
                     .color(k.c.text_faint),
@@ -2180,7 +2447,7 @@ mod tests {
     use super::*;
     use crate::test_support::provider;
 
-    fn finding(id: u32, path: &str, line: Option<u32>, severity: Severity) -> Finding {
+    pub(super) fn finding(id: u32, path: &str, line: Option<u32>, severity: Severity) -> Finding {
         Finding {
             id,
             fingerprint: format!("fingerprint-{id}"),
@@ -2200,7 +2467,7 @@ mod tests {
         }
     }
 
-    fn run(id: ReviewId, stage: Option<ReviewStage>, finished: bool) -> ReviewRun {
+    pub(super) fn run(id: ReviewId, stage: Option<ReviewStage>, finished: bool) -> ReviewRun {
         ReviewRun {
             id,
             workspace_id: WorkspaceId::new(),
@@ -2230,74 +2497,6 @@ mod tests {
             branch: Some("main".into()),
             tree_oid: None,
         }
-    }
-
-    #[test]
-    fn findings_group_by_severity_then_path_and_line() {
-        let findings = vec![
-            finding(1, "b.rs", Some(9), Severity::P2),
-            finding(2, "a.rs", Some(4), Severity::P1),
-            finding(3, "b.rs", Some(2), Severity::P0),
-            finding(4, "a.rs", None, Severity::P2),
-        ];
-        let groups = group_findings(&findings, Grouping::Severity);
-        let keys: Vec<&str> = groups.iter().map(|(key, _)| key.as_str()).collect();
-        assert_eq!(keys, ["P0", "P1", "P2"]);
-        let p2: Vec<u32> = groups[2].1.iter().map(|finding| finding.id).collect();
-        assert_eq!(p2, vec![4, 1], "path, then a whole-file finding first");
-        assert_eq!(
-            group_findings(&findings[..1], Grouping::Severity)
-                .iter()
-                .map(|(key, _)| key.as_str())
-                .collect::<Vec<_>>(),
-            ["P2"]
-        );
-    }
-
-    #[test]
-    fn findings_group_by_file_with_general_findings_first() {
-        let findings = vec![
-            finding(1, "b.rs", Some(9), Severity::P2),
-            finding(2, "a.rs", Some(4), Severity::P1),
-            finding(3, "b.rs", Some(2), Severity::P0),
-            finding(4, "a.rs", None, Severity::P2),
-        ];
-        let groups = group_findings(&findings, Grouping::File);
-        let keys: Vec<&str> = groups.iter().map(|(key, _)| key.as_str()).collect();
-        assert_eq!(keys, ["a.rs", "b.rs"]);
-        let a: Vec<u32> = groups[0].1.iter().map(|finding| finding.id).collect();
-        assert_eq!(a, vec![4, 2]);
-        let b: Vec<u32> = groups[1].1.iter().map(|finding| finding.id).collect();
-        assert_eq!(b, vec![3, 1]);
-    }
-
-    #[test]
-    fn a_run_is_stale_only_when_a_known_head_moved() {
-        let run = run(ReviewId::new(), None, false);
-        assert!(!is_stale(&run, Some(run.head_oid.as_str())));
-        assert!(is_stale(&run, Some("different")));
-        assert!(!is_stale(&run, None), "unmeasured is not evidence");
-    }
-
-    #[test]
-    fn a_newer_run_or_a_later_stage_replaces_the_one_on_screen() {
-        let first = ReviewId::new();
-        let second = ReviewId::new();
-        assert!(supersedes(None, &run(first, None, false)));
-        assert!(supersedes(
-            Some(&run(first, None, false)),
-            &run(second, None, false)
-        ));
-        assert!(!supersedes(
-            Some(&run(second, None, false)),
-            &run(first, None, false)
-        ));
-        let done = run(first, Some(ReviewStage::Validate), true);
-        assert!(!supersedes(Some(&done), &run(first, None, false)));
-        assert!(supersedes(
-            Some(&run(first, Some(ReviewStage::Pack), false)),
-            &run(first, Some(ReviewStage::Model), false)
-        ));
     }
 
     #[test]
@@ -2590,23 +2789,6 @@ mod tests {
     }
 
     #[test]
-    fn annotations_index_new_side_lines_of_standing_anchored_findings() {
-        let mut dismissed = finding(3, "b.rs", Some(7), Severity::P1);
-        dismissed.reaction = Some(FindingReaction::Dismiss);
-        let findings = vec![
-            finding(1, "b.rs", Some(4), Severity::P1),
-            finding(2, "a.rs", None, Severity::P2),
-            dismissed,
-            finding(4, "elsewhere.rs", Some(1), Severity::P0),
-        ];
-        let built = annotations(&findings, &["a.rs", "b.rs"]);
-        assert_eq!(
-            built,
-            vec![Annotation::new(1, LineRef::new(Side::New, 4), "1")]
-        );
-    }
-
-    #[test]
     fn only_a_fresh_completed_workspace_review_annotates_changes() {
         let workspace = WorkspaceId::new();
         let run = completed(workspace, workspace_target(workspace));
@@ -2721,32 +2903,6 @@ mod tests {
             None,
             "a reviewer is never the target"
         );
-    }
-
-    #[test]
-    fn a_findings_prompt_fits_its_budget_on_whole_findings() {
-        let mut big = finding(1, "a.rs", Some(2), Severity::P0);
-        big.body = "x".repeat(PROMPT_BUDGET);
-        let small = finding(2, "a.rs", Some(4), Severity::P1);
-        let (prompt, left_out) = findings_prompt(&[&big, &small], PROMPT_BUDGET);
-        assert!(prompt.len() <= PROMPT_BUDGET);
-        assert_eq!(left_out, 1);
-        assert!(prompt.contains("a.rs:4 — finding 2"), "{prompt}");
-        assert!(!prompt.contains("finding 1"));
-
-        let many: Vec<Finding> = (0..200)
-            .map(|id| {
-                let mut f = finding(id, "a.rs", Some(id), Severity::P2);
-                f.body = "y".repeat(100);
-                f
-            })
-            .collect();
-        let refs: Vec<&Finding> = many.iter().collect();
-        let (prompt, left_out) = findings_prompt(&refs, PROMPT_BUDGET);
-        assert!(prompt.len() <= PROMPT_BUDGET);
-        assert!(left_out > 0 && left_out < 200);
-
-        assert_eq!(findings_prompt(&[&big], PROMPT_BUDGET), (String::new(), 1));
     }
 
     #[test]
@@ -2962,5 +3118,250 @@ mod tests {
         ));
         assert!(state.settle_review_reveal(&mut tx));
         assert!(state.code_review.reveal.is_none());
+    }
+
+    #[test]
+    fn a_failed_report_read_is_not_asked_again() {
+        let (mut state, workspace) = fixture_state();
+        let run = completed(workspace, workspace_target(workspace));
+        state.apply_review_run(&run);
+        state.code_review.report_asked.insert(run.id);
+        assert!(state.apply_review_report(workspace, Err("the review is gone".into())));
+        assert!(
+            state.code_review.report_asked.contains(&run.id),
+            "the next sync skips it until Refresh or a reconnect"
+        );
+    }
+
+    #[test]
+    fn a_report_read_that_cannot_be_sent_is_not_asked_again() {
+        let (mut state, workspace) = fixture_state();
+        assert!(state.connection.is_none(), "every send fails");
+        let run = completed(workspace, workspace_target(workspace));
+        state.apply_review_run(&run);
+        state.sync_review();
+        state.code_review.errors.clear();
+        state.sync_review();
+        assert!(state.code_review.report_asked.contains(&run.id));
+        assert!(
+            !state.code_review.errors.contains_key(&workspace),
+            "the second sync did not ask again"
+        );
+    }
+
+    fn connected(state: &mut AppState) -> flume::Receiver<crate::connection::Command> {
+        let (handle, rx) = crate::connection::ConnectionHandle::test_handle(std::sync::Arc::new(
+            crate::connection::Metrics::default(),
+        ));
+        state.connection = Some(handle);
+        state.code_review.provider = Some("claude".into());
+        rx
+    }
+
+    fn list(state: &mut AppState, workspace: WorkspaceId, repository: &str, number: u32) {
+        let store = state.store.as_mut().unwrap();
+        let project = store
+            .workspaces
+            .iter()
+            .find(|row| row.id == workspace)
+            .map(|row| row.project_id);
+        store
+            .pull_requests
+            .pull_requests
+            .push(crate::review_subject::listed_pr(
+                project, repository, number,
+            ));
+    }
+
+    fn started(rx: &flume::Receiver<crate::connection::Command>) -> ReviewTarget {
+        match rx.try_recv() {
+            Ok(crate::connection::Command::StartReview { target, .. }) => target,
+            other => panic!("expected StartReview, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn a_link_in_the_instructions_reviews_that_pull_request_not_the_changes() {
+        let (mut state, workspace) = fixture_state();
+        let rx = connected(&mut state);
+        list(&mut state, workspace, "acme/forge", 96);
+        state.code_review.instructions =
+            TextEdit::new("Review this pr https://github.com/acme/forge/pull/96");
+        state.review_instructions_edited();
+        assert_eq!(state.code_review.subject, Subject::PullRequest);
+
+        state.start_code_review();
+        assert_eq!(
+            started(&rx),
+            ReviewTarget::PullRequest {
+                workspace_id: workspace,
+                number: 96,
+                base: Some("main".into()),
+            }
+        );
+        assert_eq!(
+            state.code_review.shown_lane(workspace),
+            Lane::PullRequest(96)
+        );
+
+        state.code_review.subject = Subject::Changes;
+        state.code_review.instructions.text.push_str(" carefully");
+        state.review_instructions_edited();
+        assert_eq!(
+            state.code_review.subject,
+            Subject::Changes,
+            "the same link does not undo choosing the changes again"
+        );
+    }
+
+    #[test]
+    fn an_unlisted_link_is_read_before_its_review_starts() {
+        let (mut state, workspace) = fixture_state();
+        let rx = connected(&mut state);
+        state.code_review.subject = Subject::PullRequest;
+        state.code_review.pull_request = TextEdit::new("https://github.com/acme/forge/pull/5");
+        state.start_code_review();
+        let Ok(crate::connection::Command::FetchPullRequest(link)) = rx.try_recv() else {
+            panic!("expected FetchPullRequest");
+        };
+        assert_eq!(link.number, 5);
+        assert!(state.code_review.awaiting.is_some());
+
+        list(&mut state, workspace, "acme/forge", 5);
+        state.review_link_fetched("github.com", "Acme/Forge", 5, None);
+        assert!(state.code_review.awaiting.is_none());
+        assert!(matches!(
+            started(&rx),
+            ReviewTarget::PullRequest { number: 5, .. }
+        ));
+    }
+
+    #[test]
+    fn a_bare_number_is_read_from_this_checkout_and_a_bad_one_never_starts() {
+        let (mut state, workspace) = fixture_state();
+        let rx = connected(&mut state);
+        state.code_review.subject = Subject::PullRequest;
+        state.code_review.pull_request = TextEdit::new("main");
+        state.start_code_review();
+        assert!(rx.try_recv().is_err());
+        assert!(state.code_review.errors.contains_key(&workspace));
+
+        state.code_review.pull_request = TextEdit::new("#12");
+        state.start_code_review();
+        assert_eq!(
+            started(&rx),
+            ReviewTarget::PullRequest {
+                workspace_id: workspace,
+                number: 12,
+                base: None,
+            }
+        );
+    }
+
+    #[test]
+    fn a_pull_request_opened_for_review_is_pinned_and_starts_only_when_pressed() {
+        let (mut state, workspace) = fixture_state();
+        let rx = connected(&mut state);
+        list(&mut state, workspace, "acme/forge", 96);
+        state
+            .open_pull_request_review("acme/forge", 96)
+            .expect("a checkout of acme/forge is open");
+        assert!(rx.try_recv().is_err(), "opening it starts nothing");
+        assert_eq!(
+            state.code_review.shown_lane(workspace),
+            Lane::PullRequest(96)
+        );
+
+        state.code_review.instructions = TextEdit::new("see https://github.com/acme/forge/pull/7");
+        state.review_instructions_edited();
+        state.start_code_review();
+        assert_eq!(
+            started(&rx),
+            ReviewTarget::PullRequest {
+                workspace_id: workspace,
+                number: 96,
+                base: Some("main".into()),
+            },
+            "a link in the instructions never moves a pinned review"
+        );
+
+        state.unpin_review();
+        assert_eq!(state.code_review.subject, Subject::PullRequest);
+        assert_eq!(state.code_review.pull_request.text, "#96");
+    }
+
+    #[test]
+    fn a_pinned_review_drops_the_choice_of_what_to_review() {
+        let (mut state, workspace) = fixture_state();
+        list(&mut state, workspace, "acme/forge", 96);
+        state
+            .open_pull_request_review("acme/forge", 96)
+            .expect("a checkout of acme/forge is open");
+        let keys = keys(state);
+        assert!(has(&keys, "review-pinned"), "{keys:?}");
+        assert!(!has(&keys, "review-subject-kind"));
+        assert!(has(&keys, "review-presets"));
+    }
+
+    #[test]
+    fn the_start_stays_busy_until_the_reviewer_session_is_shown() {
+        let (mut state, workspace) = fixture_state();
+        let _rx = connected(&mut state);
+        let reviewer = state
+            .rows
+            .iter()
+            .find(|row| row.workspace_id == workspace)
+            .map(|row| row.id)
+            .expect("the fixture checkout has a session");
+        state.start_code_review();
+        assert!(state.code_review.busy(workspace));
+
+        let id = ReviewId::new();
+        assert!(state.review_started(workspace, Ok(id)));
+        let mut live = run(id, Some(ReviewStage::Pack), false);
+        live.workspace_id = workspace;
+        live.target = workspace_target(workspace);
+        state.apply_review_run(&live);
+        assert!(state.code_review.busy(workspace), "no reviewer to show yet");
+        assert_eq!(state.workbench.mode, CenterMode::Review);
+
+        live.stage = Some(ReviewStage::Model);
+        live.session_id = Some(reviewer);
+        state.apply_review_run(&live);
+        assert_eq!(state.workbench.mode, CenterMode::Session);
+        assert_eq!(state.active, Some(reviewer));
+        assert!(
+            state.code_review.busy(workspace),
+            "a running review of the same target is not started twice"
+        );
+
+        live.status = ReviewStatus::Completed;
+        live.finished_at = Some(Timestamp::now());
+        state.apply_review_run(&live);
+        assert!(!state.code_review.busy(workspace));
+    }
+
+    #[test]
+    fn a_reviewer_that_lands_after_the_person_left_review_does_not_take_focus() {
+        let (mut state, workspace) = fixture_state();
+        let _rx = connected(&mut state);
+        let reviewer = state
+            .rows
+            .iter()
+            .find(|row| row.workspace_id == workspace)
+            .map(|row| row.id)
+            .expect("the fixture checkout has a session");
+        state.start_code_review();
+        let id = ReviewId::new();
+        assert!(state.review_started(workspace, Ok(id)));
+        state.show_mode(CenterMode::Changes);
+
+        let mut live = run(id, Some(ReviewStage::Model), false);
+        live.workspace_id = workspace;
+        live.target = workspace_target(workspace);
+        live.session_id = Some(reviewer);
+        state.apply_review_run(&live);
+        assert_eq!(state.workbench.mode, CenterMode::Changes);
+        assert_eq!(state.code_review.follow, None);
     }
 }

@@ -14,7 +14,7 @@ pub use clamp::{read_capped, CappedBytes};
 pub use damage::RowDamage;
 pub use paths::{resolve_socket, socket_path, SocketPathError, SocketQuery, MAX_SOCKET_PATH_LEN};
 
-pub use domain::{DirectoryListing, SymlinkTarget};
+pub use domain::{DirectoryListing, SymlinkTarget, CUSTOM_PRESET};
 pub use ipc::{
     ActionLaunch, ActionSuggestions, Branches, Client, ClientError, DaemonInfo, ReviewReport,
     SendContextResult, StopSessions,
@@ -22,7 +22,7 @@ pub use ipc::{
 pub use protocol::{
     DaemonEvent, DaemonStats, EditorSurface, ErrorCode, ForgePaths, Layout, PromptDelivery,
     ProtocolCodecError, ProtocolError, ProviderInfo, RemoveProjectPolicy, Request, Response,
-    SendContextSpawn, PROTOCOL_VERSION,
+    SendContextSpawn, MAX_PROMPT_BYTES, PROTOCOL_VERSION,
 };
 pub use store::{CellGrid, DeltaOutcome, EventOutcome, Store};
 pub use terminal_input::{
