@@ -36,17 +36,11 @@ pub fn busy(s: &AppState, k: &Kit) -> El {
 }
 
 /// The mark of a session at work: `for_row` names it `LOADER`, a glyph that
-/// cannot turn, so it is drawn as the kit's spinner unless motion is reduced.
+/// cannot move, so it is drawn as the working pulse unless motion is reduced.
 #[must_use]
-pub fn session_mark(
-    s: &AppState,
-    k: &Kit,
-    glyph: &'static rune::Icon,
-    size: f32,
-    ink: rune::Color,
-) -> El {
+pub fn session_mark(s: &AppState, glyph: &'static rune::Icon, size: f32, ink: rune::Color) -> El {
     if std::ptr::eq(glyph, &crate::glyphs::LOADER) && !s.reduce_motion() {
-        Loader::new().size(size).color(ink).build(k).a11y_hidden()
+        crate::ds::working(size, ink)
     } else {
         icon(glyph, size).color(ink)
     }
@@ -315,7 +309,6 @@ pub fn session_row(s: &AppState, session: &SessionRow, index: usize, depth: u8, 
         .selected(selected)
         .leading(session_mark(
             s,
-            k,
             glyph,
             ds::ICON_ROW,
             match session.status {
@@ -555,7 +548,6 @@ fn pane_header(s: &AppState, k: &Kit, idx: usize) -> El {
         |row| {
             session_mark(
                 s,
-                k,
                 crate::glyphs::for_row(row, true, !k.dark),
                 ds::ICON_ROW,
                 k.c.icon_muted,

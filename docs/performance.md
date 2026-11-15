@@ -532,6 +532,14 @@ commits up to 8 times a second (its accessibility mirror refreshes every
 - `poll` returns `true` only when something visible changed.
 - Derived data is built in `AppState::set_store`; at 400 runs and 144
   sessions the History index and process groups cost 0.11 ms per store change.
+  A session-only event (`SessionUpdated`, `TerminalBell`) leaves the History
+  index alone, since it cannot change the transcripts.
+- An idle window sleeps: `AppState::next_wake` polls every 100 ms and sooner
+  only for a debounce that is due; daemon data wakes the window itself. A
+  perpetual animation is a bounded loop (`Cycle` with an `fps`, as
+  `ds::working`), never a `Rotation` like rune-kit's `Loader`, which asks for
+  every vsync and kept the whole window painting at the display's refresh
+  rate while any agent was busy.
 
 Measure with `RUNE_COMMIT_BUDGET_MS=8` (prints every commit over budget with
 its view/layout/apply split), `scripts/dev ui run --bench`,
@@ -567,6 +575,9 @@ Carry these forward; they are real, verified, and not yet fixed.
 | Trailing blank cells on the wire | `domain::Row` | ~70% of a typical full delta is default blanks. Eliding them is a decode-side amplification risk (a 6-byte row can claim 1 000 cells) unless the decoder is budgeted per frame. |
 | Transcript text under the lock | `Daemon` session transcript read | Builds up to 4 096 rows of cells under the core lock to keep a 36–96 KB text tail. |
 | Filesystem work in `build_spawn_spec` | `core.rs` | `inject_attention` (which reads and may write `~/.cursor/hooks.json`) and executable resolution run under the core lock. |
+| Accessibility mirror without a reader | `AppState::poll` (`refresh_mirror`) | A grid change rebuilds the whole view up to 8 times a second even when no assistive client is connected; an agent TUI's spinner keeps it doing so. Rune exposes no public "a11y active" flag to gate it on. |
+| Unthrottled title broadcasts | `core.rs` OSC title → `SessionUpdated` | Every title change of an attached terminal is a broadcast and a full row rebuild in each client; a provider that animates its title would pay that per frame. Unmeasured. |
+| `CreateAgentSession` on the command worker | `apps/ui/src/connection.rs` | Right after startup the daemon can wait on the login-shell capture and an inline version probe (seconds), and typing in other terminals waits with it. |
 | `GetSnapshot` on the command worker | `Command::RefreshSnapshot` in `apps/ui/src/connection.rs` | A blocking snapshot read holds the worker that also carries terminal input; whether a slow one can overflow the 64-slot event queue in the Rune client is unmeasured. |
 
 The original Rust-GUI observations about cloning the whole `Store` and

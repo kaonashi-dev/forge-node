@@ -10,6 +10,7 @@ pub mod gallery;
 mod metrics;
 mod row;
 mod tone;
+mod working;
 
 pub use atoms::{IconButtonSize, avatar, avatar_image, chip, dot, icon_button, section_header};
 pub use bars::{Tab, TabShape, toolbar};
@@ -17,3 +18,4 @@ pub use empty::Empty;
 pub use metrics::*;
 pub use row::{Emphasis, Row};
 pub use tone::Tone;
+pub use working::working;

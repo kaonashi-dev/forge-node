@@ -287,6 +287,15 @@ impl Tabs {
         true
     }
 
+    /// When a held gesture still hidden is to be revealed.
+    #[must_use]
+    pub fn reveal_at(&self) -> Option<Instant> {
+        self.gesture
+            .as_ref()
+            .filter(|gesture| !gesture.shown)
+            .map(|gesture| gesture.started + SHOW_DELAY)
+    }
+
     pub fn cancel_gesture(&mut self) {
         self.gesture = None;
     }

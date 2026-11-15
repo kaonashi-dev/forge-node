@@ -24,6 +24,10 @@ use crate::workbench::{CenterMode, Panel, Workbench};
 /// Pull Requests scope buttons are what wrap below it.
 pub const SIDEBAR_MIN_W: f32 = 260.0;
 
+/// How often an idle window polls with no deadline pending.
+const POLL_FALLBACK_SECS: f64 = 0.100;
+const FRAME_SECS: f64 = 1.0 / 60.0;
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum LinkStatus {
     Connecting,
@@ -370,7 +374,13 @@ impl AppState {
         self.switch_started.set(Some(Instant::now()));
     }
 
-    fn set_store(&mut self, store: Store) {
+    pub(crate) fn set_store(&mut self, store: Store) {
+        self.adopt_store(store, true);
+    }
+
+    /// `reindex_history` is false for an event that cannot have changed the
+    /// transcripts, so a busy agent does not re-sort every one of them.
+    fn adopt_store(&mut self, store: Store, reindex_history: bool) {
         self.rows_revision += 1;
         // A background session is the daemon's errand, never a tab or a row,
         // until it stops to ask the person something only they can answer.
@@ -417,12 +427,14 @@ impl AppState {
             .iter()
             .map(|workspace| WorkspaceChoice { id: workspace.id })
             .collect();
-        self.fixture_titles
-            .extend(store.sessions.iter().filter_map(|session| {
-                session
-                    .terminal_id
-                    .map(|terminal| (terminal, session.title.resolve("untitled").to_string()))
-            }));
+        if self.terminal.is_fixture() {
+            self.fixture_titles
+                .extend(store.sessions.iter().filter_map(|session| {
+                    session
+                        .terminal_id
+                        .map(|terminal| (terminal, session.title.resolve("untitled").to_string()))
+                }));
+        }
         let keep = self
             .active
             .filter(|id| self.rows.iter().any(|row| row.id == *id));
@@ -452,7 +464,9 @@ impl AppState {
         if let Some(active) = self.active {
             self.tabs.touch(active);
         }
-        self.history.index = crate::history::index(&store.external_agents);
+        if reindex_history {
+            self.history.index = crate::history::index(&store.external_agents);
+        }
         self.processes =
             crate::processes::group(&store.sessions, &store.workspaces, &store.projects);
         self.diff_split =
@@ -460,11 +474,13 @@ impl AppState {
         self.hues = crate::menus::parse_hues(store.app_state_value(crate::menus::PROJECT_HUES_KEY));
         self.store = Some(store);
         self.workbench.set_split(self.diff_split);
-        self.terminal.set_fixture_titles(
-            self.fixture_titles
-                .iter()
-                .map(|(terminal, title)| (*terminal, title.clone())),
-        );
+        if self.terminal.is_fixture() {
+            self.terminal.set_fixture_titles(
+                self.fixture_titles
+                    .iter()
+                    .map(|(terminal, title)| (*terminal, title.clone())),
+            );
+        }
         if self.palette.open {
             self.refresh_palette_context();
         }
@@ -1960,8 +1976,15 @@ impl AppState {
                         | client::DaemonEvent::WorkspaceRemoved { .. }
                         | client::DaemonEvent::TerminalBell { .. }
                 );
+                let transcripts_kept = matches!(
+                    event.as_ref(),
+                    client::DaemonEvent::SessionCreated(_)
+                        | client::DaemonEvent::SessionUpdated(_)
+                        | client::DaemonEvent::SessionRemoved { .. }
+                        | client::DaemonEvent::TerminalBell { .. }
+                );
                 if rebuild && let Some(store) = self.store.take() {
-                    self.set_store(store);
+                    self.adopt_store(store, !transcripts_kept);
                 }
                 if let Some(id) = self.select_when_listed
                     && self.rows.iter().any(|row| row.id == id)
@@ -2660,11 +2683,7 @@ impl AppState {
             }
             self.mirror_at = clock;
         }
-        let mut floor: f64 = if self.terminal.shared.meta().has_grid {
-            0.100
-        } else {
-            0.016
-        };
+        let mut floor = self.next_wake(Instant::now());
         let mut fetched = false;
         for idx in 0..self.pane_count() {
             fetched |= self.terminal_follow_history(idx);
@@ -2693,6 +2712,24 @@ impl AppState {
         }
         tx.wake_after(Duration::from_secs_f64(floor));
         changed
+    }
+
+    /// Seconds until `poll` next has work no event will bring: the fallback,
+    /// or sooner for a debounce or a held Ctrl-Tab. Daemon data wakes the
+    /// window itself, so nothing here polls for it.
+    #[must_use]
+    pub fn next_wake(&self, now: Instant) -> f64 {
+        let due = [self.tabs.reveal_at(), self.workbench.next_due()]
+            .into_iter()
+            .flatten()
+            .min();
+        due.map_or(POLL_FALLBACK_SECS, |due| {
+            // A deadline poll cannot consume yet (no scope, the diff hidden)
+            // stays overdue; one frame is the most often that wakes.
+            due.saturating_duration_since(now)
+                .as_secs_f64()
+                .clamp(FRAME_SECS, POLL_FALLBACK_SECS)
+        })
     }
 
     fn terminal_follow_history(&mut self, idx: usize) -> bool {
@@ -3336,6 +3373,25 @@ mod tests {
             fixture_store(&Path::new(env!("CARGO_MANIFEST_DIR")).join("fixtures/snapshot.json"))
                 .expect("fixture snapshot decodes");
         AppState::for_bench(store, Arc::new(Metrics::default()), SharedTerminal::new())
+    }
+
+    #[test]
+    fn an_idle_window_polls_at_the_fallback_and_a_debounce_wakes_it_on_time() {
+        let mut state = state();
+        let now = Instant::now();
+        assert_eq!(state.next_wake(now), POLL_FALLBACK_SECS);
+        state.workbench.search.edit = rune::TextEdit::new("needle");
+        state.workbench.search.typed(now);
+        let wake = state.next_wake(now + Duration::from_millis(200));
+        assert!(
+            (wake - 0.050).abs() < 1e-3,
+            "the rest of the debounce: {wake}"
+        );
+        assert_eq!(
+            state.next_wake(now + Duration::from_secs(5)),
+            FRAME_SECS,
+            "an overdue read that cannot go yet wakes once a frame, never in a spin"
+        );
     }
 
     #[test]

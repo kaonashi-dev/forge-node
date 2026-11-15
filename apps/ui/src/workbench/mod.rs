@@ -513,6 +513,12 @@ pub struct Preview {
 }
 
 impl Workbench {
+    /// The soonest debounced read `take_reads` or the search is waiting on.
+    #[must_use]
+    pub fn next_due(&self) -> Option<Instant> {
+        self.search.due().into_iter().chain(self.changes.due).min()
+    }
+
     /// Points the views at `workspace`; a different one drops what was read.
     /// A project search keeps its query and asks it again there.
     pub fn set_workspace(&mut self, workspace: Option<WorkspaceId>) {

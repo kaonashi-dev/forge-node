@@ -185,6 +185,11 @@ impl ProjectSearch {
         self.edit.text.trim()
     }
 
+    #[must_use]
+    pub fn due(&self) -> Option<Instant> {
+        self.due
+    }
+
     pub fn typed(&mut self, now: Instant) {
         if should_search(self.query()) {
             self.due = Some(now + DEBOUNCE);
