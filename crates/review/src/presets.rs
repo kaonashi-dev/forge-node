@@ -5,8 +5,7 @@ use crate::config::{Categories, Config, ContextSettings, Strictness, CATEGORIES}
 use crate::rules::Rule;
 
 pub const DEFAULT_PRESET: &str = "standard";
-/// The built-in with no wording of its own: a run of it must bring instructions.
-pub const CUSTOM_PRESET: &str = "custom";
+pub use domain::CUSTOM_PRESET;
 pub const MAX_INSTRUCTIONS_BYTES: usize = 4096;
 
 /// A built-in or a `.forge/review/presets/<id>.toml`.

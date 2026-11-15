@@ -487,6 +487,7 @@ impl AppState {
         self.editor_store_changed();
         self.sync_project_icons();
         self.refresh_send_targets();
+        self.refresh_reviewers();
     }
 
     pub fn apply_events(&mut self, events: Vec<UiEvent>, tx: &mut Tx) {
@@ -1951,6 +1952,12 @@ impl AppState {
                         self.workbench.pr_index.sync(&store.pull_requests);
                         self.pr_refreshing = false;
                     }
+                }
+                if matches!(
+                    event.as_ref(),
+                    client::DaemonEvent::AgentDetectionChanged { .. }
+                ) {
+                    self.refresh_reviewers();
                 }
                 if reset {
                     self.store = None;

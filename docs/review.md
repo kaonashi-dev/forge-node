@@ -24,33 +24,54 @@ Three pieces own it, in that order:
 2. Build the pack (below) for the resolved tier.
 3. Launch the reviewer — an ordinary `SessionKind::Agent` with
    `read_only: true`, titled **Forge Review** — with the pack path, then wait
-   for its hook to report `Idle` (or its session to exit). A run whose reviewer
-   never answers fails at `[review] timeout_secs` and the session is stopped.
+   for its hook to report `Idle` (or its session to exit). A reviewer that
+   reports `Idle` or `Waiting` without a parseable answer fails the run after a
+   2-second grace, so one stuck on a permission prompt does not hold a slot. A
+   run whose reviewer never answers fails at `[review] timeout_secs` (at most
+   24 h). However the run ends, its reviewer session is stopped and closed.
 4. Parse the last assistant message for the `forge.review/v1` JSON object, then
    validate it. The full diff, the pack and the reviewer's transcript are never
    stored; a finding keeps only its capped evidence and suggestion.
 
 A workspace has one run in flight. A start with the same head, base, provider,
 model, effort, tier, preset and instructions answers with that run's id unless
-it was cancelled; any other start cancels it and begins anew. Two runs may be in
-flight daemon-wide (`Conflict` past that). After every run the workspace is
+it was cancelled; any other start cancels it and begins anew. Two review workers
+may be alive daemon-wide, a superseded one included until it notices its
+cancel: past that, a start that would not join a running run is `Conflict`, even
+one that would supersede. A cancel that lands while the answer is validated
+still wins, and no findings are saved for it. After every run the workspace is
 pruned: anything older than 90 days, and anything past the newest 20. A run
 whose reviewer session row still exists is kept, because that row is what makes
-a restart read-only.
+a restart read-only; a finished run closed its reviewer, so only a run the
+daemon died under keeps one.
 
 Validation is what makes a finding a finding:
 
-- its `evidence` must occur in the file, and a line anchor is snapped to the
-  nearest occurrence within ±3 lines and kept only inside a new-side hunk;
-  otherwise the finding becomes general;
-- an unknown `rule_id` is cleared, a known one caps the finding's severity, and a
-  finding in a disabled category without a rule is dropped;
-- `confidence` below the configured `min_confidence` is dropped, overlapping
-  findings dedupe, the project's feedback suppressions drop what they match
-  (below), and only then `max_findings` trims the tail;
-- if more than half the claimed anchors cannot be confirmed inside the diff,
-  the whole answer is rejected — the model reviewed something other than this
-  change.
+- a category outside `logic`, `security`, `performance`, `style` and `docs`
+  is rewritten to `logic` before anything else reads it;
+- a `rule_id` is kept only when it names an in-scope rule whose `scope`
+  matches the finding's own path, and then caps the finding's severity;
+  otherwise it is cleared. A finding in a disabled category without a rule is
+  dropped;
+- its path must be in the diff, without `..` and not absolute, and its
+  `evidence` must occur in the file. The comparison runs over non-blank lines on
+  both sides with whitespace collapsed, and reads the first 40 evidence lines.
+  A finding that fails either check is dropped and counted as
+  `Coverage::unverified`, with the note "N finding(s) could not be verified".
+  A line anchor is snapped to the nearest occurrence within ±3 lines and kept
+  only inside a new-side hunk; otherwise the finding becomes general;
+- a finding on an excluded file (below) is kept as general with an empty
+  evidence: the file never reached the pack, and its text may hold secrets;
+- `confidence` below the configured `min_confidence` is dropped. Overlapping
+  findings dedupe, and so does a general finding with the fingerprint of one
+  already kept; the more severe one stays. The project's feedback suppressions
+  drop what they match (below), and only then `max_findings` trims the tail;
+- title, body, evidence, suggestion and the summary are redacted like the
+  pack before they are stored or fingerprinted;
+- the answer is rejected when `(invalid anchors + unverified) × 2` exceeds
+  `anchor attempts + unverified`, where an attempt is a verified finding that
+  named a line. General findings neither help nor hurt: the model reviewed
+  something other than this change.
 
 The summary may carry one mermaid diagram; a suggested fix is capped text, never
 a patch Forge applies. A run that outlives the daemon is metadata: with
@@ -64,9 +85,11 @@ project's existing checkout; nothing moves its `HEAD` or working tree, and no
 scratch worktree is made. The worker fetches from the remote whose URL names the
 pull request's repository (from the pull-request cache), else from the remote
 the listing reads (`origin`, or the only one), in one `run_git_network` fetch:
-`refs/pull/<n>/head` into `refs/forge/review/<n>/head` and `base` (the cached
-pull request's base, else the remote's `HEAD`) into `refs/forge/review/<n>/base`.
-It diffs their merge base to that head. The pack says the working directory is not the
+`refs/pull/<n>/head` into `refs/forge/review/<n>/<run>/head` and `base` (the
+cached pull request's base, else the remote's `HEAD`) into
+`refs/forge/review/<n>/<run>/base`, with an empty `--refmap` so the remote's
+own refspec updates no remote-tracking ref. Each run has its own refs, and they
+are deleted when it ends. It diffs their merge base to that head. The pack says the working directory is not the
 head and that head files read with `git show <head>:<path>`; validation reads
 them from the object store the same way, capped like a working-tree read. The
 checkout's own `AGENTS.md` and `.forge/review/` are the instructions: the
@@ -87,7 +110,9 @@ the run's start) or the same pull request. Each finding is stored `new` or
 run's findings this one no longer reports — and names `previous`. A fingerprint
 the reviewer reported but validation left out (suppressed, below the floor, past
 `max_findings`) is kept in `Coverage::withheld`, so it is not counted as
-resolved. Nothing is copied between runs.
+resolved. A finding dropped as unverified is not withheld: repeated with
+evidence the file no longer holds, a fixed finding shows as resolved. Nothing is
+copied between runs.
 
 ## Feedback and suppression
 
@@ -107,8 +132,9 @@ project's newest 10 000 rows each time:
 P0 and `security` findings are never suppressed. What was suppressed is a
 coverage note. `GetReviewConfig` lists the active suppressions;
 `ClearReviewSuppression` lifts one: a fingerprint's dismissals are deleted, so
-the finding comes back; a rule's or `style`'s stop counting toward it, and
-each finding they dismissed stays dismissed.
+the finding comes back, and each run that held one is rescored and broadcast
+as `ReviewUpdated`; a rule's or `style`'s stop counting toward it, and each
+finding they dismissed stays dismissed.
 
 ## Send and Fix
 
@@ -133,10 +159,16 @@ rebuilt when the report or the shown files change, never per frame.
 
 ## The pack
 
-The prompt points at a temporary `pack.md`; the answer is read from the reviewer's
-transcript. The pack carries `<project_context>`, the in-scope `<rules>`, the
-commits and redacted diffs, each in a block whose closing tag is neutralised
-inside data so a diff cannot end the block early.
+The prompt points at a temporary `pack.md`, under `<forge home>/review-packs/<run>/`
+(directories `0700`, the file `0600`, never beside a configurable worktrees
+root). It is removed when the run ends, and the whole `review-packs` directory
+at daemon startup. The answer is read from the reviewer's transcript. The pack
+carries `<project_context-N>`, the in-scope `<rules-N>`, `<commits-N>` and
+redacted `<diff-N>` blocks, where `N` is a random nonce per run, and the prompt
+names the same tags. Inside data, any opening or closing tag of the four, in
+any case or spacing, has its `<` escaped, and a `path` attribute escapes `&`,
+quotes, angle brackets and control characters. Commit subjects are redacted
+and neutralised like the diff.
 
 | Tier | Files | Diff bytes |
 |------|-------|-----------|
@@ -144,9 +176,14 @@ inside data so a diff cannot end the block early.
 | `plus` | 60 | 1 MiB |
 | `apex` | 100 | 2 MiB |
 
-Lockfiles and snapshots, `.env*`, `*.pem`/`*.key`, generated and `dist/` paths,
-binaries and files already over the diff budget are left out; what was left out
-is recorded in `Coverage`, not silently dropped. Token-shaped secrets are
+Lockfiles and snapshots, `.env*`, `*.pem`/`*.key`, `.npmrc`, `.pypirc`,
+`.netrc`, `*.tfvars`, `*.p12`/`*.pfx`, generated and `dist/` paths, binaries and
+files already over the diff budget are left out. File names and `[ignore]
+paths` match in any case. What was left out is recorded in `Coverage`, not
+silently dropped, and the tier note counts only the files its cap cut.
+Token-shaped secrets (AWS, GitHub, Anthropic and OpenAI `sk-`, Slack, GitLab,
+Google API and npm tokens, JWTs, PEM private keys, the password in
+`scheme://user:pass@`, and quoted `secret`/`token`/`password` values) are
 replaced with `«redacted»` before a line reaches the pack.
 
 ## Repository files (`.forge/review/`)
@@ -225,7 +262,7 @@ that redefines it.
 | Key | Default | Effect |
 |-----|---------|--------|
 | `provider` | `claude` | must declare structured review; only Claude Code does today |
-| `timeout_secs` | `900` | a run with no answer by then fails and its session is stopped |
+| `timeout_secs` | `900` | a run with no answer by then fails and its session is stopped; capped at 24 h |
 | `model`, `effort` | unset | the provider's own default; a run may override both |
 | `instructions` | empty | added before every repository's `prompt.md`; over 4 096 bytes is ignored with a note |
 

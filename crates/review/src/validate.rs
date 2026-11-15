@@ -4,7 +4,9 @@ use domain::{Finding, ReviewSuppression, Severity, Verdict};
 use sha2::{Digest, Sha256};
 
 use crate::clip;
+use crate::config::CATEGORIES;
 use crate::output::{RawFinding, ReviewOutput};
+use crate::pack::redact;
 use crate::presets::Resolved;
 use crate::rules::Rule;
 
@@ -16,12 +18,15 @@ pub const MAX_SUGGESTION_BYTES: usize = 8 * 1024;
 const ANCHOR_SLACK: u32 = 3;
 
 /// A path in the reviewed diff. `text` is the new side, `None` when it could
-/// not be read, which leaves its findings unverifiable and so dropped.
+/// not be read, which leaves its findings unverifiable and so dropped. A
+/// finding on an `excluded` file is kept general and without evidence: the
+/// file was left out of the pack because it may hold secrets.
 #[derive(Clone, Debug)]
 pub struct ChangedFile {
     pub path: String,
     pub patch: String,
     pub text: Option<String>,
+    pub excluded: bool,
 }
 
 #[derive(Debug)]
@@ -32,6 +37,8 @@ pub struct Validated {
     /// Claims whose line is not near their evidence, or outside every new-side
     /// hunk, demoted to general.
     pub invalid_anchors: u32,
+    /// Dropped: a path outside the diff or escaping it, or evidence not in the file.
+    pub unverified: u32,
     /// Findings considered, after the caps, the category and the confidence
     /// filters, before dedupe.
     pub total: u32,
@@ -41,8 +48,8 @@ pub struct Validated {
     pub trimmed: u32,
     /// Dropped by the project's feedback suppressions, before `max_findings`.
     pub suppressed: u32,
-    /// Fingerprints the model reported that did not survive as a finding:
-    /// suppressed, below the floor, past the cap, deduped or unanchorable.
+    /// Fingerprints of valid findings that were hidden: suppressed, below
+    /// `min_confidence` or past `max_findings`.
     pub withheld: Vec<String>,
 }
 
@@ -84,26 +91,19 @@ pub fn validate(
     let findings: Vec<RawFinding> = findings
         .into_iter()
         .map(|mut raw| {
+            if !CATEGORIES.contains(&raw.category.as_str()) {
+                raw.category = "logic".to_owned();
+            }
             let rule = raw
                 .rule_id
                 .as_deref()
-                .and_then(|id| rules.iter().find(|rule| rule.id == id));
+                .and_then(|id| rules.iter().find(|rule| rule.id == id))
+                .filter(|rule| rule.matches(&raw.path));
             match rule {
                 Some(rule) => raw.severity = raw.severity.max(rule.severity),
                 None => raw.rule_id = None,
             }
             capped(raw)
-        })
-        .collect();
-    let reported: BTreeSet<String> = findings
-        .iter()
-        .map(|raw| {
-            fingerprint(
-                &raw.path,
-                &raw.category,
-                raw.rule_id.as_deref(),
-                &raw.evidence,
-            )
         })
         .collect();
     let findings: Vec<RawFinding> = findings
@@ -116,36 +116,61 @@ pub fn validate(
         .into_iter()
         .partition(|raw| raw.confidence >= resolved.min_confidence);
     let low_confidence = u32::try_from(low.len()).unwrap_or(u32::MAX);
+    let mut withheld: BTreeSet<String> = low
+        .iter()
+        .map(|raw| {
+            fingerprint(
+                &raw.path,
+                &raw.category,
+                raw.rule_id.as_deref(),
+                &redact(&raw.evidence).0,
+            )
+        })
+        .collect();
     let total = u32::try_from(findings.len()).unwrap_or(u32::MAX);
     let mut invalid_anchors = 0u32;
+    let mut anchor_attempts = 0u32;
+    let mut unverified = 0u32;
     let mut kept: Vec<Finding> = Vec::new();
     let prepared: Vec<Prepared<'_>> = files
         .iter()
-        .map(|file| Prepared {
-            path: &file.path,
-            hunks: hunks(&file.patch),
-            lines: file
-                .text
-                .as_deref()
-                .map(|text| text.lines().collect())
-                .unwrap_or_default(),
+        .map(|file| {
+            let text = file.text.as_deref().unwrap_or_default();
+            Prepared {
+                path: &file.path,
+                excluded: file.excluded,
+                hunks: hunks(&file.patch),
+                line_count: text.lines().count(),
+                nonblank: text
+                    .lines()
+                    .zip(1u32..)
+                    .filter(|(line, _)| !line.trim().is_empty())
+                    .map(|(line, number)| (number, collapsed(line)))
+                    .collect(),
+            }
         })
         .collect();
 
     for raw in findings {
-        if raw.path.contains("..") || raw.path.starts_with('/') {
-            continue;
-        }
-        let Some(file) = prepared.iter().find(|file| file.path == raw.path) else {
-            continue;
+        let file = (!raw.path.contains("..") && !raw.path.starts_with('/'))
+            .then(|| prepared.iter().find(|file| file.path == raw.path))
+            .flatten();
+        let excluded = file.is_some_and(|file| file.excluded);
+        let occurrences = file
+            .filter(|_| !excluded)
+            .map(|file| evidence_lines(&file.nonblank, &raw.evidence))
+            .unwrap_or_default();
+        let file = match file {
+            Some(file) if excluded || !occurrences.is_empty() => file,
+            _ => {
+                unverified += 1;
+                continue;
+            }
         };
-        let occurrences = evidence_lines(&file.lines, &raw.evidence);
-        if occurrences.is_empty() {
-            continue;
-        }
         let mut line = None;
         let mut end_line = None;
-        if let Some(asked) = raw.line {
+        if let Some(asked) = raw.line.filter(|_| !excluded) {
+            anchor_attempts += 1;
             let anchored = occurrences
                 .iter()
                 .copied()
@@ -167,13 +192,14 @@ pub fn validate(
                         })
                         .filter(|end| {
                             *end >= anchored
-                                && usize::try_from(*end).is_ok_and(|end| end <= file.lines.len())
+                                && usize::try_from(*end).is_ok_and(|end| end <= file.line_count)
                         });
                 }
                 _ => invalid_anchors += 1,
             }
         }
 
+        let raw = redacted(raw);
         let finding = Finding {
             id: 0,
             fingerprint: fingerprint(
@@ -191,7 +217,11 @@ pub fn validate(
             confidence: raw.confidence,
             title: raw.title,
             body: raw.body,
-            evidence: raw.evidence,
+            evidence: if excluded {
+                String::new()
+            } else {
+                raw.evidence
+            },
             suggestion: raw.suggestion,
             lineage: domain::Lineage::New,
             reaction: None,
@@ -203,28 +233,29 @@ pub fn validate(
         }
     }
 
-    if invalid_anchors * 2 > total {
+    if (invalid_anchors + unverified) * 2 > anchor_attempts + unverified {
         return Err(format!(
-            "{invalid_anchors} of {total} findings were anchored outside the diff or away from \
-             their evidence"
+            "{invalid_anchors} of {anchor_attempts} anchors were outside the diff or away from \
+             their evidence and {unverified} could not be verified: the answer reviewed \
+             something other than this change"
         ));
     }
-    let before = kept.len();
-    kept.retain(|finding| !crate::suppress::is_suppressed(finding, suppressions));
-    let suppressed = u32::try_from(before - kept.len()).unwrap_or(u32::MAX);
+    let (hidden, mut kept): (Vec<Finding>, Vec<Finding>) = kept
+        .into_iter()
+        .partition(|finding| crate::suppress::is_suppressed(finding, suppressions));
+    let suppressed = u32::try_from(hidden.len()).unwrap_or(u32::MAX);
     kept.sort_by_key(|finding| finding.severity);
-    let trimmed =
-        u32::try_from(kept.len().saturating_sub(resolved.max_findings)).unwrap_or(u32::MAX);
-    kept.truncate(resolved.max_findings);
+    let cut = kept.split_off(resolved.max_findings.min(kept.len()));
+    let trimmed = u32::try_from(cut.len()).unwrap_or(u32::MAX);
+    withheld.extend(
+        hidden
+            .into_iter()
+            .chain(cut)
+            .map(|finding| finding.fingerprint),
+    );
     for (id, finding) in kept.iter_mut().enumerate() {
         finding.id = u32::try_from(id + 1).unwrap_or(u32::MAX);
     }
-    let surviving: BTreeSet<&str> = kept.iter().map(|f| f.fingerprint.as_str()).collect();
-    let withheld = reported
-        .iter()
-        .filter(|fingerprint| !surviving.contains(fingerprint.as_str()))
-        .cloned()
-        .collect();
     let summary = match output.diagram {
         Some(diagram) if diagram.trim_start().starts_with("```") => {
             format!("{}\n\n{diagram}", output.summary)
@@ -232,16 +263,28 @@ pub fn validate(
         Some(diagram) => format!("{}\n\n```mermaid\n{diagram}\n```", output.summary),
         None => output.summary,
     };
+    let summary = redact(&summary).0;
     Ok(Validated {
         summary,
         findings: kept,
         invalid_anchors,
+        unverified,
         total,
         low_confidence,
         trimmed,
         suppressed,
-        withheld,
+        withheld: withheld.into_iter().collect(),
     })
+}
+
+fn redacted(mut raw: RawFinding) -> RawFinding {
+    for text in [&mut raw.title, &mut raw.body, &mut raw.evidence] {
+        *text = redact(text).0;
+    }
+    if let Some(suggestion) = raw.suggestion.as_mut() {
+        *suggestion = redact(suggestion).0;
+    }
+    raw
 }
 
 fn capped(mut raw: RawFinding) -> RawFinding {
@@ -263,37 +306,42 @@ fn capped(mut raw: RawFinding) -> RawFinding {
 /// What validation needs from one changed file, computed once for all findings.
 struct Prepared<'a> {
     path: &'a str,
+    excluded: bool,
     hunks: Vec<(u32, u32)>,
-    lines: Vec<&'a str>,
+    line_count: usize,
+    /// `(1-based line, whitespace-collapsed text)` of every non-blank line.
+    nonblank: Vec<(u32, String)>,
 }
 
-/// 1-based lines where `evidence` starts, compared line by line with
-/// surrounding whitespace ignored: the model rarely keeps indentation.
-fn evidence_lines(lines: &[&str], evidence: &str) -> Vec<u32> {
-    let wanted: Vec<&str> = evidence
+/// Bounds the comparison of an evidence pasted at length.
+const MAX_EVIDENCE_LINES: usize = 40;
+
+fn collapsed(line: &str) -> String {
+    line.split_whitespace().collect::<Vec<_>>().join(" ")
+}
+
+/// 1-based lines where `evidence` starts, compared over non-blank lines with
+/// whitespace collapsed: the model rarely keeps indentation or blank lines.
+fn evidence_lines(nonblank: &[(u32, String)], evidence: &str) -> Vec<u32> {
+    let wanted: Vec<String> = evidence
         .lines()
-        .map(str::trim)
+        .map(collapsed)
         .filter(|line| !line.is_empty())
+        .take(MAX_EVIDENCE_LINES)
         .collect();
-    let Some((first, rest)) = wanted.split_first() else {
+    if wanted.is_empty() {
         return Vec::new();
-    };
-    let mut found = Vec::new();
-    for (start, line) in lines.iter().enumerate() {
-        if !line.contains(first) {
-            continue;
-        }
-        if rest.iter().enumerate().all(|(offset, want)| {
-            lines
-                .get(start + 1 + offset)
-                .is_some_and(|line| line.contains(want))
-        }) {
-            if let Ok(line) = u32::try_from(start + 1) {
-                found.push(line);
-            }
-        }
     }
-    found
+    nonblank
+        .windows(wanted.len())
+        .filter(|window| {
+            window
+                .iter()
+                .zip(&wanted)
+                .all(|((_, line), want)| line.contains(want.as_str()))
+        })
+        .map(|window| window[0].0)
+        .collect()
 }
 
 fn overlaps(a: &Finding, b: &Finding) -> bool {
@@ -301,7 +349,7 @@ fn overlaps(a: &Finding, b: &Finding) -> bool {
         return false;
     }
     let (Some(a_start), Some(b_start)) = (a.line, b.line) else {
-        return false;
+        return b.line.is_none() && a.fingerprint == b.fingerprint;
     };
     let a_end = a.end_line.unwrap_or(a_start);
     let b_end = b.end_line.unwrap_or(b_start);

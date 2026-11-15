@@ -2505,7 +2505,7 @@ pub(crate) fn fixture_review_config() -> domain::ReviewSettings {
                 tier: None,
             },
             domain::ReviewPreset {
-                id: crate::code_review::CUSTOM_PRESET.into(),
+                id: client::CUSTOM_PRESET.into(),
                 name: "Custom".into(),
                 detail: "Your own wording, remembered for next time.".into(),
                 tier: None,

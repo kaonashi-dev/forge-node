@@ -42,7 +42,8 @@ pub use rebase::{
     Conflict, Continued, Sequencer, SequencerState, MAX_CONFLICTS,
 };
 pub use remote::{
-    default_remote, fetch, fetch_pull_request, has_remote, FetchOutcome, FetchedPullRequest,
+    default_remote, delete_pull_request_refs, fetch, fetch_pull_request, has_remote, FetchOutcome,
+    FetchedPullRequest,
 };
 pub use repository::{
     commit_exists, common_dir, compare_base, current_branch, default_branch, discover_root,

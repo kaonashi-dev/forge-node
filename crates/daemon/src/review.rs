@@ -3,7 +3,8 @@
 //! reviewer is an ordinary read-only agent session, read when its hook idles.
 
 use std::fmt::Write as _;
-use std::io::Read;
+use std::io::{Read, Write as _};
+use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -41,7 +42,7 @@ pub(crate) struct RunningReview {
     pub(crate) key: String,
 }
 
-enum End {
+pub(crate) enum End {
     Cancelled,
     Failed(String),
 }
@@ -144,21 +145,23 @@ impl Daemon {
                         review_id: running.id,
                     });
                 }
+                // A superseded worker lives on until it sees its cancel, so it still counts.
+                _ if inner.review_workers >= MAX_RUNNING_REVIEWS => {
+                    return Err(ProtocolError::conflict(format!(
+                        "{MAX_RUNNING_REVIEWS} reviews are already running"
+                    )));
+                }
                 Some(running) => {
                     let superseded = running.id;
                     inner.review_cancel.insert(superseded);
                     crate::actions::run::wake_waiters(&mut inner);
-                }
-                None if inner.reviews_running.len() >= MAX_RUNNING_REVIEWS => {
-                    return Err(ProtocolError::conflict(format!(
-                        "{MAX_RUNNING_REVIEWS} reviews are already running"
-                    )));
                 }
                 None => {}
             }
             inner
                 .reviews_running
                 .insert(slot.clone(), RunningReview { id, key });
+            inner.review_workers += 1;
         }
 
         let run = ReviewRun {
@@ -387,13 +390,7 @@ impl Daemon {
         .map_err(db_err)?;
         finding.reaction = reaction;
         if was_dismissed != (reaction == Some(FindingReaction::Dismiss)) && run.score.is_some() {
-            let standing: Vec<domain::Finding> = findings
-                .into_iter()
-                .filter(|finding| finding.reaction != Some(FindingReaction::Dismiss))
-                .collect();
-            let score = review::score(&standing);
-            run.verdict = Some(review::verdict(&standing, score));
-            run.score = Some(score);
+            rescore(&mut run, &findings);
             self.publish_review(&run);
         }
         Ok(Response::Ack)
@@ -405,9 +402,20 @@ impl Daemon {
         suppression: &domain::ReviewSuppression,
     ) -> Result<Response, ProtocolError> {
         let project = self.workspace_project(workspace_id)?;
-        self.review_store
+        let restored = self
+            .review_store
             .clear_suppression(project, suppression)
             .map_err(db_err)?;
+        for review_id in restored {
+            match self.review_store.get(review_id) {
+                Ok(Some((mut run, findings))) if run.score.is_some() => {
+                    rescore(&mut run, &findings);
+                    self.publish_review(&run);
+                }
+                Ok(_) => {}
+                Err(error) => tracing::warn!(%review_id, %error, "could not rescore a review"),
+            }
+        }
         Ok(Response::Ack)
     }
 
@@ -434,10 +442,9 @@ impl Daemon {
             review_id: run.id,
         };
         let pack_dir = PackDir(
-            self.worktrees_root_path()
-                .parent()
-                .unwrap_or(self.worktrees_root_path())
-                .join("review-packs")
+            self.forge_paths()
+                .home
+                .join(PACKS_DIR)
                 .join(run.id.to_string()),
         );
         run.status = ReviewStatus::Running;
@@ -458,10 +465,45 @@ impl Daemon {
         if let Some(session_id) = run.session_id {
             self.stop_reviewer(session_id);
         }
+        self.settle_review(&mut run, outcome);
+        if let ReviewTarget::PullRequest { number, .. } = &run.target {
+            // `GetReviewDiff` reads the range by oid; once unreachable, a `git gc` may prune it.
+            if let Err(error) =
+                git_service::delete_pull_request_refs(&path, *number, &run.id.to_string())
+            {
+                tracing::warn!(%error, "could not delete a review's pull-request refs");
+            }
+        }
+        drop(pack_dir);
+        drop(guard);
+        self.finish_review(&mut run);
+        let cutoff = time::OffsetDateTime::now_utc() - time::Duration::days(KEEP_DAYS);
+        if let Err(error) =
+            self.review_store
+                .prune(run.workspace_id, KEEP_RUNS, Timestamp::from_offset(cutoff))
+        {
+            tracing::warn!(%error, "could not prune old reviews");
+        }
+    }
+
+    /// A cancel that arrived while the answer was validated still wins, and
+    /// no findings are saved for it.
+    pub(crate) fn settle_review(
+        &self,
+        run: &mut ReviewRun,
+        outcome: Result<Vec<domain::Finding>, End>,
+    ) {
+        let cancelled = self.lock().review_cancel.contains(&run.id);
         match outcome {
+            Ok(_) | Err(End::Cancelled) if cancelled => {
+                run.status = ReviewStatus::Cancelled;
+                run.score = None;
+                run.verdict = None;
+            }
             Ok(mut findings) => {
+                // `previous_review` only looks back from a completed run.
                 run.status = ReviewStatus::Completed;
-                if let Some((_, before)) = self.previous_review(&run) {
+                if let Some((_, before)) = self.previous_review(run) {
                     review::mark_lineage(&mut findings, &before);
                 }
                 if let Err(error) = self.review_store.insert_findings(run.id, &findings) {
@@ -474,16 +516,6 @@ impl Daemon {
                 run.status = ReviewStatus::Failed;
                 run.error = Some(error);
             }
-        }
-        drop(pack_dir);
-        drop(guard);
-        self.finish_review(&mut run);
-        let cutoff = time::OffsetDateTime::now_utc() - time::Duration::days(KEEP_DAYS);
-        if let Err(error) =
-            self.review_store
-                .prune(run.workspace_id, KEEP_RUNS, Timestamp::from_offset(cutoff))
-        {
-            tracing::warn!(%error, "could not prune old reviews");
         }
     }
 
@@ -558,15 +590,26 @@ impl Daemon {
         };
         let paths: Vec<&str> = files.iter().map(|file| file.path.as_str()).collect();
         let rules = review::in_scope(&resolved.rules, &paths);
+        // A v7 uuid starts with its timestamp; its tail is the random part.
+        let uuid = SessionId::new().as_uuid().simple().to_string();
+        let nonce = &uuid[uuid.len() - 12..];
         let (pack, mut coverage) =
-            review::build_pack(&meta, &commits, &files, resolved, &rules, context);
+            review::build_pack(&meta, &commits, &files, resolved, &rules, context, nonce);
         coverage
             .notes
             .splice(0..0, std::mem::take(&mut run.coverage.notes));
         run.coverage = coverage;
         let pack_file = pack_dir.join("pack.md");
-        std::fs::create_dir_all(pack_dir)
-            .and_then(|()| std::fs::write(&pack_file, pack))
+        create_pack_dir(pack_dir)
+            .and_then(|()| {
+                std::fs::OpenOptions::new()
+                    .write(true)
+                    .create(true)
+                    .truncate(true)
+                    .mode(0o600)
+                    .open(&pack_file)
+            })
+            .and_then(|mut file| file.write_all(pack.as_bytes()))
             .map_err(|error| End::Failed(format!("could not write the review pack: {error}")))?;
 
         self.review_stage(run, ReviewStage::Model)?;
@@ -579,7 +622,7 @@ impl Daemon {
             None,
             SessionRole::Generic,
             None,
-            Some(review::prompt(resolved, &pack_file)),
+            Some(review::prompt(resolved, &pack_file, nonce)),
             true,
             launch.options.clone(),
             Some(REVIEWER_TITLE.into()),
@@ -595,7 +638,12 @@ impl Daemon {
         };
         run.session_id = Some(session_id);
         self.publish_review(run);
-        let output = self.await_answer(run.id, session_id, path, &transcript, &launch.provider)?;
+        let answer = Answer {
+            transcript: &transcript,
+            provider: &launch.provider,
+            config_dir: self.launch_config_dir(&launch.provider),
+        };
+        let output = self.await_answer(run.id, session_id, path, &answer)?;
 
         self.review_stage(run, ReviewStage::Validate)?;
         let suppressions = match self
@@ -615,13 +663,17 @@ impl Daemon {
         let changed: Vec<review::ChangedFile> = files
             .iter()
             .filter(|file| !file.binary)
-            .map(|file| review::ChangedFile {
-                path: file.path.clone(),
-                patch: file.patch.clone(),
-                text: output
-                    .findings
-                    .iter()
-                    .any(|finding| finding.path == file.path)
+            .map(|file| {
+                let excluded = run.coverage.excluded.contains(&file.path);
+                review::ChangedFile {
+                    path: file.path.clone(),
+                    patch: file.patch.clone(),
+                    excluded,
+                    text: (!excluded
+                        && output
+                            .findings
+                            .iter()
+                            .any(|finding| finding.path == file.path))
                     .then(|| match (pull_request.is_some(), &run.tree_oid) {
                         (true, _) => read_blob(path, &run.head_oid, &file.path),
                         (false, Some(tree)) => read_blob(path, tree, &file.path),
@@ -632,6 +684,7 @@ impl Daemon {
                         }
                     })
                     .flatten(),
+                }
             })
             .collect();
         let validated = review::validate(output, &changed, &rules, resolved, &suppressions)
@@ -652,6 +705,13 @@ impl Daemon {
             run.coverage.notes.push(format!(
                 "{} finding(s) suppressed by feedback",
                 validated.suppressed
+            ));
+        }
+        run.coverage.unverified = validated.unverified;
+        if validated.unverified > 0 {
+            run.coverage.notes.push(format!(
+                "{} finding(s) could not be verified",
+                validated.unverified
             ));
         }
         run.coverage.withheld = validated.withheld;
@@ -677,6 +737,7 @@ impl Daemon {
             path,
             &remote,
             number,
+            &run.id.to_string(),
             base.as_deref(),
             self.config.git.fetch_timeout(),
         )
@@ -758,12 +819,11 @@ impl Daemon {
         review_id: ReviewId,
         session_id: SessionId,
         cwd: &Path,
-        transcript: &str,
-        provider: &str,
+        answer: &Answer<'_>,
     ) -> Result<review::ReviewOutput, End> {
         let (wake_tx, wake_rx) = flume::bounded(1);
         self.lock().task_waiters.push(wake_tx);
-        let deadline = Instant::now() + Duration::from_secs(self.config.review.timeout_secs);
+        let deadline = Instant::now() + answer_budget(self.config.review.timeout_secs);
         let mut found = None;
         let mut grace: Option<Instant> = None;
         let mut last_error = None;
@@ -788,24 +848,25 @@ impl Daemon {
             let stopped = hooked && activity.state == ActivityState::Idle;
             let waiting = hooked && activity.state == ActivityState::Waiting;
             if exited || stopped || waiting {
-                match read_answer(&mut found, cwd, transcript, provider) {
+                match read_answer(&mut found, cwd, answer) {
                     Ok(output) => return Ok(output),
                     Err(error) if exited => {
                         return Err(End::Failed(format!(
                             "the reviewer ended without a valid review: {error}"
                         )))
                     }
-                    Err(error) if stopped => {
+                    Err(error) => {
                         let until = *grace.get_or_insert_with(|| Instant::now() + ANSWER_GRACE);
                         if Instant::now() >= until {
+                            let state = if stopped {
+                                "stopped"
+                            } else {
+                                "is waiting for input"
+                            };
                             return Err(End::Failed(format!(
-                                "the reviewer stopped without a valid review: {error}"
+                                "the reviewer {state} without a valid review: {error}"
                             )));
                         }
-                        last_error = Some(error);
-                    }
-                    Err(error) => {
-                        grace = None;
                         last_error = Some(error);
                     }
                 }
@@ -828,9 +889,24 @@ impl Daemon {
         }
     }
 
+    /// The provider's config directory as a profile-less launch got it: from
+    /// the resolved login-shell environment, which the reviewer's spawn used.
+    fn launch_config_dir(&self, provider: &str) -> Option<PathBuf> {
+        let var = self
+            .lock()
+            .agents
+            .descriptor(&AgentProviderId::new(provider))?
+            .config_dir
+            .as_ref()?
+            .vars
+            .first()?
+            .clone();
+        self.launch_var(&var).map(PathBuf::from)
+    }
+
     fn stop_reviewer(self: &Arc<Self>, session_id: SessionId) {
-        if let Err(error) = self.kill_session(session_id) {
-            tracing::debug!(%session_id, %error, "reviewer already stopped");
+        if let Err(error) = self.kill_and_close_session(session_id) {
+            tracing::debug!(%session_id, %error, "reviewer already gone");
         }
     }
 
@@ -856,8 +932,11 @@ impl Daemon {
         self.publish_review(run);
     }
 
+    /// Ends one worker's claim: called once per accepted start, by its guard or
+    /// by the path that failed to start it.
     fn release_review(&self, slot: &str, review_id: ReviewId) {
         let mut inner = self.lock();
+        inner.review_workers = inner.review_workers.saturating_sub(1);
         if inner
             .reviews_running
             .get(slot)
@@ -867,6 +946,25 @@ impl Daemon {
         }
         inner.review_cancel.remove(&review_id);
     }
+}
+
+/// Score and verdict over the findings that are not dismissed.
+fn rescore(run: &mut ReviewRun, findings: &[domain::Finding]) {
+    let standing: Vec<domain::Finding> = findings
+        .iter()
+        .filter(|finding| finding.reaction != Some(FindingReaction::Dismiss))
+        .cloned()
+        .collect();
+    let score = review::score(&standing);
+    run.verdict = Some(review::verdict(&standing, score));
+    run.score = Some(score);
+}
+
+/// `Instant + Duration` panics on overflow, so an absurd `timeout_secs` is capped.
+const MAX_ANSWER_SECS: u64 = 24 * 3600;
+
+fn answer_budget(timeout_secs: u64) -> Duration {
+    Duration::from_secs(timeout_secs.min(MAX_ANSWER_SECS))
 }
 
 fn unix_now() -> i64 {
@@ -906,7 +1004,7 @@ fn snapshot(
         .filter(|file| !file.truncated && !file.binary)
         .map(|file| file.path.as_str())
         .collect();
-    std::fs::create_dir_all(pack_dir)?;
+    create_pack_dir(pack_dir)?;
     git_service::snapshot_tree(path, &paths, &pack_dir.join("index"))
 }
 
@@ -933,16 +1031,29 @@ struct Stages<'a> {
     pack_dir: &'a Path,
 }
 
+/// Where the reviewer's answer is written: the session id Forge minted for
+/// its transcript, in the provider's config directory.
+struct Answer<'a> {
+    transcript: &'a str,
+    provider: &'a str,
+    config_dir: Option<PathBuf>,
+}
+
 /// The reviewer's last answer, parsed. `found` keeps the transcript's path
 /// once it exists, so a re-read opens one known file rather than scanning.
 fn read_answer(
     found: &mut Option<PathBuf>,
     cwd: &Path,
-    transcript: &str,
-    provider: &str,
+    answer: &Answer<'_>,
 ) -> Result<review::ReviewOutput, String> {
+    let provider = answer.provider;
     if found.is_none() {
-        *found = crate::external_agents::minted_transcript(provider, cwd, transcript);
+        *found = crate::external_agents::minted_transcript(
+            provider,
+            answer.config_dir.as_deref(),
+            cwd,
+            answer.transcript,
+        );
     }
     let path = found
         .as_deref()
@@ -963,6 +1074,27 @@ struct ReviewGuard {
 impl Drop for ReviewGuard {
     fn drop(&mut self) {
         self.daemon.release_review(&self.slot, self.review_id);
+    }
+}
+
+/// Under the Forge home, never beside a configurable worktrees root, which
+/// may sit inside a repository.
+const PACKS_DIR: &str = "review-packs";
+
+/// The pack holds diff excerpts and project context: only the user reads it.
+fn create_pack_dir(dir: &Path) -> std::io::Result<()> {
+    std::fs::DirBuilder::new()
+        .recursive(true)
+        .mode(0o700)
+        .create(dir)
+}
+
+/// Remove every pack a crash left behind; run before any review can start.
+pub(crate) fn sweep_packs(home: &Path) {
+    if let Err(error) = std::fs::remove_dir_all(home.join(PACKS_DIR)) {
+        if error.kind() != std::io::ErrorKind::NotFound {
+            tracing::warn!(%error, "could not remove leftover review packs");
+        }
     }
 }
 
@@ -1173,6 +1305,12 @@ fn read_inside(root: &Path, relative: &Path, cap: u64) -> Result<Option<String>,
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_answer_budget_is_capped_at_a_day() {
+        assert_eq!(answer_budget(900), Duration::from_secs(900));
+        assert_eq!(answer_budget(u64::MAX), Duration::from_secs(24 * 3600));
+    }
 
     #[test]
     fn review_files_keep_the_sorted_prefix_and_report_the_rest() {

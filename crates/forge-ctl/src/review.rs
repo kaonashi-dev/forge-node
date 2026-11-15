@@ -336,6 +336,8 @@ struct Case {
     note: String,
 }
 
+const MAX_CORPUS_BYTES: usize = 1024 * 1024;
+
 fn bench(app: &App, client: &Client, corpus: &Path, out: Option<PathBuf>) -> Result<(), u8> {
     let bad = |message: String| {
         app.fail(
@@ -346,8 +348,16 @@ fn bench(app: &App, client: &Client, corpus: &Path, out: Option<PathBuf>) -> Res
             next(&["forgectl", "review", "bench", "--help"]),
         )
     };
-    let text = std::fs::read_to_string(corpus)
+    let read = client::read_capped(corpus, MAX_CORPUS_BYTES)
         .map_err(|error| bad(format!("cannot read the corpus: {error}")))?;
+    if read.truncated {
+        return Err(bad(format!(
+            "the corpus is over {} KiB",
+            MAX_CORPUS_BYTES / 1024
+        )));
+    }
+    let text = String::from_utf8(read.bytes)
+        .map_err(|error| bad(format!("the corpus is not UTF-8: {error}")))?;
     let parsed: Corpus =
         toml::from_str(&text).map_err(|error| bad(format!("invalid corpus: {error}")))?;
     let corpus_dir = corpus

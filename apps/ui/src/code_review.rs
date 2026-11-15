@@ -20,13 +20,13 @@ use rune_kit::{
 use crate::app::AppState;
 use crate::workbench::CenterMode;
 
-pub const CUSTOM_PRESET: &str = "custom";
+mod model;
 
-/// What the daemon accepts in one `SendSessionPrompt`.
-pub const PROMPT_BUDGET: usize = 8_192;
-
-const PROMPT_HEAD: &str = "Forge Review found these issues in your changes. Fix each one, or say \
-                           why it is not a problem:\n\n";
+pub use client::CUSTOM_PRESET;
+pub use client::MAX_PROMPT_BYTES as PROMPT_BUDGET;
+use model::{
+    STAGES, annotations, findings_prompt, group_findings, is_stale, standing_prompt, supersedes,
+};
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum Grouping {
@@ -65,6 +65,47 @@ pub struct Report {
     pub findings: Vec<Finding>,
     pub resolved: Vec<Finding>,
     pub previous: Option<ReviewId>,
+    /// `findings` grouped by `grouped_by`, as indices into it.
+    groups: Vec<(String, Vec<usize>)>,
+    grouped_by: Grouping,
+    /// A finding's index by its id as an annotation names it.
+    by_id: HashMap<String, usize>,
+}
+
+impl Report {
+    fn new(
+        run: ReviewId,
+        findings: Vec<Finding>,
+        resolved: Vec<Finding>,
+        previous: Option<ReviewId>,
+        grouping: Grouping,
+    ) -> Self {
+        let by_id = findings
+            .iter()
+            .enumerate()
+            .map(|(at, finding)| (finding.id.to_string(), at))
+            .collect();
+        Self {
+            groups: group_findings(&findings, grouping),
+            grouped_by: grouping,
+            run,
+            findings,
+            resolved,
+            previous,
+            by_id,
+        }
+    }
+
+    fn regroup(&mut self, grouping: Grouping) {
+        if self.grouped_by != grouping {
+            self.groups = group_findings(&self.findings, grouping);
+            self.grouped_by = grouping;
+        }
+    }
+
+    fn finding(&self, annotation: &Annotation) -> Option<&Finding> {
+        self.findings.get(*self.by_id.get(annotation.id.as_str())?)
+    }
 }
 
 /// The range one run reviewed, as the Diff tab draws it.
@@ -119,6 +160,10 @@ pub struct CodeReview {
     /// Each reviewed workspace's `send_target`, recomputed when the sessions or
     /// the runs change, never per frame.
     pub send_to: HashMap<WorkspaceId, SessionId>,
+    /// `reviewers` of the store's providers, recomputed when they change.
+    pub offered: Vec<(AgentProviderId, String)>,
+    /// Each checkout's lanes in order, extended when a run of a new lane lands.
+    lanes: HashMap<WorkspaceId, Vec<Lane>>,
 }
 
 impl Default for CodeReview {
@@ -147,6 +192,8 @@ impl Default for CodeReview {
             revision: 0,
             changes_key: None,
             send_to: HashMap::new(),
+            offered: Vec::new(),
+            lanes: HashMap::new(),
         }
     }
 }
@@ -180,79 +227,20 @@ impl CodeReview {
         self.reports.get(&(workspace, Lane::Workspace))
     }
 
-    fn lanes(&self, workspace: WorkspaceId) -> Vec<Lane> {
-        let mut lanes: Vec<Lane> = self
-            .latest
-            .keys()
-            .filter(|(owner, _)| *owner == workspace)
-            .map(|(_, lane)| *lane)
-            .collect();
-        lanes.sort_unstable();
-        lanes
+    fn lanes(&self, workspace: WorkspaceId) -> &[Lane] {
+        self.lanes.get(&workspace).map_or(&[], Vec::as_slice)
+    }
+
+    fn set_grouping(&mut self, grouping: Grouping) {
+        self.grouping = grouping;
+        for report in self.reports.values_mut() {
+            report.regroup(grouping);
+        }
     }
 
     fn knows(&self, workspace: WorkspaceId) -> bool {
         self.latest.keys().any(|(owner, _)| *owner == workspace)
     }
-}
-
-const SEVERITIES: [Severity; 3] = [Severity::P0, Severity::P1, Severity::P2];
-const STAGES: [ReviewStage; 4] = [
-    ReviewStage::Diff,
-    ReviewStage::Pack,
-    ReviewStage::Model,
-    ReviewStage::Validate,
-];
-
-/// Findings grouped: severity groups are most
-/// severe first; file groups are sorted by path and line. Empty groups drop.
-#[must_use]
-pub fn group_findings(findings: &[Finding], by: Grouping) -> Vec<(String, Vec<&Finding>)> {
-    match by {
-        Grouping::Severity => SEVERITIES
-            .iter()
-            .map(|severity| {
-                let mut group: Vec<&Finding> = findings
-                    .iter()
-                    .filter(|finding| finding.severity == *severity)
-                    .collect();
-                group.sort_by(|a, b| {
-                    a.path
-                        .cmp(&b.path)
-                        .then_with(|| a.line.unwrap_or(0).cmp(&b.line.unwrap_or(0)))
-                });
-                (format!("{severity:?}"), group)
-            })
-            .filter(|(_, group)| !group.is_empty())
-            .collect(),
-        Grouping::File => {
-            let mut paths: Vec<&str> = findings
-                .iter()
-                .map(|finding| finding.path.as_str())
-                .collect();
-            paths.sort_unstable();
-            paths.dedup();
-            paths
-                .into_iter()
-                .map(|path| {
-                    let mut group: Vec<&Finding> = findings
-                        .iter()
-                        .filter(|finding| finding.path == path)
-                        .collect();
-                    group.sort_by_key(|finding| finding.line.unwrap_or(0));
-                    (path.to_string(), group)
-                })
-                .collect()
-        }
-    }
-}
-
-/// An unmeasured head is not evidence the checkout moved, and a pull
-/// request's head is not the checkout's.
-#[must_use]
-pub fn is_stale(run: &ReviewRun, head: Option<&str>) -> bool {
-    matches!(run.target, ReviewTarget::Workspace { .. })
-        && head.is_some_and(|head| head != run.head_oid)
 }
 
 #[must_use]
@@ -282,25 +270,6 @@ pub fn annotates_changes(run: &ReviewRun, head: Option<&str>) -> bool {
         && !is_stale(run, head)
 }
 
-/// One annotation per anchored, standing finding, on the new side of the file
-/// at its index in `file_paths`.
-#[must_use]
-pub fn annotations(findings: &[Finding], file_paths: &[&str]) -> Vec<Annotation> {
-    findings
-        .iter()
-        .filter(|finding| finding.reaction != Some(FindingReaction::Dismiss))
-        .filter_map(|finding| {
-            let line = finding.line?;
-            let file = file_paths.iter().position(|path| *path == finding.path)?;
-            Some(Annotation::new(
-                file,
-                LineRef::new(Side::New, line),
-                finding.id.to_string(),
-            ))
-        })
-        .collect()
-}
-
 /// The workspace's live agent that was active last, never a reviewer or a
 /// background one.
 #[must_use]
@@ -320,53 +289,6 @@ pub fn send_target(
         })
         .max_by_key(|session| session.last_activity_at)
         .map(|session| session.id)
-}
-
-/// Whole findings, in order, within `budget` bytes, and how many did not fit.
-/// Empty when none fits or none is given; [`empty_prompt_reason`] tells which.
-#[must_use]
-pub fn findings_prompt(findings: &[&Finding], budget: usize) -> (String, usize) {
-    let mut prompt = PROMPT_HEAD.to_string();
-    let mut left_out = 0;
-    for finding in findings {
-        let mut block = format!(
-            "- [{:?}] {}{} — {}\n  {}\n",
-            finding.severity,
-            finding.path,
-            finding
-                .line
-                .map(|line| format!(":{line}"))
-                .unwrap_or_default(),
-            finding.title,
-            finding.body.replace('\n', "\n  "),
-        );
-        if let Some(suggestion) = &finding.suggestion {
-            block.push_str(&format!(
-                "  Suggestion:\n  {}\n",
-                suggestion.replace('\n', "\n  ")
-            ));
-        }
-        block.push('\n');
-        if prompt.len() + block.len() <= budget {
-            prompt.push_str(&block);
-        } else {
-            left_out += 1;
-        }
-    }
-    if left_out == findings.len() {
-        return (String::new(), left_out);
-    }
-    (prompt, left_out)
-}
-
-/// Every finding that is not dismissed, as one prompt within [`PROMPT_BUDGET`].
-#[must_use]
-pub fn standing_prompt(findings: &[Finding]) -> (String, usize) {
-    let standing: Vec<&Finding> = findings
-        .iter()
-        .filter(|finding| finding.reaction != Some(FindingReaction::Dismiss))
-        .collect();
-    findings_prompt(&standing, PROMPT_BUDGET)
 }
 
 #[must_use]
@@ -389,31 +311,6 @@ pub fn delivery_message(queued: bool, left_out: usize) -> String {
         message.push_str(&format!(" · {left_out} finding(s) left out to fit 8 KiB"));
     }
     message
-}
-
-fn progress(run: &ReviewRun) -> usize {
-    if run.finished_at.is_some() {
-        return STAGES.len() + 1;
-    }
-    run.stage.map_or(0, |stage| {
-        STAGES
-            .iter()
-            .position(|known| *known == stage)
-            .map_or(1, |at| at + 1)
-    })
-}
-
-/// Whether `next` replaces `current`: a newer run wins, and an earlier read of
-/// the same run never undoes a later one.
-#[must_use]
-pub fn supersedes(current: Option<&ReviewRun>, next: &ReviewRun) -> bool {
-    let Some(current) = current else {
-        return true;
-    };
-    if current.id != next.id {
-        return next.id > current.id;
-    }
-    progress(next) >= progress(current)
 }
 
 #[must_use]
@@ -611,7 +508,6 @@ fn sync(s: &mut AppState) {
             None => Err("The client worker is still starting.".to_string()),
         };
         if let Err(error) = result {
-            s.code_review.report_asked.remove(&run);
             s.code_review.errors.insert(workspace, error);
         }
     }
@@ -727,11 +623,10 @@ impl AppState {
             return;
         };
         let provider = self.code_review.provider.clone().or_else(|| {
-            self.store.as_ref().and_then(|store| {
-                reviewers(&store.providers)
-                    .first()
-                    .map(|(id, _)| id.to_string())
-            })
+            self.code_review
+                .offered
+                .first()
+                .map(|(id, _)| id.to_string())
         });
         let preset = self
             .code_review
@@ -809,6 +704,11 @@ impl AppState {
         if supersedes(self.code_review.latest.get(&slot), run) {
             self.code_review.latest.insert(slot, run.clone());
             self.code_review.shown.entry(slot.0).or_insert(slot.1);
+            let lanes = self.code_review.lanes.entry(slot.0).or_default();
+            if !lanes.contains(&slot.1) {
+                lanes.push(slot.1);
+                lanes.sort_unstable();
+            }
             self.refresh_send_targets();
         }
         self.code_review.starting = false;
@@ -833,11 +733,7 @@ impl AppState {
                 if current && remembered.is_none() {
                     self.code_review.preset = Some(config.default_preset.clone());
                 }
-                let offered: Vec<(AgentProviderId, String)> = self
-                    .store
-                    .as_ref()
-                    .map(|store| reviewers(&store.providers))
-                    .unwrap_or_default();
+                let offered = &self.code_review.offered;
                 if current
                     && !self
                         .code_review
@@ -890,19 +786,19 @@ impl AppState {
                 } = *report;
                 self.code_review.reports.insert(
                     (workspace, lane(&run.target)),
-                    Report {
-                        run: run.id,
+                    Report::new(
+                        run.id,
                         findings,
                         resolved,
                         previous,
-                    },
+                        self.code_review.grouping,
+                    ),
                 );
                 self.code_review.revision += 1;
                 self.apply_review_run(&run);
                 self.code_review.errors.remove(&workspace);
             }
             Err(error) => {
-                self.code_review.report_asked.clear();
                 self.code_review.errors.insert(workspace, error);
             }
         }
@@ -1087,6 +983,14 @@ impl AppState {
             .ok_or("No running agent in this checkout to send to.")
     }
 
+    pub(crate) fn refresh_reviewers(&mut self) {
+        self.code_review.offered = self
+            .store
+            .as_ref()
+            .map(|store| reviewers(&store.providers))
+            .unwrap_or_default();
+    }
+
     pub(crate) fn refresh_send_targets(&mut self) {
         let reviewers: Vec<SessionId> = self
             .code_review
@@ -1220,11 +1124,10 @@ impl AppState {
             return;
         };
         let provider = self.code_review.provider.clone().or_else(|| {
-            self.store.as_ref().and_then(|store| {
-                reviewers(&store.providers)
-                    .first()
-                    .map(|(id, _)| id.to_string())
-            })
+            self.code_review
+                .offered
+                .first()
+                .map(|(id, _)| id.to_string())
         });
         let result = match &self.connection {
             Some(connection) => connection.start_review(
@@ -1270,11 +1173,7 @@ fn setup(s: &AppState, k: &Kit) -> El {
         return col();
     };
     let config = s.code_review.configs.get(&workspace);
-    let offered: Vec<(AgentProviderId, String)> = s
-        .store
-        .as_ref()
-        .map(|store| reviewers(&store.providers))
-        .unwrap_or_default();
+    let offered = &s.code_review.offered;
     let mut body = col().key("review-setup").w_full().gap(crate::ds::SPACE_4);
     if offered.is_empty() {
         body = body.child(note(k, "No installed agent can run a Forge Review."));
@@ -1314,7 +1213,7 @@ fn setup(s: &AppState, k: &Kit) -> El {
             .key("review-tier"),
         );
         let mut agents = RadioGroup::new().label("Agent");
-        for (id, name) in &offered {
+        for (id, name) in offered {
             let chosen = s.code_review.provider.as_deref() == Some(id.as_str());
             let id = id.to_string();
             agents = agents.item(RadioItem::new(name.clone(), chosen).on_select(
@@ -1742,7 +1641,6 @@ fn findings(s: &AppState, k: &Kit, run: &ReviewRun) -> El {
     };
     let lineage = report.previous.is_some();
     let send = s.send_destination(run).err();
-    let groups = group_findings(&report.findings, s.code_review.grouping);
     let mut body = col()
         .key("review-findings")
         .w_full()
@@ -1768,19 +1666,19 @@ fn findings(s: &AppState, k: &Kit, run: &ReviewRun) -> El {
                     .variant(ButtonVariant::GhostMuted)
                     .control_size(ControlSize::Small)
                     .on_press(|s: &mut AppState| {
-                        s.code_review.grouping = match s.code_review.grouping {
+                        s.code_review.set_grouping(match s.code_review.grouping {
                             Grouping::Severity => Grouping::File,
                             Grouping::File => Grouping::Severity,
-                        };
+                        });
                     })
                     .build(k)
                     .key("review-grouping"),
                 ),
         );
-    for (key, group) in groups {
-        body = body.child(section(k, key));
-        for finding in group {
-            body = body.child(finding_row(k, run, finding, lineage, send));
+    for (key, group) in &report.groups {
+        body = body.child(section(k, key.clone()));
+        for at in group {
+            body = body.child(finding_row(k, run, &report.findings[*at], lineage, send));
         }
     }
     if !report.resolved.is_empty() {
@@ -1816,12 +1714,7 @@ pub fn finding_note(k: &Kit, finding: &Finding) -> El {
 
 fn note_for(k: &Kit, report: Option<&Report>, annotation: &Annotation) -> El {
     report
-        .and_then(|report| {
-            report
-                .findings
-                .iter()
-                .find(|finding| finding.id.to_string() == annotation.id)
-        })
+        .and_then(|report| report.finding(annotation))
         .map_or_else(col, |finding| finding_note(k, finding))
 }
 
@@ -2055,8 +1948,8 @@ pub fn view(s: &AppState, k: &Kit) -> El {
                 .label("Review")
                 .fit()
                 .on_pick(move |s: &mut AppState, index: usize, _| {
-                    if let Some(lane) = lanes.get(index) {
-                        s.code_review.shown.insert(workspace, *lane);
+                    if let Some(lane) = s.code_review.lanes(workspace).get(index).copied() {
+                        s.code_review.shown.insert(workspace, lane);
                     }
                 })
                 .build(k)
@@ -2180,7 +2073,7 @@ mod tests {
     use super::*;
     use crate::test_support::provider;
 
-    fn finding(id: u32, path: &str, line: Option<u32>, severity: Severity) -> Finding {
+    pub(super) fn finding(id: u32, path: &str, line: Option<u32>, severity: Severity) -> Finding {
         Finding {
             id,
             fingerprint: format!("fingerprint-{id}"),
@@ -2200,7 +2093,7 @@ mod tests {
         }
     }
 
-    fn run(id: ReviewId, stage: Option<ReviewStage>, finished: bool) -> ReviewRun {
+    pub(super) fn run(id: ReviewId, stage: Option<ReviewStage>, finished: bool) -> ReviewRun {
         ReviewRun {
             id,
             workspace_id: WorkspaceId::new(),
@@ -2230,74 +2123,6 @@ mod tests {
             branch: Some("main".into()),
             tree_oid: None,
         }
-    }
-
-    #[test]
-    fn findings_group_by_severity_then_path_and_line() {
-        let findings = vec![
-            finding(1, "b.rs", Some(9), Severity::P2),
-            finding(2, "a.rs", Some(4), Severity::P1),
-            finding(3, "b.rs", Some(2), Severity::P0),
-            finding(4, "a.rs", None, Severity::P2),
-        ];
-        let groups = group_findings(&findings, Grouping::Severity);
-        let keys: Vec<&str> = groups.iter().map(|(key, _)| key.as_str()).collect();
-        assert_eq!(keys, ["P0", "P1", "P2"]);
-        let p2: Vec<u32> = groups[2].1.iter().map(|finding| finding.id).collect();
-        assert_eq!(p2, vec![4, 1], "path, then a whole-file finding first");
-        assert_eq!(
-            group_findings(&findings[..1], Grouping::Severity)
-                .iter()
-                .map(|(key, _)| key.as_str())
-                .collect::<Vec<_>>(),
-            ["P2"]
-        );
-    }
-
-    #[test]
-    fn findings_group_by_file_with_general_findings_first() {
-        let findings = vec![
-            finding(1, "b.rs", Some(9), Severity::P2),
-            finding(2, "a.rs", Some(4), Severity::P1),
-            finding(3, "b.rs", Some(2), Severity::P0),
-            finding(4, "a.rs", None, Severity::P2),
-        ];
-        let groups = group_findings(&findings, Grouping::File);
-        let keys: Vec<&str> = groups.iter().map(|(key, _)| key.as_str()).collect();
-        assert_eq!(keys, ["a.rs", "b.rs"]);
-        let a: Vec<u32> = groups[0].1.iter().map(|finding| finding.id).collect();
-        assert_eq!(a, vec![4, 2]);
-        let b: Vec<u32> = groups[1].1.iter().map(|finding| finding.id).collect();
-        assert_eq!(b, vec![3, 1]);
-    }
-
-    #[test]
-    fn a_run_is_stale_only_when_a_known_head_moved() {
-        let run = run(ReviewId::new(), None, false);
-        assert!(!is_stale(&run, Some(run.head_oid.as_str())));
-        assert!(is_stale(&run, Some("different")));
-        assert!(!is_stale(&run, None), "unmeasured is not evidence");
-    }
-
-    #[test]
-    fn a_newer_run_or_a_later_stage_replaces_the_one_on_screen() {
-        let first = ReviewId::new();
-        let second = ReviewId::new();
-        assert!(supersedes(None, &run(first, None, false)));
-        assert!(supersedes(
-            Some(&run(first, None, false)),
-            &run(second, None, false)
-        ));
-        assert!(!supersedes(
-            Some(&run(second, None, false)),
-            &run(first, None, false)
-        ));
-        let done = run(first, Some(ReviewStage::Validate), true);
-        assert!(!supersedes(Some(&done), &run(first, None, false)));
-        assert!(supersedes(
-            Some(&run(first, Some(ReviewStage::Pack), false)),
-            &run(first, Some(ReviewStage::Model), false)
-        ));
     }
 
     #[test]
@@ -2590,23 +2415,6 @@ mod tests {
     }
 
     #[test]
-    fn annotations_index_new_side_lines_of_standing_anchored_findings() {
-        let mut dismissed = finding(3, "b.rs", Some(7), Severity::P1);
-        dismissed.reaction = Some(FindingReaction::Dismiss);
-        let findings = vec![
-            finding(1, "b.rs", Some(4), Severity::P1),
-            finding(2, "a.rs", None, Severity::P2),
-            dismissed,
-            finding(4, "elsewhere.rs", Some(1), Severity::P0),
-        ];
-        let built = annotations(&findings, &["a.rs", "b.rs"]);
-        assert_eq!(
-            built,
-            vec![Annotation::new(1, LineRef::new(Side::New, 4), "1")]
-        );
-    }
-
-    #[test]
     fn only_a_fresh_completed_workspace_review_annotates_changes() {
         let workspace = WorkspaceId::new();
         let run = completed(workspace, workspace_target(workspace));
@@ -2721,32 +2529,6 @@ mod tests {
             None,
             "a reviewer is never the target"
         );
-    }
-
-    #[test]
-    fn a_findings_prompt_fits_its_budget_on_whole_findings() {
-        let mut big = finding(1, "a.rs", Some(2), Severity::P0);
-        big.body = "x".repeat(PROMPT_BUDGET);
-        let small = finding(2, "a.rs", Some(4), Severity::P1);
-        let (prompt, left_out) = findings_prompt(&[&big, &small], PROMPT_BUDGET);
-        assert!(prompt.len() <= PROMPT_BUDGET);
-        assert_eq!(left_out, 1);
-        assert!(prompt.contains("a.rs:4 — finding 2"), "{prompt}");
-        assert!(!prompt.contains("finding 1"));
-
-        let many: Vec<Finding> = (0..200)
-            .map(|id| {
-                let mut f = finding(id, "a.rs", Some(id), Severity::P2);
-                f.body = "y".repeat(100);
-                f
-            })
-            .collect();
-        let refs: Vec<&Finding> = many.iter().collect();
-        let (prompt, left_out) = findings_prompt(&refs, PROMPT_BUDGET);
-        assert!(prompt.len() <= PROMPT_BUDGET);
-        assert!(left_out > 0 && left_out < 200);
-
-        assert_eq!(findings_prompt(&[&big], PROMPT_BUDGET), (String::new(), 1));
     }
 
     #[test]
@@ -2962,5 +2744,34 @@ mod tests {
         ));
         assert!(state.settle_review_reveal(&mut tx));
         assert!(state.code_review.reveal.is_none());
+    }
+
+    #[test]
+    fn a_failed_report_read_is_not_asked_again() {
+        let (mut state, workspace) = fixture_state();
+        let run = completed(workspace, workspace_target(workspace));
+        state.apply_review_run(&run);
+        state.code_review.report_asked.insert(run.id);
+        assert!(state.apply_review_report(workspace, Err("the review is gone".into())));
+        assert!(
+            state.code_review.report_asked.contains(&run.id),
+            "the next sync skips it until Refresh or a reconnect"
+        );
+    }
+
+    #[test]
+    fn a_report_read_that_cannot_be_sent_is_not_asked_again() {
+        let (mut state, workspace) = fixture_state();
+        assert!(state.connection.is_none(), "every send fails");
+        let run = completed(workspace, workspace_target(workspace));
+        state.apply_review_run(&run);
+        state.sync_review();
+        state.code_review.errors.clear();
+        state.sync_review();
+        assert!(state.code_review.report_asked.contains(&run.id));
+        assert!(
+            !state.code_review.errors.contains_key(&workspace),
+            "the second sync did not ask again"
+        );
     }
 }

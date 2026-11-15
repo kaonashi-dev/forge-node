@@ -106,10 +106,9 @@ pub fn insert_findings(
         }
         Ok::<_, DbError>(())
     })();
-    if result.is_ok() {
-        conn.execute("COMMIT", [])?;
-    } else {
-        let _ = conn.execute("ROLLBACK", []);
+    let result = result.and_then(|()| Ok(conn.execute_batch("COMMIT")?));
+    if result.is_err() {
+        let _ = conn.execute_batch("ROLLBACK");
     }
     result
 }
@@ -259,30 +258,43 @@ pub fn feedback(conn: &Connection, project: ProjectId) -> Result<Vec<review::Fee
 
 /// Lifts `suppression`: a fingerprint's dismissals are deleted at every
 /// severity, so the finding comes back; a rule's or a category's stop counting
-/// toward it, and each finding they dismissed stays dismissed.
+/// toward it, and each finding they dismissed stays dismissed. Returns the
+/// runs whose findings are no longer dismissed, each once.
 pub fn clear_suppression(
     conn: &Connection,
     project: ProjectId,
     suppression: &ReviewSuppression,
-) -> Result<usize, DbError> {
+) -> Result<Vec<ReviewId>, DbError> {
     let column = match suppression.kind {
         SuppressionKind::Rule => "rule_id",
         SuppressionKind::Category => "category",
         SuppressionKind::Fingerprint => "fingerprint",
     };
     let filter = format!("project_id = ?1 AND reaction = ?2 AND {column} = ?3");
-    let sql = match suppression.kind {
-        SuppressionKind::Fingerprint => format!("DELETE FROM review_feedback WHERE {filter}"),
-        _ => format!("UPDATE review_feedback SET counted = 0 WHERE {filter} AND counted = 1"),
-    };
-    Ok(conn.execute(
-        &sql,
-        params![
-            project.to_string(),
-            reaction_tag(FindingReaction::Dismiss),
-            suppression.value
-        ],
-    )?)
+    let params = params![
+        project.to_string(),
+        reaction_tag(FindingReaction::Dismiss),
+        suppression.value
+    ];
+    if suppression.kind != SuppressionKind::Fingerprint {
+        conn.execute(
+            &format!("UPDATE review_feedback SET counted = 0 WHERE {filter} AND counted = 1"),
+            params,
+        )?;
+        return Ok(Vec::new());
+    }
+    let mut stmt = conn.prepare(&format!(
+        "DELETE FROM review_feedback WHERE {filter} RETURNING review_id"
+    ))?;
+    let rows = stmt.query_map(params, |row| row.get::<_, String>(0))?;
+    let mut ids = Vec::new();
+    for row in rows {
+        let id = id_from_str("review feedback run", &row?)?;
+        if !ids.contains(&id) {
+            ids.push(id);
+        }
+    }
+    Ok(ids)
 }
 
 fn reactions(

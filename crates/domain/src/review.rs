@@ -7,6 +7,9 @@ use serde::{Deserialize, Serialize};
 
 use crate::ids::{ReviewId, SessionId, Timestamp, WorkspaceId};
 
+/// The built-in preset with no wording of its own: a run of it must bring instructions.
+pub const CUSTOM_PRESET: &str = "custom";
+
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 #[non_exhaustive]
@@ -105,6 +108,10 @@ pub struct Coverage {
     /// later run's read does not count them as resolved. At most 200.
     #[serde(default)]
     pub withheld: Vec<String>,
+    /// Findings dropped because their path or evidence could not be checked
+    /// against the diff.
+    #[serde(default)]
+    pub unverified: u32,
 }
 
 /// Compact on purpose: it is what `ReviewUpdated` carries, so it holds no findings.

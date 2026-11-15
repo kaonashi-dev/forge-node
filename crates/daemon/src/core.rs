@@ -116,6 +116,10 @@ pub(crate) struct Inner {
     pub(crate) reviews_running: HashMap<String, crate::review::RunningReview>,
     /// Reviews asked to stop, including ones a newer head superseded.
     pub(crate) review_cancel: HashSet<domain::ReviewId>,
+    /// Review worker threads alive, superseded ones included; what
+    /// `MAX_RUNNING_REVIEWS` bounds. Not cleared by a factory reset: each
+    /// worker still releases its own claim when it ends.
+    pub(crate) review_workers: usize,
     /// Coalesces `RefreshPullRequests` globally — one refresh covers every host.
     pr_refreshing: bool,
     /// A `RefreshAgentDetection` worker is running.
@@ -320,6 +324,7 @@ impl Daemon {
         if interrupted > 0 {
             tracing::info!(interrupted, "interrupted reviews left in flight");
         }
+        crate::review::sweep_packs(&paths.forge.home);
         let reviewer_sessions = review_store
             .reviewer_sessions()
             .map_err(|e| e.to_string())?;
@@ -427,6 +432,7 @@ impl Daemon {
             drafting: HashSet::new(),
             reviews_running: HashMap::new(),
             review_cancel: HashSet::new(),
+            review_workers: 0,
             pr_refreshing: false,
             detecting: false,
             detect_again: false,
@@ -7859,6 +7865,22 @@ impl Daemon {
         self.lock().env = env;
     }
 
+    /// A variable of the cached login-shell environment; `None` before
+    /// `ensure_env` captured it, so the lock never waits on a capture.
+    pub(crate) fn launch_var(&self, name: &str) -> Option<String> {
+        let mut inner = self.lock();
+        if !inner.env.is_resolved() {
+            return None;
+        }
+        inner
+            .env
+            .get()
+            .vars
+            .iter()
+            .find(|(key, value)| key == name && !value.is_empty())
+            .map(|(_, value)| value.clone())
+    }
+
     /// Cached login-shell env. Fallback notice once per daemon.
     fn resolved_env(&self, inner: &mut Inner) -> ResolvedEnvironment {
         // Every caller runs `ensure_env` first, which captures off the lock;
@@ -13427,5 +13449,65 @@ mod tests {
             .orchestration()
             .update_attempt(&attempt)
             .expect("attempt is writable");
+    }
+
+    #[test]
+    fn a_cancel_that_lands_during_validation_wins() {
+        let (daemon, _tmp) = test_daemon();
+        let project = add_project_row(&daemon, "p", None);
+        let workspace_id = add_workspace_row(&daemon, project, false);
+        let mut run = domain::ReviewRun {
+            id: domain::ReviewId::new(),
+            workspace_id,
+            target: domain::ReviewTarget::Workspace {
+                workspace_id,
+                base: None,
+            },
+            head_oid: "abc".into(),
+            base_oid: None,
+            tier: domain::Tier::Base,
+            preset: "standard".into(),
+            provider: "claude".into(),
+            status: domain::ReviewStatus::Running,
+            stage: Some(domain::ReviewStage::Validate),
+            summary: String::new(),
+            score: Some(5.0),
+            verdict: Some(domain::Verdict::Ok),
+            error: None,
+            session_id: None,
+            coverage: domain::Coverage::default(),
+            created_at: Timestamp::now(),
+            finished_at: None,
+            branch: None,
+            tree_oid: None,
+        };
+        daemon.review_store.insert_run(&run).expect("insert run");
+        daemon.lock().review_cancel.insert(run.id);
+        let finding = domain::Finding {
+            id: 1,
+            fingerprint: "f".into(),
+            path: "a.rs".into(),
+            line: None,
+            end_line: None,
+            severity: domain::Severity::P1,
+            category: "logic".into(),
+            rule_id: None,
+            confidence: 0.9,
+            title: "t".into(),
+            body: "b".into(),
+            evidence: "e".into(),
+            suggestion: None,
+            lineage: domain::Lineage::New,
+            reaction: None,
+        };
+
+        daemon.settle_review(&mut run, Ok(vec![finding]));
+        assert_eq!(run.status, domain::ReviewStatus::Cancelled);
+        let (_, findings) = daemon
+            .review_store
+            .get(run.id)
+            .expect("read")
+            .expect("the run");
+        assert!(findings.is_empty(), "{findings:?}");
     }
 }

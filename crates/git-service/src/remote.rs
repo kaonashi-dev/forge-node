@@ -112,9 +112,11 @@ pub struct FetchedPullRequest {
 }
 
 /// Fetch pull request `number`'s head from `remote` into
-/// `refs/forge/review/<number>/head`, and `base` (the remote's `HEAD` when
-/// `None`) into `refs/forge/review/<number>/base`, in one fetch. The checkout's
-/// own `HEAD`, branches and remote-tracking refs are untouched.
+/// `refs/forge/review/<number>/<run>/head`, and `base` (the remote's `HEAD`
+/// when `None`) into `refs/forge/review/<number>/<run>/base`, in one fetch.
+/// `run` is a ref component of the caller's, so concurrent fetches of one pull
+/// request do not share refs; [`delete_pull_request_refs`] removes them. The
+/// checkout's own `HEAD`, branches and remote-tracking refs are untouched.
 ///
 /// # Errors
 /// - [`GitError::InvalidBranchName`] if `remote` looks like an option or `base`
@@ -125,6 +127,7 @@ pub fn fetch_pull_request(
     repo: &Path,
     remote: &str,
     number: u32,
+    run: &str,
     base: Option<&str>,
     timeout: Duration,
 ) -> Result<FetchedPullRequest, GitError> {
@@ -137,14 +140,15 @@ pub fn fetch_pull_request(
     if let Some(base) = base {
         crate::worktree::validate_branch_name(base)?;
     }
-    let head_ref = format!("refs/forge/review/{number}/head");
-    let base_ref = format!("refs/forge/review/{number}/base");
+    let [head_ref, base_ref] = pull_request_refs(number, run);
     let base_source = base.map_or_else(|| "HEAD".to_string(), |base| format!("refs/heads/{base}"));
     let refspecs = [
         format!("+refs/pull/{number}/head:{head_ref}"),
         format!("+{base_source}:{base_ref}"),
     ];
-    let mut args = vec!["fetch", "--no-tags", "--", remote];
+    // An empty `--refmap` keeps the remote's configured refspec from also
+    // updating its remote-tracking refs.
+    let mut args = vec!["fetch", "--no-tags", "--refmap=", "--", remote];
     args.extend(refspecs.iter().map(String::as_str));
     run_git_network(Some(repo), &args, timeout)?.ok(&args)?;
     let resolve = |name: &str| -> Result<String, GitError> {
@@ -157,6 +161,22 @@ pub fn fetch_pull_request(
         head: resolve(&head_ref)?,
         base: resolve(&base_ref)?,
     })
+}
+
+fn pull_request_refs(number: u32, run: &str) -> [String; 2] {
+    ["head", "base"].map(|side| format!("refs/forge/review/{number}/{run}/{side}"))
+}
+
+/// Delete the refs [`fetch_pull_request`] wrote for `run`; a missing one is fine.
+///
+/// # Errors
+/// [`GitError::CommandFailed`] if git cannot delete a ref that exists.
+pub fn delete_pull_request_refs(repo: &Path, number: u32, run: &str) -> Result<(), GitError> {
+    for name in pull_request_refs(number, run) {
+        let args = ["update-ref", "-d", name.as_str()];
+        run_git(Some(repo), &args)?.ok(&args)?;
+    }
+    Ok(())
 }
 
 #[cfg(test)]
