@@ -66,14 +66,12 @@ worth it when you build several checkouts.
 
 ### Editor
 
-`scripts/dev ui run --open PATH` opens `PATH` in an editor session. It is
-painted as lines when the daemon runs with `[editor] surface = "dom"`; with the
-default `cells` it is a terminal. Name this checkout's build so the daemon and
-editor control versions match:
+`scripts/dev ui run --open PATH` opens `PATH` in an editor session, painted as
+lines (`[editor] surface = "dom"`, the default); with `cells` it is a terminal.
+Name this checkout's build so the daemon and editor control versions match:
 
 ```toml
 [editor]
-surface = "dom"
 executable = "/path/to/forge-node/target/debug/forge-editor"
 ```
 

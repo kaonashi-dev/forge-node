@@ -166,6 +166,7 @@ impl SyntaxProvider {
         };
 
         let mut source_definitions = None;
+        let mut receiver = None;
         let source_text = match query.buffer {
             Some(buffer) if buffer.len() <= MAX_FILE_BYTES => Some((buffer.to_owned(), None)),
             Some(_) => None,
@@ -180,12 +181,16 @@ impl SyntaxProvider {
                 return Ok(truncated());
             };
             if let Some(position) = query.position {
-                let local = extract::caret_byte(text, position.line, position.utf16_column)
-                    .and_then(|caret| {
-                        extract::locals(source_compiled, &tree, text, query.symbol, caret, &expired)
-                    });
+                let caret = extract::caret_byte(text, position.line, position.utf16_column);
+                let local = caret.and_then(|caret| {
+                    extract::locals(source_compiled, &tree, text, query.symbol, caret, &expired)
+                });
                 if let Some(local) = local {
-                    let mut candidates = candidates(query.source, &local, query, Confidence::Local);
+                    let mut candidates: Vec<Candidate> =
+                        candidates(query.source, &local, query, Confidence::Local, &[])
+                            .into_iter()
+                            .map(|(candidate, _)| candidate)
+                            .collect();
                     candidates.truncate(query.limit);
                     if !candidates.is_empty() {
                         return Ok(Answer {
@@ -195,6 +200,9 @@ impl SyntaxProvider {
                         });
                     }
                 }
+                receiver = caret.and_then(|caret| {
+                    extract::receiver(&tree, text, query.symbol, caret, &expired)
+                });
             }
             let Some(definitions) = extract::definitions(source_compiled, &tree, text, &expired)
             else {
@@ -224,7 +232,10 @@ impl SyntaxProvider {
             closeness(query.source, source_language, path, language)
         });
 
-        let mut found: Vec<Candidate> = Vec::new();
+        let owners = receiver
+            .map(|receiver| owners(receiver, source_definitions.as_deref()))
+            .unwrap_or_default();
+        let mut found: Vec<(Candidate, bool)> = Vec::new();
         let mut cut = if grep_cut { Cut::Budget } else { Cut::None };
         if let Some(definitions) = &source_definitions {
             found.extend(candidates(
@@ -232,6 +243,7 @@ impl SyntaxProvider {
                 definitions,
                 query,
                 Confidence::Syntactic,
+                &owners,
             ));
         }
         // Files are in closeness order, so once the source's own family has
@@ -267,9 +279,16 @@ impl SyntaxProvider {
                 }
             };
             let before = found.len();
-            found.extend(candidates(path, &definitions, query, Confidence::Syntactic));
+            found.extend(candidates(
+                path,
+                &definitions,
+                query,
+                Confidence::Syntactic,
+                &owners,
+            ));
             same_family |= family && found.len() > before;
         }
+        let mut found = on_receiver(found, !owners.is_empty());
         if found.len() > query.limit {
             found.truncate(query.limit);
             cut = cut.max(Cut::Limit);
@@ -371,21 +390,69 @@ fn closeness(
     )
 }
 
+/// Each candidate, and whether it is declared in one of `owners`.
 fn candidates(
     path: &str,
     definitions: &[Definition],
     query: &DefinitionQuery<'_>,
     confidence: Confidence,
-) -> Vec<Candidate> {
+    owners: &[String],
+) -> Vec<(Candidate, bool)> {
     definitions
         .iter()
         .filter(|definition| &*definition.name == query.symbol)
-        .map(|definition| Candidate {
-            target: Target::Workspace(path.to_string()),
-            line: definition.line,
-            column: definition.column,
-            text: definition.text.to_string(),
-            confidence,
+        .map(|definition| {
+            let owned = definition
+                .container
+                .as_deref()
+                .is_some_and(|container| owners.iter().any(|owner| owner == container));
+            let candidate = Candidate {
+                target: Target::Workspace(path.to_string()),
+                line: definition.line,
+                column: definition.column,
+                text: definition.text.to_string(),
+                confidence,
+            };
+            (candidate, owned)
+        })
+        .collect()
+}
+
+/// The declarations a member access can mean: the receiver itself (a constant
+/// object, a class's statics) and the types the source file gives it,
+/// following one destructuring hop (`{ data }: Props` → `Props.data`'s type).
+fn owners(receiver: extract::Receiver, source: Option<&[Definition]>) -> Vec<String> {
+    let mut owners = vec![receiver.name.clone()];
+    owners.extend(receiver.types);
+    for from in &receiver.destructured_from {
+        let field_types = source.into_iter().flatten().filter_map(|definition| {
+            (*definition.name == *receiver.name && definition.container.as_deref() == Some(from))
+                .then_some(definition.annotation.as_deref())
+                .flatten()
+        });
+        owners.extend(field_types.map(str::to_string));
+    }
+    owners
+}
+
+/// Narrows a member access to the declarations on its receiver. When none is
+/// on it, the name's declarations are still offered, demoted to a guess: they
+/// belong to something else of that name, and must not be followed unasked.
+fn on_receiver(found: Vec<(Candidate, bool)>, member: bool) -> Vec<Candidate> {
+    if !member {
+        return found.into_iter().map(|(candidate, _)| candidate).collect();
+    }
+    if found.iter().any(|(_, owned)| *owned) {
+        return found
+            .into_iter()
+            .filter_map(|(candidate, owned)| owned.then_some(candidate))
+            .collect();
+    }
+    found
+        .into_iter()
+        .map(|(candidate, _)| Candidate {
+            confidence: Confidence::Heuristic,
+            ..candidate
         })
         .collect()
 }

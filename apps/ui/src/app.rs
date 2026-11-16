@@ -569,7 +569,10 @@ impl AppState {
         if crate::menus::tree_menu_key(ev, tx) {
             return false;
         }
-        if self.active_line_editor().is_none() || !self.session_shown() || !self.editor.key(ev) {
+        if self.active_line_editor().is_none()
+            || !self.session_shown()
+            || !self.editor.key(ev, tx.key_base())
+        {
             return false;
         }
         // Sent now rather than on the next poll: a key waits for no frame.
@@ -2956,7 +2959,7 @@ impl AppState {
             y,
             clicks: 1,
             cancelled: false,
-            shift: tx.mods().shift,
+            mods: tx.mods(),
             plain: false,
         };
         let mut fx = Effects::default();

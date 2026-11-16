@@ -13,9 +13,9 @@ Three crates build the editor:
   including integrated buffer reads, saves and DOM view frames.
 
 The integrated editor uses the same engine through a private control channel.
-`[editor] surface = "cells"` paints its PTY output; the experimental `"dom"`
-surface paints bounded view frames from a headless editor. Neither puts a
-document engine in the window. The Rune client owns the file explorer and the
+`[editor] surface = "dom"`, the default, paints bounded view frames from a
+headless editor; `"cells"` paints its PTY output as a plain terminal. Neither
+puts a document engine in the window. The Rune client owns the file explorer and the
 editor chrome. Markdown, SVG and raster previews have a separate read-only
 surface; editing text opens a `forge-editor` session.
 
@@ -181,9 +181,12 @@ living with no window pill of its own.
 use the same document and daemon-owned save path; their presentation routes
 are described below.
 
-- `cells` (the default) is everything above: the TUI under the daemon's PTY,
-  painted by the GUI as a passive cell grid.
-- `dom` spawns the same binary with `--headless`. It never enters raw mode and
+- `cells` is everything above: the TUI under the daemon's PTY, painted by the
+  GUI as a passive cell grid. The Rune client treats it as a terminal like any
+  other: the editor's ⌘ chords, its find panel and its chrome are wired to
+  `dom` only. A mouse report carries Control and Alt, and ⌘ as Control, so
+  Ctrl- or ⌘-click still asks for a definition.
+- `dom` (the default) spawns the same binary with `--headless`. It never enters raw mode and
   never writes a byte of ANSI; the PTY it is still born under carries nothing,
   and stays only because that is how every session is spawned and reaped.
 
@@ -313,6 +316,13 @@ in regex mode: a selected `a.c` means `a.c`.
 Linux) step `ui.editor.font_size` while Code is up; they never reach the TUI
 as keys. The same chords zoom terminals and agents (`ui.terminal.zoom`) only
 while a session is on screen — the two sizes do not move together.
+
+**Option composes, so the pane reads the key under it.** macOS turns ⌥C into
+`ç`; the editor's Alt chords (Alt-C, Alt-D, Alt-F, Alt-I, Alt-L, Alt-N, Alt-O,
+Alt-P, Alt-W) are recognized by the key's unmodified character
+(`Tx::key_base`) when Option composed something other than ASCII. Every other
+⌥ character is text: a Spanish layout types `@` with ⌥2 and a German one with
+⌥L, and an Alt chord the editor does not bind would drop it.
 
 **On a Mac the platform chords reach the editor.** `editor/actions.rs` maps
 ⌘S/C/X, ⌘A, ⌘Z, ⇧⌘Z, ⌘F, ⌘G, ⇧⌘G, ⌥⌘F and ⌥⌘L onto the editor's own keys,
@@ -603,10 +613,11 @@ become a regex (`SearchKind::Definition`).
 The daemon asks a chain of providers (below) on a lookup thread of its own, so
 a slow one never holds the editor's control loop; a newer lookup from the same
 editor cancels the older one. What comes back is capped at 64 and is
-*candidates* unless a resolver decided: only a language server, a binding in
-scope at the caret or a fresh SCIP index may send a single place the editor
-follows without asking. A heuristic or syntactic single candidate is still a
-list, because a wrong answer taken silently is the worst of the three outcomes.
+*candidates* unless a provider decided: a single place that a language server,
+a binding in scope at the caret, a fresh SCIP index or a complete syntax-index
+scan vouches for is followed without asking, and Alt-O comes back from it. A
+heuristic single candidate is still a list, because a wrong answer taken
+silently is the worst of the three outcomes.
 An empty answer names why when a provider knows ("rust-analyzer is indexing").
 
 Following a place in the same buffer moves the caret. Following one in another
@@ -695,6 +706,18 @@ local binding. ADR-013.
 | Syntax index (`[definitions] syntax`) | syntactic, authoritative when it found a declaration and no budget cut | yes | Tree-sitter for Rust, TypeScript/TSX, JavaScript, Python and Go with Forge's own `tags.scm` and `locals.scm`. Grep first, then parse only the files that mention the name, closest first, within 256 files and 16 MiB; definitions are cached per file by length and mtime. A binding in scope at the caret wins outright. |
 | Universal Ctags (`[definitions] ctags`) | indexed, never authoritative | no | Installed by the person (GPL, never bundled); the probe refuses macOS's BSD `ctags`. One `ctags --output-format=json` run over the files `git grep -l` named. |
 | Grep heuristic | heuristic | always last | The heuristic below, plus installed declaration files. |
+
+**A member access is looked up on its receiver.** With the caret on `b` in
+`a.b` (or `this.a.b`, `self.a.b`), the syntax index keeps only the `b`s declared
+in what `a` is: `a` itself when it is a module's constant object (its keys, one
+level of nesting deep, `as const` and `satisfies` included), or a type the
+source file annotates a binding of `a` with — following one destructuring hop,
+so `({ data }: Props)` makes `data.amount` the `amount` of `Props.data`'s type.
+Every declaration records its nearest container (interface, class, `impl`
+type, constant object) and its own annotation for this. When nothing on the
+receiver declares `b`, the name's declarations are still listed, demoted to
+heuristic so none is followed unasked. Keys of any other object literal are
+never declarations.
 
 The syntax index lives in the daemon, not in `forge-editor`; the passage on
 tree-sitter below is about the editor's own highlighting. Adding a language to

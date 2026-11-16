@@ -332,9 +332,13 @@ impl EditorUi {
         }
     }
 
-    /// Turns a key into editor input; `false` leaves it for the app.
-    pub fn key(&mut self, event: &KeyEvent) -> bool {
-        let Some(event) = key_input(event) else {
+    /// Turns a key into editor input; `false` leaves it for the app. `base` is
+    /// the character the key types with no modifiers (`Tx::key_base`).
+    pub fn key(&mut self, event: &KeyEvent, base: Option<char>) -> bool {
+        let Some(event) = alt_slash(event)
+            .or_else(|| option_key(event, base))
+            .or_else(|| key_input(event))
+        else {
             return false;
         };
         self.queue(event);
@@ -438,6 +442,37 @@ fn key_input(event: &KeyEvent) -> Option<EditorInputEvent> {
         _ => return None,
     };
     Some(EditorInputEvent::Key { key, modifiers })
+}
+
+/// The letters `forge-editor` binds with Alt.
+const ALT_LETTERS: [char; 9] = ['c', 'd', 'f', 'i', 'l', 'n', 'o', 'p', 'w'];
+
+/// An ⌥ key that macOS composed into another character. Composed from one of
+/// [`ALT_LETTERS`] into a symbol nobody types (⌥C is `ç`), it is the Alt chord;
+/// anything else is text, because ⌥ is how a Spanish layout types `@` (⌥2) and
+/// a German one `@` (⌥L) — sent as an Alt chord, the editor drops them.
+/// `base` is the key's character without modifiers.
+fn option_key(event: &KeyEvent, base: Option<char>) -> Option<EditorInputEvent> {
+    let mods = event.mods;
+    if !mods.alt || mods.cmd || mods.ctrl || mods.logo {
+        return None;
+    }
+    let Key::Text(value) = &event.key else {
+        return None;
+    };
+    let base = base?.to_ascii_lowercase();
+    let mut chars = value.chars();
+    let composed = match (chars.next(), chars.next()) {
+        (Some(ch), None) => ch.to_ascii_lowercase() != base,
+        _ => true,
+    };
+    if ALT_LETTERS.contains(&base) && !(composed && value.is_ascii()) {
+        return Some(EditorInputEvent::Key {
+            key: EditorKey::Char(base),
+            modifiers: modifier_bits(mods),
+        });
+    }
+    composed.then(|| EditorInputEvent::Text(value.clone()))
 }
 
 /// The editor's key table is Ctrl-based, so a macOS ⌘ chord is sent as the
@@ -673,17 +708,23 @@ pub(crate) mod tests {
         let (mut ui, session) = surface(0.0);
         let plain = rune::Mods::default();
         for key in [Key::Text("x".into()), Key::Left, Key::Text("ñé".into())] {
-            assert!(ui.key(&KeyEvent { key, mods: plain }));
+            assert!(ui.key(&KeyEvent { key, mods: plain }, None));
         }
-        assert!(ui.key(&KeyEvent {
-            key: Key::Command('s'),
-            mods: rune::Mods { cmd: true, ..plain },
-        }));
-        assert!(
-            !ui.key(&KeyEvent {
-                key: Key::Command('v'),
+        assert!(ui.key(
+            &KeyEvent {
+                key: Key::Command('s'),
                 mods: rune::Mods { cmd: true, ..plain },
-            }),
+            },
+            None
+        ));
+        assert!(
+            !ui.key(
+                &KeyEvent {
+                    key: Key::Command('v'),
+                    mods: rune::Mods { cmd: true, ..plain },
+                },
+                None
+            ),
             "⌘V belongs to the window's paste handler, not the key table"
         );
         let (to, events) = ui.take_requests().input.unwrap();
@@ -738,14 +779,66 @@ pub(crate) mod tests {
     }
 
     #[test]
+    fn an_option_letter_is_the_alt_chord_and_an_option_symbol_is_text() {
+        let alt = rune::Mods {
+            alt: true,
+            ..rune::Mods::default()
+        };
+        let key = |text: &str, base: char, mods| {
+            let event = KeyEvent {
+                key: Key::Text(text.into()),
+                mods,
+            };
+            option_key(&event, Some(base))
+        };
+        let chord = |ch, modifiers| {
+            Some(EditorInputEvent::Key {
+                key: EditorKey::Char(ch),
+                modifiers,
+            })
+        };
+        let text = |value: &str| Some(EditorInputEvent::Text(value.into()));
+        assert_eq!(key("ç", 'c', alt), chord('c', editor_modifiers::ALT));
+        assert_eq!(key("∂", 'd', alt), chord('d', editor_modifiers::ALT));
+        assert_eq!(
+            key("Ï", 'f', rune::Mods { shift: true, ..alt }),
+            chord('f', editor_modifiers::ALT | editor_modifiers::SHIFT),
+            "⇧⌥F unfolds everything"
+        );
+        assert_eq!(
+            key("d", 'd', alt),
+            chord('d', editor_modifiers::ALT),
+            "a layout that composes nothing still sends the chord"
+        );
+        assert_eq!(key("@", '2', alt), text("@"), "Spanish ⌥2");
+        assert_eq!(key("@", 'l', alt), text("@"), "German ⌥L");
+        assert_eq!(key("~", 'ñ', alt), text("~"), "Spanish ⌥Ñ");
+        assert_eq!(key("å", 'a', alt), text("å"), "an unbound letter types");
+        assert_eq!(key("x", 'x', alt), None, "nothing composed, nothing bound");
+        assert_eq!(
+            key("ç", 'c', rune::Mods { cmd: true, ..alt }),
+            None,
+            "⌘ chords are the app's"
+        );
+        let plain = KeyEvent {
+            key: Key::Text("ç".into()),
+            mods: alt,
+        };
+        assert_eq!(option_key(&plain, None), None, "no base, no guess");
+    }
+
+    #[test]
     fn input_queued_for_a_session_left_is_handed_back_for_it() {
         let mut ui = EditorUi::default();
         let (first, second) = (SessionId::new(), SessionId::new());
         assert_eq!(ui.set_session(Some(first)), None);
-        assert!(ui.key(&KeyEvent {
-            key: Key::Text("a".into()),
-            mods: rune::Mods::default(),
-        }));
+        assert!(ui.key(
+            &KeyEvent {
+                key: Key::Text("a".into()),
+                mods: rune::Mods::default(),
+            },
+            None
+        ));
         let left = ui.set_session(Some(second)).expect("the queued key");
         assert_eq!(left.0, first, "sent to the session it was typed in");
         assert_eq!(left.1.len(), 1);

@@ -111,7 +111,8 @@ enterprise_hosts = []           # GHES hostnames, e.g. ["github.example.com"].
 
 [editor]
 # Saves use the daemon's revision-checked fs-service on either surface.
-surface = "cells"               # "dom" selects the experimental native-scroll surface.
+surface = "dom"                 # "cells" paints the TUI as a plain terminal: no
+                                # editor chords, find panel or chrome in the GUI.
 executable = ""                 # empty searches the login-shell PATH, then the
                                 # forge-editor sitting next to forge-daemon (the
                                 # app bundle and a cargo target/ share that

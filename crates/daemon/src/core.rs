@@ -6785,9 +6785,7 @@ impl Daemon {
             .map(|provider| provider as &dyn fs_service::definition::DefinitionProvider);
         let chain = self.definitions.chain(first, &env.path_entries);
         let resolved = fs_service::definition::resolve(&chain, &query);
-        let exact = resolved.decided_by.is_some()
-            && resolved.candidates.len() == 1
-            && resolved.candidates[0].confidence >= fs_service::definition::Confidence::Indexed;
+        let exact = resolved.is_exact();
         let places = resolved
             .candidates
             .into_iter()
@@ -12555,15 +12553,9 @@ mod tests {
     /// The DOM surface's editor takes the same buffer over the same socket and
     /// only stops painting: one editor, two sinks.
     #[test]
-    fn the_dom_surface_spawns_a_headless_editor() {
+    fn the_dom_surface_is_the_default_and_spawns_a_headless_editor() {
         let tmp = tempfile::tempdir().expect("tempdir");
-        let editor = write_executable(tmp.path(), "forge-editor");
-        let mut config = Config::default();
-        config.sessions.term = terminfo::FALLBACK_TERM.to_owned();
-        config.editor.executable = editor.to_string_lossy().into_owned();
-        config.editor.surface = crate::config::EditorSurface::Dom;
-        let (daemon, _worktrees, backend) =
-            test_daemon_with_config(FakePtyBackend::empty(), config);
+        let (daemon, _worktrees, backend) = editor_daemon(tmp.path(), FakePtyBackend::empty());
         let ws = checkout_with_file(&daemon, tmp.path(), "src/main.rs", b"fn main() {}\n");
         daemon
             .handle_request(Request::CreateEditorSession {
@@ -12580,13 +12572,16 @@ mod tests {
         assert_eq!(daemon.editor_surface(), crate::config::EditorSurface::Dom);
     }
 
-    /// The default is still the cell grid: the DOM surface is opt-in until it
-    /// has everything the TUI has.
     #[test]
-    fn the_cell_surface_is_the_default_and_spawns_no_headless_flag() {
+    fn the_cell_surface_spawns_no_headless_flag() {
         let tmp = tempfile::tempdir().expect("tempdir");
-        let backend = FakePtyBackend::empty();
-        let (daemon, _worktrees, backend) = editor_daemon(tmp.path(), backend);
+        let editor = write_executable(tmp.path(), "forge-editor");
+        let mut config = Config::default();
+        config.sessions.term = terminfo::FALLBACK_TERM.to_owned();
+        config.editor.executable = editor.to_string_lossy().into_owned();
+        config.editor.surface = crate::config::EditorSurface::Cells;
+        let (daemon, _worktrees, backend) =
+            test_daemon_with_config(FakePtyBackend::empty(), config);
         let ws = checkout_with_file(&daemon, tmp.path(), "src/main.rs", b"fn main() {}\n");
         daemon
             .handle_request(Request::CreateEditorSession {

@@ -542,6 +542,69 @@ fn go_parameters_and_short_declarations_are_locals() {
     );
 }
 
+const STRINGS: &str = "export const UI_STRINGS = {\n  title: \"Pago\",\n  errors: {\n    timeout: \"Tarde\",\n  },\n} as const;\nexport const OTHER = { title: \"x\" };\n";
+
+#[test]
+fn a_constant_objects_keys_are_found_through_the_object_that_holds_them() {
+    let view = "import { UI_STRINGS } from \"./strings\";\nexport const View = () => (\n  <p>{UI_STRINGS.title} {UI_STRINGS.errors.timeout}</p>\n);\n";
+    let files = [("src/strings.ts", STRINGS), ("src/View.tsx", view)];
+    let title = local(&files, "src/View.tsx", "title", ("title}", 0));
+    assert_eq!(places(&title), [("src/strings.ts".to_string(), 2)]);
+    assert!(title.authoritative);
+    assert_eq!(title.candidates[0].confidence, Confidence::Syntactic);
+    let nested = local(&files, "src/View.tsx", "timeout", ("timeout}", 0));
+    assert_eq!(places(&nested), [("src/strings.ts".to_string(), 4)]);
+}
+
+#[test]
+fn a_key_in_an_ordinary_object_literal_is_not_a_declaration() {
+    let text = "export function send() {\n  post({ title: \"x\" });\n  return { title: 1 };\n}\n";
+    let answer =
+        ask("src/a.ts", "title").run(&SyntaxProvider::new(), &repo(&[("src/a.ts", text)]).root);
+    assert!(answer.candidates.is_empty(), "{answer:?}");
+}
+
+#[test]
+fn a_destructured_props_field_resolves_to_its_declared_type() {
+    let types = "export interface PayinData {\n  amount: number;\n}\nexport interface Banner {\n  amount: string;\n}\n";
+    let view = "import type { PayinData } from \"./types\";\ninterface Props {\n  data: PayinData;\n}\nexport function View({ data }: Props) {\n  return data.amount;\n}\n";
+    let other = "export interface Steps {\n  amount?: string;\n}\n";
+    let files = [
+        ("src/types.ts", types),
+        ("src/View.tsx", view),
+        ("src/Steps.tsx", other),
+    ];
+    let answer = local(&files, "src/View.tsx", "amount", ("amount;", 0));
+    assert_eq!(places(&answer), [("src/types.ts".to_string(), 2)]);
+    assert_eq!(answer.candidates[0].confidence, Confidence::Syntactic);
+}
+
+#[test]
+fn a_rust_method_on_a_field_resolves_to_the_fields_type() {
+    let text = "struct Cache;\nimpl Cache {\n    fn get(&self) {}\n}\nstruct Map;\nimpl Map {\n    fn get(&self) {}\n}\nstruct Store {\n    cache: Cache,\n}\nimpl Store {\n    fn read(&self) {\n        self.cache.get();\n    }\n}\n";
+    let answer = local(&[("src/lib.rs", text)], "src/lib.rs", "get", ("get();", 0));
+    assert_eq!(places(&answer), [("src/lib.rs".to_string(), 3)]);
+}
+
+#[test]
+fn a_member_on_a_receiver_nothing_declares_is_offered_as_a_guess() {
+    let types = "export interface A {\n  label: string;\n}\n";
+    let view =
+        "export function show(props: unknown) {\n  return (props as any).x + thing.label;\n}\n";
+    let answer = local(
+        &[("src/types.ts", types), ("src/view.ts", view)],
+        "src/view.ts",
+        "label",
+        ("label;", 0),
+    );
+    assert_eq!(places(&answer), [("src/types.ts".to_string(), 2)]);
+    assert_eq!(
+        answer.candidates[0].confidence,
+        Confidence::Heuristic,
+        "`thing` is not `A`: the name matched, the member did not"
+    );
+}
+
 #[test]
 fn closer_files_come_first_and_another_family_is_dropped_once_one_answers() {
     let repo = repo(&[
