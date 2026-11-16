@@ -180,7 +180,7 @@ pub struct SessionChanges {
 }
 
 /// One checkout's branch against the branch a pull request would target,
-/// committed work only: a pull request before it is opened.
+/// uncommitted and untracked changes included: a pull request before it is opened.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct BranchCompare {
     pub workspace_id: WorkspaceId,

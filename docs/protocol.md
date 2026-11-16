@@ -202,7 +202,7 @@ DaemonMessage::Event    (DaemonEvent)
 |---------|----------------------|
 | `GetChangeContext { workspace_id }` | Synchronous `Response::ChangeContext`: status and patch context for drafting. |
 | `GetSessionChanges { session_id }` | Synchronous `Response::SessionChanges`: summary since the recorded baseline, without patches. |
-| `GetBranchCompare { workspace_id, base, context_lines }` | Synchronous `Response::BranchCompare(Box<BranchCompare>)`: committed work only — HEAD against the ref a pull request would target, diffed from their merge base. `base: None` resolves `origin`'s default branch, then a local `main` or `master`; an explicit base that names no commit is `InvalidRequest`. |
+| `GetBranchCompare { workspace_id, base, context_lines }` | Synchronous `Response::BranchCompare(Box<BranchCompare>)`: the working tree (uncommitted and untracked changes included, since opening the pull request commits them) against the ref a pull request would target, diffed from their merge base; `commits` lists only what is already committed. `base: None` resolves `origin`'s default branch, then a local `main` or `master`; an explicit base that names no commit is `InvalidRequest`. |
 | `GetExternalTranscript { session_id, provider, profile_id, max_turns, max_bytes }` | Synchronous `Response::ExternalTranscript`; resolves a discovered run by identity rather than accepting an arbitrary path. |
 | `DeleteExternalSession { session_id, provider, profile_id }` | `Ack` after deleting that run's transcript/artifacts; refuses stores that cannot safely remove one run. |
 | `DraftWithJuva { workspace_id, kind }` | `Ack` on start, then `JuvaDraftReady`; coalesced per workspace. Remote drafting falls back to deterministic local text. |

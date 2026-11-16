@@ -268,10 +268,10 @@ fn a_review_completes_with_anchored_findings_and_leaves_the_tree_alone() {
         .exists()));
     let args = std::fs::read_to_string(harness.root().join("args")).expect("args");
     assert!(
-        args.contains("--permission-mode plan --session-id "),
+        args.starts_with("--add-dir ") && !args.contains("--permission-mode"),
         "{args}"
     );
-    assert!(args.contains("--add-dir "), "{args}");
+    assert!(args.contains(" --session-id "), "{args}");
     assert!(
         !args.contains("--model") && !args.contains("--effort"),
         "unset leaves the provider's own default: {args}"

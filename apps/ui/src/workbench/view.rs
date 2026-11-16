@@ -419,7 +419,7 @@ pub fn files_panel(s: &AppState, k: &Kit) -> El {
     let tones = [Tone::Added, Tone::Modified, Tone::Deleted, Tone::Conflict]
         .map(|tone| tone_color(k, tone));
     let tint = move |tone: Tone| tones[tone as usize];
-    let query = s.workbench.files.filter_query().to_string();
+    let query = s.workbench.files.filter_highlight().to_string();
     let tree = Tree::new(
         |s: &AppState| &s.workbench.files.tree,
         |s: &mut AppState| &mut s.workbench.files.tree,

@@ -196,7 +196,11 @@ pub fn build_launch_with_config_dir(
             .review
             .as_ref()
             .ok_or_else(|| AgentError::ReviewUnsupported(descriptor.id.clone()))?;
-        args.extend(style.args.iter().cloned());
+        // A structured review stays read-only inside Forge but runs outside the
+        // provider's read-only mode: its prompt forbids writes instead.
+        if req.structured_review.is_none() {
+            args.extend(style.args.iter().cloned());
+        }
     }
     if let Some(review) = &req.structured_review {
         let style = descriptor
@@ -204,11 +208,13 @@ pub fn build_launch_with_config_dir(
             .as_ref()
             .filter(|_| req.read_only)
             .ok_or_else(|| AgentError::ReviewUnsupported(descriptor.id.clone()))?;
+        // `--add-dir <directories...>` is variadic: as the last flag it would
+        // swallow the positional prompt as a second directory.
         args.extend([
-            style.session_id_flag.clone(),
-            review.session_id.clone(),
             style.add_dir_flag.clone(),
             review.add_dir.to_string_lossy().into_owned(),
+            style.session_id_flag.clone(),
+            review.session_id.clone(),
         ]);
     }
     // The prompt goes last, after every flag: the three providers that take it
@@ -406,12 +412,10 @@ mod tests {
         assert_eq!(
             spec.args,
             [
-                "--permission-mode",
-                "plan",
-                "--session-id",
-                "0190a8f2-0000-7000-8000-000000000001",
                 "--add-dir",
                 pack.as_str(),
+                "--session-id",
+                "0190a8f2-0000-7000-8000-000000000001",
                 "review"
             ]
         );

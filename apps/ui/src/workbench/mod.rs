@@ -138,6 +138,19 @@ pub fn checkout_moved(before: Option<&CheckoutMark>, after: Option<&CheckoutMark
     }
 }
 
+/// Whether a Files row matches a lowercased `query`. A query with a `/` is a
+/// path and matches the row's path; any other matches only the name, so `src`
+/// does not match everything under `src/`.
+#[must_use]
+pub fn filter_matches(name: &str, path: &str, query: &str) -> bool {
+    if query.contains('/') {
+        let query = query.trim_start_matches("./").trim_start_matches('/');
+        path.to_lowercase().contains(query)
+    } else {
+        name.to_lowercase().contains(query)
+    }
+}
+
 /// What the sidebar shows. The centre keeps the
 /// session, a diff picked from Git, or Settings.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -445,6 +458,9 @@ pub struct Files {
     previewing: Option<String>,
     /// Every open folder, as of the last `take_reads`.
     open: Vec<String>,
+    /// The folders open when the filter started. A filtering tree reports
+    /// every folder open, so these are what stays listed, watched and reopened.
+    open_before_filter: Option<Vec<String>>,
     open_changed: bool,
     /// The active editor's path, and whether the tree has shown it yet.
     follow: Option<String>,
@@ -467,6 +483,7 @@ impl Default for Files {
             root_requested: false,
             previewing: None,
             open: Vec::new(),
+            open_before_filter: None,
             open_changed: false,
             follow: None,
             followed: false,
@@ -1292,6 +1309,9 @@ impl Workbench {
 impl Files {
     /// Every open folder, depth first.
     fn expanded(&self) -> Vec<String> {
+        if let Some(open) = &self.open_before_filter {
+            return open.clone();
+        }
         let mut open = Vec::new();
         let mut stack: Vec<String> = self.tree.children(None).map(str::to_string).collect();
         while let Some(id) = stack.pop() {
@@ -1308,16 +1328,28 @@ impl Files {
         self.filter.text.trim()
     }
 
-    /// Shows the loaded rows whose name holds the filter, with the folders
-    /// that lead to them. Only what was listed is searched; ⌘P asks the
-    /// daemon about the rest.
+    /// The part of the filter a row's name shows: a path query's last segment.
+    #[must_use]
+    pub fn filter_highlight(&self) -> &str {
+        let query = self.filter_query();
+        query.rsplit('/').next().unwrap_or(query)
+    }
+
+    /// Shows the loaded rows the filter matches, with the folders that lead
+    /// to them. Only what was listed is searched; ⌘P asks the daemon about
+    /// the rest.
     fn apply_filter(&mut self) {
         let query = self.filter_query().to_lowercase();
         if query.is_empty() {
             self.tree.clear_filter();
+            self.open_before_filter = None;
         } else {
-            self.tree
-                .filter(|node| !node.path.is_empty() && node.name.to_lowercase().contains(&query));
+            if self.open_before_filter.is_none() {
+                self.open_before_filter = Some(self.expanded());
+            }
+            self.tree.filter(|node| {
+                !node.path.is_empty() && filter_matches(&node.name, &node.path, &query)
+            });
         }
     }
 
@@ -1961,6 +1993,63 @@ mod tests {
         bench.files.filter = rune::TextEdit::new("");
         bench.filter_changed();
         assert_eq!(shown(&bench).len(), 4);
+    }
+
+    #[test]
+    fn a_path_in_the_filter_matches_the_row_at_that_path() {
+        let (mut bench, _, _) = listed();
+        let shown = |bench: &mut Workbench, query: &str| -> Vec<String> {
+            bench.files.filter = rune::TextEdit::new(query);
+            bench.filter_changed();
+            (0..bench.files.tree.visible_len())
+                .filter_map(|row| bench.files.tree.visible_id(row).map(str::to_string))
+                .collect()
+        };
+        assert_eq!(shown(&mut bench, "src/main.rs"), ["src", "src/main.rs"]);
+        assert_eq!(shown(&mut bench, "./SRC/MAIN"), ["src", "src/main.rs"]);
+        assert_eq!(
+            shown(&mut bench, "src"),
+            ["src"],
+            "a bare name still matches names, not every path under it"
+        );
+        assert_eq!(bench.files.filter_highlight(), "src");
+        bench.files.filter = rune::TextEdit::new("src/main.rs");
+        assert_eq!(bench.files.filter_highlight(), "main.rs");
+    }
+
+    #[test]
+    fn filtering_neither_lists_nor_leaves_open_the_closed_folders() {
+        let (mut bench, _, scope) = listed();
+        bench.apply_directory(
+            scope,
+            "",
+            Ok(listing(
+                "",
+                vec![
+                    entry("src", FileKind::Directory),
+                    entry("docs", FileKind::Directory),
+                    entry("README.md", FileKind::File),
+                ],
+            )),
+        );
+        bench.take_reads(Instant::now());
+        bench.files.filter = rune::TextEdit::new("main");
+        bench.filter_changed();
+        assert!(
+            !bench
+                .take_reads(Instant::now())
+                .contains(&Read::Directory("docs".into())),
+            "a filtering tree reports every folder open; a closed one is still not listed"
+        );
+        bench.apply_directory(
+            scope,
+            "src",
+            Ok(listing("src", vec![entry("src/main.rs", FileKind::File)])),
+        );
+        bench.files.filter = rune::TextEdit::new("");
+        bench.filter_changed();
+        assert!(bench.files.tree.is_expanded("src"));
+        assert!(!bench.files.tree.is_expanded("docs"));
     }
 
     #[test]

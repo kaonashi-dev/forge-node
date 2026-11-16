@@ -170,7 +170,7 @@ fn descriptor(
         prompt,
         review,
         // `--session-id` takes a UUID the caller minted, so Forge knows which
-        // transcript holds the answer; `--add-dir` lets plan mode read the pack.
+        // transcript holds the answer; `--add-dir` lets the reviewer read the pack.
         structured_review: (id == "claude").then(|| StructuredReviewStyle {
             session_id_flag: "--session-id".into(),
             add_dir_flag: "--add-dir".into(),

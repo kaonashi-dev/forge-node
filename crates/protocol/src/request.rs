@@ -332,7 +332,8 @@ pub enum Request {
     ///
     /// Local and synchronous like [`Request::GetWorkspaceDiff`]: it compares
     /// refs already on disk and never fetches, so a stale remote-tracking ref
-    /// is compared as it stands. Committed work only, from the merge base.
+    /// is compared as it stands. The working tree, uncommitted and untracked
+    /// changes included, from the merge base.
     GetBranchCompare {
         workspace_id: WorkspaceId,
         /// Ref to compare against. `None` takes `origin`'s default branch,

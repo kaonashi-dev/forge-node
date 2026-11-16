@@ -2550,9 +2550,11 @@ impl Daemon {
 
         let context = context_lines.unwrap_or(git_service::DIFF_CONTEXT_LINES);
         let (diff, commits, commit_count) = match merge_base.as_deref() {
+            // Against the working tree, not `HEAD`: opening the pull request
+            // commits every uncommitted and untracked change first.
             Some(from) => {
-                let diff = git_service::commit_range_diff(&path, from, "HEAD", context)
-                    .map_err(git_err)?;
+                let diff =
+                    git_service::working_tree_diff(&path, Some(from), context).map_err(git_err)?;
                 let (commits, count) = git_service::commits_since(&path, from);
                 (diff, commits, count)
             }
@@ -10770,7 +10772,7 @@ mod tests {
     }
 
     #[test]
-    fn a_branch_compare_diffs_from_the_merge_base_and_ignores_the_working_tree() {
+    fn a_branch_compare_diffs_the_working_tree_from_the_merge_base() {
         let (daemon, tmp, _backend) = test_daemon_with_pty(FakePtyBackend::empty());
         let repo = tmp.path().join("repo");
         std::fs::create_dir_all(&repo).expect("create repo");
@@ -10800,6 +10802,7 @@ mod tests {
         git(&["commit", "-m", "add c"]);
         git(&["checkout", "feature"]);
         std::fs::write(repo.join("a.txt"), "dirty\n").expect("write");
+        std::fs::write(repo.join("d.txt"), "untracked\n").expect("write");
         let workspace = seeded_workspace(&daemon, &repo);
 
         let Response::BranchCompare(compare) = daemon
@@ -10810,8 +10813,9 @@ mod tests {
         };
         assert_eq!(compare.base_ref.as_deref(), Some("main"));
         assert_eq!(compare.commit_count, 1);
-        let paths: Vec<&str> = compare.diff.files.iter().map(|f| f.path.as_str()).collect();
-        assert_eq!(paths, ["b.txt"]);
+        let mut paths: Vec<&str> = compare.diff.files.iter().map(|f| f.path.as_str()).collect();
+        paths.sort_unstable();
+        assert_eq!(paths, ["a.txt", "b.txt", "d.txt"]);
 
         assert!(daemon
             .get_branch_compare(workspace, Some("--output=x".into()), None)

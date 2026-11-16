@@ -1,5 +1,5 @@
-//! The branch compare behind "Preview PR": committed work only, against the
-//! branch a pull request would target.
+//! The branch compare behind "Preview PR": the working tree, uncommitted
+//! changes included, against the branch a pull request would target.
 //!
 //! Every read is a daemon request on the worker (`GetBranchCompare`,
 //! `ListBranches`); this side keeps the answer, splits its patches into rows
@@ -703,11 +703,7 @@ fn body(s: &AppState, k: &Kit) -> El {
         );
     }
     if data.diff.files.is_empty() {
-        return notice(
-            k,
-            "compare-clean",
-            "No committed changes against this base.",
-        );
+        return notice(k, "compare-clean", "No changes against this base.");
     }
     let look = Look::new(k);
     let mut rail = col()
