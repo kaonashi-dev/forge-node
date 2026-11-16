@@ -48,15 +48,14 @@ scripts/dev ui run --help             # every flag, including Rune's --snap/--tr
 ### Editor
 
 `scripts/dev ui run --open PATH` opens `PATH` (relative to the first workspace) in an
-editor session. It is painted as lines only when the daemon runs with
-`[editor] surface = "dom"`; with the default `cells` it is a terminal like any other.
+editor session, painted as lines (`[editor] surface = "dom"`, the default); with `cells`
+it is a terminal like any other, without the editor's chords, find panel or chrome.
 `scripts/dev daemon` finds `forge-editor` on the login shell's `PATH` before the one it
 was built with, which is the installed app's. Name this checkout's build so the control
 versions match:
 
 ```toml
 [editor]
-surface = "dom"
 executable = "/path/to/forge-node/target/debug/forge-editor"
 ```
 

@@ -670,7 +670,7 @@ fn terminal_pane(s: &AppState, k: &Kit, idx: usize) -> El {
                     y: drag.y,
                     clicks: drag.clicks,
                     cancelled: drag.cancelled(),
-                    shift: mods.shift,
+                    mods,
                     plain: !(mods.shift || mods.cmd || mods.alt || mods.ctrl),
                 },
                 tx,

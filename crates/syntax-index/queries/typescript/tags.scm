@@ -15,3 +15,27 @@
   (lexical_declaration (variable_declarator name: (identifier) @name) @definition.variable))
 (ambient_declaration
   (variable_declaration (variable_declarator name: (identifier) @name) @definition.variable))
+
+; `as const` and `satisfies` wrap the same constant objects.
+(program
+  (lexical_declaration
+    (variable_declarator
+      value: [(as_expression (object (pair key: (property_identifier) @name) @definition.field))
+              (satisfies_expression (object (pair key: (property_identifier) @name) @definition.field))])))
+(program
+  (export_statement
+    declaration: (lexical_declaration
+      (variable_declarator
+        value: [(as_expression (object (pair key: (property_identifier) @name) @definition.field))
+                (satisfies_expression (object (pair key: (property_identifier) @name) @definition.field))]))))
+(program
+  (lexical_declaration
+    (variable_declarator
+      value: [(as_expression (object (pair value: (object (pair key: (property_identifier) @name) @definition.field))))
+              (satisfies_expression (object (pair value: (object (pair key: (property_identifier) @name) @definition.field))))])))
+(program
+  (export_statement
+    declaration: (lexical_declaration
+      (variable_declarator
+        value: [(as_expression (object (pair value: (object (pair key: (property_identifier) @name) @definition.field))))
+                (satisfies_expression (object (pair value: (object (pair key: (property_identifier) @name) @definition.field))))]))))

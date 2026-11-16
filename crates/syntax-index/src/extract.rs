@@ -109,6 +109,191 @@ fn definition_at(text: &str, name: Node<'_>) -> Definition {
         line: u32::try_from(name.start_position().row + 1).unwrap_or(u32::MAX),
         column: utf16_column(line, name.start_byte() - start),
         text: clamp(line.trim()).into(),
+        container: container(text, name).map(Into::into),
+        annotation: name
+            .parent()
+            .and_then(|parent| parent.child_by_field_name("type"))
+            .and_then(|annotated| type_name(text, annotated))
+            .map(Into::into),
+    }
+}
+
+/// Where a declaration lives, by the field that names it: Rust's `impl`
+/// names its type, the rest their own name. An object literal's key counts,
+/// so `UI.errors.title` lives in `errors`.
+const CONTAINERS: [(&str, &str); 13] = [
+    ("interface_declaration", "name"),
+    ("type_alias_declaration", "name"),
+    ("class_declaration", "name"),
+    ("abstract_class_declaration", "name"),
+    ("enum_declaration", "name"),
+    ("variable_declarator", "name"),
+    ("pair", "key"),
+    ("struct_item", "name"),
+    ("enum_item", "name"),
+    ("trait_item", "name"),
+    ("impl_item", "type"),
+    ("class_definition", "name"),
+    ("type_spec", "name"),
+];
+
+/// Ancestors walked looking for a container; a member sits a few levels below.
+const MAX_CONTAINER_DEPTH: usize = 12;
+
+fn container<'t>(text: &'t str, name: Node<'_>) -> Option<&'t str> {
+    let mut node = name.parent()?;
+    for _ in 0..MAX_CONTAINER_DEPTH {
+        if let Some((_, field)) = CONTAINERS.iter().find(|(kind, _)| *kind == node.kind()) {
+            if let Some(named) = node.child_by_field_name(field) {
+                // A declaration is not its own container, and a destructuring
+                // pattern names nothing.
+                let names = named.kind().ends_with("identifier") || named.kind() == "generic_type";
+                if named.id() != name.id() && names {
+                    return type_name(text, named).or_else(|| text.get(named.byte_range()));
+                }
+            }
+        }
+        node = node.parent()?;
+    }
+    None
+}
+
+/// The plain type a type annotation names: `Money` for `: Money`,
+/// `Box<Money>`'s `Box`. `None` for a union, a literal or an array.
+fn type_name<'t>(text: &'t str, node: Node<'_>) -> Option<&'t str> {
+    let mut node = node;
+    for _ in 0..4 {
+        match node.kind() {
+            "type_identifier" => return text.get(node.byte_range()),
+            "type_annotation" => node = node.named_child(0)?,
+            "generic_type" => {
+                node = node
+                    .child_by_field_name("name")
+                    .or_else(|| node.child_by_field_name("type"))?;
+            }
+            _ => return None,
+        }
+    }
+    None
+}
+
+/// What a member access at the caret is looked up on.
+#[derive(Debug, Default, PartialEq, Eq)]
+pub(crate) struct Receiver {
+    /// `UI_STRINGS` in `UI_STRINGS.title`; `queue` in `this.queue.add`.
+    pub(crate) name: String,
+    /// Types a binding of `name` in this file is annotated with.
+    pub(crate) types: Vec<String>,
+    /// Object types `name` is destructured from (`{ data }: Props`), whose
+    /// field `name` says the type.
+    pub(crate) destructured_from: Vec<String>,
+}
+
+/// `(member kind, object field, property field)` across the grammars.
+const MEMBER_ACCESS: [(&str, &str, &str); 4] = [
+    ("member_expression", "object", "property"),
+    ("field_expression", "value", "field"),
+    ("attribute", "object", "attribute"),
+    ("selector_expression", "operand", "field"),
+];
+
+/// Receiver bindings searched past this many nodes are not searched.
+const MAX_RECEIVER_NODES: usize = 200_000;
+const MAX_RECEIVER_TYPES: usize = 8;
+
+/// The receiver of `symbol` at `caret` when the caret is on the property of
+/// a member access, with what this file says about its type.
+pub(crate) fn receiver(
+    tree: &Tree,
+    text: &str,
+    symbol: &str,
+    caret: usize,
+    expired: &dyn Fn() -> bool,
+) -> Option<Receiver> {
+    let bytes = text.as_bytes();
+    let root = tree.root_node();
+    let property = [caret, caret.saturating_sub(1)]
+        .into_iter()
+        .filter_map(|at| root.named_descendant_for_byte_range(at, at))
+        .find(|node| bytes.get(node.byte_range()) == Some(symbol.as_bytes()))?;
+    let access = property.parent()?;
+    let (_, object_field, property_field) = MEMBER_ACCESS
+        .iter()
+        .find(|(kind, _, _)| *kind == access.kind())?;
+    if access.child_by_field_name(property_field)?.id() != property.id() {
+        return None;
+    }
+    let object = access.child_by_field_name(object_field)?;
+    let name_node = if object.named_child_count() == 0 {
+        object
+    } else {
+        // `this.queue.add` and `self.cache.get`: the field is the receiver.
+        let (_, _, inner_property) = MEMBER_ACCESS
+            .iter()
+            .find(|(kind, _, _)| *kind == object.kind())?;
+        object.child_by_field_name(inner_property)?
+    };
+    let name = text.get(name_node.byte_range())?;
+    if matches!(name, "this" | "self" | "super") {
+        return None;
+    }
+    let mut found = Receiver {
+        name: name.to_string(),
+        ..Receiver::default()
+    };
+    let mut cursor = root.walk();
+    let mut visited = 0usize;
+    'walk: loop {
+        let node = cursor.node();
+        visited += 1;
+        if visited > MAX_RECEIVER_NODES || (visited % 4096 == 0 && expired()) {
+            break;
+        }
+        if node.child_count() == 0 && bytes.get(node.byte_range()) == Some(name.as_bytes()) {
+            annotate(text, node, &mut found);
+        }
+        if cursor.goto_first_child() || cursor.goto_next_sibling() {
+            continue;
+        }
+        loop {
+            if !cursor.goto_parent() {
+                break 'walk;
+            }
+            if cursor.goto_next_sibling() {
+                break;
+            }
+        }
+    }
+    Some(found)
+}
+
+/// Records the type a binding at `node` is annotated with, if it is one.
+fn annotate(text: &str, node: Node<'_>, found: &mut Receiver) {
+    let Some(parent) = node.parent() else {
+        return;
+    };
+    let push = |list: &mut Vec<String>, ty: Option<&str>| {
+        if let Some(ty) = ty {
+            if list.len() < MAX_RECEIVER_TYPES && !list.iter().any(|seen| seen == ty) {
+                list.push(ty.to_string());
+            }
+        }
+    };
+    let binds = ["name", "pattern"].iter().any(|field| {
+        parent
+            .child_by_field_name(field)
+            .is_some_and(|n| n.id() == node.id())
+    });
+    if binds {
+        if let Some(annotated) = parent.child_by_field_name("type") {
+            push(&mut found.types, type_name(text, annotated));
+        }
+        return;
+    }
+    if node.kind() == "shorthand_property_identifier_pattern" && parent.kind() == "object_pattern" {
+        if let Some(annotated) = parent.parent().and_then(|p| p.child_by_field_name("type")) {
+            push(&mut found.destructured_from, type_name(text, annotated));
+        }
     }
 }
 

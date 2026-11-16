@@ -30,7 +30,7 @@ pub struct Pointer {
     pub y: f32,
     pub clicks: u32,
     pub cancelled: bool,
-    pub shift: bool,
+    pub mods: Mods,
     /// No modifier held: only such a click may move the cursor.
     pub plain: bool,
 }
@@ -97,6 +97,16 @@ impl Outbox {
 pub fn modifiers(m: Mods) -> Modifiers {
     Modifiers {
         ctrl: m.ctrl,
+        alt: m.alt,
+        shift: m.shift,
+    }
+}
+
+/// A mouse report has no Command bit, so ⌘ travels as Control: ⌘-click in
+/// `forge-editor` is the same go to definition as Ctrl-click.
+fn report_modifiers(m: Mods) -> Modifiers {
+    Modifiers {
+        ctrl: m.ctrl || m.cmd,
         alt: m.alt,
         shift: m.shift,
     }
@@ -442,10 +452,7 @@ pub fn pointer(
         scroll: ui.scroll,
     };
     let (col, row) = viewport.viewport_cell(p.x, p.y, cell);
-    let mods = Modifiers {
-        shift: p.shift,
-        ..Modifiers::none()
-    };
+    let mods = report_modifiers(p.mods);
     match p.phase {
         Press::Down => {
             ui.preedit.clear();
@@ -463,7 +470,7 @@ pub fn pointer(
                     x: p.x,
                     y: p.y,
                 });
-            if reporting(&modes, p.shift) {
+            if reporting(&modes, p.mods.shift) {
                 ui.gesture = Some(Gesture::Report);
                 ui.last_cell = Some((col, row));
                 if let Some(b) = encode_mouse(
@@ -596,7 +603,7 @@ pub fn secondary(
     fx: &mut Effects,
 ) {
     let modes = grid.modes;
-    if reporting(&modes, p.shift) {
+    if reporting(&modes, p.mods.shift) {
         let viewport = Viewport {
             grid,
             scroll: ui.scroll,
@@ -1141,7 +1148,7 @@ mod tests {
             y,
             clicks,
             cancelled: false,
-            shift: false,
+            mods: Mods::default(),
             plain: false,
         };
         pointer(0, ui, grid, pt, CELL, out, &mut Effects::default());
@@ -1161,7 +1168,7 @@ mod tests {
                 y,
                 clicks: 1,
                 cancelled: false,
-                shift: false,
+                mods: Mods::default(),
                 plain: true,
             };
             pointer(0, ui, grid, pt, CELL, &mut out, &mut Effects::default());
@@ -1222,6 +1229,40 @@ mod tests {
         drag(&mut ui, &grid, Press::Up, 40.0, 28.0, 1, &mut out);
         assert!(out.entries.is_empty(), "no bytes without a mouse mode");
         assert!(ui.selection.is_some());
+    }
+
+    #[test]
+    fn a_mouse_report_carries_control_alt_and_command_as_control() {
+        let (mut ui, grid) = surface(ModeSet::Mouse);
+        let press = |ui: &mut TerminalUi, mods: Mods| {
+            let mut out = Outbox::default();
+            let pt = Pointer {
+                phase: Press::Down,
+                x: 7.0,
+                y: 14.0,
+                clicks: 1,
+                cancelled: false,
+                mods,
+                plain: false,
+            };
+            pointer(0, ui, &grid, pt, CELL, &mut out, &mut Effects::default());
+            render_bytes(&out.entries[0].bytes)
+        };
+        let cmd = Mods {
+            cmd: true,
+            ..Mods::default()
+        };
+        let ctrl = Mods {
+            ctrl: true,
+            ..Mods::default()
+        };
+        let alt = Mods {
+            alt: true,
+            ..Mods::default()
+        };
+        assert_eq!(press(&mut ui, ctrl), "\\x1b[<16;2;2M");
+        assert_eq!(press(&mut ui, cmd), "\\x1b[<16;2;2M");
+        assert_eq!(press(&mut ui, alt), "\\x1b[<8;2;2M");
     }
 
     #[test]

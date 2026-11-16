@@ -15,6 +15,11 @@ pub(crate) struct Definition {
     /// 1-based UTF-16 column of the name.
     pub(crate) column: u32,
     pub(crate) text: Box<str>,
+    /// The nearest enclosing declaration's name: the interface, class, impl
+    /// type or `const` object a member belongs to.
+    pub(crate) container: Option<Box<str>>,
+    /// The type named in the declaration's own annotation (`amount: Money`).
+    pub(crate) annotation: Option<Box<str>>,
 }
 
 /// Bookkeeping per entry, so a cache of many tiny files is not costed as free.
@@ -25,7 +30,13 @@ pub(crate) fn weight(definitions: &[Definition]) -> usize {
     ENTRY_OVERHEAD
         + definitions
             .iter()
-            .map(|d| DEFINITION_OVERHEAD + d.name.len() + d.text.len())
+            .map(|d| {
+                DEFINITION_OVERHEAD
+                    + d.name.len()
+                    + d.text.len()
+                    + d.container.as_deref().map_or(0, str::len)
+                    + d.annotation.as_deref().map_or(0, str::len)
+            })
             .sum::<usize>()
 }
 
@@ -170,6 +181,8 @@ mod tests {
             line: 1,
             column: 1,
             text: name.into(),
+            container: None,
+            annotation: None,
         }])
     }
 

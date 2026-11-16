@@ -21,3 +21,27 @@
 (pair
   key: (property_identifier) @name
   value: [(arrow_function) (function_expression)]) @definition.function
+
+; The keys of a module's constant objects, one level of nesting deep, are
+; what `UI_STRINGS.title` names. A key in any other object literal (a call's
+; options, a return value) is data, not a declaration.
+(program
+  (lexical_declaration
+    (variable_declarator
+      value: (object (pair key: (property_identifier) @name) @definition.field))))
+(program
+  (export_statement
+    declaration: (lexical_declaration
+      (variable_declarator
+        value: (object (pair key: (property_identifier) @name) @definition.field)))))
+(program
+  (lexical_declaration
+    (variable_declarator
+      value: (object
+        (pair value: (object (pair key: (property_identifier) @name) @definition.field))))))
+(program
+  (export_statement
+    declaration: (lexical_declaration
+      (variable_declarator
+        value: (object
+          (pair value: (object (pair key: (property_identifier) @name) @definition.field)))))))

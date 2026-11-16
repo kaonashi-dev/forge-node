@@ -115,6 +115,17 @@ pub struct Resolved {
     pub notes: Vec<String>,
 }
 
+impl Resolved {
+    /// One place, decided by an authoritative provider that parsed or resolved
+    /// it: the editor follows it without offering a list. A heuristic match is
+    /// always a list, and Alt-O returns from a jump that guessed wrong.
+    #[must_use]
+    pub fn is_exact(&self) -> bool {
+        self.decided_by.is_some()
+            && matches!(self.candidates.as_slice(), [only] if only.confidence >= Confidence::Syntactic)
+    }
+}
+
 /// Ask `chain` in order and merge.
 ///
 /// Duplicates — the same file and line from two providers — keep the higher
@@ -369,6 +380,28 @@ mod tests {
             })
             .collect();
         assert_eq!(paths, ["other.py", "src/b.rs", "src/a.rs"]);
+    }
+
+    #[test]
+    fn one_decided_parse_is_followed_and_a_heuristic_or_a_choice_is_a_list() {
+        let decided = |candidates: Vec<Candidate>| Resolved {
+            candidates,
+            decided_by: Some("syntax"),
+            ..Resolved::default()
+        };
+        let one = at("src/b.rs", 4, 8, Confidence::Syntactic);
+        assert!(decided(vec![one.clone()]).is_exact());
+        assert!(!decided(vec![
+            one.clone(),
+            at("src/c.rs", 1, 1, Confidence::Syntactic)
+        ])
+        .is_exact());
+        assert!(!decided(vec![at("src/b.rs", 4, 8, Confidence::Heuristic)]).is_exact());
+        let undecided = Resolved {
+            candidates: vec![one],
+            ..Resolved::default()
+        };
+        assert!(!undecided.is_exact(), "no provider vouched for it");
     }
 
     #[test]
