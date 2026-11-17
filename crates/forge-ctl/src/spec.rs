@@ -1,5 +1,6 @@
 use super::*;
 use client::Store;
+use domain::orchestration::ToolSurface;
 use domain::spec_run::{
     agent_refusal, classify, compose_planner_prompt, planner_effort, Coder, SpecError, SpecRun,
     SpecSource, MAX_INLINE_SPEC_BYTES,
@@ -87,7 +88,12 @@ pub(crate) fn dispatch(app: &App, client: &Client, cmd: SpecCmd) -> Result<(), u
         SpecCmd::Run(args) => run(app, client, *args),
         SpecCmd::Brief(args) => {
             let store = places::load(app, client)?;
-            let run = prepare(app, &store, &args, env_session().is_some())?;
+            let surface = if app.capture.is_some() {
+                ToolSurface::Mcp
+            } else {
+                ToolSurface::Cli
+            };
+            let run = prepare(app, &store, &args, env_session().is_some(), surface)?;
             let brief = compose_planner_prompt(&run);
             if app.json {
                 app.print_ok(json!({ "brief": brief, "coder": coder_json(&run.coder),
@@ -102,7 +108,7 @@ pub(crate) fn dispatch(app: &App, client: &Client, cmd: SpecCmd) -> Result<(), u
 
 fn run(app: &App, client: &Client, args: RunArgs) -> Result<(), u8> {
     let store = places::load(app, client)?;
-    let spec = prepare(app, &store, &args.spec, true)?;
+    let spec = prepare(app, &store, &args.spec, true, ToolSurface::Cli)?;
     let effort = match args.planner_effort {
         Some(effort) => Some(effort),
         None => planner_effort(provider(app, &store, &args.planner, "planner")?),
@@ -148,6 +154,7 @@ fn prepare(
     store: &Store,
     args: &SpecArgs,
     planner_is_session: bool,
+    surface: ToolSurface,
 ) -> Result<SpecRun, u8> {
     let help = ["forgectl", "spec", "--help"];
     let source = if args.spec == "-" {
@@ -215,6 +222,7 @@ fn prepare(
         base: args.base.clone(),
         rounds: args.rounds,
         planner_is_session,
+        surface,
     })
 }
 

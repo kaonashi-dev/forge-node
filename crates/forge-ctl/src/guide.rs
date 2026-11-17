@@ -9,25 +9,10 @@ pub fn guide_text(topic: &str) -> Option<&'static str> {
         "integration" => INTEGRATION,
         "errors" => ERRORS,
         "sessions" => SESSIONS,
-        "spec" => SPEC,
+        "spec" => domain::spec_run::guide(),
         _ => return None,
     })
 }
-
-const SPEC: &str = "\
-# forgectl guide spec
-
-A spec run has two agents: a planner owns the spec, the plan and the review; a coder writes the code.
-The spec is a Claude artifact link, a path to a Markdown file, the full text, or - for stdin. Forge never fetches a link: the planner reads an artifact with its own artifact tool.
-Launch a planner: forgectl --json spec run <spec> [--preset claude|mix] [--coder <provider>] [--coder-profile <name|uuid>] [--planner-profile <name|uuid>] [--worktree <branch>] [--rounds 3]
-Profiles pick the account: the brief launches the coder with --profile <uuid>, so a renamed profile still resolves.
-- claude: Claude plans at high effort, Claude codes at medium.
-- mix: Claude plans at high effort, Cursor codes; --coder opencode picks OpenCode. Cursor applies an effort only with --coder-model.
-Be the planner yourself: forgectl spec brief <spec> [same options] prints the brief to follow in this session.
-The planner validates every criterion (context and a way to prove it), asks the person all open points at once with its question selector, plans, launches the coder, waits for idle,waiting,exit, reruns the validations, sends numbered findings, and stops after the review rounds.
-The power of the simple: the smallest concrete change that meets the spec wins.
-Providers, effort levels and models are checked before anything launches; a path that does not exist exits 4.
-";
 
 const SESSIONS: &str = "\
 # forgectl guide sessions

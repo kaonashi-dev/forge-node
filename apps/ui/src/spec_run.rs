@@ -154,6 +154,7 @@ pub fn planner_launch(
             .rounds
             .clamp(1, *ROUNDS.last().unwrap_or(&DEFAULT_ROUNDS)),
         planner_is_session: true,
+        surface: domain::orchestration::ToolSurface::Cli,
     };
     Ok(PlannerLaunch {
         provider: planner.id.clone(),
