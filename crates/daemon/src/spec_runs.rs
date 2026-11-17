@@ -420,9 +420,11 @@ pub(crate) fn start(
             session_id,
         }),
         Err(error) => {
-            daemon.spec_runs.lock().remove(&id);
-            let _ = daemon.spec_runs.store.delete(id);
-            let _ = std::fs::remove_dir_all(&dir);
+            let _ = update(daemon, id, |run| {
+                run.stage = SpecStage::Rejected;
+                run.attention = Some(format!("the drafter did not start: {}", error.message));
+                Ok(())
+            });
             Err(error)
         }
     }
