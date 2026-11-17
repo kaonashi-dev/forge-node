@@ -2051,6 +2051,7 @@ fn a_spec_run_round_trips_as_metadata() {
         deviations: Vec::new(),
         review_id: None,
         spec_sha256: None,
+        plan_sha256: None,
         has_research: false,
         has_plan: false,
         has_report: false,

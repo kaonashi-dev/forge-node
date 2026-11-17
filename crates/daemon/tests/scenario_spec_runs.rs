@@ -134,7 +134,10 @@ fn start(
         Ok(Response::SpecRunStarted {
             spec_run_id,
             session_id,
-        }) => (spec_run_id, session_id),
+        }) => (
+            spec_run_id,
+            session_id.expect("an inline source starts its drafter at once"),
+        ),
         other => panic!("StartSpecRun: {other:?}"),
     }
 }
@@ -755,7 +758,7 @@ fn an_issue_becomes_the_drafters_source() {
     let workspace = common::add_main_workspace(&client, repo.path());
     let Response::SpecRunStarted {
         spec_run_id,
-        session_id,
+        session_id: None,
     } = client
         .request(Request::StartSpecRun {
             workspace_id: workspace,
@@ -771,6 +774,7 @@ fn an_issue_becomes_the_drafters_source() {
     else {
         panic!()
     };
+    let session_id = wait_drafter(&client, spec_run_id);
     let source =
         fs::read_to_string(run_dir(&harness, spec_run_id).join("source.md")).expect("fixture");
     assert!(
@@ -874,4 +878,60 @@ fn rounds_are_ledger_attempts_and_the_full_route_runs_its_tasks_in_order() {
     );
     let last = round(&client, id, planner, None).expect_err("refused");
     assert!(last.message.contains("no further task"), "{last:?}");
+}
+
+/// An issue's drafter starts once `gh` has read the issue, after the request answered.
+fn wait_drafter(client: &client::Client, id: SpecRunId) -> SessionId {
+    let mut drafter = None;
+    assert!(common::poll_until(Duration::from_secs(30), || {
+        drafter = detail(client, id).run.session(SpecRole::Drafter);
+        drafter.is_some()
+    }));
+    drafter.expect("drafter")
+}
+
+#[test]
+fn an_approved_spec_edited_on_disk_stops_the_run_and_a_stuck_run_can_be_rejected() {
+    let harness = common::Harness::new();
+    install_claude(&harness);
+    let repo = test_support::init_repo().expect("git repo");
+    let daemon = harness.boot();
+    let client = connect(&daemon, "spec-run-pinned");
+    let workspace = common::add_main_workspace(&client, repo.path());
+    let (id, run) = drive_to_review(
+        &client,
+        workspace,
+        options(worktree("spec/pinned")),
+        &plan(&check("true"), &check("true"), Some("true")),
+        approve(),
+        &[],
+    );
+    let planner = run.session(SpecRole::Planner).expect("planner");
+    let spec = run_dir(&harness, id).join("spec.md");
+    fs::write(&spec, SPEC.replace("AC-2", "AC-9")).expect("tamper");
+    let tampered = submit(&client, id, planner, &report("met", &[])).expect_err("refused");
+    assert!(
+        tampered.message.contains("spec.md changed on disk"),
+        "{tampered:?}"
+    );
+
+    let stuck = gate(
+        &client,
+        id,
+        GateKind::Result,
+        GateDecision::Reject {
+            reason: "Stop: the spec was edited outside Forge.".into(),
+        },
+    );
+    assert_eq!(stuck.expect("reject outside a gate"), Response::Ack);
+    assert_eq!(detail(&client, id).run.stage, SpecStage::Rejected);
+    assert!(prompts(&harness, id).contains("Stop: the spec was edited outside Forge."));
+    let again = gate(
+        &client,
+        id,
+        GateKind::Result,
+        GateDecision::Reject { reason: "x".into() },
+    )
+    .expect_err("closed");
+    assert_eq!(again.code, ErrorCode::Conflict);
 }

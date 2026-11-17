@@ -25,8 +25,14 @@ Source: `crates/domain/src/spec_run/` (prompts, model, pure validation),
 A gate passes only through `SpecGate` (the GUI or `forgectl spec gate`); a
 caller that is one of the run's own sessions is refused, and a change request
 or a rejection without a reason is refused. The reason reaches the agent
-verbatim. Forge refuses an agent launch by the drafter or the planner before G2:
+verbatim. A rejection also ends a run outside a gate (a lost coder, a
+restart), so no run is stuck at a stage nobody can leave. The caller is the
+session `forgectl` declares from `FORGE_SESSION_ID`, the ledger's identity model:
+it keeps an agent from passing its own gate by accident, not by force. Forge refuses an agent launch by the drafter or the planner before G2:
 the coder is started by Forge, as a ledger attempt, when the plan is approved.
+
+An issue is read with `gh issue view` on a worker thread: `StartSpecRun`
+answers at once and the drafter starts when the issue has been read.
 
 The drafter is a writable launch (so it has the forge MCP tools) whose prompt
 forbids editing code; a read-only launch would have neither MCP nor shell
@@ -40,7 +46,9 @@ own rounds, and the gate runs after the last task.
 ## What Forge checks
 
 - A spec needs at least one `AC-n`, each with an automatic or manual
-  validation, and no repeated id.
+  validation, and no repeated id. The spec and the plan are pinned by their SHA-256 when
+  saved; one edited on disk afterwards stops the run instead of changing what
+  Forge checks.
 - A plan's `forge.spec_plan/v1` block names, per step, the criteria it serves
   and a check; every criterion needs a step. The gate is the project action
   marked `gate`, otherwise the plan's proposal; with neither the plan is

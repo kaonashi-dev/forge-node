@@ -171,7 +171,14 @@ impl AppState {
         let Some(id) = self.spec_panel.as_ref().map(|panel| panel.run) else {
             return;
         };
-        let gate = live_run(self, id).and_then(|run| spec_gate::gate(run.stage));
+        let reject = matches!(decision, Some(GateDecision::Reject { .. }));
+        let gate = live_run(self, id).and_then(|run| {
+            if reject {
+                spec_gate::reject_gate(run.stage)
+            } else {
+                spec_gate::gate(run.stage)
+            }
+        });
         let (Some(gate), Some(decision)) = (gate, decision) else {
             return;
         };
@@ -746,6 +753,28 @@ pub fn panel(s: &AppState, k: &Kit, layer: &mut Vec<El>) {
             .build(k)
             .key("spec-approve"),
         ]);
+    } else if !run.stage.is_closed() && panel.detail.is_some() {
+        body = body.child(
+            TextArea::new(&panel.reason)
+                .label("Reason")
+                .placeholder("Why to stop this run (needed to reject it)")
+                .width(None)
+                .on_edit(|s: &mut AppState| match s.spec_panel.as_mut() {
+                    Some(panel) => &mut panel.reason,
+                    None => &mut s.scratch_edit,
+                })
+                .build(k)
+                .key("spec-reason")
+                .h(72.0),
+        );
+        footer.push(
+            Button::new("Reject run")
+                .variant(ButtonVariant::Danger)
+                .disabled(panel.reason.text.trim().is_empty() || panel.sending)
+                .on_press(|s: &mut AppState| s.refuse_spec_gate(true))
+                .build(k)
+                .key("spec-reject"),
+        );
     }
     if let Some(error) = &panel.error {
         body = body.child(

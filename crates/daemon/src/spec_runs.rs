@@ -34,6 +34,8 @@ const MAX_NAME_CHARS: usize = 80;
 const MAX_REASON_BYTES: usize = 4096;
 const MAX_FINDINGS_BYTES: usize = 32 * 1024;
 const MAX_DIRTY_PATHS: usize = 500;
+/// The report as saved, with room for the deviations Forge appends to the validated text.
+const REPORT_FILE_BYTES: usize = schema::MAX_REPORT_BYTES + 16 * 1024;
 const DEFAULT_CHECK_TIMEOUT: Duration = Duration::from_secs(600);
 const MAX_CHECK_TIMEOUT_SECS: u64 = 3600;
 /// Past the kill grace, how long a killed check may take to be reaped.
@@ -248,11 +250,7 @@ fn project_actions(daemon: &Daemon, project_id: ProjectId) -> Vec<ProjectAction>
 // ----- Start -----
 
 /// Read what Forge can read of the source; a link or an artifact stays a reference.
-fn read_source(
-    daemon: &Daemon,
-    root: &Path,
-    source: &SpecRunSource,
-) -> Result<(SourceRef, Option<String>), ProtocolError> {
+fn read_source(source: &SpecRunSource) -> Result<(SourceRef, Option<String>), ProtocolError> {
     let cap = schema::MAX_SPEC_BYTES;
     let (kind, reference, text) = match source {
         SpecRunSource::Inline { text } => {
@@ -283,13 +281,7 @@ fn read_source(
         }
         SpecRunSource::ClaudeArtifact { url } => ("claude_artifact", url.clone(), None),
         SpecRunSource::Link { url } => ("link", url.clone(), None),
-        SpecRunSource::Issue { reference } => {
-            let cli = daemon.github_cli();
-            let text = git_service::issue_markdown(&cli, root, reference).map_err(|e| {
-                ProtocolError::new(ErrorCode::GitError, format!("gh issue view: {e}"))
-            })?;
-            ("issue", reference.clone(), Some(text))
-        }
+        SpecRunSource::Issue { reference } => ("issue", reference.clone(), None),
         _ => return Err(ProtocolError::invalid_request("unknown spec source")),
     };
     if text.as_ref().is_some_and(|t| t.len() > cap) {
@@ -357,7 +349,7 @@ pub(crate) fn start(
         (ws.project_id, ws.path.clone())
     };
     check_options(daemon, &options)?;
-    let (source, text) = read_source(daemon, &root, &source)?;
+    let (source, text) = read_source(&source)?;
     let id = SpecRunId::new();
     let dir = dir_of(daemon, id);
     ensure_dir(&dir)?;
@@ -389,6 +381,7 @@ pub(crate) fn start(
         deviations: Vec::new(),
         review_id: None,
         spec_sha256: None,
+        plan_sha256: None,
         has_research: false,
         has_plan: false,
         has_report: false,
@@ -406,28 +399,85 @@ pub(crate) fn start(
         runs.insert(id, run.clone());
         publish(daemon, run.clone());
     }
+    if run.source.kind != "issue" {
+        let session_id = launch_drafter(daemon, &run, &dir)?;
+        return Ok(Response::SpecRunStarted {
+            spec_run_id: id,
+            session_id: Some(session_id),
+        });
+    }
+    // `gh issue view` opens a socket: the request answers now, and the drafter starts once the
+    // issue is read.
+    let daemon_for_thread = Arc::clone(daemon);
+    let spawned = std::thread::Builder::new()
+        .name("forge-spec-issue".into())
+        .spawn(move || {
+            let daemon = &daemon_for_thread;
+            let read =
+                git_service::issue_markdown(&daemon.github_cli(), &root, &run.source.reference)
+                    .map_err(|e| {
+                        ProtocolError::new(ErrorCode::GitError, format!("gh issue view: {e}"))
+                    })
+                    .and_then(|text| {
+                        write_file(&dir, "source.md", &text)?;
+                        let sha = sha256(&text);
+                        update(daemon, id, |run| {
+                            run.source.sha256 = Some(sha);
+                            Ok(run.clone())
+                        })
+                    });
+            match read {
+                Ok(run) => {
+                    let _ = launch_drafter(daemon, &run, &dir);
+                }
+                Err(error) => fail_start(
+                    daemon,
+                    id,
+                    &format!("the issue could not be read: {}", error.message),
+                ),
+            }
+        });
+    if let Err(error) = spawned {
+        fail_start(
+            daemon,
+            id,
+            &format!("the issue reader did not start: {error}"),
+        );
+    }
+    Ok(Response::SpecRunStarted {
+        spec_run_id: id,
+        session_id: None,
+    })
+}
+
+fn fail_start(daemon: &Daemon, id: SpecRunId, why: &str) {
+    let _ = update(daemon, id, |run| {
+        run.stage = SpecStage::Rejected;
+        run.attention = Some(why.to_owned());
+        Ok(())
+    });
+}
+
+fn launch_drafter(
+    daemon: &Arc<Daemon>,
+    run: &SpecRunView,
+    dir: &Path,
+) -> Result<SessionId, ProtocolError> {
     let tools = tools(daemon, &run.planner);
-    let source = drafter_source(&dir, &run.source);
+    let source = drafter_source(dir, &run.source);
     let prompt = compose_drafter_prompt(&DrafterInput {
-        spec_run_id: &id.to_string(),
+        spec_run_id: &run.id.to_string(),
         source: &source,
         tools: &tools,
         publish_artifact: run.options.publish_spec,
     });
-    match launch_agent(daemon, &run, SpecRole::Drafter, prompt) {
-        Ok(session_id) => Ok(Response::SpecRunStarted {
-            spec_run_id: id,
-            session_id,
-        }),
-        Err(error) => {
-            let _ = update(daemon, id, |run| {
-                run.stage = SpecStage::Rejected;
-                run.attention = Some(format!("the drafter did not start: {}", error.message));
-                Ok(())
-            });
-            Err(error)
-        }
-    }
+    launch_agent(daemon, run, SpecRole::Drafter, prompt).inspect_err(|error| {
+        fail_start(
+            daemon,
+            run.id,
+            &format!("the drafter did not start: {}", error.message),
+        );
+    })
 }
 
 fn launch_agent(
@@ -597,21 +647,38 @@ fn expect_stage(run: &SpecRunView, stages: &[SpecStage]) -> Result<(), ProtocolE
     }
 }
 
-fn approved_spec(dir: &Path) -> Result<(String, SpecDoc), ProtocolError> {
-    let text = read_file(dir, "spec.md", schema::MAX_SPEC_BYTES)
-        .ok_or_else(|| ProtocolError::precondition_failed("the run has no saved spec"))?;
+/// A run file as it was saved: the hash kept at save time must still match, so an agent that
+/// edits the approved spec or plan in place stops the run instead of changing what it checks.
+fn pinned(dir: &Path, name: &str, cap: usize, sha: Option<&str>) -> Result<String, ProtocolError> {
+    let text = read_file(dir, name, cap).ok_or_else(|| {
+        ProtocolError::precondition_failed(format!("the run has no saved {name}"))
+    })?;
+    match sha {
+        Some(sha) if sha256(&text) != sha => Err(ProtocolError::precondition_failed(format!(
+            "{name} changed on disk after it was saved; save it again through Forge"
+        ))),
+        _ => Ok(text),
+    }
+}
+
+fn approved_spec(dir: &Path, sha: Option<&str>) -> Result<(String, SpecDoc), ProtocolError> {
+    let text = pinned(dir, "spec.md", schema::MAX_SPEC_BYTES, sha)?;
     let doc = schema::parse_spec(&text).map_err(|e| invalid("the saved spec", e))?;
     Ok((text, doc))
 }
 
 fn approved_plan(daemon: &Daemon, run: &SpecRunView) -> Result<(SpecDoc, PlanDoc), ProtocolError> {
     let dir = dir_of(daemon, run.id);
-    let (spec_text, doc) = approved_spec(&dir)?;
+    let (spec_text, doc) = approved_spec(&dir, run.spec_sha256.as_deref())?;
     let plan_text = if run.route == Route::Short {
         spec_text
     } else {
-        read_file(&dir, "plan.md", schema::MAX_PLAN_BYTES)
-            .ok_or_else(|| ProtocolError::precondition_failed("the run has no saved plan"))?
+        pinned(
+            &dir,
+            "plan.md",
+            schema::MAX_PLAN_BYTES,
+            run.plan_sha256.as_deref(),
+        )?
     };
     let actions = project_actions(daemon, run.project_id);
     let (plan, _) =
@@ -697,13 +764,15 @@ pub(crate) fn save(
         SpecArtifactKind::Plan => {
             author(&run, caller, SpecRole::Planner)?;
             expect_stage(&run, &[SpecStage::Planning, SpecStage::PlanGate])?;
-            let (_, doc) = approved_spec(&dir)?;
+            let (_, doc) = approved_spec(&dir, run.spec_sha256.as_deref())?;
             let actions = project_actions(daemon, run.project_id);
             let (_, gate) = schema::parse_plan(&content, &doc, &actions)
                 .map_err(|e| invalid("plan refused", e))?;
             write_file(&dir, "plan.md", &content)?;
+            let sha = sha256(&content);
             update(daemon, run.id, |run| {
                 expect_stage(run, &[SpecStage::Planning, SpecStage::PlanGate])?;
+                run.plan_sha256 = Some(sha);
                 run.gate = Some(gate);
                 run.has_plan = true;
                 run.stage = SpecStage::PlanGate;
@@ -731,7 +800,19 @@ pub(crate) fn gate(
             "a gate is passed by a person in Forge, never by the run's own agents",
         ));
     }
-    expect_stage(&run, &[kind.stage()])?;
+    // A rejection also ends a run stuck outside a gate (a lost coder, a restart), so it only needs
+    // an open run.
+    if matches!(decision, GateDecision::Reject { .. }) {
+        if run.stage.is_closed() {
+            return Err(ProtocolError::conflict(format!(
+                "spec run {} is already {}",
+                run.id,
+                run.stage.as_str()
+            )));
+        }
+    } else {
+        expect_stage(&run, &[kind.stage()])?;
+    }
     if let GateDecision::Changes { reason } | GateDecision::Reject { reason } = &decision {
         if reason.trim().is_empty() {
             return Err(ProtocolError::invalid_request(
@@ -746,11 +827,11 @@ pub(crate) fn gate(
     }
     match (kind, decision) {
         (_, GateDecision::Reject { reason }) => {
-            let role = match kind {
-                GateKind::Spec => SpecRole::Drafter,
+            let role = match run.stage {
+                SpecStage::Drafting | SpecStage::SpecGate => SpecRole::Drafter,
                 _ => SpecRole::Planner,
             };
-            claim(daemon, id, kind.stage(), SpecStage::Rejected, Some(&reason))?;
+            claim(daemon, id, run.stage, SpecStage::Rejected, Some(&reason))?;
             send_reason(
                 daemon,
                 &run,
@@ -797,12 +878,24 @@ pub(crate) fn gate(
         (GateKind::Result, GateDecision::Changes { reason }) => {
             another_round(daemon, &run, reason)?;
         }
-        (GateKind::Spec, GateDecision::Approve { options, .. }) => {
+        (
+            GateKind::Spec,
+            GateDecision::Approve {
+                options,
+                save_gate_action,
+                ..
+            },
+        ) => {
             set_options(daemon, &run, options)?;
             claim(daemon, id, SpecStage::SpecGate, SpecStage::Planning, None)?;
             let run = daemon.spec_runs.get(id)?;
             if run.route == Route::Short {
-                if let Err(error) = execute(daemon, &run) {
+                let started = if save_gate_action {
+                    save_gate(daemon, &run).and_then(|()| execute(daemon, &run))
+                } else {
+                    execute(daemon, &run)
+                };
+                if let Err(error) = started {
                     reopen(daemon, id, SpecStage::SpecGate, &error);
                     return Err(error);
                 }
@@ -960,9 +1053,17 @@ fn save_gate(daemon: &Arc<Daemon>, run: &SpecRunView) -> Result<(), ProtocolErro
 
 // ----- Execution -----
 
-/// Place the coder, open its ledger and start round 1.
+/// Place the coder, open its ledger and start round 1. After a launch that failed, the
+/// worktree and the ledger already exist and only the round is started again.
 fn execute(daemon: &Arc<Daemon>, run: &SpecRunView) -> Result<(), ProtocolError> {
     let (spec, plan) = approved_plan(daemon, run)?;
+    if run.ledger_run.is_some() {
+        let run = update(daemon, run.id, |run| {
+            run.stage = SpecStage::Executing;
+            Ok(run.clone())
+        })?;
+        return start_round(daemon, &run, None);
+    }
     let (workspace, path) = match &run.options.placement {
         Placement::Worktree { branch, base } => {
             let ws =
@@ -1088,6 +1189,7 @@ fn start_round(
     run: &SpecRunView,
     findings: Option<String>,
 ) -> Result<(), ProtocolError> {
+    let task_index = run.current_task;
     let workspace = run
         .coder_workspace_id
         .ok_or_else(|| ProtocolError::precondition_failed("the coder has no workspace yet"))?;
@@ -1128,6 +1230,7 @@ fn start_round(
         },
     )?;
     update(daemon, run.id, |run| {
+        run.current_task = task_index;
         run.round = round;
         run.stage = SpecStage::Executing;
         run.attention = None;
@@ -1278,6 +1381,7 @@ fn verify(
         .filter(|record| {
             run.checks.iter().any(|earlier| {
                 earlier.criterion == record.criterion
+                    && earlier.task == record.task
                     && earlier.round + 1 == record.round
                     && !earlier.passed()
                     && earlier.not_verified.is_none()
@@ -1380,6 +1484,7 @@ fn run_check(
     let log = format!("{stem}.log");
     let mut record = CheckRecord {
         criterion: check.criterion.clone(),
+        task: run.current_task,
         round,
         command: check.command.clone(),
         exit_code: None,
@@ -1573,11 +1678,9 @@ pub(crate) fn round(
                 SpecStage::Executing,
                 None,
             )?;
-            let next = update(daemon, run.id, |run| {
-                run.current_task += 1;
-                run.round = 0;
-                Ok(run.clone())
-            })?;
+            let mut next = run.clone();
+            next.current_task += 1;
+            next.round = 0;
             if let Err(error) = start_round(daemon, &next, None) {
                 reopen(daemon, run.id, SpecStage::Reviewing, &error);
                 return Err(error);
@@ -1585,6 +1688,21 @@ pub(crate) fn round(
         }
     }
     Ok(Response::Ack)
+}
+
+/// Each task's checks from its last round: rounds restart with every task, so this round's
+/// number alone would mix one task's first round with another's.
+fn final_checks(checks: &[CheckRecord]) -> Vec<CheckRecord> {
+    let mut last: HashMap<usize, u32> = HashMap::new();
+    for check in checks {
+        let round = last.entry(check.task).or_insert(0);
+        *round = (*round).max(check.round);
+    }
+    checks
+        .iter()
+        .filter(|c| last.get(&c.task) == Some(&c.round))
+        .cloned()
+        .collect()
 }
 
 fn reviewed_paths(daemon: &Daemon, run: &SpecRunView) -> Result<BTreeSet<String>, ProtocolError> {
@@ -1617,14 +1735,9 @@ pub(crate) fn report(
         schema::validate_artifact_url(url).map_err(ProtocolError::invalid_request)?;
     }
     let dir = dir_of(daemon, run.id);
-    let (_, spec) = approved_spec(&dir)?;
+    let (_, spec) = approved_spec(&dir, run.spec_sha256.as_deref())?;
     let diff = reviewed_paths(daemon, &run)?;
-    let checks: Vec<CheckRecord> = run
-        .checks
-        .iter()
-        .filter(|c| c.round == run.round)
-        .cloned()
-        .collect();
+    let checks = final_checks(&run.checks);
     let valid = schema::validate_report(
         &content,
         &schema::ReportContext {
@@ -1638,6 +1751,10 @@ pub(crate) fn report(
     if !run.deviations.is_empty() {
         text.push_str("\n\n## Deviations Forge found\n");
         for deviation in &run.deviations {
+            if text.len() + deviation.len() + 3 > REPORT_FILE_BYTES {
+                text.push_str("- (more deviations left out)\n");
+                break;
+            }
             text.push_str(&format!("- {deviation}\n"));
         }
     }
@@ -1727,12 +1844,8 @@ fn finish(
             let workspace = run
                 .coder_workspace_id
                 .ok_or_else(|| ProtocolError::precondition_failed("the coder has no workspace"))?;
-            let report = read_file(
-                &dir_of(daemon, run.id),
-                "report.md",
-                schema::MAX_REPORT_BYTES,
-            )
-            .ok_or_else(|| ProtocolError::precondition_failed("the run has no report"))?;
+            let report = read_file(&dir_of(daemon, run.id), "report.md", REPORT_FILE_BYTES)
+                .ok_or_else(|| ProtocolError::precondition_failed("the run has no report"))?;
             daemon.open_pull_request_from(
                 workspace,
                 run.planner.provider.clone(),
@@ -1803,7 +1916,7 @@ pub(crate) fn detail(daemon: &Daemon, id: SpecRunId) -> Result<Response, Protoco
         spec,
         research: read_file(&dir, "research.md", schema::MAX_RESEARCH_BYTES),
         plan: read_file(&dir, "plan.md", schema::MAX_PLAN_BYTES),
-        report: read_file(&dir, "report.md", schema::MAX_REPORT_BYTES + 4096),
+        report: read_file(&dir, "report.md", REPORT_FILE_BYTES),
         exit: read_file(&dir, "exit.md", schema::MAX_SPEC_BYTES),
         planned_checks,
         manual_checks,

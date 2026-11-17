@@ -1439,7 +1439,7 @@ impl Client {
         planner: domain::spec_run::model::AgentPick,
         coder: domain::spec_run::model::AgentPick,
         options: domain::spec_run::model::SpecOptions,
-    ) -> Result<(domain::SpecRunId, SessionId), ClientError> {
+    ) -> Result<(domain::SpecRunId, Option<SessionId>), ClientError> {
         match self.request(Request::StartSpecRun {
             workspace_id,
             name,

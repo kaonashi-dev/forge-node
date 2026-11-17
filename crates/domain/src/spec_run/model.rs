@@ -179,6 +179,9 @@ pub struct GateCheck {
 pub struct CheckRecord {
     /// `AC-n`, or `gate`.
     pub criterion: String,
+    /// The ledger task it checked, by position; rounds restart with every task.
+    #[serde(default)]
+    pub task: usize,
     pub round: u32,
     pub command: String,
     /// `None` when the check could not run, which is not a failure of the code.
@@ -268,6 +271,9 @@ pub struct SpecRunView {
     /// SHA-256 of the approved spec as saved.
     #[serde(default)]
     pub spec_sha256: Option<String>,
+    /// SHA-256 of the saved plan; with the spec's, what every later read is checked against.
+    #[serde(default)]
+    pub plan_sha256: Option<String>,
     #[serde(default)]
     pub has_research: bool,
     #[serde(default)]

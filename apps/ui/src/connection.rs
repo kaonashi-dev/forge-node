@@ -3646,10 +3646,12 @@ fn handle_live_command(
                         launch.options,
                     )
                     .map(|(_, session_id)| {
-                        sink(vec![UiEvent::SessionOpened {
-                            generation,
-                            session_id,
-                        }]);
+                        if let Some(session_id) = session_id {
+                            sink(vec![UiEvent::SessionOpened {
+                                generation,
+                                session_id,
+                            }]);
+                        }
                         format!("started {name}")
                     })
                     .map_err(|error| error.to_string())

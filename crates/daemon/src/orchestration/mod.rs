@@ -3533,15 +3533,19 @@ pub(crate) fn start_spec_attempt(
 }
 
 pub(crate) fn accept_spec_task(daemon: &Arc<Daemon>, task_id: TaskId) -> Result<(), ProtocolError> {
-    let revision = {
+    let (revision, accepted) = {
         let inner = daemon.lock();
         inner
             .ledger
             .tasks
             .get(&task_id)
-            .map(|task| task.revision)
+            .map(|task| (task.revision, task.status == TaskStatus::Accepted))
             .ok_or_else(|| ProtocolError::not_found("task"))?
     };
+    // A retry after the next task failed to start finds this one already accepted.
+    if accepted {
+        return Ok(());
+    }
     decide_task(
         daemon,
         None,

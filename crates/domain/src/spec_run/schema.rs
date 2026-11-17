@@ -848,6 +848,7 @@ mod tests {
     fn record(criterion: &str, exit: Option<i32>) -> CheckRecord {
         CheckRecord {
             criterion: criterion.into(),
+            task: 0,
             round: 1,
             command: "cmd".into(),
             exit_code: exit,

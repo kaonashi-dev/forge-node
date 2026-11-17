@@ -717,6 +717,7 @@ fn gate(app: &App, client: &Client, args: GateArgs) -> Result<(), u8> {
         SpecStage::SpecGate => GateKind::Spec,
         SpecStage::PlanGate => GateKind::Plan,
         SpecStage::ResultGate => GateKind::Result,
+        _ if args.reject.is_some() && !run.stage.is_closed() => GateKind::Result,
         stage => {
             return Err(app.fail(
                 5,

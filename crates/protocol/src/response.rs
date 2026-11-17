@@ -240,10 +240,11 @@ pub enum Response {
     /// One session's changes since its baseline, answering
     /// `GetSessionChanges`.
     SessionChanges(SessionChanges),
-    /// Answers `StartSpecRun`: the run and the session it launched.
+    /// Answers `StartSpecRun`: the run and its drafter. A drafter that starts from an issue
+    /// starts once `gh` has read it, so it arrives later, in `SpecRunUpdated`.
     SpecRunStarted {
         spec_run_id: domain::SpecRunId,
-        session_id: SessionId,
+        session_id: Option<SessionId>,
     },
     /// Answers `GetSpecRun`.
     SpecRun(Box<domain::spec_run::model::SpecRunDetail>),

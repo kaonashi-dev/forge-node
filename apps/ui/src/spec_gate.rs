@@ -58,6 +58,13 @@ pub fn gate(stage: SpecStage) -> Option<GateKind> {
     }
 }
 
+/// The gate a rejection names: the current one, or any while a run that is not at a gate is
+/// still open, so a run stuck outside a gate can be ended.
+#[must_use]
+pub fn reject_gate(stage: SpecStage) -> Option<GateKind> {
+    gate(stage).or((!stage.is_closed()).then_some(GateKind::Result))
+}
+
 /// G2, and G1 on the short route, where the two gates are one.
 #[must_use]
 pub fn edits_options(stage: SpecStage, route: Route) -> bool {
@@ -253,6 +260,14 @@ mod tests {
             branch: "spec/x".into(),
             base: None,
         }
+    }
+
+    #[test]
+    fn an_open_run_can_be_rejected_outside_a_gate_and_a_closed_one_cannot() {
+        assert_eq!(reject_gate(SpecStage::PlanGate), Some(GateKind::Plan));
+        assert_eq!(reject_gate(SpecStage::Executing), Some(GateKind::Result));
+        assert_eq!(gate(SpecStage::Executing), None);
+        assert_eq!(reject_gate(SpecStage::Done), None);
     }
 
     #[test]
