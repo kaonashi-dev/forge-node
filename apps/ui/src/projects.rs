@@ -329,7 +329,7 @@ fn wants_you(s: &AppState, workspace: WorkspaceId) -> bool {
 fn needs_you_block(s: &AppState, k: &Kit) -> Option<El> {
     let store = s.store.as_ref()?;
     let waiting = crate::rail::needs_you(&store.sessions);
-    if waiting.is_empty() {
+    if waiting.is_empty() && s.spec_waiting.is_empty() {
         return None;
     }
     let now = domain::Timestamp::now();
@@ -398,7 +398,57 @@ fn needs_you_block(s: &AppState, k: &Kit) -> Option<El> {
                 ),
         );
     }
+    for run in s
+        .spec_waiting
+        .iter()
+        .filter_map(|id| store.spec_runs.iter().find(|run| run.id == *id))
+    {
+        block = block.child(spec_run_row(k, &roles, run, &now));
+    }
     Some(block)
+}
+
+fn spec_run_row(
+    k: &Kit,
+    roles: &crate::theme::Roles,
+    run: &domain::spec_run::model::SpecRunView,
+    now: &domain::Timestamp,
+) -> El {
+    let id = run.id;
+    let stage = crate::spec_gate::stage_label(run.stage);
+    let waited = crate::rail::waited_since(run.updated_at, now);
+    let title = format!("Spec · {}", run.name);
+    col()
+        .key(format!("needs-you-spec-{id}"))
+        .role("button")
+        .label(format!("{title}, {stage}, waiting on you for {waited}"))
+        .w_full()
+        .px(8.0)
+        .py(6.0)
+        .radius(k.radius.md)
+        .fill(roles.needs_you.soft)
+        .hover(k.c.hover)
+        .on_press(move |s: &mut AppState| s.open_spec_run(id))
+        .child(
+            row()
+                .gap(crate::ds::SPACE_3)
+                .items_center()
+                .child(rune::icon(&crate::glyphs::NEEDS_YOU, 12.0).color(roles.needs_you.solid))
+                .child(
+                    text(title)
+                        .font(k.ty.small_medium)
+                        .color(k.c.text_base)
+                        .truncate()
+                        .min_w(0.0)
+                        .grow(1.0),
+                ),
+        )
+        .child(
+            text(format!("{stage} · waiting {waited}"))
+                .font(k.ty.text_xsmall)
+                .color(k.c.text_faint)
+                .truncate(),
+        )
 }
 
 fn group_header(s: &AppState, k: &Kit, group: ProjectGroupId, projects: &[ProjectId]) -> El {
@@ -1239,6 +1289,7 @@ mod tests {
             cwd: None,
             single_instance: true,
             pinned: true,
+            gate: false,
             ready: ActionReady::None,
             port: None,
             depends_on: Vec::new(),

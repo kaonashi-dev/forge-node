@@ -135,6 +135,7 @@ fn from_suggestion(
         cwd: suggestion.cwd.clone(),
         single_instance: suggestion.single_instance,
         pinned: suggestion.pinned,
+        gate: false,
         ready: suggestion.ready.clone(),
         port: suggestion.port,
         depends_on: Vec::new(),
@@ -185,8 +186,10 @@ pub fn build_draft(
             continue;
         }
         let id = suggestion.saved_as.unwrap_or_else(&mut mint);
+        let mut action = from_suggestion(suggestion, project, id);
+        action.gate = saved.iter().any(|kept| kept.id == id && kept.gate);
         let mut row = DraftRow::new(
-            from_suggestion(suggestion, project, id),
+            action,
             Origin::Repo,
             false,
             Some(suggestion.detected_from.clone()),
@@ -432,6 +435,7 @@ fn add_row(s: &mut AppState) {
             cwd: None,
             single_instance: true,
             pinned: false,
+            gate: false,
             ready: ActionReady::None,
             port: None,
             depends_on: Vec::new(),
@@ -1092,6 +1096,7 @@ mod tests {
             cwd: None,
             single_instance: true,
             pinned: false,
+            gate: false,
             ready: ActionReady::None,
             port: None,
             depends_on: Vec::new(),
@@ -1123,7 +1128,8 @@ mod tests {
         let project = ProjectId::new();
         let lint = saved(project, "lint", 1);
         let dev = saved(project, "dev", 0);
-        let drifted = saved(project, "serve", 2);
+        let mut drifted = saved(project, "serve", 2);
+        drifted.gate = true;
         let repo = RepoActionsFile {
             file_hash: "h".into(),
             actions: vec![
@@ -1174,6 +1180,10 @@ mod tests {
             "the update replaces its saved row"
         );
         assert!(matches!(set[3].source, ActionSource::Detected));
+        assert!(
+            set[3].gate,
+            "an update keeps the gate mark of the row it replaces"
+        );
     }
 
     #[test]

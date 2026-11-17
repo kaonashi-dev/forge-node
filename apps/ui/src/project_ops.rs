@@ -571,6 +571,7 @@ mod tests {
             cwd: None,
             single_instance: true,
             pinned: false,
+            gate: false,
             ready: domain::ActionReady::None,
             port: None,
             depends_on: Vec::new(),

@@ -126,13 +126,22 @@ pub enum Command {
     Fetch {
         project_id: domain::ProjectId,
     },
-    /// Start a spec run's planner. The spec path is checked here, off the UI
-    /// thread, through the daemon when it is in the checkout.
+    /// Start a spec run. The spec path is checked here, off the UI thread,
+    /// through the daemon when it is in the checkout.
     RunSpec {
         workspace_id: WorkspaceId,
         checkout: std::path::PathBuf,
         providers: Vec<domain::AgentDescriptor>,
         request: crate::spec_run::SpecRequest,
+    },
+    GetSpecRun {
+        generation: u64,
+        spec_run_id: domain::SpecRunId,
+    },
+    SpecGate {
+        spec_run_id: domain::SpecRunId,
+        gate: domain::spec_run::model::GateKind,
+        decision: domain::spec_run::model::GateDecision,
     },
     /// A background agent drafts the pull request; the daemon opens it.
     OpenPullRequestWithAgent {
@@ -568,6 +577,11 @@ pub enum UiEvent {
         generation: u64,
         review_id: domain::ReviewId,
         result: Result<domain::WorkspaceDiff, String>,
+    },
+    SpecRun {
+        generation: u64,
+        spec_run_id: domain::SpecRunId,
+        result: Result<Box<domain::spec_run::model::SpecRunDetail>, String>,
     },
     StorageMigration {
         generation: u64,
@@ -1034,6 +1048,30 @@ impl ConnectionHandle {
             checkout,
             providers,
             request,
+        })
+    }
+
+    pub fn get_spec_run(
+        &self,
+        generation: u64,
+        spec_run_id: domain::SpecRunId,
+    ) -> Result<(), String> {
+        self.send(Command::GetSpecRun {
+            generation,
+            spec_run_id,
+        })
+    }
+
+    pub fn spec_gate(
+        &self,
+        spec_run_id: domain::SpecRunId,
+        gate: domain::spec_run::model::GateKind,
+        decision: domain::spec_run::model::GateDecision,
+    ) -> Result<(), String> {
+        self.send(Command::SpecGate {
+            spec_run_id,
+            gate,
+            decision,
         })
     }
 
@@ -2116,6 +2154,28 @@ fn handle_fixture_command(
                 message: "a spec run needs a running daemon".to_string(),
                 took_us: started.elapsed().as_micros() as u64,
             }]);
+        }
+        Command::SpecGate { .. } => {
+            metrics.commands_completed.fetch_add(1, Ordering::Relaxed);
+            sink(vec![UiEvent::CommandResult {
+                generation,
+                label: "SpecGate",
+                ok: false,
+                message: "a spec run needs a running daemon".to_string(),
+                took_us: started.elapsed().as_micros() as u64,
+            }]);
+        }
+        Command::GetSpecRun {
+            generation: command_generation,
+            spec_run_id,
+        } => {
+            if command_generation == generation {
+                sink(vec![UiEvent::SpecRun {
+                    generation,
+                    spec_run_id,
+                    result: Err("the recorded snapshot has no spec runs".into()),
+                }]);
+            }
         }
         Command::Config {
             generation: command_generation,
@@ -3567,34 +3627,64 @@ fn handle_live_command(
                 },
             };
             let home = std::env::var_os("HOME").map(std::path::PathBuf::from);
-            let result = crate::spec_run::planner_launch(
+            let result = crate::spec_run::spec_launch(
                 &providers,
                 &checkout,
                 &request,
                 home.as_deref(),
-                crate::spec_run::forgectl(),
                 is_file,
             )
             .and_then(|launch| {
+                let name = launch.name.clone();
                 client
-                    .create_planner_session(
+                    .start_spec_run(
                         workspace_id,
-                        launch.provider,
-                        launch.profile,
-                        launch.effort,
-                        launch.title.clone(),
-                        launch.brief,
+                        launch.name,
+                        launch.source,
+                        launch.planner,
+                        launch.coder,
+                        launch.options,
                     )
-                    .map(|(session_id, _)| {
+                    .map(|(_, session_id)| {
                         sink(vec![UiEvent::SessionOpened {
                             generation,
                             session_id,
                         }]);
-                        format!("started {}", launch.title)
+                        format!("started {name}")
                     })
                     .map_err(|error| error.to_string())
             });
             live_result(generation, "RunSpec", result, sink, metrics, started);
+        }
+        Command::GetSpecRun {
+            generation: command_generation,
+            spec_run_id,
+        } => {
+            if command_generation != generation {
+                return;
+            }
+            metrics.note_socket_op();
+            let result = client
+                .spec_run(spec_run_id)
+                .map(Box::new)
+                .map_err(|error| error.to_string());
+            sink(vec![UiEvent::SpecRun {
+                generation,
+                spec_run_id,
+                result,
+            }]);
+        }
+        Command::SpecGate {
+            spec_run_id,
+            gate,
+            decision,
+        } => {
+            metrics.note_socket_op();
+            let result = client
+                .spec_gate(spec_run_id, gate, decision)
+                .map(|()| "decided".to_string())
+                .map_err(|error| error.to_string());
+            live_result(generation, "SpecGate", result, sink, metrics, started);
         }
         Command::OpenPullRequestWithAgent {
             workspace_id,
@@ -4469,6 +4559,8 @@ fn command_label(command: &Command) -> &'static str {
         Command::Fetch { .. } => "FetchRemote",
         Command::OpenPullRequestWithAgent { .. } => "OpenPullRequestWithAgent",
         Command::RunSpec { .. } => "RunSpec",
+        Command::GetSpecRun { .. } => "GetSpecRun",
+        Command::SpecGate { .. } => "SpecGate",
         Command::RefreshPullRequests { .. } => "RefreshPullRequests",
         Command::FetchPullRequest(_) => "FetchPullRequest",
         Command::DraftCommit { .. } => "DraftWithJuva",

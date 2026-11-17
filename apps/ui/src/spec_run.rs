@@ -1,46 +1,55 @@
-//! Run Spec…: the planner launch `forgectl spec run` makes, from the palette.
+//! Run Spec… and Draft Spec…: the dialog that starts a daemon spec run.
 //!
-//! The brief is `domain::spec_run::compose_planner_prompt`, as on the command
-//! line. Whether a spec path names a file is asked of the daemon when the file
-//! is in the checkout (ADR-012), on the connection worker, never here.
+//! Whether a spec path names a file is asked of the daemon when the file is in
+//! the checkout (ADR-012), on the connection worker, never here.
 
 use std::path::{Component, Path, PathBuf};
 
+use domain::spec_run::model::{
+    AgentPick, Delivery, MAX_ROUNDS, MIN_ROUNDS, Placement, SpecOptions, SpecRunSource,
+};
 use domain::spec_run::{
-    Coder, MAX_INLINE_SPEC_BYTES, Preset, SpecRun, SpecSource, agent_refusal, classify,
-    compose_planner_prompt, planner_effort,
+    MAX_INLINE_SPEC_BYTES, Preset, SpecSource, agent_refusal, classify, planner_effort,
 };
 use domain::{AgentDescriptor, AgentProfileId, AgentProviderId, WorkspaceId};
 use rune::{El, TextEdit, col, text};
-use rune_kit::{Button, ButtonVariant, Kit, SegmentedControl, TextArea, TextInput};
+use rune_kit::{Button, ButtonVariant, Checkbox, Kit, SegmentedControl, TextArea, TextInput};
 
 use crate::agent_ops::Choice;
 use crate::app::AppState;
 
-/// The planner is Claude, at high effort when it offers it.
 const PLANNER: &str = "claude";
 /// A Claude coder, under any profile, codes at the `claude` preset's medium
-/// effort; any other provider is the `mix` preset with that coder.
+/// effort; any other provider runs at its own default.
 const CLAUDE_PRESET: &str = "claude";
 /// The last coder and planner rows a run started with.
 const CODER_PREF: &str = "ui.spec_run.coder";
 const PLANNER_PREF: &str = "ui.spec_run.planner";
 pub const DEFAULT_ROUNDS: u32 = 3;
-const ROUNDS: [u32; 5] = [1, 2, 3, 4, 5];
+pub const ROUNDS: [u32; 5] = [1, 2, 3, 4, 5];
+const NAME_WORDS: usize = 6;
+const NAME_CHARS: usize = 48;
+const BRANCH_SLUG_CHARS: usize = 40;
 
-/// What the dialog asks for.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SpecMode {
+    Run,
+    Draft,
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct SpecRequest {
-    /// A path (relative to the checkout, absolute or `~/`), a link, or the spec's text.
+    /// A path (relative to the checkout, absolute or `~/`), a link, an issue, or text.
     pub spec: String,
     pub coder: SpecAgent,
     pub planner_profile: Option<AgentProfileId>,
-    /// A new worktree on this branch for the coder, instead of the planner's checkout.
-    pub worktree: Option<String>,
+    pub worktree: bool,
+    /// Empty picks `spec/<slug of the name>`.
+    pub branch: Option<String>,
     pub rounds: u32,
+    pub publish_spec: bool,
 }
 
-/// An agent and the account it runs under.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct SpecAgent {
     pub provider: String,
@@ -65,13 +74,13 @@ pub enum SpecPath<'a> {
     Elsewhere(PathBuf),
 }
 
-#[derive(Debug, PartialEq, Eq)]
-pub struct PlannerLaunch {
-    pub provider: AgentProviderId,
-    pub profile: Option<AgentProfileId>,
-    pub effort: Option<String>,
-    pub title: String,
-    pub brief: String,
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SpecLaunch {
+    pub name: String,
+    pub source: SpecRunSource,
+    pub planner: AgentPick,
+    pub coder: AgentPick,
+    pub options: SpecOptions,
 }
 
 fn place<'a>(raw: &'a Path, home: Option<&Path>) -> SpecPath<'a> {
@@ -88,80 +97,162 @@ fn place<'a>(raw: &'a Path, home: Option<&Path>) -> SpecPath<'a> {
     }
 }
 
-/// The planner launch for `request` in `checkout`, or why it would fail.
+/// `#123`, `123`, or an https link to an issue.
+#[must_use]
+pub fn issue_reference(raw: &str) -> Option<String> {
+    let raw = raw.trim();
+    let digits = |s: &str| !s.is_empty() && s.bytes().all(|b| b.is_ascii_digit());
+    let link = raw.starts_with("https://")
+        && !raw.chars().any(char::is_whitespace)
+        && raw
+            .split_once("/issues/")
+            .is_some_and(|(_, rest)| digits(rest.split(['/', '#', '?']).next().unwrap_or("")));
+    (digits(raw.strip_prefix('#').unwrap_or(raw)) || link).then(|| raw.to_owned())
+}
+
+/// A short name for the run, from what it starts from.
+#[must_use]
+pub fn run_name(source: &SpecRunSource) -> String {
+    let name = match source {
+        SpecRunSource::File { path } => Path::new(path)
+            .file_stem()
+            .map(|stem| stem.to_string_lossy().into_owned()),
+        SpecRunSource::Issue { reference } => reference
+            .rsplit(|c: char| !c.is_ascii_digit())
+            .find(|part| !part.is_empty())
+            .map(|number| format!("issue {number}")),
+        SpecRunSource::Inline { text } => Some(
+            text.split_whitespace()
+                .take(NAME_WORDS)
+                .collect::<Vec<_>>()
+                .join(" "),
+        ),
+        SpecRunSource::ClaudeArtifact { url } | SpecRunSource::Link { url } => url
+            .split_once("://")
+            .and_then(|(_, rest)| rest.split(['?', '#']).next())
+            .and_then(|rest| rest.trim_end_matches('/').split_once('/'))
+            .and_then(|(_, path)| path.rsplit('/').next())
+            .map(str::to_owned),
+        _ => None,
+    };
+    let name: String = name
+        .map(|name| name.trim().to_owned())
+        .filter(|name| !name.is_empty())
+        .unwrap_or_else(|| "spec".to_owned())
+        .chars()
+        .take(NAME_CHARS)
+        .collect();
+    name.trim_end().to_owned()
+}
+
+/// `spec/<slug>`, for a worktree placement with no branch typed.
+#[must_use]
+pub fn default_branch(name: &str) -> String {
+    let mut slug = String::new();
+    for c in name.chars().flat_map(char::to_lowercase) {
+        if c.is_ascii_alphanumeric() {
+            slug.push(c);
+        } else if !slug.is_empty() && !slug.ends_with('-') {
+            slug.push('-');
+        }
+        if slug.len() >= BRANCH_SLUG_CHARS {
+            break;
+        }
+    }
+    let slug = slug.trim_end_matches('-');
+    if slug.is_empty() {
+        "spec/run".to_owned()
+    } else {
+        format!("spec/{slug}")
+    }
+}
+
+/// The spec run `request` starts in `checkout`, or why it would fail.
 ///
 /// # Errors
 /// A sentence for the person: an empty spec, a path that is not a file, a
 /// pasted spec over the cap, or a planner or coder the providers cannot run.
-pub fn planner_launch(
+pub fn spec_launch(
     providers: &[AgentDescriptor],
     checkout: &Path,
     request: &SpecRequest,
     home: Option<&Path>,
-    forgectl: PathBuf,
     is_file: impl Fn(SpecPath<'_>) -> bool,
-) -> Result<PlannerLaunch, String> {
-    let source = match classify(&request.spec, |raw| is_file(place(raw, home)))
-        .map_err(|error| error.to_string())?
-    {
-        SpecSource::File(raw) => SpecSource::File(match place(&raw, home) {
-            SpecPath::InCheckout(relative) => checkout.join(relative),
-            SpecPath::Elsewhere(path) => path,
-        }),
-        SpecSource::Inline(text) if text.len() > MAX_INLINE_SPEC_BYTES => {
-            return Err(format!(
-                "a pasted spec is capped at {} KiB; save it to a file",
-                MAX_INLINE_SPEC_BYTES / 1024
-            ));
-        }
-        other => other,
+) -> Result<SpecLaunch, String> {
+    let source = match issue_reference(&request.spec) {
+        Some(reference) => SpecRunSource::Issue { reference },
+        None => match classify(&request.spec, |raw| is_file(place(raw, home)))
+            .map_err(|error| error.to_string())?
+        {
+            SpecSource::File(raw) => SpecRunSource::File {
+                path: match place(&raw, home) {
+                    SpecPath::InCheckout(relative) => checkout.join(relative),
+                    SpecPath::Elsewhere(path) => path,
+                }
+                .to_string_lossy()
+                .into_owned(),
+            },
+            SpecSource::Inline(text) if text.len() > MAX_INLINE_SPEC_BYTES => {
+                return Err(format!(
+                    "a pasted spec is capped at {} KiB; save it to a file",
+                    MAX_INLINE_SPEC_BYTES / 1024
+                ));
+            }
+            SpecSource::Inline(text) => SpecRunSource::Inline { text },
+            SpecSource::ClaudeArtifact(url) => SpecRunSource::ClaudeArtifact { url },
+            SpecSource::Link(url) => SpecRunSource::Link { url },
+        },
     };
-    let provider = request.coder.provider.clone();
-    let effort = if provider == CLAUDE_PRESET {
-        Preset::Claude.coder().1.map(str::to_owned)
-    } else {
-        None
-    };
-    check(providers, &provider, effort.as_deref(), "coder")?;
+    let coder_effort = (request.coder.provider == CLAUDE_PRESET)
+        .then(|| Preset::Claude.coder().1.map(str::to_owned))
+        .flatten();
+    check(
+        providers,
+        &request.coder.provider,
+        coder_effort.as_deref(),
+        "coder",
+    )?;
     let planner = descriptor(providers, PLANNER, "planner")?;
     let planner_effort = planner_effort(planner);
     check(providers, PLANNER, planner_effort.as_deref(), "planner")?;
-    let name = match &source {
-        SpecSource::File(path) => path.file_stem().map_or_else(
-            || "spec".to_owned(),
-            |stem| stem.to_string_lossy().into_owned(),
-        ),
-        _ => "spec".to_owned(),
+    let name = run_name(&source);
+    let placement = if request.worktree {
+        Placement::Worktree {
+            branch: request
+                .branch
+                .as_deref()
+                .map(str::trim)
+                .filter(|branch| !branch.is_empty())
+                .map_or_else(|| default_branch(&name), str::to_owned),
+            base: None,
+        }
+    } else {
+        Placement::Checkout
     };
-    let run = SpecRun {
+    Ok(SpecLaunch {
+        name,
         source,
-        coder: Coder {
-            provider,
-            profile: request.coder.profile.map(|id| id.to_string()),
-            effort,
+        planner: AgentPick {
+            provider: planner.id.clone(),
+            profile: request.planner_profile,
+            effort: planner_effort,
             model: None,
         },
-        forgectl,
-        name: name.clone(),
-        worktree: request
-            .worktree
-            .as_deref()
-            .map(str::trim)
-            .filter(|branch| !branch.is_empty())
-            .map(str::to_owned),
-        base: None,
-        rounds: request
-            .rounds
-            .clamp(1, *ROUNDS.last().unwrap_or(&DEFAULT_ROUNDS)),
-        planner_is_session: true,
-        surface: domain::orchestration::ToolSurface::Cli,
-    };
-    Ok(PlannerLaunch {
-        provider: planner.id.clone(),
-        profile: request.planner_profile,
-        effort: planner_effort,
-        title: format!("{name} planner"),
-        brief: compose_planner_prompt(&run),
+        coder: AgentPick {
+            provider: AgentProviderId::new(&request.coder.provider),
+            profile: request.coder.profile,
+            effort: coder_effort,
+            model: None,
+        },
+        options: SpecOptions {
+            placement,
+            delivery: Delivery::NoCommit,
+            rounds: request.rounds.clamp(MIN_ROUNDS, MAX_ROUNDS),
+            forge_review: true,
+            session_per_stage: false,
+            publish_spec: request.publish_spec,
+            publish_report: false,
+        },
     })
 }
 
@@ -188,47 +279,43 @@ fn check(
     }
 }
 
-/// The `forgectl` the planner's brief names. Beside this binary in a bundle,
-/// else beside the daemon; a bare name still works in a session, whose `PATH`
-/// the daemon leads with its own directory.
-#[must_use]
-pub fn forgectl() -> PathBuf {
-    let beside = |exe: Option<PathBuf>| {
-        exe.map(|exe| exe.with_file_name("forgectl"))
-            .filter(|path| path.is_file())
-    };
-    beside(std::env::current_exe().ok())
-        .or_else(|| beside(std::env::var_os("FORGE_DAEMON_BIN").map(PathBuf::from)))
-        .unwrap_or_else(|| PathBuf::from("forgectl"))
-}
-
 pub struct SpecDialog {
+    pub mode: SpecMode,
     pub workspace: WorkspaceId,
     pub spec: TextEdit,
-    /// [`Choice`] keys.
     pub coder: Option<String>,
     pub planner: Option<String>,
-    pub worktree: TextEdit,
+    pub worktree: bool,
+    pub branch: TextEdit,
     pub rounds: u32,
+    pub publish_spec: bool,
     pub starting: bool,
     pub error: Option<String>,
 }
 
 impl SpecDialog {
     #[must_use]
-    pub fn new(workspace: WorkspaceId, spec: &str, store: Option<&client::Store>) -> Self {
+    pub fn new(
+        mode: SpecMode,
+        workspace: WorkspaceId,
+        spec: &str,
+        store: Option<&client::Store>,
+    ) -> Self {
         let mut edit = TextEdit::new(spec);
         edit.focused = true;
         let remembered = |rows: Vec<Choice>, pref: &str| {
             remembered_row(&rows, store.and_then(|store| store.app_state_value(pref)))
         };
         Self {
+            mode,
             workspace,
             spec: edit,
             coder: store.and_then(|store| remembered(coder_rows(store), CODER_PREF)),
             planner: store.and_then(|store| remembered(planner_rows(store), PLANNER_PREF)),
-            worktree: TextEdit::new(""),
+            worktree: true,
+            branch: TextEdit::new(""),
             rounds: DEFAULT_ROUNDS,
+            publish_spec: false,
             starting: false,
             error: None,
         }
@@ -247,8 +334,10 @@ impl SpecDialog {
             spec: spec.to_owned(),
             coder: SpecAgent::from(&coder),
             planner_profile: planner.profile,
-            worktree: Some(self.worktree.text.trim().to_owned()).filter(|b| !b.is_empty()),
+            worktree: self.worktree,
+            branch: Some(self.branch.text.trim().to_owned()).filter(|b| !b.is_empty()),
             rounds: self.rounds,
+            publish_spec: self.publish_spec,
         })
     }
 }
@@ -267,7 +356,7 @@ pub fn coder_rows(store: &client::Store) -> Vec<Choice> {
     rows
 }
 
-/// The planner is Claude; its rows are Claude and each Claude profile.
+/// The drafter and planner are Claude; its rows are Claude and each Claude profile.
 #[must_use]
 pub fn planner_rows(store: &client::Store) -> Vec<Choice> {
     crate::agent_ops::choices(store, true)
@@ -286,9 +375,9 @@ pub fn remembered_row(rows: &[Choice], remembered: Option<&str>) -> Option<Strin
 }
 
 impl AppState {
-    /// Opens the dialog for the window's checkout, with the Markdown file on
-    /// screen already filled in.
-    pub fn open_run_spec(&mut self) {
+    /// Opens the dialog for the window's checkout; Run Spec fills in the
+    /// Markdown file on screen.
+    pub fn open_run_spec(&mut self, mode: SpecMode) {
         self.sync_workbench_workspace();
         let Some(workspace) = self.workbench.workspace else {
             self.toasts.neutral(
@@ -301,13 +390,19 @@ impl AppState {
             .active_editor_state()
             .map(|state| state.path.clone())
             .filter(|path| {
-                Path::new(path)
-                    .extension()
-                    .and_then(|ext| ext.to_str())
-                    .is_some_and(|ext| matches!(ext, "md" | "markdown" | "mdx"))
+                mode == SpecMode::Run
+                    && Path::new(path)
+                        .extension()
+                        .and_then(|ext| ext.to_str())
+                        .is_some_and(|ext| matches!(ext, "md" | "markdown" | "mdx"))
             })
             .unwrap_or_default();
-        self.spec_dialog = Some(SpecDialog::new(workspace, &on_screen, self.store.as_ref()));
+        self.spec_dialog = Some(SpecDialog::new(
+            mode,
+            workspace,
+            &on_screen,
+            self.store.as_ref(),
+        ));
     }
 
     pub fn start_spec_run(&mut self) {
@@ -354,7 +449,7 @@ impl AppState {
         }
     }
 
-    /// The daemon's answer to Run Spec: the planner opens as a tab, or the
+    /// The daemon's answer to Run Spec: the drafter opens as a tab, or the
     /// dialog says why it did not start.
     pub fn spec_run_result(&mut self, ok: bool, message: &str) {
         if ok {
@@ -408,7 +503,7 @@ pub fn dialog(s: &AppState, k: &Kit, layer: &mut Vec<El>) {
         &planners,
         &dialog.planner,
         "Planner",
-        "The planner is Claude, and Claude is not installed.",
+        "The drafter and planner are Claude, and Claude is not installed.",
         |dialog, key| dialog.planner = Some(key),
     );
     let round_labels = ROUNDS.map(|count| count.to_string());
@@ -425,6 +520,19 @@ pub fn dialog(s: &AppState, k: &Kit, layer: &mut Vec<El>) {
     })
     .build(k)
     .key("spec-rounds");
+    let placement = SegmentedControl::new(
+        &["New worktree", "This checkout"],
+        Some(usize::from(!dialog.worktree)),
+    )
+    .label("Where the coder works")
+    .fit()
+    .on_pick(|s: &mut AppState, index: usize, _| {
+        if let Some(dialog) = s.spec_dialog.as_mut() {
+            dialog.worktree = index == 0;
+        }
+    })
+    .build(k)
+    .key("spec-placement");
     let field = |words: &'static str, control: El| {
         col()
             .w_full()
@@ -437,19 +545,31 @@ pub fn dialog(s: &AppState, k: &Kit, layer: &mut Vec<El>) {
             )
             .child(control)
     };
+    let drafting = dialog.mode == SpecMode::Draft;
     let note = dialog.error.clone().unwrap_or_else(|| {
-        "A Claude planner validates the spec, asks what it cannot answer, plans, starts the \
-         coder under itself and reviews its work. It never commits or pushes."
-            .into()
+        if drafting {
+            "A Claude drafter turns the idea, issue or file into a spec with AC-n criteria. \
+             You pass three gates: the spec, the plan with the checks Forge will run, and the \
+             result. Nothing is committed or pushed unless you choose it at the plan gate."
+        } else {
+            "A Claude drafter checks the spec and writes it with AC-n criteria. You pass three \
+             gates: the spec, the plan with the checks Forge will run, and the result. Nothing \
+             is committed or pushed unless you choose it at the plan gate."
+        }
+        .into()
     });
-    let body = col()
+    let mut body = col()
         .w_full()
         .gap(crate::ds::SPACE_6)
         .child(field(
-            "Spec",
+            if drafting { "Idea or issue" } else { "Spec" },
             TextArea::new(&dialog.spec)
-                .label("Spec")
-                .placeholder("docs/spec.md, a Claude artifact link, or the spec itself")
+                .label(if drafting { "Idea or issue" } else { "Spec" })
+                .placeholder(if drafting {
+                    "What to build, #123 or an issue link, a file, or a Claude artifact link"
+                } else {
+                    "docs/spec.md, a Claude artifact link, or the spec itself"
+                })
                 .width(None)
                 .on_edit(|s: &mut AppState| match s.spec_dialog.as_mut() {
                     Some(dialog) => &mut dialog.spec,
@@ -461,20 +581,36 @@ pub fn dialog(s: &AppState, k: &Kit, layer: &mut Vec<El>) {
         ))
         .child(field("Planner", planner))
         .child(field("Coder", coder))
-        .child(field(
+        .child(field("Where the coder works", placement));
+    if dialog.worktree {
+        body = body.child(field(
             "Worktree branch",
-            TextInput::new(&dialog.worktree)
+            TextInput::new(&dialog.branch)
                 .label("Worktree branch")
-                .placeholder("Empty: the coder works in this checkout")
+                .placeholder("Empty: spec/<the run's name>")
                 .width(None)
                 .on_edit(|s: &mut AppState| match s.spec_dialog.as_mut() {
-                    Some(dialog) => &mut dialog.worktree,
+                    Some(dialog) => &mut dialog.branch,
                     None => &mut s.scratch_edit,
                 })
                 .build(k)
                 .key("spec-worktree"),
-        ))
+        ));
+    }
+    let publish = dialog.publish_spec;
+    let body = body
         .child(field("Review rounds", rounds))
+        .child(
+            Checkbox::new(publish)
+                .label("Also publish the spec as a Claude artifact")
+                .on_toggle(move |s: &mut AppState| {
+                    if let Some(dialog) = s.spec_dialog.as_mut() {
+                        dialog.publish_spec = !publish;
+                    }
+                })
+                .build(k)
+                .key("spec-publish"),
+        )
         .child(
             text(note)
                 .key("spec-note")
@@ -493,28 +629,31 @@ pub fn dialog(s: &AppState, k: &Kit, layer: &mut Vec<El>) {
         .as_ref()
         .and_then(|store| dialog.request(store))
         .is_none();
-    crate::modal::Modal::new("run-spec", "Run a spec")
-        .width(crate::modal::WIDTH_STANDARD)
-        .on_close(|s: &mut AppState| s.spec_dialog = None)
-        .child(body)
-        .footer([
-            Button::new("Cancel")
-                .variant(ButtonVariant::GhostMuted)
-                .on_press(|s: &mut AppState| s.spec_dialog = None)
-                .build(k)
-                .key("spec-cancel"),
-            Button::new(if dialog.starting {
-                "Starting…"
-            } else {
-                "Start planner"
-            })
-            .variant(ButtonVariant::Contrast)
-            .disabled(blocked)
-            .on_press(|s: &mut AppState| s.start_spec_run())
+    crate::modal::Modal::new(
+        "run-spec",
+        if drafting { "Draft Spec" } else { "Run a spec" },
+    )
+    .width(crate::modal::WIDTH_STANDARD)
+    .on_close(|s: &mut AppState| s.spec_dialog = None)
+    .child(body)
+    .footer([
+        Button::new("Cancel")
+            .variant(ButtonVariant::GhostMuted)
+            .on_press(|s: &mut AppState| s.spec_dialog = None)
             .build(k)
-            .key("spec-start"),
-        ])
-        .build(s, k, layer);
+            .key("spec-cancel"),
+        Button::new(if dialog.starting {
+            "Starting…"
+        } else {
+            "Start"
+        })
+        .variant(ButtonVariant::Contrast)
+        .disabled(blocked)
+        .on_press(|s: &mut AppState| s.start_spec_run())
+        .build(k)
+        .key("spec-start"),
+    ])
+    .build(s, k, layer);
 }
 
 #[cfg(test)]
@@ -536,18 +675,19 @@ mod tests {
                 profile: None,
             },
             planner_profile: None,
-            worktree: None,
+            worktree: true,
+            branch: None,
             rounds: DEFAULT_ROUNDS,
+            publish_spec: false,
         }
     }
 
-    fn launch(request: &SpecRequest, files: &[&str]) -> Result<PlannerLaunch, String> {
-        planner_launch(
+    fn launch(request: &SpecRequest, files: &[&str]) -> Result<SpecLaunch, String> {
+        spec_launch(
             &providers(),
             Path::new("/work/repo"),
             request,
             Some(Path::new("/home/me")),
-            PathBuf::from("forgectl"),
             |path| match path {
                 SpecPath::InCheckout(relative) => files.contains(&relative.to_str().unwrap_or("")),
                 SpecPath::Elsewhere(path) => files.contains(&path.to_str().unwrap_or("")),
@@ -556,24 +696,36 @@ mod tests {
     }
 
     #[test]
-    fn a_checkout_path_is_asked_of_the_daemon_and_names_the_planner() {
+    fn a_checkout_file_starts_a_run_in_a_new_worktree_by_default() {
         let launch = launch(
             &request("docs/auth-flow.md", "claude"),
             &["docs/auth-flow.md"],
         )
         .expect("launch");
-        assert_eq!(launch.provider.as_str(), "claude");
-        assert_eq!(launch.effort.as_deref(), Some("high"));
-        assert_eq!(launch.title, "auth-flow planner");
-        assert!(
-            launch
-                .brief
-                .contains("The spec is the file /work/repo/docs/auth-flow.md")
+        assert_eq!(launch.name, "auth-flow");
+        assert_eq!(
+            launch.source,
+            SpecRunSource::File {
+                path: "/work/repo/docs/auth-flow.md".into()
+            }
         );
-        assert!(
-            launch
-                .brief
-                .contains("--provider claude --role executor --effort medium --parent self")
+        assert_eq!(launch.planner.provider.as_str(), "claude");
+        assert_eq!(launch.planner.effort.as_deref(), Some("high"));
+        assert_eq!(launch.coder.effort.as_deref(), Some("medium"));
+        assert_eq!(
+            launch.options,
+            SpecOptions {
+                placement: Placement::Worktree {
+                    branch: "spec/auth-flow".into(),
+                    base: None
+                },
+                delivery: Delivery::NoCommit,
+                rounds: DEFAULT_ROUNDS,
+                forge_review: true,
+                session_per_stage: false,
+                publish_spec: false,
+                publish_report: false,
+            }
         );
     }
 
@@ -588,22 +740,22 @@ mod tests {
             SpecPath::Elsewhere("../other/x.md".into())
         );
         let launch = launch(&request("~/specs/x.md", "claude"), &["/home/me/specs/x.md"]);
-        assert!(
-            launch
-                .expect("launch")
-                .brief
-                .contains("The spec is the file /home/me/specs/x.md")
+        assert_eq!(
+            launch.expect("launch").source,
+            SpecRunSource::File {
+                path: "/home/me/specs/x.md".into()
+            }
         );
     }
 
     #[test]
-    fn another_coder_is_the_mix_preset_and_an_unknown_one_is_refused() {
-        let brief = launch(&request("Add a health endpoint", "opencode"), &[])
-            .expect("launch")
-            .brief;
-        assert!(brief.contains("--provider opencode --role executor --parent self"));
+    fn another_coder_runs_at_its_own_effort_and_an_unknown_one_is_refused() {
+        let launch_for = |coder| launch(&request("Add a health endpoint", coder), &[]);
+        let opencode = launch_for("opencode").expect("launch");
+        assert_eq!(opencode.coder.provider.as_str(), "opencode");
+        assert_eq!(opencode.coder.effort, None);
         assert_eq!(
-            launch(&request("Add a health endpoint", "missing"), &[]),
+            launch_for("missing"),
             Err("the coder provider missing is not available".to_owned())
         );
     }
@@ -617,30 +769,105 @@ mod tests {
     }
 
     #[test]
-    fn a_worktree_and_the_rounds_reach_the_brief() {
-        let mut asked = request("Add a cache", "claude");
-        asked.worktree = Some("  spec/cache ".into());
+    fn a_typed_branch_the_checkout_and_the_rounds_reach_the_options() {
+        let mut asked = request("Add a cache to the session list", "claude");
+        asked.branch = Some("  spec/cache ".into());
         asked.rounds = 9;
-        let brief = launch(&asked, &[]).expect("launch").brief;
-        assert!(brief.contains("--worktree spec/cache"));
-        assert!(
-            brief.contains("After 5 review round(s)"),
-            "clamped to the offer"
+        asked.publish_spec = true;
+        let launch = launch(&asked, &[]).expect("launch");
+        assert_eq!(launch.name, "Add a cache to the session");
+        assert_eq!(
+            launch.source,
+            SpecRunSource::Inline {
+                text: "Add a cache to the session list".into()
+            }
+        );
+        assert_eq!(
+            launch.options.placement,
+            Placement::Worktree {
+                branch: "spec/cache".into(),
+                base: None
+            }
+        );
+        assert_eq!(launch.options.rounds, MAX_ROUNDS, "clamped to the offer");
+        assert!(launch.options.publish_spec);
+
+        asked.worktree = false;
+        asked.rounds = 0;
+        let launch = self::launch(&asked, &[]).expect("launch");
+        assert_eq!(launch.options.placement, Placement::Checkout);
+        assert_eq!(launch.options.rounds, MIN_ROUNDS);
+    }
+
+    #[test]
+    fn an_issue_is_a_number_or_an_issue_link() {
+        for issue in [
+            "#123",
+            "123",
+            " https://github.com/acme/app/issues/7 ",
+            "https://github.com/acme/app/issues/7#issuecomment-1",
+        ] {
+            assert_eq!(
+                issue_reference(issue).as_deref(),
+                Some(issue.trim()),
+                "{issue}"
+            );
+        }
+        for not in [
+            "#12a",
+            "fix #12 please",
+            "https://github.com/acme/app/pull/7",
+            "http://github.com/acme/app/issues/7",
+            "https://github.com/acme/app/issues/",
+            "#",
+        ] {
+            assert_eq!(issue_reference(not), None, "{not}");
+        }
+        let launch = launch(&request("#42", "claude"), &[]).expect("launch");
+        assert_eq!(
+            launch.source,
+            SpecRunSource::Issue {
+                reference: "#42".into()
+            }
+        );
+        assert_eq!(launch.name, "issue 42");
+        assert_eq!(
+            launch.options.placement,
+            Placement::Worktree {
+                branch: "spec/issue-42".into(),
+                base: None
+            }
         );
     }
 
     #[test]
-    fn profiles_reach_the_planner_launch_and_the_coder_spawn_by_uuid() {
+    fn links_are_named_by_their_last_segment_and_branches_are_slugs() {
+        let named = |url: &str| {
+            run_name(&SpecRunSource::Link {
+                url: url.to_owned(),
+            })
+        };
+        assert_eq!(named("https://example.com/docs/plan-v2/"), "plan-v2");
+        assert_eq!(named("https://example.com"), "spec");
+        assert_eq!(
+            default_branch("Add OAuth: login & logout!"),
+            "spec/add-oauth-login-logout"
+        );
+        assert_eq!(default_branch("¿?"), "spec/run");
+    }
+
+    #[test]
+    fn profiles_reach_the_planner_and_the_coder() {
         let (work, personal) = (AgentProfileId::new(), AgentProfileId::new());
         let mut asked = request("Add a cache", "claude");
         asked.coder.profile = Some(work);
         asked.planner_profile = Some(personal);
         let launch = launch(&asked, &[]).expect("launch");
-        assert_eq!(launch.profile, Some(personal));
-        assert!(
-            launch.brief.contains(&format!(
-                "--provider claude --profile {work} --role executor --effort medium"
-            )),
+        assert_eq!(launch.planner.profile, Some(personal));
+        assert_eq!(launch.coder.profile, Some(work));
+        assert_eq!(
+            launch.coder.effort.as_deref(),
+            Some("medium"),
             "a Claude coder keeps the preset's effort under a profile"
         );
     }
@@ -688,10 +915,12 @@ mod tests {
             "a forgotten profile falls back to the bare provider"
         );
         store.app_state = vec![(PLANNER_PREF.into(), remembered.clone())];
-        let dialog = SpecDialog::new(WorkspaceId::new(), "spec.md", Some(&store));
+        let dialog = SpecDialog::new(SpecMode::Draft, WorkspaceId::new(), "spec.md", Some(&store));
         assert_eq!(dialog.planner, Some(remembered));
         let request = dialog.request(&store).expect("a request");
         assert_eq!(request.planner_profile, Some(work.id));
         assert_eq!(request.coder.provider, "claude");
+        assert!(request.worktree, "a run gets its own worktree by default");
+        assert_eq!(request.branch, None);
     }
 }
