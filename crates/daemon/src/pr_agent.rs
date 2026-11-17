@@ -31,6 +31,19 @@ impl Daemon {
         profile_id: Option<AgentProfileId>,
         draft: bool,
     ) -> Result<Response, ProtocolError> {
+        self.open_pull_request_from(workspace_id, provider_id, profile_id, draft, None)
+    }
+
+    /// With a spec-run `report`, the agent starts its body from it, and the body Forge opens
+    /// carries the report's criteria table whatever the agent wrote.
+    pub(crate) fn open_pull_request_from(
+        self: &Arc<Self>,
+        workspace_id: WorkspaceId,
+        provider_id: AgentProviderId,
+        profile_id: Option<AgentProfileId>,
+        draft: bool,
+        report: Option<String>,
+    ) -> Result<Response, ProtocolError> {
         let path = self.workspace_path(workspace_id)?;
         let diff = git_service::working_tree_diff(&path, None, git_service::DIFF_CONTEXT_LINES)
             .map_err(git_refusal)?;
@@ -46,7 +59,7 @@ impl Daemon {
                  changes",
             ));
         }
-        let prompt = domain::agent_prompt(
+        let mut prompt = domain::agent_prompt(
             &self.config.pull_requests.system_prompt,
             &domain::WorkspaceDiff {
                 workspace_id,
@@ -59,6 +72,17 @@ impl Daemon {
                 ahead: status.ahead,
             },
         );
+        if let Some(report) = &report {
+            prompt.push_str(
+                "\n\nThis change is the result of a spec run. Start the pull request body from its \
+                 report, below; keep its criteria table as it is.\n\n",
+            );
+            prompt.push_str(report);
+        }
+        let criteria = report
+            .as_deref()
+            .and_then(domain::spec_run::schema::criteria_section)
+            .map(str::to_owned);
 
         if !self.lock().pr_opening.insert(workspace_id) {
             return Ok(Response::Ack);
@@ -76,6 +100,7 @@ impl Daemon {
                     prompt,
                     draft,
                     &drafted,
+                    criteria.as_deref(),
                 );
             })
             .map_err(|error| {
@@ -101,6 +126,7 @@ impl Daemon {
         prompt: String,
         draft: bool,
         drafted: &CheckoutPrint,
+        criteria: Option<&str>,
     ) {
         let options = domain::AgentLaunchOptions {
             model: self.config.pull_requests.model.clone(),
@@ -165,6 +191,12 @@ impl Daemon {
                     .into(),
             );
         }
+        let body = match criteria {
+            Some(table) if !pr.body.contains(table) => {
+                format!("{}\n\n{table}\n", pr.body.trim_end())
+            }
+            _ => pr.body.clone(),
+        };
         let commit = drafted.dirty.then(|| domain::CommitPlan {
             branch: Some(pr.branch.clone()).filter(|branch| !branch.trim().is_empty()),
             message: pr.commit_message.clone(),
@@ -173,7 +205,7 @@ impl Daemon {
             path,
             workspace_id,
             &pr.title,
-            &pr.body,
+            &body,
             None,
             draft,
             commit.as_ref(),

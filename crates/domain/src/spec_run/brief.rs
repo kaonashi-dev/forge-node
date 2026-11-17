@@ -456,14 +456,20 @@ static GUIDE: LazyLock<String> = LazyLock::new(|| {
         "\
 # forgectl guide spec
 
-A spec run has two agents: a planner owns the spec, the plan and the review; a coder writes the code.
-The spec is a Claude artifact link, a path to a Markdown file, the full text, or - for stdin. Forge never fetches a link: the planner reads an artifact with its own artifact tool.
-Launch a planner: forgectl --json spec run <spec> [--preset claude|mix] [--coder <provider>] [--coder-profile <name|uuid>] [--planner-profile <name|uuid>] [--worktree <branch>] [--rounds 3]
-Profiles pick the account: the brief launches the coder with --profile <uuid>, so a renamed profile still resolves.
-- claude: Claude plans at high effort, Claude codes at medium.
-- mix: Claude plans at high effort, Cursor codes; --coder opencode picks OpenCode. Cursor applies an effort only with --coder-model.
-Be the planner yourself: forgectl spec brief <spec> [same options] prints the brief to follow in this session.
-The planner resolves every criterion into an AC-n with a validation, asks the person in batches of at most 4, plans with a check per step, launches the coder, waits for idle,waiting,exit, reruns the checks, classifies findings as patch, defer or decision, and stops after the review rounds with a report per criterion: met, not_met, not_verified or needs_decision.
+A spec run is a daemon object with six stages: draft the spec, plan, execute, verify, review, report. A person passes three gates in Forge; nothing typed into an agent's terminal counts.
+Start from a spec: forgectl --json spec run <spec> [--preset claude|mix] [--coder <provider>] [--coder-profile <name|uuid>] [--planner-profile <name|uuid>] [--worktree <branch> | --checkout] [--delivery no-commit|commit|draft-pr] [--rounds 3]
+Start from an idea or an issue: forgectl --json spec draft <text | #123 | issue link | file | artifact link> [same options]
+The spec is a Claude artifact link, a Markdown file, the full text, or - for stdin. Forge never fetches a link; an issue is read with gh issue view.
+- claude: Claude plans at high effort, Claude codes at medium. mix: Cursor codes; --coder opencode picks OpenCode.
+1. A drafter (Claude, its own session, no code edits) writes the spec with AC-n criteria and saves it with spec save --kind spec, or ends early with --kind exit.
+2. G1: forgectl spec gate <run> --approve | --changes <reason> | --reject <reason>. A change or a rejection always carries its reason, which reaches the agent verbatim.
+3. A planner researches and saves research and a plan with a forge.spec_plan/v1 block: steps with checks, the gate. G2 approves it with --checkout|--worktree, --delivery, --rounds 1-5, --forge-review, --session-per-stage, --save-gate-action.
+4. Forge starts the coder as a ledger attempt; one report settles each round. Forge then runs the plan's checks as Task sessions (10 min timeout, killed by process group) into checks/<AC>-r<n>.log.
+5. The planner reviews and sends findings with spec round --file, or accepts a task with spec round --accept.
+6. The planner saves the report with spec report; a met needs a check of this round that passed. G3: --approve [--manual <AC>] [--next finish|draft-pr|another-round|discard] [--text].
+See where runs wait: forgectl spec status [--attention]; read one: forgectl spec show <run>. Files live in /spec-runs/<id>/.
+The short route (at most 3 criteria) folds G1 and G2 into one gate and keeps its plan block in the spec. The full route splits the plan into ledger tasks, one round loop each.
+Be the planner yourself, without gates: forgectl spec brief <spec> [options] prints the brief to follow in this session.
 Providers, effort levels and models are checked before anything launches; a path that does not exist exits 4.
 
 {POWER_OF_THE_SIMPLE}"

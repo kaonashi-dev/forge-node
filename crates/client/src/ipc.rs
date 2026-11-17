@@ -1430,6 +1430,64 @@ impl Client {
         })
     }
 
+    /// Start a spec run: the daemon saves the source and launches its drafter.
+    pub fn start_spec_run(
+        &self,
+        workspace_id: WorkspaceId,
+        name: String,
+        source: domain::spec_run::model::SpecRunSource,
+        planner: domain::spec_run::model::AgentPick,
+        coder: domain::spec_run::model::AgentPick,
+        options: domain::spec_run::model::SpecOptions,
+    ) -> Result<(domain::SpecRunId, SessionId), ClientError> {
+        match self.request(Request::StartSpecRun {
+            workspace_id,
+            name,
+            source,
+            planner,
+            coder,
+            options,
+        })? {
+            Response::SpecRunStarted {
+                spec_run_id,
+                session_id,
+            } => Ok((spec_run_id, session_id)),
+            _ => Err(ClientError::UnexpectedResponse {
+                expected: "SpecRunStarted",
+            }),
+        }
+    }
+
+    /// A person's gate decision; the GUI connection declares no session, so it is never one of
+    /// the run's agents.
+    pub fn spec_gate(
+        &self,
+        spec_run_id: domain::SpecRunId,
+        gate: domain::spec_run::model::GateKind,
+        decision: domain::spec_run::model::GateDecision,
+    ) -> Result<(), ClientError> {
+        self.request(Request::SpecGate {
+            spec_run_id,
+            caller_session_id: None,
+            gate,
+            decision,
+        })
+        .map(|_| ())
+    }
+
+    /// A spec run with its spec, plan and report, read through the daemon.
+    pub fn spec_run(
+        &self,
+        spec_run_id: domain::SpecRunId,
+    ) -> Result<domain::spec_run::model::SpecRunDetail, ClientError> {
+        match self.request(Request::GetSpecRun { spec_run_id })? {
+            Response::SpecRun(detail) => Ok(*detail),
+            _ => Err(ClientError::UnexpectedResponse {
+                expected: "SpecRun",
+            }),
+        }
+    }
+
     /// Start the planner of a spec run: a titled agent with an effort and its brief.
     pub fn create_planner_session(
         &self,
@@ -2315,6 +2373,7 @@ mod tests {
             external_agents: vec![],
             pull_requests: Box::new(domain::PullRequestState::default()),
             runs: vec![],
+            spec_runs: Vec::new(),
             usage: vec![],
         };
         let server_expected = expected.clone();

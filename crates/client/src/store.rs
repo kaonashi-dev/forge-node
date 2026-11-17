@@ -71,6 +71,8 @@ pub struct Store {
     pub pull_requests: PullRequestState,
     /// Active orchestration runs from the snapshot. The GUI does not draw them yet.
     pub runs: Vec<domain::orchestration::RunView>,
+    /// Every spec run, oldest first.
+    pub spec_runs: Vec<domain::spec_run::model::SpecRunView>,
     /// Cell replicas for the terminals the GUI is attached to, keyed by id.
     pub terminals: HashMap<TerminalId, CellGrid>,
     /// Kept outside `CellGrid` so unattached terminals can retain attention flags.
@@ -101,6 +103,7 @@ impl Store {
                 external_agents,
                 pull_requests,
                 runs,
+                spec_runs,
                 usage,
             } => {
                 self.project_groups = project_groups;
@@ -116,6 +119,7 @@ impl Store {
                 self.external_agents = external_agents;
                 self.pull_requests = *pull_requests;
                 self.runs = runs;
+                self.spec_runs = spec_runs;
                 // Usage rides in the snapshot from the daemon's cache (L1); a
                 // later `ProviderUsageChanged` refreshes it in place.
                 self.usage = usage;
@@ -164,6 +168,7 @@ impl Store {
                 self.app_state.clear();
                 self.usage.clear();
                 self.runs.clear();
+                self.spec_runs.clear();
                 self.pull_requests = PullRequestState::default();
                 self.terminals.clear();
                 self.pending_bell.clear();
@@ -191,6 +196,7 @@ impl Store {
             }
             DaemonEvent::ProjectRemoved { project_id } => {
                 self.projects.retain(|x| x.id != *project_id);
+                self.spec_runs.retain(|run| run.project_id != *project_id);
                 // The daemon drops these by cascade and broadcasts nothing
                 // more, so the replica would keep them until the next snapshot.
                 self.worktree_shares
@@ -323,6 +329,14 @@ impl Store {
             DaemonEvent::SharesApplied { .. } => EventOutcome::Unchanged,
             DaemonEvent::PullRequestsUpdated { state } => {
                 self.pull_requests = state.clone();
+                EventOutcome::Applied
+            }
+            DaemonEvent::SpecRunUpdated(run) => {
+                match self.spec_runs.iter_mut().find(|r| r.id == run.id) {
+                    Some(slot) if *slot == **run => return EventOutcome::Unchanged,
+                    Some(slot) => *slot = (**run).clone(),
+                    None => self.spec_runs.push((**run).clone()),
+                }
                 EventOutcome::Applied
             }
             DaemonEvent::AgentDetectionChanged { results } => {
@@ -815,6 +829,7 @@ mod tests {
             external_agents: vec![],
             pull_requests: Box::new(pull_requests.clone()),
             runs: vec![],
+            spec_runs: Vec::new(),
             usage: vec![sample_usage("claude", 40)],
         };
         store.apply_snapshot(response);
@@ -847,6 +862,7 @@ mod tests {
             external_agents: vec![],
             pull_requests: Box::new(PullRequestState::default()),
             runs: vec![],
+            spec_runs: Vec::new(),
             usage: vec![],
         });
 

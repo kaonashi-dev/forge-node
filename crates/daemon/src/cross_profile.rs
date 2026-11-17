@@ -171,6 +171,12 @@ pub(crate) fn handle(
     connection_caller: Option<SessionId>,
     request: Request,
 ) -> Result<Response, ProtocolError> {
+    if let Request::CreateAgentSession { parent, .. } = &request {
+        crate::spec_runs::refuse_early_coder(
+            daemon,
+            parent.iter().chain(connection_caller.iter()).copied(),
+        )?;
+    }
     let Some(caller) = explicit_caller(&request).or(connection_caller) else {
         return daemon.handle_request_from(client_kind, request);
     };

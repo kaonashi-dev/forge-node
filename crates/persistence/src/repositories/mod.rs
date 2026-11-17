@@ -18,6 +18,7 @@ pub mod provider_overrides;
 pub mod reviews;
 pub mod sessions;
 pub mod shares;
+pub mod spec_runs;
 pub mod workspaces;
 
 pub use actions::ActionRepo;

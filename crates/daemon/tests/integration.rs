@@ -1693,3 +1693,72 @@ fn another_socket_cannot_initialize_an_owned_data_directory() {
     )
     .is_ok());
 }
+
+/// Reference-machine smoke for "Draft Spec" from a real issue: the real `claude` drafts in a
+/// checkout whose remote is on GitHub, and a person answers its questions in its terminal.
+/// `FORGE_SMOKE_REPO` is that checkout, `FORGE_SMOKE_ISSUE` the issue (`#123` or its link).
+#[test]
+#[ignore = "requires installed claude and gh, a GitHub checkout and a person at the drafter"]
+fn a_real_issue_drafts_a_spec_or_ends_early() {
+    use domain::spec_run::model::{
+        AgentPick, Delivery, Placement, SpecOptions, SpecRunSource, SpecStage,
+    };
+    let repo = PathBuf::from(std::env::var("FORGE_SMOKE_REPO").expect("FORGE_SMOKE_REPO"));
+    let issue = std::env::var("FORGE_SMOKE_ISSUE").expect("FORGE_SMOKE_ISSUE");
+    let td = start_daemon();
+    let client = Client::connect(&td.socket, "spec-draft-smoke").expect("connect");
+    let workspace_id = add_main_workspace(&client, &repo);
+    let claude = AgentPick {
+        provider: domain::AgentProviderId::new("claude"),
+        profile: None,
+        effort: Some("high".into()),
+        model: None,
+    };
+    let (id, _drafter) = client
+        .start_spec_run(
+            workspace_id,
+            "smoke".into(),
+            SpecRunSource::Issue { reference: issue },
+            claude.clone(),
+            claude,
+            SpecOptions {
+                placement: Placement::Checkout,
+                delivery: Delivery::NoCommit,
+                rounds: 1,
+                forge_review: false,
+                session_per_stage: false,
+                publish_spec: false,
+                publish_report: false,
+            },
+        )
+        .expect("draft started");
+    let mut last = None;
+    let settled = poll_until(Duration::from_secs(30 * 60), || {
+        let detail = client.spec_run(id).expect("read the run");
+        let done = matches!(detail.run.stage, SpecStage::SpecGate | SpecStage::Exited);
+        last = Some(detail);
+        done
+    });
+    let detail = last.expect("read once");
+    assert!(
+        settled,
+        "the drafter neither saved a spec nor ended early: {:?}",
+        detail.run
+    );
+    match detail.run.stage {
+        SpecStage::SpecGate => {
+            let spec = detail.spec.expect("spec.md");
+            assert!(
+                domain::spec_run::schema::parse_spec(&spec).is_ok(),
+                "{spec}"
+            );
+        }
+        _ => {
+            let exit = detail.exit.expect("exit.md");
+            assert!(
+                domain::spec_run::schema::parse_exit(&exit).is_ok(),
+                "{exit}"
+            );
+        }
+    }
+}

@@ -29,7 +29,7 @@ pub use diff::{
     MAX_SUMMARY_COMMITS,
 };
 pub use github::{
-    create_pull_request, create_pull_request_with_cli, fetch_pull_request_with_cli,
+    create_pull_request, create_pull_request_with_cli, fetch_pull_request_with_cli, issue_markdown,
     list_pull_requests, list_pull_requests_with_cli, parse_remote_url, GitHubCli,
     GitHubPullRequest, GitHubRepo, PullRequest, PullRequestLabel, PullRequestLifecycle,
     PullRequestPage, PullRequestReviewDecision, SinglePullRequest, GH_TIMEOUT, MAX_PR_BODY,

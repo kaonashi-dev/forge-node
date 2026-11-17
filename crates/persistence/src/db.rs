@@ -121,6 +121,36 @@ impl ContextWriter {
     }
 }
 
+/// Spec-run rows on their own connection, so a spec run never writes through the core lock.
+#[derive(Clone)]
+pub struct SpecRunStore(Arc<Mutex<Connection>>);
+
+impl std::fmt::Debug for SpecRunStore {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("SpecRunStore").finish_non_exhaustive()
+    }
+}
+
+impl SpecRunStore {
+    fn conn(&self) -> std::sync::MutexGuard<'_, Connection> {
+        self.0
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+
+    pub fn upsert(&self, run: &domain::spec_run::model::SpecRunView) -> Result<(), DbError> {
+        crate::repositories::spec_runs::upsert(&self.conn(), run)
+    }
+
+    pub fn list(&self) -> Result<Vec<domain::spec_run::model::SpecRunView>, DbError> {
+        crate::repositories::spec_runs::list(&self.conn())
+    }
+
+    pub fn delete(&self, id: domain::SpecRunId) -> Result<bool, DbError> {
+        crate::repositories::spec_runs::delete(&self.conn(), id)
+    }
+}
+
 /// Forge Review rows on their own connection, so the review worker and
 /// `GetReview` never write or read through the core lock's `Db`.
 #[derive(Clone)]
@@ -296,6 +326,15 @@ impl Db {
         Ok(ContextWriter(Arc::new(Mutex::new(conn))))
     }
 
+    /// Open the spec-run store's own connection.
+    pub fn spec_run_store(&self) -> Result<SpecRunStore, DbError> {
+        let conn = Connection::open(&self.location)?;
+        conn.execute_batch(
+            "PRAGMA foreign_keys = ON; PRAGMA synchronous = NORMAL; PRAGMA busy_timeout = 5000;",
+        )?;
+        Ok(SpecRunStore(Arc::new(Mutex::new(conn))))
+    }
+
     /// Open the review store's own connection.
     pub fn review_store(&self) -> Result<ReviewStore, DbError> {
         let conn = Connection::open(&self.location)?;
@@ -396,7 +435,8 @@ impl Db {
     pub fn reset(&mut self) -> Result<(), DbError> {
         let tx = self.conn.transaction()?;
         tx.execute_batch(
-            "DELETE FROM review_feedback;
+            "DELETE FROM spec_runs;
+             DELETE FROM review_feedback;
              DELETE FROM review_findings;
              DELETE FROM review_runs;
              DELETE FROM orchestration_receipts;

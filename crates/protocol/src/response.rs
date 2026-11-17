@@ -143,6 +143,9 @@ pub enum Response {
         /// runs that are still open.
         #[serde(default)]
         runs: Vec<RunView>,
+        /// Every spec run, metadata only.
+        #[serde(default)]
+        spec_runs: Vec<domain::spec_run::model::SpecRunView>,
         /// The last per-provider account usage the daemon read, served
         /// straight from its cache. Producing a snapshot performs **no** network
         /// I/O — a background sweeper keeps this current — so a client learns the
@@ -237,6 +240,13 @@ pub enum Response {
     /// One session's changes since its baseline, answering
     /// `GetSessionChanges`.
     SessionChanges(SessionChanges),
+    /// Answers `StartSpecRun`: the run and the session it launched.
+    SpecRunStarted {
+        spec_run_id: domain::SpecRunId,
+        session_id: SessionId,
+    },
+    /// Answers `GetSpecRun`.
+    SpecRun(Box<domain::spec_run::model::SpecRunDetail>),
     /// Answers `StartReview`; may name a run already in flight.
     ReviewStarted {
         review_id: domain::ReviewId,

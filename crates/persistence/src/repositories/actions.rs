@@ -30,6 +30,8 @@ struct Spec {
     #[serde(default)]
     depends_on: Vec<ProjectActionId>,
     source: ActionSource,
+    #[serde(default)]
+    gate: bool,
 }
 
 impl<'a> ActionRepo<'a> {
@@ -96,6 +98,7 @@ impl<'a> ActionRepo<'a> {
                 port: action.port,
                 depends_on: action.depends_on.clone(),
                 source: action.source.clone(),
+                gate: action.gate,
             })
             .map_err(|e| DbError::Encode(format!("action spec: {e}")))?;
             let kind = kind_to_str(action.kind)?;
@@ -182,6 +185,7 @@ impl RawAction {
             cwd: spec.cwd,
             single_instance: spec.single_instance,
             pinned: self.pinned != 0,
+            gate: spec.gate,
             ready: spec.ready,
             port: spec.port,
             depends_on: spec.depends_on,

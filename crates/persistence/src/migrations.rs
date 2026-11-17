@@ -603,6 +603,21 @@ pub const REVIEW_FEEDBACK_COUNTED: &str =
 /// the diff itself.
 pub const REVIEW_TREE: &str = "ALTER TABLE review_runs ADD COLUMN tree_oid TEXT;";
 
+/// One row per spec run: its stage and metadata as JSON. The spec, plan, logs and report
+/// stay on disk under `<forge home>/spec-runs/<id>/`.
+pub const SPEC_RUNS: &str = "
+CREATE TABLE spec_runs (
+    id         TEXT PRIMARY KEY,
+    project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+    stage      TEXT NOT NULL,
+    meta       TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
+
+CREATE INDEX idx_spec_runs_project ON spec_runs (project_id);
+";
+
 /// The full, ordered migration set. Appended to over time; never reordered.
 #[must_use]
 pub fn migrations() -> Migrations<'static> {
@@ -630,5 +645,6 @@ pub fn migrations() -> Migrations<'static> {
         M::up(REVIEW_FEEDBACK),
         M::up(REVIEW_FEEDBACK_COUNTED),
         M::up(REVIEW_TREE),
+        M::up(SPEC_RUNS),
     ])
 }

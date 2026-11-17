@@ -6,6 +6,10 @@
 use domain::orchestration::{
     AttemptPlacement, ControllerSpec, IntegrationPlacement, ReportOutcome, TaskDecision, WorkMode,
 };
+use domain::spec_run::model::{
+    AgentPick, GateDecision, GateKind, SpecArtifactKind, SpecOptions, SpecRunSource,
+};
+use domain::SpecRunId;
 use domain::{
     ActivityState, AgentProfile, AgentProfileId, AgentProviderId, AttemptId, ChildWorkspacePolicy,
     CommitPlan, ContextEnvelope, ContextKind, EditorFindCommand, EditorInputEvent, JuvaKind,
@@ -677,6 +681,60 @@ pub enum Request {
         /// A level the provider does not list is `InvalidRequest`.
         #[serde(default)]
         effort: Option<String>,
+    },
+    // ----- Spec runs -----
+    /// Save the source under the run's directory and launch its drafter →
+    /// `Response::SpecRunStarted`, then `SpecRunUpdated` broadcasts.
+    StartSpecRun {
+        workspace_id: WorkspaceId,
+        name: String,
+        source: SpecRunSource,
+        planner: AgentPick,
+        coder: AgentPick,
+        options: SpecOptions,
+    },
+    /// A run agent hands over its spec, research, plan or early exit → `Ack`. Validated before
+    /// it is kept; `InvalidRequest` lists every reason. `spec_run_id: None` is the caller's run.
+    SaveSpecArtifact {
+        #[serde(default)]
+        spec_run_id: Option<SpecRunId>,
+        caller_session_id: Option<SessionId>,
+        kind: SpecArtifactKind,
+        content: String,
+        #[serde(default)]
+        artifact_url: Option<String>,
+    },
+    /// The planner's report, written once per G3 → `Ack`; validated against the approved spec,
+    /// the reviewed diff and this round's checks.
+    SubmitSpecReport {
+        #[serde(default)]
+        spec_run_id: Option<SpecRunId>,
+        caller_session_id: Option<SessionId>,
+        content: String,
+        #[serde(default)]
+        artifact_url: Option<String>,
+    },
+    /// The planner's verdict on a reviewed round → `Ack`: findings start another coder attempt
+    /// (`PreconditionFailed` past the run's rounds); none accepts the current task and starts
+    /// the next one.
+    SpecRound {
+        #[serde(default)]
+        spec_run_id: Option<SpecRunId>,
+        caller_session_id: Option<SessionId>,
+        #[serde(default)]
+        findings: Option<String>,
+    },
+    /// A person passes, sends back or rejects a gate → `Ack`. Refused for the run's own agents;
+    /// `Conflict` when the run is not at `gate`.
+    SpecGate {
+        spec_run_id: SpecRunId,
+        caller_session_id: Option<SessionId>,
+        gate: GateKind,
+        decision: GateDecision,
+    },
+    /// One run with its spec, plan and report → `Response::SpecRun`. Local read.
+    GetSpecRun {
+        spec_run_id: SpecRunId,
     },
     /// The workspace's `.forge/review/` rules and presets → `Response::ReviewConfig`.
     /// Local read of the working tree; `NotFound` for an unknown workspace.

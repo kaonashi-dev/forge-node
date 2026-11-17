@@ -173,6 +173,7 @@ pub struct DaemonPaths {
 pub struct Daemon {
     pub(crate) context_writer: persistence::db::ContextWriter,
     pub(crate) review_store: persistence::ReviewStore,
+    pub(crate) spec_runs: crate::spec_runs::SpecRuns,
     inner: Mutex<Inner>,
     pub(crate) registry: crate::registry::ClientRegistry,
     pub(crate) config: Config,
@@ -318,6 +319,8 @@ impl Daemon {
             .map_err(|error| error.to_string())?;
         // No reviewer process survives the daemon, whatever `persist_history` says.
         let review_store = db.review_store().map_err(|e| e.to_string())?;
+        let spec_runs =
+            crate::spec_runs::SpecRuns::load(db.spec_run_store().map_err(|e| e.to_string())?)?;
         let interrupted = review_store
             .interrupt_unfinished()
             .map_err(|e| e.to_string())?;
@@ -457,6 +460,7 @@ impl Daemon {
         Ok(Arc::new(Daemon {
             context_writer,
             review_store,
+            spec_runs,
             inner: Mutex::new(inner),
             registry: crate::registry::ClientRegistry::new(),
             config,
@@ -871,6 +875,52 @@ impl Daemon {
         }
         match request {
             Request::GetSnapshot => Ok(self.snapshot(client_kind != ClientKind::Cli)),
+            Request::StartSpecRun {
+                workspace_id,
+                name,
+                source,
+                planner,
+                coder,
+                options,
+            } => crate::spec_runs::start(self, workspace_id, name, source, planner, coder, options),
+            Request::SaveSpecArtifact {
+                spec_run_id,
+                caller_session_id,
+                kind,
+                content,
+                artifact_url,
+            } => crate::spec_runs::save(
+                self,
+                spec_run_id,
+                caller_session_id,
+                kind,
+                content,
+                artifact_url,
+            ),
+            Request::SubmitSpecReport {
+                spec_run_id,
+                caller_session_id,
+                content,
+                artifact_url,
+            } => crate::spec_runs::report(
+                self,
+                spec_run_id,
+                caller_session_id,
+                content,
+                artifact_url,
+            ),
+            Request::SpecRound {
+                spec_run_id,
+                caller_session_id,
+                findings,
+            } => crate::spec_runs::round(self, spec_run_id, caller_session_id, findings),
+            Request::SpecGate {
+                spec_run_id,
+                caller_session_id,
+                gate,
+                decision,
+            } => crate::spec_runs::gate(self, spec_run_id, caller_session_id, gate, decision),
+            Request::GetSpecRun { spec_run_id } => crate::spec_runs::detail(self, spec_run_id),
             Request::StopDaemon { kill_sessions } => self.stop_daemon(kill_sessions),
             Request::FactoryReset => self.factory_reset(),
             Request::GetAppState { key } => self.get_app_state(&key),
@@ -1436,6 +1486,16 @@ impl Daemon {
         paths
     }
 
+    /// `gh` with the login shell's `PATH`, captured off the core lock first.
+    pub(crate) fn github_cli(&self) -> git_service::GitHubCli {
+        self.ensure_env();
+        let path_entries = {
+            let mut inner = self.lock();
+            self.resolved_env(&mut inner).path_entries
+        };
+        self.config.github.cli(path_entries)
+    }
+
     pub(crate) fn forge_paths(&self) -> &client::ForgePaths {
         &self.paths.forge
     }
@@ -1529,6 +1589,7 @@ impl Daemon {
             external_agents,
             pull_requests: Box::new(pull_requests),
             runs,
+            spec_runs: self.spec_runs.list(),
             usage,
         };
         for event in self.take_pending_notices() {
@@ -1654,6 +1715,7 @@ impl Daemon {
             .unwrap_or_else(std::sync::PoisonError::into_inner) =
             crate::usage_stats::Cache::default();
         self.file_index.clear();
+        self.spec_runs.clear(&self.forge_paths().home);
 
         self.registry.broadcast_domain(DaemonEvent::FactoryReset);
         if !failed_worktrees.is_empty() {
@@ -2062,6 +2124,8 @@ impl Daemon {
         inner.worktree_ignores.remove(&project_id);
         inner.project_actions.remove(&project_id);
         drop(inner);
+        self.spec_runs
+            .forget_project(project_id, &self.forge_paths().home);
 
         // Replica drops by id: sessions before their workspace/project.
         for session_id in session_ids {
@@ -6620,6 +6684,7 @@ impl Daemon {
         };
         if let Some(session) = session {
             crate::orchestration::note_session_exit(self, session.id);
+            crate::spec_runs::note_session_exit(self, session.id);
             // Transcript just finished: invalidate so History does not wait the TTL.
             if session.kind == SessionKind::Agent {
                 self.external_agents_stale.store(true, Ordering::Release);
@@ -8460,7 +8525,7 @@ const FORGE_MCP_ENV: &[&str] = &[
     "FORGE_ATTEMPT_ID",
 ];
 
-fn sibling_forgectl() -> Option<PathBuf> {
+pub(crate) fn sibling_forgectl() -> Option<PathBuf> {
     std::env::current_exe()
         .ok()
         .map(|exe| exe.with_file_name("forgectl"))

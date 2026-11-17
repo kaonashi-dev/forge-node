@@ -336,33 +336,13 @@ config, behind an explicit opt-in.
 
 ### Spec runs
 
-`forgectl spec run <spec>` launches a planner session whose prompt is the brief
-`domain::spec_run::compose_planner_prompt` writes; `forgectl spec brief <spec>`
-prints the same brief for the calling session to follow as the planner. The
-spec is a Claude artifact link (`claude.ai`, `claude.site`), another link, a
-Markdown file or the text itself (`-` reads stdin). Forge classifies it and
-never fetches it: an artifact needs the planner's own login and artifact tool.
-A value that looks like a path but is not a file exits 4 rather than becoming
-a one-line spec.
-
-The palette's **Run Spec…** (also in New Session) is the same launch from the
-GUI (`apps/ui/src/spec_run.rs`): the client composes the brief with the same
-function and starts the planner in the checkout on screen. A relative path
-resolves against that checkout and is checked through the daemon's `ReadFile`
-(ADR-012), the Markdown file on screen is prefilled, and a refusal (missing
-file, unknown coder) stays in the dialog before anything starts. The dialog
-offers a planner row for Claude and each visible Claude profile, and a coder row
-for every prompt-taking agent and visible profile (`agent_ops::choices`); a
-Claude coder, under any profile, codes at `medium`. The rows a run started
-with are remembered (`ui.spec_run.planner`, `ui.spec_run.coder`) and offered
-first next time.
-
-The planner validates every criterion (context, and a check that proves it),
-asks the person every open point at once with its question selector, writes a
-plan with no open question, launches the coder with `session spawn --parent
-self --role executor`, waits for `idle,waiting,exit`, reruns the validations
-itself, sends numbered findings, and hands what remains to the person after
-`--rounds` (default 3). It never commits, pushes or merges.
+A spec run is a daemon object, not a second runtime: a drafter and a planner are
+ordinary agent sessions, the coder is a ledger attempt of a run Forge opens at the
+plan gate, and Forge runs the plan's checks as `Task` sessions. The stages, the
+three gates, the files under `$FORGE_HOME/spec-runs/<id>/` and the CLI
+(`spec run|draft|save|report|round|gate|status|show`) are in
+[spec-runs.md](./spec-runs.md). `forgectl spec brief <spec>` still prints a
+self-driven planner brief, without gates, for the calling session to follow.
 
 `--preset claude` codes with Claude at `medium`; `--preset mix` codes with
 Cursor, or with `--coder opencode`. A preset is a provider and an effort;

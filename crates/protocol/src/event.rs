@@ -211,6 +211,8 @@ pub enum DaemonEvent {
         session_id: SessionId,
         draft: PullRequestDraft,
     },
+    /// A spec run changed stage, round, sessions or attention.
+    SpecRunUpdated(Box<domain::spec_run::model::SpecRunView>),
     /// A review changed status or stage. Compact: the findings are read with
     /// `GetReview` once the run is `Completed`.
     ReviewUpdated {

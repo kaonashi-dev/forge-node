@@ -6,7 +6,10 @@ use crate::orchestration::ToolSurface;
 use crate::{AgentDescriptor, EffortSpelling};
 
 mod brief;
+pub mod model;
 pub mod principles;
+pub mod schema;
+pub mod stages;
 
 pub use brief::{
     coder_rules, compose_drafter_prompt, compose_planner_prompt, guide, resolve_spec_section,
@@ -41,7 +44,7 @@ pub enum SpecError {
     MissingFile(String),
 }
 
-const ARTIFACT_HOSTS: [&str; 2] = ["claude.ai", "claude.site"];
+pub(crate) const ARTIFACT_HOSTS: [&str; 2] = ["claude.ai", "claude.site"];
 const SPEC_EXTENSIONS: [&str; 4] = ["md", "markdown", "mdx", "txt"];
 
 /// A path-like value that is not a file is an error, never a one-line inline spec.
@@ -70,7 +73,7 @@ pub fn classify(raw: &str, is_file: impl Fn(&Path) -> bool) -> Result<SpecSource
     Ok(SpecSource::Inline(trimmed.to_owned()))
 }
 
-fn link_host(raw: &str) -> Option<String> {
+pub(crate) fn link_host(raw: &str) -> Option<String> {
     if raw.chars().any(char::is_whitespace) {
         return None;
     }
@@ -191,7 +194,7 @@ fn quote(text: &str) -> String {
     format!("'{}'", text.replace('\'', r"'\''"))
 }
 
-fn source_section(source: &SpecSource) -> String {
+pub fn source_section(source: &SpecSource) -> String {
     match source {
         SpecSource::ClaudeArtifact(url) => format!(
             "The spec is a Claude artifact: {url}\n\nRead it with your Claude artifact tool \

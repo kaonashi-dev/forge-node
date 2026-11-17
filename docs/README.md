@@ -19,6 +19,7 @@ must match the code.
 | [terminal.md](./terminal.md) | PTY → engine → delta pipeline, sequence/resync, backpressure, kill semantics, shell environment |
 | [editor.md](./editor.md) | document engine, daemon control wire, cells/DOM surfaces and previews |
 | [agents.md](./agents.md) | built-in providers, detection algorithm, launch spec |
+| [spec-runs.md](./spec-runs.md) | spec runs: stages, the three gates, checks Forge runs, the validated report |
 | [review.md](./review.md) | Forge Review: a workspace's structured review, its pack, repository rules and presets |
 | [actions.md](./actions.md) | project actions: one-click tasks, single instance, ports, readiness, dependencies, `.forge/actions.toml` trust |
 | [worktrees.md](./worktrees.md) | project discovery, managed worktree placement/slugs, create/remove safety rules |
