@@ -464,7 +464,7 @@ The spec is a Claude artifact link, a Markdown file, the full text, or - for std
 1. A drafter (Claude, its own session, no code edits) writes the spec with AC-n criteria and saves it with spec save --kind spec, or ends early with --kind exit.
 2. G1: forgectl spec gate <run> --approve | --changes <reason> | --reject <reason>. A change or a rejection always carries its reason, which reaches the agent verbatim.
 3. A planner researches and saves research and a plan with a forge.spec_plan/v1 block: steps with checks, the gate. G2 approves it with --checkout|--worktree, --delivery, --rounds 1-5, --forge-review, --session-per-stage, --save-gate-action.
-4. Forge starts the coder as a ledger attempt; one report settles each round. Forge then runs the plan's checks as Task sessions (10 min timeout, killed by process group) into checks/<AC>-r<n>.log.
+4. Forge starts the coder as a ledger attempt; one report settles each round. Forge then runs the plan's checks as Task sessions (10 min timeout, killed by process group) into checks/<AC>-t<task>-r<round>-<n>.log.
 5. The planner reviews and sends findings with spec round --file, or accepts a task with spec round --accept.
 6. The planner saves the report with spec report; a met needs a check of this round that passed. G3: --approve [--manual <AC>] [--next finish|draft-pr|another-round|discard] [--text].
 See where runs wait: forgectl spec status [--attention]; read one: forgectl spec show <run>. Files live in /spec-runs/<id>/.

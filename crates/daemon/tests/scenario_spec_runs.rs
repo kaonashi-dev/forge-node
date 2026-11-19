@@ -453,8 +453,7 @@ fn a_spec_run_passes_its_gates_and_meets_only_what_a_check_proved() {
     assert_eq!(by("AC-1").exit_code, Some(0));
     assert_eq!(by("AC-2").exit_code, Some(1));
     assert_eq!(by("gate").exit_code, Some(0));
-    let log =
-        fs::read_to_string(run_dir(&harness, id).join("checks/AC-2-r1.log")).expect("fixture");
+    let log = fs::read_to_string(run_dir(&harness, id).join(by("AC-2").log)).expect("fixture");
     assert!(
         log.contains("command: /usr/bin/grep -q fast done.txt") && log.contains("exit: 1"),
         "{log}"
@@ -464,7 +463,7 @@ fn a_spec_run_passes_its_gates_and_meets_only_what_a_check_proved() {
     assert!(
         claimed
             .message
-            .contains("AC-2 is met, but no check of this round passed"),
+            .contains("AC-2 is met, but not every check of this round passed"),
         "{claimed:?}"
     );
     submit(&client, id, planner, &report("not_met", &["done.txt:1"])).expect("report");
@@ -852,6 +851,14 @@ fn rounds_are_ledger_attempts_and_the_full_route_runs_its_tasks_in_order() {
         "task T1 checks only AC-1: {:?}",
         run.checks
     );
+    let early = submit(&client, id, planner, &report("not_verified", &[])).expect_err("refused");
+    assert_eq!(early.code, ErrorCode::PreconditionFailed);
+    assert!(
+        early
+            .message
+            .contains("start the next task before the report"),
+        "{early:?}"
+    );
 
     round(&client, id, planner, Some("1. done.txt is missing")).expect("round 2");
     let run = wait_stage(&client, id, SpecStage::Executing);
@@ -934,4 +941,99 @@ fn an_approved_spec_edited_on_disk_stops_the_run_and_a_stuck_run_can_be_rejected
     )
     .expect_err("closed");
     assert_eq!(again.code, ErrorCode::Conflict);
+}
+
+#[test]
+fn a_rejected_run_stops_its_coder_and_its_checks_and_stays_rejected() {
+    let harness = common::Harness::new();
+    install_claude(&harness);
+    let repo = test_support::init_repo().expect("git repo");
+    let daemon = harness.boot();
+    let client = connect(&daemon, "spec-run-reject");
+    let workspace = common::add_main_workspace(&client, repo.path());
+    let reject = || GateDecision::Reject {
+        reason: "Not this one.".into(),
+    };
+    let ended = |session: SessionId| {
+        common::poll_until(Duration::from_secs(30), || {
+            common::session(&client, session).is_none_or(|s| s.state.is_terminal())
+        })
+    };
+
+    let (id, drafter) = start(&client, workspace, options(worktree("spec/reject-coder")));
+    save(&client, id, drafter, SpecArtifactKind::Spec, SPEC).expect("spec saved");
+    gate(&client, id, GateKind::Spec, approve()).expect("G1");
+    let planner = wait_stage(&client, id, SpecStage::Planning)
+        .session(SpecRole::Planner)
+        .expect("planner");
+    save(
+        &client,
+        id,
+        planner,
+        SpecArtifactKind::Plan,
+        &plan(&check("true"), &check("true"), Some("true")),
+    )
+    .expect("plan saved");
+    gate(&client, id, GateKind::Plan, approve()).expect("G2");
+    let coder = wait_stage(&client, id, SpecStage::Executing)
+        .session(SpecRole::Coder)
+        .expect("coder");
+    gate(&client, id, GateKind::Result, reject()).expect("reject while executing");
+    assert!(ended(coder), "the coder kept running after the rejection");
+
+    let (id, drafter) = start(&client, workspace, options(worktree("spec/reject-checks")));
+    save(&client, id, drafter, SpecArtifactKind::Spec, SPEC).expect("spec saved");
+    gate(&client, id, GateKind::Spec, approve()).expect("G1");
+    let planner = wait_stage(&client, id, SpecStage::Planning)
+        .session(SpecRole::Planner)
+        .expect("planner");
+    save(
+        &client,
+        id,
+        planner,
+        SpecArtifactKind::Plan,
+        &plan(&check("/bin/sleep 300"), &check("true"), Some("true")),
+    )
+    .expect("plan saved");
+    gate(&client, id, GateKind::Plan, approve()).expect("G2");
+    let coder = wait_stage(&client, id, SpecStage::Executing)
+        .session(SpecRole::Coder)
+        .expect("coder");
+    coder_reports(&client, coder);
+    let mut checking = None;
+    assert!(common::poll_until(Duration::from_secs(30), || {
+        checking = detail(&client, id).run.session(SpecRole::Check);
+        checking.is_some()
+    }));
+    gate(&client, id, GateKind::Result, reject()).expect("reject while verifying");
+    assert!(
+        ended(checking.expect("check")),
+        "the check kept running after the rejection"
+    );
+    let log = run_dir(&harness, id).join("checks");
+    assert!(common::poll_until(Duration::from_secs(30), || {
+        fs::read_dir(&log).is_ok_and(|mut entries| {
+            entries.any(|e| e.is_ok_and(|e| e.path().extension().is_some_and(|x| x == "log")))
+        })
+    }));
+    // The checks' thread finishes after the log is written; a resurrected run would move on.
+    let resurrected = common::poll_until(Duration::from_secs(2), || {
+        detail(&client, id).run.stage != SpecStage::Rejected
+    });
+    let run = detail(&client, id).run;
+    assert!(!resurrected, "{run:#?}");
+    assert!(run.checks.is_empty(), "{:?}", run.checks);
+    let handed: Vec<String> = fs::read_dir(run_dir(&harness, id).join("prompts"))
+        .expect("fixture")
+        .map(|e| {
+            e.expect("fixture")
+                .file_name()
+                .to_string_lossy()
+                .into_owned()
+        })
+        .collect();
+    assert!(
+        !handed.iter().any(|name| name.contains("review-r")),
+        "the planner was handed a review: {handed:?}"
+    );
 }

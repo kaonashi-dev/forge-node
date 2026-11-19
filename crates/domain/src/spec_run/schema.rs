@@ -484,9 +484,9 @@ fn evidence_complete(criterion: &ReportCriterion) -> bool {
 }
 
 /// # Errors
-/// Every reason the report is refused: a `met` without evidence or without a passing check this
-/// round, a path outside the reviewed diff, an id the approved spec does not have, a criterion
-/// left out.
+/// Every reason the report is refused: a `met` without evidence or with any check of this round
+/// that did not pass, a path outside the reviewed diff, an id the approved spec does not have, a
+/// criterion left out.
 pub fn validate_report(text: &str, ctx: &ReportContext) -> Result<ValidReport, Vec<String>> {
     if text.len() > MAX_REPORT_BYTES {
         return Err(vec![format!(
@@ -501,8 +501,8 @@ pub fn validate_report(text: &str, ctx: &ReportContext) -> Result<ValidReport, V
     let block: ReportBlock =
         serde_json::from_value(value).map_err(|e| vec![format!("{REPORT_SCHEMA}: {e}")])?;
     let passed: BTreeMap<&str, bool> = ctx.checks.iter().fold(BTreeMap::new(), |mut acc, c| {
-        let entry = acc.entry(c.criterion.as_str()).or_insert(false);
-        *entry |= c.passed();
+        let entry = acc.entry(c.criterion.as_str()).or_insert(true);
+        *entry &= c.passed();
         acc
     });
     let mut errors = Vec::new();
@@ -532,7 +532,7 @@ pub fn validate_report(text: &str, ctx: &ReportContext) -> Result<ValidReport, V
             }
             if !passed.get(criterion.id.as_str()).copied().unwrap_or(false) {
                 errors.push(format!(
-                    "{} is met, but no check of this round passed for it",
+                    "{} is met, but not every check of this round passed for it",
                     criterion.id
                 ));
             }
@@ -917,12 +917,17 @@ mod tests {
     }
 
     #[test]
-    fn met_needs_a_check_that_passed_this_round() {
+    fn met_needs_every_check_of_this_round_to_pass() {
         let spec = spec();
         let diff: BTreeSet<String> = ["src/loader.rs".to_owned()].into();
         for checks in [
             vec![record("AC-1", Some(1)), record(GATE, Some(0))],
             vec![record(GATE, Some(0))],
+            vec![
+                record("AC-1", Some(0)),
+                record("AC-1", Some(1)),
+                record(GATE, Some(0)),
+            ],
         ] {
             let ctx = ReportContext {
                 spec: &spec,
@@ -932,7 +937,7 @@ mod tests {
             let errors = validate_report(&report(MET), &ctx).unwrap_err();
             assert_eq!(
                 errors,
-                ["AC-1 is met, but no check of this round passed for it"]
+                ["AC-1 is met, but not every check of this round passed for it"]
             );
         }
         let failed_gate = [record("AC-1", Some(0)), record(GATE, None)];

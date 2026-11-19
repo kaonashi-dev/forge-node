@@ -57,15 +57,23 @@ own rounds, and the gate runs after the last task.
   after the last task) in the coder's checkout as `Task` sessions under
   `/bin/sh`, each with a timeout (10 min by default, `timeout_secs` per check),
   its own process group killed on timeout, and only the last 16 KiB of output
-  kept in `checks/<AC>-r<round>.log`. Exit 127 is `not_verified`, not a failure.
+  kept in `checks/<AC>-t<task>-r<round>-<n>.log` (`n` numbers the round's
+  checks, since two steps may serve one criterion). Exit 127 is
+  `not_verified`, not a failure.
 - A round is a new attempt of the same task in the same checkout, with the
-  planner's findings; G2 caps rounds at the ledger's attempts per task.
+  planner's findings; G2 caps rounds at the ledger's attempts per task. A G2
+  approval that fails after creating the worktree keeps it on the run, and the
+  next approval with a worktree placement starts in it.
 - A report's `forge.spec_run/v1` block is refused for a `met` without
-  evidence or without a check of this round that passed, a path outside the
+  evidence or with any check of this round for it that did not pass, before
+  the last task's review on the full route, for a path outside the
   reviewed diff (base commit to now, minus what was already modified when the
   coder started in the person's checkout), an id the approved spec lacks, or a
   criterion left out. The overall state is derived from the criteria. A commit
   that contradicts the delivery chosen at G2 is appended as a deviation.
+- A rejection, accepted in any open stage, cancels the coder's ledger tasks
+  (killing a live attempt's session) and any running check; a check thread or
+  a gate that finishes afterwards leaves the run rejected.
 - `artifact_url` is optional and only `https` on `claude.ai` or `claude.site`.
 - With delivery `draft_pr`, nothing opens before G3; G3's draft PR goes through
   the background PR agent with the report as the base of the body, and Forge

@@ -3558,6 +3558,11 @@ pub(crate) fn accept_spec_task(daemon: &Arc<Daemon>, task_id: TaskId) -> Result<
     .map(|_| ())
 }
 
+/// Cancel every open task of a spec run's ledger and kill its live attempts' sessions.
+pub(crate) fn cancel_spec_ledger(daemon: &Arc<Daemon>, run_id: RunId) -> Result<(), ProtocolError> {
+    close_run(daemon, None, run_id, true, false, None).map(|_| ())
+}
+
 /// The task, session and report of a settled attempt.
 pub(crate) fn spec_attempt_facts(
     daemon: &Daemon,

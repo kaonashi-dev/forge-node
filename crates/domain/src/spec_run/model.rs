@@ -192,7 +192,7 @@ pub struct CheckRecord {
     #[serde(default)]
     pub not_verified: Option<String>,
     pub duration_ms: u64,
-    /// Relative to the run's directory: `checks/<AC>-r<round>.log`.
+    /// Relative to the run's directory: `checks/<AC>-t<task>-r<round>-<n>.log`.
     pub log: String,
 }
 

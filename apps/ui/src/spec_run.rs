@@ -11,7 +11,7 @@ use domain::spec_run::model::{
 use domain::spec_run::{
     MAX_INLINE_SPEC_BYTES, Preset, SpecSource, agent_refusal, classify, planner_effort,
 };
-use domain::{AgentDescriptor, AgentProfileId, AgentProviderId, WorkspaceId};
+use domain::{AgentDescriptor, AgentProfileId, AgentProviderId, SpecRunId, WorkspaceId};
 use rune::{El, TextEdit, col, text};
 use rune_kit::{Button, ButtonVariant, Checkbox, Kit, SegmentedControl, TextArea, TextInput};
 
@@ -145,7 +145,8 @@ pub fn run_name(source: &SpecRunSource) -> String {
     name.trim_end().to_owned()
 }
 
-/// `spec/<slug>`, for a worktree placement with no branch typed.
+/// `spec/<slug>-<suffix>`, for a worktree placement with no branch typed. The suffix keeps two
+/// runs with one name off each other's branch, as `forgectl` does.
 #[must_use]
 pub fn default_branch(name: &str) -> String {
     let mut slug = String::new();
@@ -160,11 +161,9 @@ pub fn default_branch(name: &str) -> String {
         }
     }
     let slug = slug.trim_end_matches('-');
-    if slug.is_empty() {
-        "spec/run".to_owned()
-    } else {
-        format!("spec/{slug}")
-    }
+    let slug = if slug.is_empty() { "run" } else { slug };
+    let unique = SpecRunId::new().to_string();
+    format!("spec/{slug}-{}", &unique[unique.len() - 6..])
 }
 
 /// The spec run `request` starts in `checkout`, or why it would fail.
@@ -682,6 +681,19 @@ mod tests {
         }
     }
 
+    /// A default branch ends in a random suffix; the slug before it is what a test can name.
+    fn unsuffixed(placement: &Placement) -> Placement {
+        match placement {
+            Placement::Worktree { branch, base } => Placement::Worktree {
+                branch: branch
+                    .rsplit_once('-')
+                    .map_or_else(|| branch.clone(), |(slug, _)| slug.to_owned()),
+                base: base.clone(),
+            },
+            other => other.clone(),
+        }
+    }
+
     fn launch(request: &SpecRequest, files: &[&str]) -> Result<SpecLaunch, String> {
         spec_launch(
             &providers(),
@@ -713,7 +725,10 @@ mod tests {
         assert_eq!(launch.planner.effort.as_deref(), Some("high"));
         assert_eq!(launch.coder.effort.as_deref(), Some("medium"));
         assert_eq!(
-            launch.options,
+            SpecOptions {
+                placement: unsuffixed(&launch.options.placement),
+                ..launch.options.clone()
+            },
             SpecOptions {
                 placement: Placement::Worktree {
                     branch: "spec/auth-flow".into(),
@@ -832,7 +847,7 @@ mod tests {
         );
         assert_eq!(launch.name, "issue 42");
         assert_eq!(
-            launch.options.placement,
+            unsuffixed(&launch.options.placement),
             Placement::Worktree {
                 branch: "spec/issue-42".into(),
                 base: None
@@ -849,11 +864,13 @@ mod tests {
         };
         assert_eq!(named("https://example.com/docs/plan-v2/"), "plan-v2");
         assert_eq!(named("https://example.com"), "spec");
+        let branch = default_branch("Add OAuth: login & logout!");
         assert_eq!(
-            default_branch("Add OAuth: login & logout!"),
-            "spec/add-oauth-login-logout"
+            branch.rsplit_once('-').map(|(slug, _)| slug),
+            Some("spec/add-oauth-login-logout")
         );
-        assert_eq!(default_branch("¿?"), "spec/run");
+        assert_ne!(branch, default_branch("Add OAuth: login & logout!"));
+        assert!(default_branch("¿?").starts_with("spec/run-"));
     }
 
     #[test]

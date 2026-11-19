@@ -393,6 +393,7 @@ impl Daemon {
     ) -> Result<SessionId, ProtocolError> {
         let session_id = SessionId::new();
         let root = self.workspace_path(workspace_id)?;
+        self.ensure_env();
         let (spec, session) = {
             let mut inner = self.lock();
             if inner.removing.contains(&workspace_id) {

@@ -814,16 +814,7 @@ pub(crate) fn gate(
         expect_stage(&run, &[kind.stage()])?;
     }
     if let GateDecision::Changes { reason } | GateDecision::Reject { reason } = &decision {
-        if reason.trim().is_empty() {
-            return Err(ProtocolError::invalid_request(
-                "asking for changes or rejecting carries its reason",
-            ));
-        }
-        if reason.len() > MAX_REASON_BYTES {
-            return Err(ProtocolError::invalid_request(format!(
-                "a reason is capped at {MAX_REASON_BYTES} bytes"
-            )));
-        }
+        check_reason(reason, "asking for changes or rejecting carries its reason")?;
     }
     match (kind, decision) {
         (_, GateDecision::Reject { reason }) => {
@@ -832,6 +823,7 @@ pub(crate) fn gate(
                 _ => SpecRole::Planner,
             };
             claim(daemon, id, run.stage, SpecStage::Rejected, Some(&reason))?;
+            stop_execution(daemon, id);
             send_reason(
                 daemon,
                 &run,
@@ -957,6 +949,18 @@ pub(crate) fn gate(
     Ok(Response::Ack)
 }
 
+fn check_reason(reason: &str, empty: &str) -> Result<(), ProtocolError> {
+    if reason.trim().is_empty() {
+        return Err(ProtocolError::invalid_request(empty));
+    }
+    if reason.len() > MAX_REASON_BYTES {
+        return Err(ProtocolError::invalid_request(format!(
+            "a reason is capped at {MAX_REASON_BYTES} bytes"
+        )));
+    }
+    Ok(())
+}
+
 /// Move `from` → `to` atomically, so two gate clicks cannot both pass.
 fn claim(
     daemon: &Daemon,
@@ -976,8 +980,27 @@ fn claim(
     })
 }
 
+/// Stop what a rejected run still has working: the coder's ledger attempt and any check.
+fn stop_execution(daemon: &Arc<Daemon>, id: SpecRunId) {
+    let Ok(run) = daemon.spec_runs.get(id) else {
+        return;
+    };
+    if let Some(ledger) = run.ledger_run {
+        if let Err(error) = crate::orchestration::cancel_spec_ledger(daemon, ledger) {
+            tracing::warn!(spec_run = %id, error = %error.message, "could not cancel the coder");
+        }
+    }
+    for check in run.sessions.iter().filter(|s| s.role == SpecRole::Check) {
+        let _ = daemon.kill_session(check.session_id);
+    }
+}
+
+/// A run rejected while its gate was proceeding stays rejected.
 fn reopen(daemon: &Daemon, id: SpecRunId, stage: SpecStage, error: &ProtocolError) {
     let _ = update(daemon, id, |run| {
+        if run.stage.is_closed() {
+            return Ok(());
+        }
         run.stage = stage;
         run.attention = Some(format!("the gate could not proceed: {}", error.message));
         Ok(())
@@ -1053,24 +1076,39 @@ fn save_gate(daemon: &Arc<Daemon>, run: &SpecRunView) -> Result<(), ProtocolErro
 
 // ----- Execution -----
 
+/// The stages a gate approval leaves the run in while `execute` places the coder: the short
+/// route approves the spec and its plan together.
+const LAUNCHING: &[SpecStage] = &[SpecStage::Planning, SpecStage::Executing];
+
 /// Place the coder, open its ledger and start round 1. After a launch that failed, the
 /// worktree and the ledger already exist and only the round is started again.
 fn execute(daemon: &Arc<Daemon>, run: &SpecRunView) -> Result<(), ProtocolError> {
     let (spec, plan) = approved_plan(daemon, run)?;
     if run.ledger_run.is_some() {
         let run = update(daemon, run.id, |run| {
+            expect_stage(run, LAUNCHING)?;
             run.stage = SpecStage::Executing;
             Ok(run.clone())
         })?;
         return start_round(daemon, &run, None);
     }
-    let (workspace, path) = match &run.options.placement {
-        Placement::Worktree { branch, base } => {
+    // A worktree from an approval that failed later is the one to retry in: creating it again
+    // would find its branch checked out.
+    let placed = run
+        .coder_workspace_id
+        .and_then(|ws| daemon.workspace_path(ws).ok().map(|path| (ws, path)));
+    let (workspace, path) = match (placed, &run.options.placement) {
+        (Some(placed), Placement::Worktree { .. }) => placed,
+        (None, Placement::Worktree { branch, base }) => {
             let ws =
                 daemon.create_managed_worktree(run.project_id, branch, base.as_deref(), None)?;
+            update(daemon, run.id, |run| {
+                run.coder_workspace_id = Some(ws.id);
+                Ok(())
+            })?;
             (ws.id, ws.path)
         }
-        Placement::Checkout => (run.workspace_id, daemon.workspace_path(run.workspace_id)?),
+        (_, Placement::Checkout) => (run.workspace_id, daemon.workspace_path(run.workspace_id)?),
     };
     let dirty = match run.options.placement {
         Placement::Checkout => git_service::change_summary(&path, None)
@@ -1135,7 +1173,9 @@ fn execute(daemon: &Arc<Daemon>, run: &SpecRunView) -> Result<(), ProtocolError>
         workspace,
         tasks,
     )?;
-    update(daemon, run.id, |run| {
+    let opened = update(daemon, run.id, |run| {
+        expect_stage(run, LAUNCHING)?;
+        run.stage = SpecStage::Executing;
         run.coder_workspace_id = Some(workspace);
         run.base_commit = base;
         run.dirty_at_launch = dirty;
@@ -1143,9 +1183,12 @@ fn execute(daemon: &Arc<Daemon>, run: &SpecRunView) -> Result<(), ProtocolError>
         run.tasks = task_ids;
         run.current_task = 0;
         run.round = 0;
-        run.stage = SpecStage::Executing;
         Ok(())
-    })?;
+    });
+    if let Err(error) = opened {
+        let _ = crate::orchestration::cancel_spec_ledger(daemon, ledger);
+        return Err(error);
+    }
     let run = daemon.spec_runs.get(run.id)?;
     start_round(daemon, &run, None)?;
     {
@@ -1229,10 +1272,10 @@ fn start_round(
             title: Some(format!("{} coder r{round}", run.name)),
         },
     )?;
-    update(daemon, run.id, |run| {
+    let started = update(daemon, run.id, |run| {
+        expect_stage(run, &[SpecStage::Executing])?;
         run.current_task = task_index;
         run.round = round;
-        run.stage = SpecStage::Executing;
         run.attention = None;
         run.sessions.push(SpecSession {
             role: SpecRole::Coder,
@@ -1241,7 +1284,11 @@ fn start_round(
             round,
         });
         Ok(())
-    })
+    });
+    if started.is_err() {
+        let _ = daemon.kill_session(session_id);
+    }
+    started
 }
 
 /// Refuse an agent launch by a run's drafter or planner before its plan gate: the coder starts
@@ -1344,22 +1391,28 @@ fn verify(
     let Ok(path) = daemon.workspace_path(workspace) else {
         return;
     };
-    let planned = match planned_checks(daemon, &run) {
-        Ok(planned) => planned,
-        Err(error) => {
-            attention(
-                daemon,
-                id,
-                format!("the plan's checks could not be read: {}", error.message),
-            );
-            Vec::new()
-        }
+    let (planned, unreadable) = match planned_checks(daemon, &run) {
+        Ok(planned) => (planned, None),
+        Err(error) => (
+            Vec::new(),
+            Some(format!(
+                "the plan's checks could not be read: {}",
+                error.message
+            )),
+        ),
     };
     let dir = dir_of(daemon, id);
-    let records: Vec<CheckRecord> = planned
-        .iter()
-        .map(|check| run_check(daemon, &run, workspace, &dir, check))
-        .collect();
+    let mut records: Vec<CheckRecord> = Vec::with_capacity(planned.len());
+    for (index, check) in planned.iter().enumerate() {
+        if !daemon
+            .spec_runs
+            .get(id)
+            .is_ok_and(|run| run.stage == SpecStage::Verifying)
+        {
+            return;
+        }
+        records.push(run_check(daemon, &run, workspace, &dir, index, check));
+    }
     let branch = match &run.options.placement {
         Placement::Worktree { branch, .. } => Some(branch.clone()),
         Placement::Checkout => None,
@@ -1396,14 +1449,17 @@ fn verify(
         }
     }
     let updated = update(daemon, id, |run| {
+        expect_stage(run, &[SpecStage::Verifying])?;
         run.checks.extend(records.iter().cloned());
         run.deviations.clone_from(&deviations);
         run.stage = SpecStage::Reviewing;
-        run.attention = (!repeated.is_empty()).then(|| {
-            format!(
-                "{} failed two rounds in a row; the planner takes the premise to you",
-                repeated.join(", ")
-            )
+        run.attention = unreadable.or_else(|| {
+            (!repeated.is_empty()).then(|| {
+                format!(
+                    "{} failed two rounds in a row; the planner takes the premise to you",
+                    repeated.join(", ")
+                )
+            })
         });
         Ok(run.clone())
     });
@@ -1477,10 +1533,17 @@ fn run_check(
     run: &SpecRunView,
     workspace: WorkspaceId,
     dir: &Path,
+    index: usize,
     check: &PlannedCheck,
 ) -> CheckRecord {
     let round = run.round;
-    let stem = format!("checks/{}-r{round}", check.criterion);
+    // Two steps may serve one criterion, and every task restarts its rounds.
+    let stem = format!(
+        "checks/{}-t{}-r{round}-{}",
+        check.criterion,
+        run.current_task + 1,
+        index + 1
+    );
     let log = format!("{stem}.log");
     let mut record = CheckRecord {
         criterion: check.criterion.clone(),
@@ -1731,6 +1794,7 @@ pub(crate) fn report(
     let run = resolve(daemon, id, caller)?;
     author(&run, caller, SpecRole::Planner)?;
     expect_stage(&run, &[SpecStage::Reviewing])?;
+    tasks_done(&run)?;
     if let Some(url) = &artifact_url {
         schema::validate_artifact_url(url).map_err(ProtocolError::invalid_request)?;
     }
@@ -1761,6 +1825,7 @@ pub(crate) fn report(
     write_file(&dir, "report.md", &text)?;
     update(daemon, run.id, |run| {
         expect_stage(run, &[SpecStage::Reviewing])?;
+        tasks_done(run)?;
         run.has_report = true;
         run.outcome = Some(valid.outcome);
         if artifact_url.is_some() {
@@ -1774,6 +1839,18 @@ pub(crate) fn report(
         start_forge_review(daemon, &run);
     }
     Ok(Response::Ack)
+}
+
+/// The report closes the last task: before it, the remaining tasks and the gate have not run.
+fn tasks_done(run: &SpecRunView) -> Result<(), ProtocolError> {
+    if run.current_task + 1 < run.tasks.len() {
+        return Err(ProtocolError::precondition_failed(format!(
+            "task {} of {} is under review: start the next task before the report",
+            run.current_task + 1,
+            run.tasks.len()
+        )));
+    }
+    Ok(())
 }
 
 fn start_forge_review(daemon: &Arc<Daemon>, run: &SpecRunView) {
@@ -1812,6 +1889,7 @@ fn another_round(
     run: &SpecRunView,
     text: String,
 ) -> Result<(), ProtocolError> {
+    check_reason(&text, "another round carries what to change")?;
     if run.round >= run.options.rounds {
         return Err(ProtocolError::precondition_failed(format!(
             "round {} of {} is spent",
