@@ -1505,20 +1505,25 @@ impl Preview {
     /// The highlights inside `line`, shifted to start at the line.
     #[must_use]
     pub fn line_highlights(&self, line: &Range<usize>) -> Vec<Highlight> {
-        let first = self
-            .highlights
-            .partition_point(|(range, _)| range.end <= line.start);
-        self.highlights[first..]
-            .iter()
-            .take_while(|(range, _)| range.start < line.end)
-            .map(|(range, paint)| {
-                let start = range.start.max(line.start) - line.start;
-                let end = range.end.min(line.end) - line.start;
-                (start..end, *paint)
-            })
-            .filter(|(range, _)| range.start < range.end)
-            .collect()
+        slice_highlights(&self.highlights, line)
     }
+}
+
+/// The ordered, non-overlapping `highlights` inside `line`, shifted to start
+/// at the line.
+#[must_use]
+pub fn slice_highlights(highlights: &[Highlight], line: &Range<usize>) -> Vec<Highlight> {
+    let first = highlights.partition_point(|(range, _)| range.end <= line.start);
+    highlights[first..]
+        .iter()
+        .take_while(|(range, _)| range.start < line.end)
+        .map(|(range, paint)| {
+            let start = range.start.max(line.start) - line.start;
+            let end = range.end.min(line.end) - line.start;
+            (start..end, *paint)
+        })
+        .filter(|(range, _)| range.start < range.end)
+        .collect()
 }
 
 #[cfg(test)]

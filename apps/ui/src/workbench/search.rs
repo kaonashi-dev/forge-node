@@ -9,6 +9,7 @@ use std::time::{Duration, Instant};
 
 use domain::{SearchMatch, SearchResults};
 use rune::TextEdit;
+use rune_kit::syntax::Highlight;
 
 use super::Scope;
 use crate::file_icons::FileIcon;
@@ -43,13 +44,14 @@ pub fn hit_ranges(text: &str, needle: &str) -> Vec<Range<usize>> {
     hits
 }
 
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Debug, PartialEq)]
 pub struct ExcerptLine {
     pub line: u32,
     pub text: String,
     pub hit: bool,
     /// Byte ranges of the needle in `text`.
     pub hits: Vec<Range<usize>>,
+    pub syntax: Vec<Highlight>,
 }
 
 /// Each line of one file's excerpts: its text and whether it is a hit.
@@ -106,6 +108,7 @@ pub fn build_excerpts(matches: &[SearchMatch], needle: &str) -> Vec<FileHits> {
                     },
                     text,
                     hit,
+                    syntax: Vec::new(),
                 };
                 match excerpts.last_mut() {
                     Some(run) if run.last().is_some_and(|last| last.line + 1 == line) => {
@@ -113,6 +116,10 @@ pub fn build_excerpts(matches: &[SearchMatch], needle: &str) -> Vec<FileHits> {
                     }
                     _ => excerpts.push(vec![entry]),
                 }
+            }
+            let language = fence_language(&path);
+            for run in &mut excerpts {
+                colour_run(language, run);
             }
             FileHits {
                 icon: crate::file_icons::for_path(&path),
@@ -122,6 +129,36 @@ pub fn build_excerpts(matches: &[SearchMatch], needle: &str) -> Vec<FileHits> {
             }
         })
         .collect()
+}
+
+/// The extension doubles as the highlighter's language name (`ts`, `rs`,
+/// `py`); one it does not know draws plain.
+fn fence_language(path: &str) -> Option<&str> {
+    let name = path.rsplit('/').next().unwrap_or(path);
+    let (stem, extension) = name.rsplit_once('.')?;
+    (!stem.is_empty() && !extension.is_empty()).then_some(extension)
+}
+
+/// Scanned as one block so a string or comment spanning lines of the run
+/// colours across them; a construct opened above the run cannot be seen.
+fn colour_run(language: Option<&str>, run: &mut [ExcerptLine]) {
+    if language.is_none() {
+        return;
+    }
+    let mut code = String::new();
+    let mut bounds = Vec::with_capacity(run.len());
+    for line in run.iter() {
+        if !code.is_empty() {
+            code.push('\n');
+        }
+        let start = code.len();
+        code.push_str(&line.text);
+        bounds.push(start..code.len());
+    }
+    let highlights = rune_kit::syntax::highlight(language, &code);
+    for (line, bound) in run.iter_mut().zip(&bounds) {
+        line.syntax = super::slice_highlights(&highlights, bound);
+    }
 }
 
 pub struct Results {
@@ -349,6 +386,39 @@ mod tests {
         assert_eq!(a.excerpts[0][2].hits, vec![4..10]);
         assert!(!a.excerpts[0][3].hit, "context is not a hit");
         assert_eq!(files[1].excerpts[0].len(), 1, "no line zero");
+    }
+
+    #[test]
+    fn excerpts_are_coloured_by_extension_across_their_run() {
+        use rune_kit::syntax::{Paint, Syntax};
+        let files = build_excerpts(
+            &[
+                hit(
+                    "src/ledger.service.ts",
+                    3,
+                    "async needle(",
+                    &["/* a", " * b */"],
+                    &[],
+                ),
+                hit(".bashrc", 1, "echo needle", &[], &[]),
+            ],
+            "needle",
+        );
+        let run = &files[0].excerpts[0];
+        assert_eq!(
+            run[1].syntax,
+            vec![(0..7, Paint::Kind(Syntax::Comment))],
+            "the comment opened on the line above still colours this one"
+        );
+        assert!(
+            run[2]
+                .syntax
+                .contains(&(0..5, Paint::Kind(Syntax::Keyword)))
+        );
+        assert!(
+            files[1].excerpts[0][0].syntax.is_empty(),
+            "a dotfile has no extension"
+        );
     }
 
     #[test]

@@ -4,7 +4,8 @@
 
 use std::time::Instant;
 
-use rune::{El, ScrollSpec, Span, col, icon, rich, row, text};
+use rune::{El, ScrollSpec, TextHighlight, col, icon, rich, row, text};
+use rune_kit::syntax::SyntaxTheme;
 use rune_kit::{Button, ButtonVariant, ControlSize, Kit, TextInput};
 
 use super::search::{ExcerptLine, FileHits, should_search};
@@ -197,6 +198,7 @@ fn file_group(s: &AppState, k: &Kit, file: &FileHits) -> El {
     if folded {
         return group;
     }
+    let theme = SyntaxTheme::from_kit(k);
     for (index, excerpt) in file.excerpts.iter().enumerate() {
         let mut lines = col()
             .key(format!("excerpt-{index}"))
@@ -206,24 +208,19 @@ fn file_group(s: &AppState, k: &Kit, file: &FileHits) -> El {
             .radius(k.radius.sm)
             .fill(k.c.surface_weak);
         for line in excerpt {
-            lines = lines.child(excerpt_line(k, &file.path, line));
+            lines = lines.child(excerpt_line(k, &theme, &file.path, line));
         }
         group = group.child(lines);
     }
     group
 }
 
-fn excerpt_line(k: &Kit, path: &str, line: &ExcerptLine) -> El {
+fn excerpt_line(k: &Kit, theme: &SyntaxTheme, path: &str, line: &ExcerptLine) -> El {
     let hit_bg = crate::theme::roles(k).git.modified.alpha(0.28);
-    let spans: Vec<Span> = line
+    let marks: Vec<TextHighlight> = line
         .hits
         .iter()
-        .map(|range| {
-            let mut span = Span::new(range.start, range.end);
-            span.bg = Some(hit_bg);
-            span.color = Some(k.c.text_base);
-            span
-        })
+        .map(|range| TextHighlight::new(range.clone(), hit_bg))
         .collect();
     let path = path.to_string();
     let number = line.line;
@@ -246,13 +243,14 @@ fn excerpt_line(k: &Kit, path: &str, line: &ExcerptLine) -> El {
                 .align(rune::Align::End),
         )
         .child(
-            rich(line.text.clone(), spans)
+            rich(line.text.clone(), theme.spans(&line.syntax, 0))
                 .font(k.ty.mono)
                 .color(if line.hit {
                     k.c.text_base
                 } else {
                     k.c.text_muted
                 })
+                .text_highlights(marks)
                 .grow(1.0)
                 .min_w(0.0)
                 .truncate(),
