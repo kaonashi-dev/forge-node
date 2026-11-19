@@ -2691,7 +2691,7 @@ impl AppState {
         self.sync_workbench();
         self.close_due();
         let mut changed = self.tabs.reveal(Instant::now());
-        changed |= self.toasts.expire(Instant::now());
+        changed |= self.toasts.expire(clock);
         changed |= self.settings.esc.expire(Instant::now());
         changed |= self.poll_files(tx);
         changed |= self.project_icons.landed();
