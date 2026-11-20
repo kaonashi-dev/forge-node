@@ -681,6 +681,9 @@ pub enum Request {
         /// A level the provider does not list is `InvalidRequest`.
         #[serde(default)]
         effort: Option<String>,
+        /// A single reviewer at size 1, with no hypotheses.
+        #[serde(default)]
+        swarm: domain::SwarmOptions,
     },
     // ----- Spec runs -----
     /// Save the source under the run's directory and launch its drafter →
@@ -775,6 +778,88 @@ pub enum Request {
     ClearReviewSuppression {
         workspace_id: WorkspaceId,
         suppression: domain::ReviewSuppression,
+    },
+    /// One kind of diagram for exactly the range `review_id` reviewed, drawn
+    /// from the current graph and not stored → `Response::ReviewDiagram`.
+    GetReviewDiagram {
+        review_id: ReviewId,
+        kind: domain::DiagramKind,
+    },
+    /// The workspace's project's knowledge base, the two derived files
+    /// included → `Response::Kb`. Local read.
+    GetKb {
+        workspace_id: WorkspaceId,
+    },
+    /// A person's `architecture.md` or `patterns.json` (a JSON list of
+    /// strings) → `Ack`. A derived file, or one over its cap, is `InvalidRequest`.
+    UpdateKbEntry {
+        workspace_id: WorkspaceId,
+        file: String,
+        content: String,
+    },
+    /// Every stored entry of `file` → `Ack`.
+    ClearKbEntry {
+        workspace_id: WorkspaceId,
+        file: String,
+    },
+    /// The four files as one Markdown document → `Response::KbExport`.
+    ExportKb {
+        workspace_id: WorkspaceId,
+    },
+    /// Forge Review's latency, graph, swarm, knowledge-base and sandbox numbers,
+    /// for one workspace or every one → `Response::ReviewStats`. Local read.
+    GetReviewStats {
+        #[serde(default)]
+        workspace_id: Option<WorkspaceId>,
+    },
+    /// Send a workspace review's standing findings to a new writable agent,
+    /// review again, and repeat until a review finds nothing or
+    /// `max_iterations` (default 3, at most 10) reviews ran → `FixLoopStarted`,
+    /// then `FixLoopUpdated` events. Never commits. A person's request only:
+    /// `InvalidRequest` for a pull-request review, `Conflict` while one runs.
+    StartFixLoop {
+        review_id: ReviewId,
+        #[serde(default)]
+        max_iterations: Option<u32>,
+        /// The fixer; `None` takes `[review] provider`.
+        #[serde(default)]
+        provider: Option<String>,
+        #[serde(default)]
+        profile_id: Option<AgentProfileId>,
+    },
+    /// Stop a workspace's fix loop → `Ack`; `NotFound` when none runs.
+    CancelFixLoop {
+        workspace_id: WorkspaceId,
+    },
+    /// Run `.forge/review/sandbox.toml`'s targets (or one) in the checkout →
+    /// `Response::SandboxStarted`, then `DaemonEvent::SandboxFinished`.
+    /// `Conflict` while one runs for the workspace.
+    RunSandbox {
+        workspace_id: WorkspaceId,
+        #[serde(default)]
+        target: Option<String>,
+    },
+    /// One sandbox run → `Response::SandboxRun`. Local read.
+    GetSandboxRun {
+        sandbox_run_id: String,
+    },
+    /// Bring the workspace's project graph up to date from its checkout →
+    /// `Response::GraphRebuilt`. `full` re-parses every file. Local, synchronous.
+    RebuildGraph {
+        workspace_id: WorkspaceId,
+        #[serde(default)]
+        full: bool,
+    },
+    /// One query over the project's stored graph → `Response::GraphNodes`;
+    /// builds the graph first when the project has none.
+    QueryGraph {
+        workspace_id: WorkspaceId,
+        query: domain::GraphQuery,
+    },
+    /// The project's graph as text → `Response::GraphExport`, at most 2 000 nodes.
+    ExportGraph {
+        workspace_id: WorkspaceId,
+        format: domain::GraphFormat,
     },
 
     // ----- Sessions -----

@@ -180,6 +180,19 @@ DaemonMessage::Event    (DaemonEvent)
 | | `SetFindingFeedback { review_id, finding_id, reaction }` | `Ack`. Stores, replaces or (with `None`) clears 👍, 👎 or a dismissal. Dismissing or clearing a dismissal rescores the run without its dismissed findings and broadcasts `ReviewUpdated`. `NotFound` for an unknown review or finding. |
 | | `ClearReviewSuppression { workspace_id, suppression }` | `Ack`; lifts one of `ReviewSettings::suppressions`: a fingerprint's dismissals are deleted, a rule's or category's stop counting and stay dismissed. |
 | | `ListReviews { workspace_id, limit }` | `Response::Reviews`, newest first, without findings; `limit` is clamped to 100. |
+| | `StartReview { …, swarm }` | `swarm: SwarmOptions { size, hypotheses }` (default: `[review] swarm_default` agents); size 1 with no hypotheses is the single v1 reviewer. |
+| | `GetReviewDiagram { review_id, kind }` | `Response::ReviewDiagram(Option<Diagram>)` — one kind drawn again for exactly the range the run reviewed, from the current graph. Stores nothing. |
+| | `RebuildGraph { workspace_id, full }` | `Response::GraphRebuilt(GraphStats)` — the project's graph brought up to date from this checkout (`full` re-parses every file). Synchronous, off the core lock. |
+| | `QueryGraph { workspace_id, query }` | `Response::GraphNodes(Vec<GraphNode>)` — callers, callees, similar, path, imports or external calls; builds the graph first when the project has none. |
+| | `ExportGraph { workspace_id, format }` | `Response::GraphExport(String)` — DOT or mermaid, at most 2 000 nodes with a line saying how many were left out. |
+| | `GetKb { workspace_id }` | `Response::Kb(Vec<KbFile>)` — the project's four knowledge-base files, the two derived from feedback included. |
+| | `UpdateKbEntry { workspace_id, file, content }` | `Ack`; a person's `architecture.md` or `patterns.json` (a JSON list of strings), redacted. `InvalidRequest` for a derived file, bad JSON or a cap. |
+| | `ClearKbEntry { workspace_id, file }` / `ExportKb { workspace_id }` | `Ack` / `Response::KbExport(String)`, one Markdown document. |
+| | `RunSandbox { workspace_id, target }` | `Response::SandboxStarted { sandbox_run_id }`, then `SandboxFinished`. `Conflict` while one runs for the workspace. |
+| | `GetSandboxRun { sandbox_run_id }` | `Response::SandboxRun(SandboxRun)`. |
+| | `StartFixLoop { review_id, max_iterations, provider, profile_id }` | `Response::FixLoopStarted { workspace_id }`, then `FixLoopUpdated`. `InvalidRequest` for a pull-request review, `Conflict` while a loop runs for the workspace. A person's request: no MCP tool sends it. |
+| | `CancelFixLoop { workspace_id }` | `Ack`; `NotFound` when no loop runs. |
+| | `GetReviewStats { workspace_id }` | `Response::ReviewStats` — latency per tier and the graph, swarm, knowledge-base and TREX rates. |
 | Project actions | `SuggestActions { workspace_id }` | `Response::ActionSuggestions` — what the workspace root's manifests suggest, plus what `.forge/actions.toml` offers for import (`repo_file`, with parse `error` and `drift`). Bounded, local, **synchronous**; writes and runs nothing. [actions.md](./actions.md). |
 | | `SetProjectActions { project_id, actions }` | Replaces the project's whole action set. `InvalidRequest` for a duplicate label (ignoring case), a `cwd` outside the checkout, a probe without its port, a dependency outside the set, a cycle, or a chain deeper than 4. A live session of a dropped action is untagged (`SessionUpdated`). `ProjectActionsChanged`. |
 | | `RunAction { workspace_id, action_id }` | `SessionCreated`, `ActionAlreadyRunning { session_id }` for a live single-instance action in that workspace, or `ActionQueued { session_id }` while its dependencies come up. The live check and the creation share one critical section. `NotFound` for an action not in the workspace's project. |
@@ -258,6 +271,8 @@ Removed relative to the v1 plan: `FocusSession` (pure GUI state) and generic
 | `AgentDetectionChanged { results }` | After startup detection or a refresh. |
 | `AgentProfilesChanged { profiles }` | The whole set after any profile write (§13.4) — like usage and detection, a merge would strand a deleted profile. |
 | `ReviewUpdated { run }` | A Forge Review changed status or stage. Compact: findings are read with `GetReview` once the run is `Completed`. |
+| `SandboxFinished(SandboxRun)` | A `RunSandbox` ended. |
+| `FixLoopUpdated { workspace_id, iteration, findings, done, error }` | A fix loop ran another review, or stopped (`done`). |
 | `ProjectActionsChanged { project_id, actions }` | One project's whole action set after `SetProjectActions`. |
 | `ProjectSharesChanged { project_id, rules }` | One project's whole rule set after any write (§14.2), for the same reason as the profiles event. |
 | `ProjectWorktreeIgnoresChanged { project_id, rules }` | One project's whole ignore set after `SetWorktreeIgnores` (§14.4) — and when a rescan collects a tombstone, so the GUI's list matches the daemon's. |

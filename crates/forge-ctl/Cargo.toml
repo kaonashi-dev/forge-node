@@ -12,6 +12,7 @@ name = "forgectl"
 path = "src/main.rs"
 
 [dependencies]
+codebase-graph.workspace = true
 domain.workspace = true
 protocol.workspace = true
 client.workspace = true

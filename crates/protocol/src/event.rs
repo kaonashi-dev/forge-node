@@ -218,6 +218,18 @@ pub enum DaemonEvent {
     ReviewUpdated {
         run: domain::ReviewRun,
     },
+    /// A `RunSandbox` finished; the same run `GetSandboxRun` reads.
+    SandboxFinished(Box<domain::SandboxRun>),
+    /// A fix loop moved: `iteration` reviews have run, the last with
+    /// `findings` standing. `done` once it stopped, with `error` when it failed.
+    FixLoopUpdated {
+        workspace_id: WorkspaceId,
+        iteration: u32,
+        findings: u32,
+        done: bool,
+        #[serde(default)]
+        error: Option<String>,
+    },
     /// A `DraftWithJuva` finished.
     ///
     /// The draft always arrives: when the `[juva]` endpoint is off, unreachable

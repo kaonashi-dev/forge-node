@@ -438,6 +438,14 @@ impl App {
                 let _ = self.hook(&state, source.as_deref());
                 Ok(())
             }
+            Command::Review(review::ReviewCmd::Graph {
+                cmd: cmd @ review::GraphCmd::Query { .. },
+            }) => match self.try_connect() {
+                Some(client) => {
+                    self.dispatch(&client, Command::Review(review::ReviewCmd::Graph { cmd }))
+                }
+                None => review::offline_graph_query(self, &cmd),
+            },
             other => self.with_client(|client| self.dispatch(client, other)),
         }
     }
@@ -1604,6 +1612,18 @@ impl App {
     fn with_client(&self, body: impl FnOnce(&Client) -> Result<(), u8>) -> Result<(), u8> {
         let client = self.connect()?;
         body(&client)
+    }
+
+    /// A connection, or `None` without printing why.
+    fn try_connect(&self) -> Option<Client> {
+        let socket = self
+            .socket
+            .clone()
+            .or_else(|| std::env::var_os("FORGE_SOCKET").map(PathBuf::from))
+            .or_else(|| client::socket_path().ok())?;
+        let mut hello = protocol::Hello::new(env!("CARGO_PKG_VERSION"), ClientKind::Cli);
+        hello.caller_session_id = env_session();
+        Client::connect_with(&socket, hello).ok()
     }
 
     fn connect(&self) -> Result<Client, u8> {

@@ -357,6 +357,24 @@ pub struct ReviewConfig {
     pub effort: Option<String>,
     /// Added to every repository's review, before `.forge/review/prompt.md`.
     pub instructions: String,
+    /// Agents per review, each hunting one hypothesis; `1` is the single
+    /// reviewer. Clamped to `1..=8`; a run may ask for another size.
+    pub swarm_default: u8,
+    /// Review workers alive daemon-wide, a superseded one included.
+    pub max_swarms: usize,
+    /// The project knowledge base in `plus` and `apex` packs.
+    pub kb_enabled: bool,
+    /// Other registered projects' signatures, when the repository lists them.
+    pub cross_repo_enabled: bool,
+    /// Run `.forge/review/sandbox.toml`'s targets before an `apex` review.
+    pub trex_enabled: bool,
+}
+
+impl ReviewConfig {
+    #[must_use]
+    pub fn swarm_size(&self, asked: Option<u8>) -> u8 {
+        asked.unwrap_or(self.swarm_default).clamp(1, 8)
+    }
 }
 
 impl Default for ReviewConfig {
@@ -367,6 +385,11 @@ impl Default for ReviewConfig {
             model: None,
             effort: None,
             instructions: String::new(),
+            swarm_default: 3,
+            max_swarms: 2,
+            kb_enabled: true,
+            cross_repo_enabled: false,
+            trex_enabled: false,
         }
     }
 }
@@ -807,6 +830,21 @@ mod tests {
         // Every value in the example is meant to be a default, so parsing it
         // has to be indistinguishable from parsing nothing at all.
         assert_eq!(parsed, Config::default());
+    }
+
+    #[test]
+    fn review_swarm_keys_parse_and_clamp() {
+        let c = Config::default();
+        assert_eq!((c.review.swarm_default, c.review.max_swarms), (3, 2));
+        assert!(c.review.kb_enabled && !c.review.cross_repo_enabled && !c.review.trex_enabled);
+        let c: Config =
+            toml::from_str("[review]\nswarm_default = 12\nmax_swarms = 4\ntrex_enabled = true\n")
+                .unwrap();
+        assert_eq!(c.review.swarm_size(None), 8);
+        assert_eq!(c.review.swarm_size(Some(0)), 1);
+        assert_eq!(c.review.swarm_size(Some(5)), 5);
+        assert_eq!(c.review.max_swarms, 4);
+        assert!(c.review.trex_enabled);
     }
 
     #[test]

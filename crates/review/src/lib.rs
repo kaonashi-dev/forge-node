@@ -1,6 +1,7 @@
 //! Forge Review's pure engine: everything between a diff and a validated,
 //! scored review that does not touch a disk, a process or a clock.
 
+mod blocks;
 mod config;
 mod lineage;
 mod output;
@@ -10,19 +11,23 @@ mod rules;
 mod suppress;
 mod validate;
 
-pub use config::{Categories, Config, ContextSettings, Strictness, CATEGORIES};
+pub use blocks::{blocks, Extras, GraphFunction, RuntimeResult};
+pub use config::{
+    AutoApprove, Categories, Config, ContextSettings, GraphSettings, RiskCeiling, SecuritySettings,
+    Strictness, CATEGORIES,
+};
 pub use lineage::{mark_lineage, resolved, same_lineage};
-pub use output::{parse_output, RawFinding, ReviewOutput, SCHEMA};
-pub use pack::{build_pack, prompt, redact, PackMeta, TierCaps};
+pub use output::{parse_output, RawFinding, ReviewOutput, SCHEMA, SCHEMA_V2};
+pub use pack::{build_pack, excluded_path, prompt, redact, PackMeta, TierCaps};
 pub use presets::{
-    builtins, default_preset, parse_presets, resolve, Preset, Resolved, CUSTOM_PRESET,
+    auto_tier, builtins, default_preset, parse_presets, resolve, Preset, Resolved, CUSTOM_PRESET,
     DEFAULT_PRESET, MAX_INSTRUCTIONS_BYTES,
 };
 pub use rules::{in_scope, parse_rules, Rule};
 pub use suppress::{suppressions, Feedback};
 pub use validate::{
-    fingerprint, hunks, score, validate, verdict, ChangedFile, Validated, MAX_FINDINGS,
-    MAX_SUGGESTION_BYTES, MAX_TEXT_BYTES,
+    auto_approvable, fingerprint, hunks, score, validate, verdict, ChangedFile, Validated,
+    MAX_FINDINGS, MAX_SUGGESTION_BYTES, MAX_TEXT_BYTES,
 };
 
 /// The longest prefix of `text` that fits in `max` bytes without splitting a char.

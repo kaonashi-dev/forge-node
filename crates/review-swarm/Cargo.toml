@@ -1,0 +1,14 @@
+[package]
+name = "review-swarm"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+
+[dependencies]
+domain.workspace = true
+review.workspace = true
+
+[lints]
+workspace = true

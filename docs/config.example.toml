@@ -190,6 +190,13 @@ timeout_secs = 900              # a run with no answer by then fails
 # .forge/review/prompt.md, the preset's and the run's instructions. They never
 # replace the fixed prompt; over 4096 bytes is ignored with a note.
 instructions = ""
+# Agents per review, each hunting one hypothesis (1..=8); 1 is the single
+# reviewer. A run's --swarm-size or --hypothesis overrides it.
+swarm_default = 3
+max_swarms = 2                  # review workers alive daemon-wide
+kb_enabled = true               # the project knowledge base, in plus and apex packs
+cross_repo_enabled = false      # other projects' signatures, when .forge/review lists them
+trex_enabled = false            # run .forge/review/sandbox.toml before an apex review (macOS)
 
 [pull_requests]
 # "Open PR" runs your default agent in the background: it drafts the title,

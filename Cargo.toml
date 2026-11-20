@@ -11,6 +11,11 @@ members = [
     "crates/fs-service",
     "crates/languages",
     "crates/syntax-index",
+    "crates/codebase-graph",
+    "crates/diagram-gen",
+    "crates/review-swarm",
+    "crates/knowledge-base",
+    "crates/runtime-sandbox",
     "crates/external-index",
     "crates/lsp-client",
     "crates/persistence",
@@ -43,6 +48,11 @@ git-service = { path = "crates/git-service" }
 fs-service = { path = "crates/fs-service" }
 languages = { path = "crates/languages" }
 syntax-index = { path = "crates/syntax-index" }
+codebase-graph = { path = "crates/codebase-graph" }
+diagram-gen = { path = "crates/diagram-gen" }
+review-swarm = { path = "crates/review-swarm" }
+knowledge-base = { path = "crates/knowledge-base" }
+runtime-sandbox = { path = "crates/runtime-sandbox" }
 external-index = { path = "crates/external-index" }
 lsp-client = { path = "crates/lsp-client" }
 persistence = { path = "crates/persistence" }

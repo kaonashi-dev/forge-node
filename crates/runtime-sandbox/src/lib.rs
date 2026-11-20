@@ -1,0 +1,326 @@
+//! TREX: a repository's `.forge/review/sandbox.toml` targets run as written,
+//! under macOS `sandbox-exec`, with no network, writes only to the run, the
+//! cache and the temp directory, no view of Forge's own socket or home, and a
+//! cleared environment. Each target is its own process group, killed whole at
+//! its timeout, and only the tail of its output is kept.
+
+use std::collections::VecDeque;
+use std::io::Read;
+use std::os::unix::process::CommandExt as _;
+use std::path::{Path, PathBuf};
+use std::process::{Command, Stdio};
+use std::sync::{mpsc, Arc, Mutex};
+use std::time::{Duration, Instant};
+
+pub const CONFIG_PATH: &str = ".forge/review/sandbox.toml";
+pub const MAX_CONFIG_BYTES: u64 = 16 * 1024;
+pub const UNSUPPORTED: &str = "TREX unsupported on this platform";
+const DEFAULT_TIMEOUT_SECS: u64 = 600;
+const MAX_TIMEOUT_SECS: u64 = 3600;
+const MAX_TARGETS: usize = 32;
+/// Bytes kept from the end of each of stdout and stderr.
+pub const TAIL_BYTES: usize = 8 * 1024;
+const SANDBOX_EXEC: &str = "/usr/bin/sandbox-exec";
+/// How long a killed target's pipes and exit are waited for before giving up on it.
+const REAP_GRACE: Duration = Duration::from_secs(5);
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Target {
+    pub name: String,
+    pub command: String,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SandboxConfig {
+    pub timeout: Duration,
+    /// Fixed values, never inherited.
+    pub env: Vec<(String, String)>,
+    pub targets: Vec<Target>,
+}
+
+/// # Errors
+/// Invalid TOML, a target without a name or a command, a duplicate name, or none at all.
+pub fn parse(text: &str) -> Result<SandboxConfig, String> {
+    let table: toml::Table = text.parse().map_err(|error: toml::de::Error| {
+        format!("sandbox.toml is not valid TOML: {}", error.message())
+    })?;
+    let timeout = match table.get("timeout_secs") {
+        None => DEFAULT_TIMEOUT_SECS,
+        Some(toml::Value::Integer(n)) if *n > 0 => u64::try_from(*n)
+            .unwrap_or(MAX_TIMEOUT_SECS)
+            .min(MAX_TIMEOUT_SECS),
+        Some(_) => return Err("sandbox.toml: `timeout_secs` must be a positive integer".into()),
+    };
+    let mut env = Vec::new();
+    match table.get("env") {
+        None => {}
+        Some(toml::Value::Table(values)) => {
+            for (name, value) in values {
+                let value = value
+                    .as_str()
+                    .ok_or_else(|| format!("sandbox.toml: `[env] {name}` must be a string"))?;
+                env.push((name.clone(), value.to_owned()));
+            }
+        }
+        Some(_) => return Err("sandbox.toml: `[env]` must be a table".into()),
+    }
+    let mut targets: Vec<Target> = Vec::new();
+    let listed = table
+        .get("targets")
+        .and_then(toml::Value::as_array)
+        .ok_or_else(|| "sandbox.toml: no `[[targets]]`".to_owned())?;
+    for item in listed.iter().take(MAX_TARGETS) {
+        let field = |key: &str| {
+            item.get(key)
+                .and_then(toml::Value::as_str)
+                .map(str::trim)
+                .filter(|v| !v.is_empty())
+        };
+        let (Some(name), Some(command)) = (field("name"), field("command")) else {
+            return Err("sandbox.toml: every target needs a `name` and a `command`".into());
+        };
+        if targets.iter().any(|t| t.name == name) {
+            return Err(format!("sandbox.toml: target `{name}` is listed twice"));
+        }
+        targets.push(Target {
+            name: name.to_owned(),
+            command: command.to_owned(),
+        });
+    }
+    if targets.is_empty() {
+        return Err("sandbox.toml: no `[[targets]]`".into());
+    }
+    Ok(SandboxConfig {
+        timeout: Duration::from_secs(timeout),
+        env,
+        targets,
+    })
+}
+
+/// What one run may touch. Every path should already be canonical: the
+/// sandbox matches real paths, and `/tmp` is `/private/tmp` on macOS.
+#[derive(Clone, Debug)]
+pub struct Policy {
+    pub run_dir: PathBuf,
+    pub cache_dir: PathBuf,
+    pub tmp_dir: PathBuf,
+    /// Forge's socket directory and home.
+    pub denied_reads: Vec<PathBuf>,
+    pub network: bool,
+    /// Forge's socket, unreachable even with the network on.
+    pub socket: Option<PathBuf>,
+}
+
+fn quoted(path: &Path) -> String {
+    let text = path.to_string_lossy();
+    format!("\"{}\"", text.replace('\\', "\\\\").replace('"', "\\\""))
+}
+
+/// The built-in SBPL profile for `policy`.
+#[must_use]
+pub fn profile(policy: &Policy) -> String {
+    let mut out = String::from("(version 1)\n(allow default)\n");
+    if !policy.network {
+        out.push_str("(deny network*)\n");
+    }
+    if let Some(socket) = &policy.socket {
+        out.push_str(&format!(
+            "(deny network-outbound (remote unix-socket (path-literal {})))\n",
+            quoted(socket)
+        ));
+    }
+    out.push_str(&format!(
+        "(deny file-write* (require-not (require-any (subpath {}) (subpath {}) (subpath {}) (subpath \"/dev\"))))\n",
+        quoted(&policy.run_dir),
+        quoted(&policy.cache_dir),
+        quoted(&policy.tmp_dir),
+    ));
+    // Data, not metadata: a shell resolves its directory through every
+    // ancestor. The run directory stays reachable even inside a denied one,
+    // as a pull request's head checked out under Forge's home is.
+    for path in &policy.denied_reads {
+        out.push_str(&format!(
+            "(deny file-read-data file-write* (require-all (subpath {}) (require-not (subpath {}))))\n",
+            quoted(path),
+            quoted(&policy.run_dir),
+        ));
+    }
+    out
+}
+
+/// The target's environment: only `whitelist`'s names from `resolved`, then
+/// the file's fixed values, then the cache directory. Nothing named `FORGE_*`
+/// from either, so `FORGE_SANDBOX_CACHE` is the only one.
+#[must_use]
+pub fn environment(
+    whitelist: &[String],
+    resolved: &dyn Fn(&str) -> Option<String>,
+    fixed: &[(String, String)],
+    cache_dir: &Path,
+) -> Vec<(String, String)> {
+    let mut env: Vec<(String, String)> = whitelist
+        .iter()
+        .filter(|name| !name.starts_with("FORGE_"))
+        .filter_map(|name| Some((name.clone(), resolved(name)?)))
+        .collect();
+    for (name, value) in fixed.iter().filter(|(name, _)| !name.starts_with("FORGE_")) {
+        env.retain(|(other, _)| other != name);
+        env.push((name.clone(), value.clone()));
+    }
+    env.push((
+        "FORGE_SANDBOX_CACHE".into(),
+        cache_dir.to_string_lossy().into_owned(),
+    ));
+    env
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct TargetResult {
+    pub name: String,
+    /// `None` when it was killed: by its timeout or a signal.
+    pub exit_code: Option<i32>,
+    pub duration: Duration,
+    pub timed_out: bool,
+    pub stdout: String,
+    pub stderr: String,
+}
+
+impl TargetResult {
+    #[must_use]
+    pub fn passed(&self) -> bool {
+        self.exit_code == Some(0)
+    }
+}
+
+/// The last `cap` bytes a pipe carried.
+#[derive(Default)]
+struct Tail {
+    bytes: VecDeque<u8>,
+}
+
+fn drain(pipe: Option<impl Read>, tail: Arc<Mutex<Tail>>) {
+    let Some(mut pipe) = pipe else { return };
+    let mut chunk = [0u8; 4096];
+    while let Ok(read) = pipe.read(&mut chunk) {
+        if read == 0 {
+            break;
+        }
+        let mut tail = tail
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        tail.bytes.extend(&chunk[..read]);
+        let over = tail.bytes.len().saturating_sub(TAIL_BYTES);
+        tail.bytes.drain(..over);
+    }
+}
+
+fn text(tail: &Arc<Mutex<Tail>>) -> String {
+    let tail = tail
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let bytes: Vec<u8> = tail.bytes.iter().copied().collect();
+    String::from_utf8_lossy(&bytes).into_owned()
+}
+
+fn kill_group(pid: u32) {
+    #[allow(
+        clippy::cast_possible_wrap,
+        reason = "a pid always fits in i32 on unix"
+    )]
+    let raw = pid as i32;
+    let _ = nix::sys::signal::kill(
+        nix::unistd::Pid::from_raw(-raw),
+        nix::sys::signal::Signal::SIGKILL,
+    );
+    let _ = nix::sys::signal::kill(
+        nix::unistd::Pid::from_raw(raw),
+        nix::sys::signal::Signal::SIGKILL,
+    );
+}
+
+/// Run one target in `policy.run_dir`.
+///
+/// # Errors
+/// Not macOS, or the sandbox could not be started.
+pub fn run_target(
+    target: &Target,
+    timeout: Duration,
+    policy: &Policy,
+    env: &[(String, String)],
+) -> Result<TargetResult, String> {
+    if !cfg!(target_os = "macos") {
+        return Err(UNSUPPORTED.into());
+    }
+    let started = Instant::now();
+    let mut child = Command::new(SANDBOX_EXEC)
+        .arg("-p")
+        .arg(profile(policy))
+        .arg("/bin/sh")
+        .arg("-c")
+        .arg(&target.command)
+        .current_dir(&policy.run_dir)
+        .env_clear()
+        .envs(env.iter().map(|(name, value)| (name, value)))
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .process_group(0)
+        .spawn()
+        .map_err(|error| format!("could not start {SANDBOX_EXEC}: {error}"))?;
+    let pid = child.id();
+    let (out, err) = (
+        Arc::new(Mutex::new(Tail::default())),
+        Arc::new(Mutex::new(Tail::default())),
+    );
+    let (drained, finished) = mpsc::channel();
+    {
+        let (pipe, tail, drained) = (child.stdout.take(), Arc::clone(&out), drained.clone());
+        std::thread::spawn(move || {
+            drain(pipe, tail);
+            let _ = drained.send(());
+        });
+    }
+    {
+        let (pipe, tail) = (child.stderr.take(), Arc::clone(&err));
+        std::thread::spawn(move || {
+            drain(pipe, tail);
+            let _ = drained.send(());
+        });
+    }
+    let (tx, rx) = mpsc::channel();
+    std::thread::spawn(move || {
+        let _ = tx.send(child.wait());
+    });
+    let (status, timed_out) = match rx.recv_timeout(timeout) {
+        Ok(status) => (status.ok(), false),
+        Err(_) => {
+            kill_group(pid);
+            (rx.recv_timeout(REAP_GRACE).ok().and_then(Result::ok), true)
+        }
+    };
+    // A descendant that left the group could hold a pipe open; its output is
+    // read for as long as the grace allows and the rest is left behind.
+    kill_group(pid);
+    let deadline = Instant::now() + REAP_GRACE;
+    for _ in 0..2 {
+        let left = deadline.saturating_duration_since(Instant::now());
+        if finished.recv_timeout(left).is_err() {
+            break;
+        }
+    }
+    Ok(TargetResult {
+        name: target.name.clone(),
+        exit_code: if timed_out {
+            None
+        } else {
+            status.and_then(|s| s.code())
+        },
+        duration: started.elapsed(),
+        timed_out,
+        stdout: text(&out),
+        stderr: text(&err),
+    })
+}
+
+#[cfg(test)]
+mod tests;

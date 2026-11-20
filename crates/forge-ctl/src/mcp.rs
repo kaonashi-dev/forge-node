@@ -594,15 +594,42 @@ fn catalog() -> Vec<Tool> {
             &["review", "start"],
             json!({ "workspace": string, "pr": { "type": "integer", "minimum": 1 }, "base": string, "tier": { "type": "string", "enum": ["base", "plus", "apex"] },
                 "provider": string, "preset": string, "instructions": string, "model": string,
-                "effort": string, "wait": boolean })).roles(NOT_A_WORKER),
+                "effort": string, "wait": boolean, "swarm_size": { "type": "integer", "minimum": 1, "maximum": 8 },
+                "hypotheses": { "type": "array", "items": { "type": "string", "enum": HYPOTHESES } } })).roles(NOT_A_WORKER),
         Tool::new("review_show", "A review run and its findings.", &["review", "show"], json!({ "review": string }))
             .required(&["review"]).positional(&["review"]).roles(NOT_A_WORKER),
         Tool::new("review_status", "A workspace's review runs, newest first.",
             &["review", "status"], json!({ "workspace": string })).roles(NOT_A_WORKER),
         Tool::new("review_cancel", "Stop a queued or running review.", &["review", "cancel"], json!({ "review": string }))
             .required(&["review"]).positional(&["review"]).roles(NOT_A_WORKER),
+        Tool::new("review_sandbox_run", "Run the repository's .forge/review/sandbox.toml targets under the macOS sandbox and wait for their exit codes and output.",
+            &["review", "sandbox", "run"], json!({ "workspace": string, "target": string })).roles(NOT_A_WORKER),
+        Tool::new("review_kb_get", "The project's review knowledge base: its architecture, patterns, learned rules and false positives.",
+            &["review", "kb", "show"], json!({ "workspace": string, "file": string })).roles(NOT_A_WORKER),
+        Tool::new("review_graph_query", "Ask the project's codebase graph who calls a function, what it calls, which functions resemble it, or what a file imports or calls outside the project.",
+            &["review", "graph", "query"],
+            json!({ "workspace": string, "query": { "type": "string", "enum": ["callers", "callees", "similar", "imports", "external-calls"] }, "function": string }))
+            .required(&["query", "function"]).flags(&["query"]).positional(&["function"]).roles(NOT_A_WORKER),
     ]
 }
+
+const HYPOTHESES: [&str; 15] = [
+    "RaceCondition",
+    "AuthBypass",
+    "RetryNesting",
+    "BrokenContract",
+    "DefaultMismatch",
+    "ResourceLeak",
+    "ErrorSwallow",
+    "NPlusOneQuery",
+    "MissingValidation",
+    "DeadCode",
+    "InconsistentPattern",
+    "CrossLayerMismatch",
+    "MissingTest",
+    "MigrationGap",
+    "ConfigDrift",
+];
 
 const LAUNCH_FLAGS: &[&str] = &[
     "checkout",
@@ -960,6 +987,18 @@ mod tests {
             ("review_show", json!({ "review": "r" })),
             ("review_status", json!({ "workspace": "w" })),
             ("review_cancel", json!({ "review": "r" })),
+            (
+                "review_graph_query",
+                json!({ "workspace": "w", "query": "external-calls", "function": "src/lib.rs" }),
+            ),
+            (
+                "review_kb_get",
+                json!({ "workspace": "w", "file": "architecture.md" }),
+            ),
+            (
+                "review_sandbox_run",
+                json!({ "workspace": "w", "target": "test" }),
+            ),
         ];
         let covered: std::collections::BTreeSet<&str> =
             samples.iter().map(|(name, _)| *name).collect();
@@ -993,6 +1032,28 @@ mod tests {
             parse("review_start", json!({ "workspace": "w", "pr": 12, "base": "main" })),
             Command::Review(crate::review::ReviewCmd::Start { pr: Some(12), base: Some(base), .. }) if base == "main"
         ));
+        assert!(matches!(
+            parse("review_start", json!({ "workspace": "w", "swarm_size": 5, "hypotheses": ["RaceCondition", "MigrationGap"] })),
+            Command::Review(crate::review::ReviewCmd::Start { swarm_size: Some(5), hypotheses, .. })
+                if hypotheses == [domain::Hypothesis::RaceCondition, domain::Hypothesis::MigrationGap]
+        ));
+        assert!(tool_argv("review_start", &json!({ "hypotheses": ["Nope"] })).is_err());
+        assert!(tool_argv("review_start", &json!({ "swarm_size": 9 })).is_err());
+        assert!(
+            tool_argv("review_start", &json!({ "fix_loop": true })).is_err(),
+            "an agent is not the person"
+        );
+        assert!(matches!(
+            parse("review_graph_query", json!({ "query": "callers", "function": "--full" })),
+            Command::Review(crate::review::ReviewCmd::Graph {
+                cmd: crate::review::GraphCmd::Query { callers: true, callees: false, names, .. }
+            }) if names == ["--full"]
+        ));
+        assert!(tool_argv(
+            "review_graph_query",
+            &json!({ "query": "path", "function": "f" })
+        )
+        .is_err());
         assert!(matches!(
             parse("task_integrate", json!({ "task": "t", "how": "abort" })),
             Command::Task(TaskCmd::Integrate {

@@ -157,6 +157,7 @@ pub fn view(s: &AppState, cx: &mut Cx<AppState>) -> El {
     crate::spec_run::dialog(s, &k, &mut overlays);
     crate::spec_run_view::panel(s, &k, &mut overlays);
     crate::pr_link::dialog(s, &k, &mut overlays);
+    crate::code_review::fix_loop_dialog(s, &k, &mut overlays);
     crate::agent_ops::dialogs(s, &k, &mut overlays);
     close_dialog(s, &k, &mut overlays);
     crate::history::delete_dialog(s, &k, &mut overlays);

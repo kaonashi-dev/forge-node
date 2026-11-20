@@ -146,6 +146,233 @@ pub struct ReviewRun {
     /// request, or when the snapshot could not be written.
     #[serde(default)]
     pub tree_oid: Option<String>,
+    /// At most two, generated from the reviewed diff and the codebase graph.
+    #[serde(default)]
+    pub diagrams: Vec<Diagram>,
+    /// `[review.auto_approve]` would let it through; never acted on by Forge.
+    #[serde(default)]
+    pub auto_approvable: bool,
+    /// Reviewer agents launched; `1` is the single v1 reviewer.
+    #[serde(default = "one_agent")]
+    pub swarm_size: u8,
+    #[serde(default)]
+    pub schema_version: SchemaVersion,
+    #[serde(default)]
+    pub sandbox_run_id: Option<String>,
+}
+
+fn one_agent() -> u8 {
+    1
+}
+
+/// The answer format the run asked its reviewers for.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum SchemaVersion {
+    #[default]
+    V1,
+    V2,
+}
+
+const PROMPT_HEAD: &str = "Forge Review found these issues in your changes. Fix each one, or say \
+                           why it is not a problem:\n\n";
+
+/// Whole findings, in order, within `budget` bytes, and how many did not fit.
+/// Empty when none fits or none is given; `empty_prompt_reason` tells which.
+#[must_use]
+pub fn findings_prompt(findings: &[&Finding], budget: usize) -> (String, usize) {
+    let mut prompt = PROMPT_HEAD.to_string();
+    let mut left_out = 0;
+    for finding in findings {
+        let mut block = format!(
+            "- [{:?}] {}{} — {}\n  {}\n",
+            finding.severity,
+            finding.path,
+            finding
+                .line
+                .map(|line| format!(":{line}"))
+                .unwrap_or_default(),
+            finding.title,
+            finding.body.replace('\n', "\n  "),
+        );
+        if let Some(suggestion) = &finding.suggestion {
+            block.push_str(&format!(
+                "  Suggestion:\n  {}\n",
+                suggestion.replace('\n', "\n  ")
+            ));
+        }
+        block.push('\n');
+        if prompt.len() + block.len() <= budget {
+            prompt.push_str(&block);
+        } else {
+            left_out += 1;
+        }
+    }
+    if left_out == findings.len() {
+        return (String::new(), left_out);
+    }
+    (prompt, left_out)
+}
+
+/// How long completed runs of one tier took, wall clock.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TierLatency {
+    pub tier: Tier,
+    pub runs: u32,
+    pub p50_secs: u64,
+    pub p95_secs: u64,
+}
+
+/// Forge Review's own numbers. Each rate is a percentage, `None` with nothing to measure.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct ReviewStats {
+    pub runs: u32,
+    pub latency: Vec<TierLatency>,
+    /// Graph queries answered from a stored graph against rebuilds, since the daemon started.
+    pub graph_hit_rate: Option<f32>,
+    /// Hypotheses with at least one kept finding, over every swarm run's agents.
+    pub swarm_coverage: Option<f32>,
+    /// Completed runs with a finding that cites the knowledge base.
+    pub kb_hit_rate: Option<f32>,
+    /// Sandbox-linked runs with a failed target.
+    pub trex_failure_rate: Option<f32>,
+    pub kb_bytes: u64,
+}
+
+// Every rate is a finite quotient rounded to a tenth, never NaN, so equality is total.
+impl Eq for ReviewStats {}
+
+/// One target of a sandbox run.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SandboxTarget {
+    pub name: String,
+    /// `None` when it was killed by its timeout or a signal.
+    pub exit_code: Option<i32>,
+    pub duration_ms: u64,
+    #[serde(default)]
+    pub timed_out: bool,
+    /// The last 8 KiB of each, redacted.
+    pub stdout: String,
+    pub stderr: String,
+}
+
+impl SandboxTarget {
+    #[must_use]
+    pub fn passed(&self) -> bool {
+        self.exit_code == Some(0)
+    }
+}
+
+/// `.forge/review/sandbox.toml`'s targets run once, for a review or by hand.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SandboxRun {
+    pub id: String,
+    pub workspace_id: WorkspaceId,
+    #[serde(default)]
+    pub review_id: Option<ReviewId>,
+    pub targets: Vec<SandboxTarget>,
+    /// Why nothing ran: no file, a bad file, an unsupported platform.
+    #[serde(default)]
+    pub error: Option<String>,
+    pub started_at: Timestamp,
+    #[serde(default)]
+    pub finished_at: Option<Timestamp>,
+}
+
+impl SandboxRun {
+    #[must_use]
+    pub fn failed(&self) -> bool {
+        self.error.is_some() || self.targets.iter().any(|target| !target.passed())
+    }
+}
+
+/// One file of a project's review knowledge base.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct KbFile {
+    /// `architecture.md`, `patterns.json`, `learned-rules.md` or `false-positives.json`.
+    pub file: String,
+    pub content: String,
+    /// `daemon`, `user`, or `derived` for the two read off feedback.
+    pub source: String,
+    #[serde(default)]
+    pub updated_at: Option<Timestamp>,
+}
+
+/// A run's swarm: `size` agents (`None` takes `[review] swarm_default`), or
+/// one per listed hypothesis.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SwarmOptions {
+    #[serde(default)]
+    pub size: Option<u8>,
+    #[serde(default)]
+    pub hypotheses: Vec<Hypothesis>,
+}
+
+/// What one swarm agent hunts for; serialized as its name.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
+#[non_exhaustive]
+pub enum Hypothesis {
+    RaceCondition,
+    AuthBypass,
+    RetryNesting,
+    BrokenContract,
+    DefaultMismatch,
+    ResourceLeak,
+    ErrorSwallow,
+    NPlusOneQuery,
+    MissingValidation,
+    DeadCode,
+    InconsistentPattern,
+    CrossLayerMismatch,
+    MissingTest,
+    MigrationGap,
+    ConfigDrift,
+}
+
+impl Hypothesis {
+    pub const ALL: [Hypothesis; 15] = [
+        Hypothesis::RaceCondition,
+        Hypothesis::AuthBypass,
+        Hypothesis::RetryNesting,
+        Hypothesis::BrokenContract,
+        Hypothesis::DefaultMismatch,
+        Hypothesis::ResourceLeak,
+        Hypothesis::ErrorSwallow,
+        Hypothesis::NPlusOneQuery,
+        Hypothesis::MissingValidation,
+        Hypothesis::DeadCode,
+        Hypothesis::InconsistentPattern,
+        Hypothesis::CrossLayerMismatch,
+        Hypothesis::MissingTest,
+        Hypothesis::MigrationGap,
+        Hypothesis::ConfigDrift,
+    ];
+
+    #[must_use]
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::RaceCondition => "RaceCondition",
+            Self::AuthBypass => "AuthBypass",
+            Self::RetryNesting => "RetryNesting",
+            Self::BrokenContract => "BrokenContract",
+            Self::DefaultMismatch => "DefaultMismatch",
+            Self::ResourceLeak => "ResourceLeak",
+            Self::ErrorSwallow => "ErrorSwallow",
+            Self::NPlusOneQuery => "NPlusOneQuery",
+            Self::MissingValidation => "MissingValidation",
+            Self::DeadCode => "DeadCode",
+            Self::InconsistentPattern => "InconsistentPattern",
+            Self::CrossLayerMismatch => "CrossLayerMismatch",
+            Self::MissingTest => "MissingTest",
+            Self::MigrationGap => "MigrationGap",
+            Self::ConfigDrift => "ConfigDrift",
+        }
+    }
+
+    #[must_use]
+    pub fn from_name(name: &str) -> Option<Self> {
+        Self::ALL.into_iter().find(|h| h.name() == name)
+    }
 }
 
 // `score` is a clamped multiple of 0.5, never NaN, so equality is total.
@@ -177,6 +404,12 @@ pub struct Finding {
     /// Read from the feedback table, never stored with the finding.
     #[serde(default)]
     pub reaction: Option<FindingReaction>,
+    /// The swarm agent that reported it; `None` for a single reviewer.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub hypothesis: Option<Hypothesis>,
+    /// The knowledge-base section it cites: `architecture.md#<section>`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub kb_ref: Option<String>,
 }
 
 // `confidence` is clamped to `0..=1`, never NaN, so equality is total.
@@ -254,6 +487,223 @@ pub struct ReviewRule {
     pub enabled: bool,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
+#[non_exhaustive]
+pub enum NodeKind {
+    File,
+    Function,
+    Class,
+    Variable,
+    /// A call nothing in the project defines, one node per name.
+    ExternalCall,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
+#[non_exhaustive]
+pub enum EdgeKind {
+    Calls,
+    Imports,
+    Uses,
+    Declares,
+    Inherits,
+    Defines,
+}
+
+/// One node of a project's codebase graph, as a query answers it.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct GraphNode {
+    pub kind: NodeKind,
+    /// Empty for an external call.
+    pub path: String,
+    pub name: String,
+    /// 1-based line of the declaration; `0` for a file or an external call.
+    pub line: u32,
+    #[serde(default)]
+    pub signature: String,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", content = "arg", rename_all = "snake_case")]
+#[non_exhaustive]
+pub enum GraphQuery {
+    Callers(String),
+    Callees(String),
+    Similar(String),
+    Path(String, String),
+    Imports(String),
+    ExternalCalls(String),
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct GraphStats {
+    pub nodes: u32,
+    pub edges: u32,
+    /// Files parsed by this build; an incremental build parses only what changed.
+    pub parsed: u32,
+    /// Files listed but not parsed (over a budget, unreadable, no grammar is not one).
+    pub skipped: Vec<String>,
+    pub git_oid: String,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+#[non_exhaustive]
+pub enum GraphFormat {
+    Dot,
+    Mermaid,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+#[non_exhaustive]
+pub enum DiagramKind {
+    Sequence,
+    Er,
+    Class,
+    Flow,
+}
+
+/// Forge's own diagram, drawn by the GUI and exportable to mermaid. A
+/// sequence's nodes are its participants in order and its edges its messages
+/// in order; an entity's label is its name, then one field per line.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Diagram {
+    pub kind: DiagramKind,
+    pub title: String,
+    pub nodes: Vec<DiagramNode>,
+    pub edges: Vec<DiagramEdge>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DiagramNode {
+    pub id: String,
+    pub label: String,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DiagramEdge {
+    pub from: String,
+    pub to: String,
+    #[serde(default)]
+    pub label: String,
+}
+
+fn mermaid_text(text: &str) -> String {
+    text.replace('"', "#quot;").replace(['\n', '\r'], " ")
+}
+
+fn mermaid_id(id: &str) -> String {
+    id.chars()
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || c == '_' {
+                c
+            } else {
+                '_'
+            }
+        })
+        .collect()
+}
+
+impl Diagram {
+    #[must_use]
+    pub fn to_mermaid(&self) -> String {
+        use std::fmt::Write as _;
+        let mut out = String::new();
+        match self.kind {
+            DiagramKind::Sequence => {
+                out.push_str("sequenceDiagram\n");
+                for node in &self.nodes {
+                    let _ = writeln!(
+                        out,
+                        "    participant {} as {}",
+                        mermaid_id(&node.id),
+                        mermaid_text(&node.label)
+                    );
+                }
+                for edge in &self.edges {
+                    let _ = writeln!(
+                        out,
+                        "    {}->>{}: {}",
+                        mermaid_id(&edge.from),
+                        mermaid_id(&edge.to),
+                        mermaid_text(&edge.label)
+                    );
+                }
+            }
+            DiagramKind::Er => {
+                out.push_str("erDiagram\n");
+                for node in &self.nodes {
+                    let mut lines = node.label.lines();
+                    let _ = lines.next();
+                    let _ = writeln!(out, "    {} {{", mermaid_id(&node.id));
+                    for field in lines {
+                        let _ = writeln!(out, "        field {}", mermaid_id(field.trim()));
+                    }
+                    out.push_str("    }\n");
+                }
+                for edge in &self.edges {
+                    let _ = writeln!(
+                        out,
+                        "    {} }}o--|| {} : \"{}\"",
+                        mermaid_id(&edge.from),
+                        mermaid_id(&edge.to),
+                        mermaid_text(&edge.label)
+                    );
+                }
+            }
+            DiagramKind::Class => {
+                out.push_str("classDiagram\n");
+                for node in &self.nodes {
+                    let _ = writeln!(
+                        out,
+                        "    class {}[\"{}\"]",
+                        mermaid_id(&node.id),
+                        mermaid_text(&node.label)
+                    );
+                }
+                for edge in &self.edges {
+                    let _ = writeln!(
+                        out,
+                        "    {} <|-- {}",
+                        mermaid_id(&edge.to),
+                        mermaid_id(&edge.from)
+                    );
+                }
+            }
+            DiagramKind::Flow => {
+                out.push_str("flowchart TD\n");
+                for node in &self.nodes {
+                    let _ = writeln!(
+                        out,
+                        "    {}[\"{}\"]",
+                        mermaid_id(&node.id),
+                        mermaid_text(&node.label)
+                    );
+                }
+                for edge in &self.edges {
+                    if edge.label.is_empty() {
+                        let _ = writeln!(
+                            out,
+                            "    {} --> {}",
+                            mermaid_id(&edge.from),
+                            mermaid_id(&edge.to)
+                        );
+                    } else {
+                        let _ = writeln!(
+                            out,
+                            "    {} -->|{}| {}",
+                            mermaid_id(&edge.from),
+                            mermaid_text(&edge.label),
+                            mermaid_id(&edge.to)
+                        );
+                    }
+                }
+            }
+        }
+        out
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -289,6 +739,11 @@ mod tests {
             finished_at: None,
             branch: Some("main".into()),
             tree_oid: None,
+            diagrams: Vec::new(),
+            auto_approvable: false,
+            swarm_size: 1,
+            schema_version: SchemaVersion::V1,
+            sandbox_run_id: None,
         };
         let json = serde_json::to_value(&run).unwrap();
         assert_eq!(json["tier"], "plus");
@@ -312,9 +767,54 @@ mod tests {
             suggestion: Some("let x = 2;".into()),
             lineage: Lineage::Persisting,
             reaction: Some(FindingReaction::Dismiss),
+            hypothesis: Some(Hypothesis::NPlusOneQuery),
+            kb_ref: None,
         };
         let json = serde_json::to_value(&finding).unwrap();
         assert_eq!(json["severity"], "P1");
         assert_eq!(serde_json::from_value::<Finding>(json).unwrap(), finding);
+    }
+
+    fn diagram(kind: DiagramKind) -> Diagram {
+        let node = |id: &str, label: &str| DiagramNode {
+            id: id.into(),
+            label: label.into(),
+        };
+        Diagram {
+            kind,
+            title: "t".into(),
+            nodes: vec![node("a.rs", "a.rs"), node("b", "Users\nid\nemail")],
+            edges: vec![DiagramEdge {
+                from: "a.rs".into(),
+                to: "b".into(),
+                label: "total \"x\"".into(),
+            }],
+        }
+    }
+
+    #[test]
+    fn each_diagram_kind_exports_to_its_mermaid_form() {
+        let sequence = diagram(DiagramKind::Sequence).to_mermaid();
+        assert_eq!(
+            sequence,
+            "sequenceDiagram\n    participant a_rs as a.rs\n    participant b as Users id email\n    a_rs->>b: total #quot;x#quot;\n"
+        );
+        let er = diagram(DiagramKind::Er).to_mermaid();
+        assert!(
+            er.starts_with("erDiagram\n")
+                && er.contains("    b {\n        field id\n        field email\n    }\n"),
+            "{er}"
+        );
+        assert!(diagram(DiagramKind::Class)
+            .to_mermaid()
+            .contains("    b <|-- a_rs\n"));
+        let flow = diagram(DiagramKind::Flow).to_mermaid();
+        assert!(
+            flow.starts_with("flowchart TD\n    a_rs[\"a.rs\"]\n"),
+            "{flow}"
+        );
+        assert!(flow.contains("a_rs -->|total #quot;x#quot;| b"));
+        let json = serde_json::to_value(diagram(DiagramKind::Er)).unwrap();
+        assert_eq!(json["kind"], "er");
     }
 }

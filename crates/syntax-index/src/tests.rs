@@ -800,3 +800,91 @@ fn lookup_latency_on_this_repository() {
         );
     }
 }
+
+fn calls_imports_inherits(
+    path: &str,
+    source: &str,
+) -> (Vec<String>, Vec<String>, Vec<(String, String)>) {
+    let symbols = symbols(path, source).expect("a parsed language");
+    let mut calls: Vec<String> = symbols.calls.into_iter().map(|call| call.name).collect();
+    calls.sort();
+    calls.dedup();
+    (calls, symbols.imports, symbols.inherits)
+}
+
+fn pairs(items: &[(&str, &str)]) -> Vec<(String, String)> {
+    items
+        .iter()
+        .map(|(child, parent)| ((*child).to_string(), (*parent).to_string()))
+        .collect()
+}
+
+#[test]
+fn rust_calls_uses_and_trait_impls_are_symbols() {
+    let source = "use crate::store::Store;\nmod net;\nstruct Disk;\nimpl Render for Disk { fn render(&self) { helper(); self.flush(); store::open(); } }\nfn helper() {}\n";
+    let (calls, imports, inherits) = calls_imports_inherits("src/lib.rs", source);
+    assert_eq!(calls, ["flush", "helper", "open"]);
+    assert_eq!(imports, ["crate::store::Store", "net"]);
+    assert_eq!(inherits, pairs(&[("Disk", "Render")]));
+    let symbols = symbols("src/lib.rs", source).expect("rust");
+    let helper = symbols
+        .definitions
+        .iter()
+        .find(|definition| definition.name == "helper")
+        .expect("helper is a definition");
+    assert_eq!(helper.kind, "function");
+    assert_eq!(helper.signature, "fn helper() {}");
+    assert_eq!(&source[helper.span.0..helper.span.1], "fn helper() {}");
+}
+
+#[test]
+fn typescript_calls_imports_extends_and_implements_are_symbols() {
+    let source = "import { open } from './store';\nclass Circle extends Base implements Shape { draw() { open(); this.paint(); new Brush(); } }\ninterface Round extends Shape {}\n";
+    let (calls, imports, inherits) = calls_imports_inherits("web/app.ts", source);
+    assert_eq!(calls, ["Brush", "open", "paint"]);
+    assert_eq!(imports, ["./store"]);
+    assert_eq!(
+        inherits,
+        pairs(&[("Circle", "Base"), ("Circle", "Shape"), ("Round", "Shape")])
+    );
+}
+
+#[test]
+fn tsx_calls_and_imports_are_symbols() {
+    let source = "import React from 'react';\nexport function App() { return render(<div/>); }\n";
+    let (calls, imports, _) = calls_imports_inherits("web/app.tsx", source);
+    assert_eq!(calls, ["render"]);
+    assert_eq!(imports, ["react"]);
+}
+
+#[test]
+fn javascript_calls_imports_and_extends_are_symbols() {
+    let source = "import { open } from './store.js';\nclass Circle extends Base { draw() { open(); this.paint(); } }\n";
+    let (calls, imports, inherits) = calls_imports_inherits("web/app.js", source);
+    assert_eq!(calls, ["open", "paint"]);
+    assert_eq!(imports, ["./store.js"]);
+    assert_eq!(inherits, pairs(&[("Circle", "Base")]));
+}
+
+#[test]
+fn python_calls_imports_and_base_classes_are_symbols() {
+    let source = "import os.path\nfrom store import open_store\nclass Disk(Base, Mixin):\n    def run(self):\n        open_store()\n        self.flush()\n";
+    let (calls, imports, inherits) = calls_imports_inherits("app/disk.py", source);
+    assert_eq!(calls, ["flush", "open_store"]);
+    assert_eq!(imports, ["os.path", "store"]);
+    assert_eq!(inherits, pairs(&[("Disk", "Base"), ("Disk", "Mixin")]));
+}
+
+#[test]
+fn go_calls_and_imports_are_symbols_and_nothing_inherits() {
+    let source = "package main\nimport (\n\t\"fmt\"\n\t\"example.com/store\"\n)\nfunc main() { fmt.Println(); helper(); store.Open() }\nfunc helper() {}\n";
+    let (calls, imports, inherits) = calls_imports_inherits("cmd/main.go", source);
+    assert_eq!(calls, ["Open", "Println", "helper"]);
+    assert_eq!(imports, ["fmt", "example.com/store"]);
+    assert!(inherits.is_empty());
+}
+
+#[test]
+fn a_file_without_a_grammar_has_no_symbols() {
+    assert!(symbols("README.md", "# title").is_none());
+}

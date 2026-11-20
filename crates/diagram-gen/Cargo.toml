@@ -1,0 +1,17 @@
+[package]
+name = "diagram-gen"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+
+[dependencies]
+codebase-graph.workspace = true
+domain.workspace = true
+
+[lints]
+workspace = true
+
+[dev-dependencies]
+syntax-index.workspace = true

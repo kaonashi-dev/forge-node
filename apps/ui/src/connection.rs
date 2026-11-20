@@ -241,6 +241,28 @@ pub enum Command {
         generation: u64,
         review_id: domain::ReviewId,
     },
+    QueryGraph {
+        generation: u64,
+        review_id: domain::ReviewId,
+        workspace_id: WorkspaceId,
+        path: String,
+        query: domain::GraphQuery,
+    },
+    GetKb {
+        generation: u64,
+        workspace_id: WorkspaceId,
+    },
+    GetSandboxRun {
+        generation: u64,
+        review_id: domain::ReviewId,
+        sandbox_run_id: String,
+    },
+    StartFixLoop {
+        review_id: domain::ReviewId,
+        max_iterations: Option<u32>,
+        provider: Option<String>,
+        profile_id: Option<domain::AgentProfileId>,
+    },
     /// Queued for the agent's next idle; `left_out` is only reported back.
     SendSessionPrompt {
         session_id: SessionId,
@@ -577,6 +599,23 @@ pub enum UiEvent {
         generation: u64,
         review_id: domain::ReviewId,
         result: Result<domain::WorkspaceDiff, String>,
+    },
+    GraphNodes {
+        generation: u64,
+        review_id: domain::ReviewId,
+        path: String,
+        query: domain::GraphQuery,
+        result: Result<Vec<domain::GraphNode>, String>,
+    },
+    Kb {
+        generation: u64,
+        workspace_id: WorkspaceId,
+        result: Result<Vec<domain::KbFile>, String>,
+    },
+    SandboxRun {
+        generation: u64,
+        review_id: domain::ReviewId,
+        result: Result<Box<domain::SandboxRun>, String>,
     },
     SpecRun {
         generation: u64,
@@ -952,6 +991,58 @@ impl ConnectionHandle {
         self.send(Command::GetReviewDiff {
             generation,
             review_id,
+        })
+    }
+
+    pub fn query_graph(
+        &self,
+        generation: u64,
+        review_id: domain::ReviewId,
+        workspace_id: WorkspaceId,
+        path: String,
+        query: domain::GraphQuery,
+    ) -> Result<(), String> {
+        self.send(Command::QueryGraph {
+            generation,
+            review_id,
+            workspace_id,
+            path,
+            query,
+        })
+    }
+
+    pub fn get_kb(&self, generation: u64, workspace_id: WorkspaceId) -> Result<(), String> {
+        self.send(Command::GetKb {
+            generation,
+            workspace_id,
+        })
+    }
+
+    pub fn get_sandbox_run(
+        &self,
+        generation: u64,
+        review_id: domain::ReviewId,
+        sandbox_run_id: String,
+    ) -> Result<(), String> {
+        self.send(Command::GetSandboxRun {
+            generation,
+            review_id,
+            sandbox_run_id,
+        })
+    }
+
+    pub fn start_fix_loop(
+        &self,
+        review_id: domain::ReviewId,
+        max_iterations: Option<u32>,
+        provider: Option<String>,
+        profile_id: Option<domain::AgentProfileId>,
+    ) -> Result<(), String> {
+        self.send(Command::StartFixLoop {
+            review_id,
+            max_iterations,
+            provider,
+            profile_id,
         })
     }
 
@@ -2144,6 +2235,61 @@ fn handle_fixture_command(
                 review_id,
                 result: Err("the recorded snapshot has no review store".into()),
             }]);
+        }
+        Command::QueryGraph {
+            generation: command_generation,
+            review_id,
+            path,
+            query,
+            ..
+        } => {
+            if command_generation != generation {
+                return;
+            }
+            sink(vec![UiEvent::GraphNodes {
+                generation,
+                review_id,
+                path,
+                query,
+                result: Err("the recorded snapshot has no review store".into()),
+            }]);
+        }
+        Command::GetKb {
+            generation: command_generation,
+            workspace_id,
+        } => {
+            if command_generation != generation {
+                return;
+            }
+            sink(vec![UiEvent::Kb {
+                generation,
+                workspace_id,
+                result: Err("the recorded snapshot has no review store".into()),
+            }]);
+        }
+        Command::GetSandboxRun {
+            generation: command_generation,
+            review_id,
+            ..
+        } => {
+            if command_generation != generation {
+                return;
+            }
+            sink(vec![UiEvent::SandboxRun {
+                generation,
+                review_id,
+                result: Err("the recorded snapshot has no review store".into()),
+            }]);
+        }
+        Command::StartFixLoop { .. } => {
+            fixture_result(
+                generation,
+                "StartFixLoop",
+                Err("the recorded snapshot has no review store".into()),
+                sink,
+                metrics,
+                started,
+            );
         }
         Command::RunSpec { .. } => {
             metrics.commands_completed.fetch_add(1, Ordering::Relaxed);
@@ -3431,6 +3577,7 @@ fn handle_live_command(
                     preset,
                     instructions,
                     domain::AgentLaunchOptions::default(),
+                    domain::SwarmOptions::default(),
                 )
                 .map_err(|error| error.to_string());
             sink(vec![UiEvent::ReviewStarted {
@@ -3553,6 +3700,77 @@ fn handle_live_command(
                 review_id,
                 result,
             }]);
+        }
+        Command::QueryGraph {
+            generation: command_generation,
+            review_id,
+            workspace_id,
+            path,
+            query,
+        } => {
+            if command_generation != generation {
+                return;
+            }
+            metrics.note_socket_op();
+            let result = client
+                .query_graph(workspace_id, query.clone())
+                .map_err(|error| error.to_string());
+            sink(vec![UiEvent::GraphNodes {
+                generation,
+                review_id,
+                path,
+                query,
+                result,
+            }]);
+        }
+        Command::GetKb {
+            generation: command_generation,
+            workspace_id,
+        } => {
+            if command_generation != generation {
+                return;
+            }
+            metrics.note_socket_op();
+            let result = client
+                .get_kb(workspace_id)
+                .map_err(|error| error.to_string());
+            sink(vec![UiEvent::Kb {
+                generation,
+                workspace_id,
+                result,
+            }]);
+        }
+        Command::GetSandboxRun {
+            generation: command_generation,
+            review_id,
+            sandbox_run_id,
+        } => {
+            if command_generation != generation {
+                return;
+            }
+            metrics.note_socket_op();
+            let result = client
+                .get_sandbox_run(sandbox_run_id)
+                .map(Box::new)
+                .map_err(|error| error.to_string());
+            sink(vec![UiEvent::SandboxRun {
+                generation,
+                review_id,
+                result,
+            }]);
+        }
+        Command::StartFixLoop {
+            review_id,
+            max_iterations,
+            provider,
+            profile_id,
+        } => {
+            metrics.note_socket_op();
+            let result = client
+                .start_fix_loop(review_id, max_iterations, provider, profile_id)
+                .map(|()| "The fix loop started.".to_string())
+                .map_err(|error| error.to_string());
+            live_result(generation, "StartFixLoop", result, sink, metrics, started);
         }
         Command::SendSessionPrompt {
             session_id,
@@ -4580,6 +4798,10 @@ fn command_label(command: &Command) -> &'static str {
         Command::SetFindingFeedback { .. } => "SetFindingFeedback",
         Command::ClearReviewSuppression { .. } => "ClearReviewSuppression",
         Command::GetReviewDiff { .. } => "GetReviewDiff",
+        Command::QueryGraph { .. } => "QueryGraph",
+        Command::GetKb { .. } => "GetKb",
+        Command::GetSandboxRun { .. } => "GetSandboxRun",
+        Command::StartFixLoop { .. } => "StartFixLoop",
         Command::SendSessionPrompt { .. } => "SendSessionPrompt",
         Command::StopDaemon { .. } => "StopDaemon",
         Command::FactoryReset => "FactoryReset",
