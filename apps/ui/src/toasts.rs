@@ -2,7 +2,7 @@
 //! happened, never a question: failures wait longer than successes, and every
 //! one can be dismissed without moving focus into the region.
 
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use rune::El;
 use rune_kit::Kit;
@@ -20,7 +20,9 @@ pub struct Toast {
     pub tone: Tone,
     pub title: String,
     pub detail: Option<String>,
-    shown: Instant,
+    /// The runtime clock (seconds) at the first poll that saw the toast: a push has no clock,
+    /// and the motion gate's clock is virtual, so wall time would expire toasts mid-animation.
+    shown: Option<f64>,
     life: Duration,
 }
 
@@ -49,7 +51,7 @@ impl Toasts {
             tone,
             title: title.into(),
             detail,
-            shown: Instant::now(),
+            shown: None,
             life,
         });
         if self.items.len() > VISIBLE {
@@ -76,11 +78,14 @@ impl Toasts {
         before != self.items.len()
     }
 
-    /// Drops what has been on screen long enough; true when the list changed.
-    pub fn expire(&mut self, now: Instant) -> bool {
+    /// Drops what has been on screen long enough at `clock`, the runtime's seconds; true when
+    /// the list changed.
+    pub fn expire(&mut self, clock: f64) -> bool {
         let before = self.items.len();
-        self.items
-            .retain(|toast| now.saturating_duration_since(toast.shown) < toast.life);
+        self.items.retain_mut(|toast| {
+            let shown = *toast.shown.get_or_insert(clock);
+            clock - shown < toast.life.as_secs_f64()
+        });
         before != self.items.len()
     }
 
@@ -135,8 +140,9 @@ mod tests {
         let id = toasts.visible()[0].id;
         assert!(toasts.dismiss(id));
         assert!(!toasts.dismiss(id));
-        assert!(!toasts.expire(Instant::now()));
-        assert!(toasts.expire(Instant::now() + DANGER_FOR));
+        assert!(!toasts.expire(10.0));
+        assert!(!toasts.expire(10.0 + DANGER_FOR.as_secs_f64() - 0.1));
+        assert!(toasts.expire(10.0 + DANGER_FOR.as_secs_f64()));
         assert!(toasts.is_empty());
     }
 

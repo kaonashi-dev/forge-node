@@ -476,10 +476,26 @@ fn catalog() -> Vec<Tool> {
             &["session", "restart"], session.clone()).required(&["session"]).positional(&["session"]),
         Tool::new("close_session", "Remove an ended session from the tree.",
             &["session", "close"], session).required(&["session"]).positional(&["session"]),
-        Tool::new("run_spec", "Run a spec with two agents: launch a planner (Claude at high effort) that reads the spec, writes a plan, launches the coder, waits, reviews and sends its review. spec is a Claude artifact link, a Markdown file path or the full spec text. preset claude codes with Claude at medium effort; mix codes with Cursor, or with coder (for example opencode). coder_profile and planner_profile pick an account by profile name or UUID.",
+        Tool::new("run_spec", "Start a spec run: a drafter resolves the spec into criteria, then the person passes the spec, plan and result gates in Forge while a planner plans and reviews and Forge runs the coder rounds and the plan's checks. spec is a Claude artifact link, a Markdown file path or the full spec text. The coder works in a new worktree unless checkout; delivery is no_commit (default), commit or draft_pr. preset claude codes with Claude at medium effort; mix codes with Cursor, or with coder (for example opencode). coder_profile and planner_profile pick an account by profile name or UUID.",
             &["spec", "run"], spec_properties(true)).required(&["spec"]).positional(&["spec"]).roles(NOT_A_WORKER),
         Tool::new("spec_brief", "Return the planner brief for a spec, for the calling session to act as the planner itself instead of launching one.",
             &["spec", "brief"], spec_properties(false)).required(&["spec"]).positional(&["spec"]).roles(NOT_A_WORKER),
+        Tool::new("draft_spec", "Start a spec run from an idea, a GitHub issue (#123 or its link, read with gh issue view), a file or a Claude artifact. The drafter writes a spec with AC-n criteria, or ends early with needs_details, intended_behavior, not_actionable or too_big.",
+            &["spec", "draft"], spec_properties(true)).required(&["spec"]).positional(&["spec"]).roles(NOT_A_WORKER),
+        Tool::new("spec_save", "Hand over this spec run's spec, research, plan or early exit from a file. Forge validates it and refuses it with every reason.",
+            &["spec", "save"], json!({ "run": string, "kind": { "type": "string", "enum": ["spec", "research", "plan", "exit"] }, "file": string, "artifact_url": string }))
+            .required(&["kind", "file"]).positional(&["run"]).roles(NOT_A_WORKER),
+        Tool::new("spec_report", "Hand over this spec run's report from a file. Forge checks it against the approved spec, the reviewed diff and this round's checks.",
+            &["spec", "report"], json!({ "run": string, "file": string, "artifact_url": string }))
+            .required(&["file"]).positional(&["run"]).roles(NOT_A_WORKER),
+        Tool::new("spec_round", "After a review: file holds numbered findings for the next coder round, or accept true accepts the current task and starts the next one.",
+            &["spec", "round"], json!({ "run": string, "file": string, "accept": boolean }))
+            .positional(&["run"]).roles(NOT_A_WORKER),
+        Tool::new("spec_status", "Spec runs with their stage, round and whether they wait on a person.",
+            &["spec", "status"], json!({ "run": string, "attention": boolean }))
+            .positional(&["run"]).roles(NOT_A_WORKER),
+        Tool::new("spec_show", "One spec run with its spec, plan, report and the checks Forge runs.",
+            &["spec", "show"], json!({ "run": string })).required(&["run"]).positional(&["run"]).roles(NOT_A_WORKER),
         // A worker's side of a run. Identity is the session's FORGE_* environment.
         Tool::new("context", "This task's current context: run objective, brief, spec, acceptance, accepted dependencies, board keys and the unread message count.",
             &["context"], json!({})).roles(&[Role::Worker]),
@@ -588,6 +604,14 @@ fn catalog() -> Vec<Tool> {
     ]
 }
 
+const LAUNCH_FLAGS: &[&str] = &[
+    "checkout",
+    "no_forge_review",
+    "session_per_stage",
+    "publish_spec",
+    "publish_report",
+];
+
 fn spec_properties(launch: bool) -> Value {
     let string = json!({ "type": "string" });
     let mut properties = json!({
@@ -608,6 +632,13 @@ fn spec_properties(launch: bool) -> Value {
             ] {
                 properties.insert(key.into(), string.clone());
             }
+            for key in LAUNCH_FLAGS {
+                properties.insert((*key).into(), json!({ "type": "boolean" }));
+            }
+            properties.insert(
+                "delivery".into(),
+                json!({ "type": "string", "enum": ["no-commit", "commit", "draft-pr"] }),
+            );
         }
     }
     properties
@@ -828,6 +859,18 @@ mod tests {
                 "spec_brief",
                 json!({ "spec": "--docs/spec.md", "worktree": "spec/x", "base": "main" }),
             ),
+            (
+                "draft_spec",
+                json!({ "spec": "#123", "project": "api", "checkout": true, "delivery": "draft-pr", "no_forge_review": true }),
+            ),
+            (
+                "spec_save",
+                json!({ "run": "0198a1b2", "kind": "plan", "file": "plan.md", "artifact_url": "https://claude.ai/artifact/x" }),
+            ),
+            ("spec_report", json!({ "file": "report.md" })),
+            ("spec_round", json!({ "run": "0198a1b2", "accept": true })),
+            ("spec_status", json!({ "attention": true })),
+            ("spec_show", json!({ "run": "0198a1b2" })),
             ("context", json!({})),
             (
                 "report",

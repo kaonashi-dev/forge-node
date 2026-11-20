@@ -382,6 +382,71 @@ impl Daemon {
     }
 }
 
+impl Daemon {
+    /// A `Task` session running one approved check command, the way an action runs, without
+    /// being an action: a spec run's checks were approved at its plan gate.
+    pub(crate) fn launch_check(
+        self: &Arc<Self>,
+        workspace_id: WorkspaceId,
+        title: String,
+        command: String,
+    ) -> Result<SessionId, ProtocolError> {
+        let session_id = SessionId::new();
+        let root = self.workspace_path(workspace_id)?;
+        self.ensure_env();
+        let (spec, session) = {
+            let mut inner = self.lock();
+            if inner.removing.contains(&workspace_id) {
+                return Err(ProtocolError::conflict(
+                    "the workspace is being removed; no check can start in it",
+                ));
+            }
+            let now = Timestamp::now();
+            let session = Session {
+                id: session_id,
+                workspace_id,
+                kind: SessionKind::Task,
+                role: SessionRole::Tester,
+                parent_session_id: None,
+                root_session_id: session_id,
+                terminal_id: None,
+                editor: None,
+                agent_provider_id: None,
+                agent_profile_id: None,
+                title: SessionTitle {
+                    user: Some(title),
+                    terminal: None,
+                },
+                state: SessionState::Starting,
+                created_at: now,
+                launch_command: Some(command.clone()),
+                last_activity_at: now,
+                ended_at: None,
+                base_commit: None,
+                activity: AgentActivity::unknown(),
+                action: None,
+                background: false,
+            };
+            let spec = self.plain_task_spec(&mut inner, &root, session_id, &command)?;
+            inner
+                .db
+                .sessions()
+                .upsert(&session)
+                .map_err(crate::core::db_err)?;
+            inner.sessions.insert(session_id, session.clone());
+            (spec, session)
+        };
+        self.registry
+            .broadcast_domain(DaemonEvent::SessionCreated(session));
+        self.spawn_terminal(session_id, spec, true)
+            .map_err(|reason| {
+                self.mark_session_failed(session_id, reason.clone());
+                ProtocolError::new(ErrorCode::SpawnError, reason)
+            })?;
+        Ok(session_id)
+    }
+}
+
 fn task_session(
     session_id: SessionId,
     workspace_id: WorkspaceId,
@@ -968,6 +1033,7 @@ mod tests {
             cwd: None,
             single_instance: true,
             pinned: false,
+            gate: false,
             ready,
             port: None,
             depends_on: depends_on.iter().map(|dep| dep.id).collect(),

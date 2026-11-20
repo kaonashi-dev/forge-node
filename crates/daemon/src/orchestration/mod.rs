@@ -447,6 +447,7 @@ fn dispatch(daemon: &Arc<Daemon>, request: Request) -> Result<Response, Protocol
             profile_id,
             placement,
             branch,
+            None,
         ),
         Request::RunTask {
             caller_session_id,
@@ -485,6 +486,7 @@ fn dispatch(daemon: &Arc<Daemon>, request: Request) -> Result<Response, Protocol
                 profile_id,
                 placement,
                 branch,
+                None,
             )
         }
         Request::ReportAttempt {
@@ -1207,6 +1209,10 @@ fn abandon_uncommitted_start(
     }
 }
 
+#[allow(
+    clippy::too_many_arguments,
+    reason = "the request's fields plus a spec run's own coder launch, passed through once"
+)]
 fn start_attempt(
     daemon: &Arc<Daemon>,
     caller: Option<SessionId>,
@@ -1215,6 +1221,7 @@ fn start_attempt(
     profile_id: Option<domain::AgentProfileId>,
     placement: AttemptPlacement,
     branch: Option<String>,
+    custom: Option<CoderLaunch>,
 ) -> Result<Response, ProtocolError> {
     let limits = daemon.config_orchestration().limits();
     let plan = {
@@ -1315,24 +1322,31 @@ fn start_attempt(
     let path = daemon.workspace_path(workspace)?;
     let read_only = task.mode == WorkMode::ReadOnly;
     let surface = daemon.tool_surface(&daemon.lock(), &provider_id, read_only);
-    let prompt = compose_worker_prompt(&WorkerPromptInput {
-        run_id: run.id,
-        task_id: task.id,
-        attempt_n: n,
-        title: &task.title,
-        objective: &run.objective,
-        spec: &task.spec,
-        acceptance: &task.acceptance,
-        brief: &run.brief,
-        brief_version: run.brief_version,
-        workspace_path: &path.to_string_lossy(),
-        branch: branch_name.as_deref().unwrap_or(""),
-        base_short: base_commit.as_deref().unwrap_or(""),
-        dependencies: &dep_refs,
-        feedback: task.feedback.as_deref(),
-        previous_report: previous_summary(daemon, task.id).as_deref(),
-        surface,
-    });
+    let (prompt, options, title) = match custom {
+        Some(custom) => (custom.prompt, custom.options, custom.title),
+        None => (
+            compose_worker_prompt(&WorkerPromptInput {
+                run_id: run.id,
+                task_id: task.id,
+                attempt_n: n,
+                title: &task.title,
+                objective: &run.objective,
+                spec: &task.spec,
+                acceptance: &task.acceptance,
+                brief: &run.brief,
+                brief_version: run.brief_version,
+                workspace_path: &path.to_string_lossy(),
+                branch: branch_name.as_deref().unwrap_or(""),
+                base_short: base_commit.as_deref().unwrap_or(""),
+                dependencies: &dep_refs,
+                feedback: task.feedback.as_deref(),
+                previous_report: previous_summary(daemon, task.id).as_deref(),
+                surface,
+            }),
+            domain::AgentLaunchOptions::default(),
+            None,
+        ),
+    };
     set_spawn_env(vec![
         ("FORGE_RUN_ID".into(), run.id.to_string()),
         ("FORGE_TASK_ID".into(), task.id.to_string()),
@@ -1340,7 +1354,7 @@ fn start_attempt(
         ("FORGECTL_JSON".into(), "1".into()),
     ]);
     let parent = run.controller_session_id;
-    let created = daemon.create_session(
+    let created = daemon.create_session_with_options(
         workspace,
         SessionKind::Agent,
         Some(provider_id.clone()),
@@ -1354,6 +1368,10 @@ fn start_attempt(
         None,
         Some(prompt),
         read_only,
+        options,
+        title,
+        None,
+        false,
     )?;
     let (session_id, terminal_id) = session_and_terminal(&created)?;
     let now = Timestamp::now();
@@ -1565,6 +1583,7 @@ fn report_attempt(
     daemon
         .registry
         .broadcast_domain(protocol::DaemonEvent::TaskUpdated(task));
+    crate::spec_runs::attempt_reported(daemon, attempt_id);
     Ok(Response::Ack)
 }
 
@@ -1732,7 +1751,9 @@ fn decide_task(
                     },
                 )
             };
-            start_attempt(daemon, caller, task_id, provider, profile, placement, None)
+            start_attempt(
+                daemon, caller, task_id, provider, profile, placement, None, None,
+            )
         }
         TaskDecision::Cancel { kill } => {
             let mut inner = daemon.lock();
@@ -3399,4 +3420,162 @@ impl Daemon {
     fn config_orchestration(&self) -> crate::config::OrchestrationConfig {
         self.orchestration_config()
     }
+}
+
+/// A spec run's coder launch: its own prompt (the plan's coder rules, not the worker contract)
+/// and the effort and model the run picked.
+pub(crate) struct CoderLaunch {
+    pub prompt: String,
+    pub options: domain::AgentLaunchOptions,
+    pub title: Option<String>,
+}
+
+/// The ledger a spec run's coder works in: one run whose integration workspace is the coder's
+/// checkout, and its tasks in order, each `after` naming earlier tasks by index. The daemon is
+/// the caller, so no controller check applies.
+pub(crate) fn open_spec_ledger(
+    daemon: &Arc<Daemon>,
+    controller: Option<SessionId>,
+    project_id: ProjectId,
+    objective: String,
+    workspace: WorkspaceId,
+    tasks: Vec<(String, String, String, Vec<usize>)>,
+) -> Result<(RunId, Vec<TaskId>), ProtocolError> {
+    let spec = if controller.is_some() {
+        ControllerSpec::SelfSession
+    } else {
+        ControllerSpec::None
+    };
+    let Response::RunCreated { run_id, .. } = create_run(
+        daemon,
+        controller,
+        project_id,
+        objective,
+        spec,
+        IntegrationPlacement::Workspace(workspace),
+        None,
+        None,
+    )?
+    else {
+        return Err(internal("create run did not return an id"));
+    };
+    let mut ids: Vec<TaskId> = Vec::new();
+    for (title, spec, acceptance, after) in tasks {
+        let after = after.iter().filter_map(|i| ids.get(*i).copied()).collect();
+        let Response::TaskCreated { task_id } = create_task(
+            daemon,
+            None,
+            run_id,
+            title,
+            spec,
+            acceptance,
+            after,
+            WorkMode::Write,
+            false,
+        )?
+        else {
+            return Err(internal("create task did not return an id"));
+        };
+        ids.push(task_id);
+    }
+    Ok((run_id, ids))
+}
+
+/// Start the next coder attempt of a spec-run task in `workspace`; a reported task goes back to
+/// ready with `feedback` first, within the attempt budget.
+pub(crate) fn start_spec_attempt(
+    daemon: &Arc<Daemon>,
+    task_id: TaskId,
+    coder: &domain::spec_run::model::AgentPick,
+    workspace: WorkspaceId,
+    feedback: Option<String>,
+    launch: CoderLaunch,
+) -> Result<(AttemptId, SessionId), ProtocolError> {
+    if let Some(feedback) = feedback {
+        let limits = daemon.config_orchestration().limits();
+        let mut inner = daemon.lock();
+        let task = task_mut(&mut inner, task_id)?;
+        if task.attempts_used >= limits.max_attempts_per_task {
+            return Err(policy(RailRefusal {
+                rail: "max_attempts",
+                message: "attempt budget is spent".into(),
+            }));
+        }
+        let (feedback, _) = domain::orchestration::clamp_text(&feedback, MAX_MESSAGE_BYTES);
+        task.feedback = Some(feedback);
+        task.status = TaskStatus::Ready;
+        task.revision = task.revision.saturating_add(1);
+        task.updated_at = Timestamp::now();
+        let task = task.clone();
+        persist_task(&inner, &task)?;
+        drop(inner);
+        daemon
+            .registry
+            .broadcast_domain(protocol::DaemonEvent::TaskUpdated(task));
+    }
+    match start_attempt(
+        daemon,
+        None,
+        task_id,
+        coder.provider.clone(),
+        coder.profile,
+        AttemptPlacement::Workspace(workspace),
+        None,
+        Some(launch),
+    )? {
+        Response::AttemptStarted {
+            attempt_id,
+            session_id,
+            ..
+        } => Ok((attempt_id, session_id)),
+        _ => Err(internal("start attempt did not return an id")),
+    }
+}
+
+pub(crate) fn accept_spec_task(daemon: &Arc<Daemon>, task_id: TaskId) -> Result<(), ProtocolError> {
+    let (revision, accepted) = {
+        let inner = daemon.lock();
+        inner
+            .ledger
+            .tasks
+            .get(&task_id)
+            .map(|task| (task.revision, task.status == TaskStatus::Accepted))
+            .ok_or_else(|| ProtocolError::not_found("task"))?
+    };
+    // A retry after the next task failed to start finds this one already accepted.
+    if accepted {
+        return Ok(());
+    }
+    decide_task(
+        daemon,
+        None,
+        task_id,
+        revision,
+        TaskDecision::Accept { note: None },
+        None,
+        None,
+    )
+    .map(|_| ())
+}
+
+/// Cancel every open task of a spec run's ledger and kill its live attempts' sessions.
+pub(crate) fn cancel_spec_ledger(daemon: &Arc<Daemon>, run_id: RunId) -> Result<(), ProtocolError> {
+    close_run(daemon, None, run_id, true, false, None).map(|_| ())
+}
+
+/// The task, session and report of a settled attempt.
+pub(crate) fn spec_attempt_facts(
+    daemon: &Daemon,
+    attempt_id: AttemptId,
+) -> Option<(
+    TaskId,
+    Option<SessionId>,
+    Option<domain::orchestration::AttemptReport>,
+)> {
+    let inner = daemon.lock();
+    inner
+        .ledger
+        .attempts
+        .get(&attempt_id)
+        .map(|attempt| (attempt.task_id, attempt.session_id, attempt.report.clone()))
 }

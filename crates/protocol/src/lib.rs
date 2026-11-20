@@ -40,7 +40,7 @@ pub use response::{DaemonStats, ProviderInfo, Response, SessionsByState};
 /// every new request with an undecodable frame and no `Response` — the caller
 /// waits on a reply that never comes. Equality at connect turns that stall
 /// into `ClientError::VersionMismatch`. N/N-1 compatibility is not supported.
-pub const PROTOCOL_VERSION: u32 = 41;
+pub const PROTOCOL_VERSION: u32 = 42;
 
 /// The most one `SendSessionPrompt` or `SendShellCommand` may carry, in bytes.
 pub const MAX_PROMPT_BYTES: usize = 8_192;
@@ -360,6 +360,7 @@ mod tests {
             external_agents: vec![],
             pull_requests: Box::new(sample_pull_request_state()),
             runs: vec![],
+            spec_runs: Vec::new(),
             usage: vec![],
         };
         let msg = DaemonMessage::Response {

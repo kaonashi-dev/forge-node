@@ -155,6 +155,7 @@ pub fn view(s: &AppState, cx: &mut Cx<AppState>) -> El {
     rename_dialog(s, &k, &mut overlays);
     crate::pr_review::dialog(s, &k, &mut overlays);
     crate::spec_run::dialog(s, &k, &mut overlays);
+    crate::spec_run_view::panel(s, &k, &mut overlays);
     crate::pr_link::dialog(s, &k, &mut overlays);
     crate::agent_ops::dialogs(s, &k, &mut overlays);
     close_dialog(s, &k, &mut overlays);

@@ -949,8 +949,13 @@ fn the_reviewer_takes_model_and_effort_from_the_config_then_the_run() {
     let second = start_launching(&client, workspace, Some("sonnet"), Some("low"))
         .expect("the run's own options");
     assert_ne!(second, first, "another model supersedes");
-    let old = wait_run(&events, first, |run| run.status.is_finished());
-    assert_eq!(old.status, ReviewStatus::Cancelled);
+    // The superseded worker settles when it sees its cancel, often after the second reviewer
+    // started; waiting on its event would swallow the one `reviewer_args` needs.
+    assert!(common::poll_until(common::DEADLINE, || get(&client, first)
+        .0
+        .status
+        .is_finished()));
+    assert_eq!(get(&client, first).0.status, ReviewStatus::Cancelled);
     let (_, args) = reviewer_args(&harness, &events, second);
     assert!(args.contains("--model sonnet"), "{args}");
     assert!(args.contains("--effort low"), "{args}");

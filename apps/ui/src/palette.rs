@@ -20,8 +20,10 @@ pub enum Command {
     Panel(Panel),
     ToggleSidebar,
     NewWorktree,
-    /// The planner of a spec run, in the window's checkout.
+    /// A spec run from a written spec, in the window's checkout.
     RunSpec,
+    /// A spec run from an idea or an issue.
+    DraftSpec,
     /// A pasted pull-request link, opened as if its sidebar row were pressed.
     ReviewPullRequestLink,
     /// A base, or `"system"`.
@@ -62,7 +64,7 @@ impl Command {
                 .map_or(&glyphs::PANEL_LEFT_OPEN, |(.., glyph)| *glyph),
             Command::ToggleSidebar => &glyphs::PANEL_LEFT_OPEN,
             Command::NewWorktree => &glyphs::WORKTREE,
-            Command::RunSpec => &glyphs::SPAWN_CHILD,
+            Command::RunSpec | Command::DraftSpec => &glyphs::SPAWN_CHILD,
             Command::ReviewPullRequestLink => &glyphs::PULL_REQUEST,
             Command::Theme(_) => &glyphs::APPEARANCE,
             Command::RunAction(_) => &glyphs::PLAY,
@@ -308,6 +310,7 @@ fn commands() -> Vec<(String, Command)> {
         ("New Terminal".to_string(), Command::NewShell),
         ("New Worktree".to_string(), Command::NewWorktree),
         ("Run Spec…".to_string(), Command::RunSpec),
+        ("Draft Spec…".to_string(), Command::DraftSpec),
         (
             "Review Pull Request…".to_string(),
             Command::ReviewPullRequestLink,
@@ -546,7 +549,10 @@ impl Palette {
                     || matches!(
                         entry,
                         Entry::Command {
-                            command: Command::NewShell | Command::NewAgent(..) | Command::RunSpec,
+                            command: Command::NewShell
+                                | Command::NewAgent(..)
+                                | Command::RunSpec
+                                | Command::DraftSpec,
                             ..
                         }
                     )
@@ -1134,7 +1140,8 @@ mod tests {
                 "New Claude Code".to_string(),
                 "New Claude Work".to_string(),
                 "New Terminal".to_string(),
-                "Run Spec…".to_string()
+                "Run Spec…".to_string(),
+                "Draft Spec…".to_string()
             ],
             "a profile is launchable by name, and a spec run starts agents too"
         );

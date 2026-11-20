@@ -242,6 +242,53 @@ pub fn create_pull_request_with_cli(
     Ok(PullRequest { url })
 }
 
+/// The largest issue body a spec run keeps, as `source.md` is capped for the drafter.
+pub const MAX_ISSUE_BYTES: usize = 48 * 1024;
+
+/// An issue as Markdown: its title, link and body, the body cut at [`MAX_ISSUE_BYTES`].
+/// `reference` is `123`, `#123` or the issue's URL, as `gh issue view` takes it.
+///
+/// # Errors
+/// `gh` fails, times out, or answers something that is not the issue's JSON.
+pub fn issue_markdown(cli: &GitHubCli, repo: &Path, reference: &str) -> Result<String, GitError> {
+    let reference = reference.trim().trim_start_matches('#');
+    let args = vec![
+        "issue".to_string(),
+        "view".to_string(),
+        reference.to_string(),
+        "--json".to_string(),
+        "title,body,url".to_string(),
+    ];
+    let output = run_gh(cli, Some(repo), &args)?;
+    if !output.success() {
+        return Err(output.into_error(cli, &args));
+    }
+    #[derive(serde::Deserialize)]
+    struct Issue {
+        title: String,
+        #[serde(default)]
+        body: String,
+        url: String,
+    }
+    let issue: Issue = serde_json::from_str(output.stdout.trim()).map_err(|error| {
+        command_failed(cli, &args, 0, format!("unreadable issue JSON: {error}"))
+    })?;
+    let mut body = issue.body;
+    if body.len() > MAX_ISSUE_BYTES {
+        let mut cut = MAX_ISSUE_BYTES;
+        while !body.is_char_boundary(cut) {
+            cut -= 1;
+        }
+        body.truncate(cut);
+        body.push_str("\n\n(truncated by Forge)");
+    }
+    Ok(format!(
+        "# {}\n\nIssue: {}\n\n{body}\n",
+        issue.title.trim(),
+        issue.url
+    ))
+}
+
 /// Parse a Git remote URL into host and `owner/name` coordinates.
 ///
 /// Supported forms include scp-style SSH (`git@host:owner/repo.git`), HTTPS,

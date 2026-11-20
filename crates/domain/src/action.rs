@@ -36,6 +36,9 @@ pub struct ProjectAction {
     pub single_instance: bool,
     /// Shown on the workspace row without hovering.
     pub pinned: bool,
+    /// The repository gate a spec run checks last; at most one per project.
+    #[serde(default)]
+    pub gate: bool,
     #[serde(default)]
     pub ready: ActionReady,
     #[serde(default)]

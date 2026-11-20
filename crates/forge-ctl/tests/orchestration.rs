@@ -722,7 +722,7 @@ fn session_dispatch_crosses_projects_without_graph_edges_and_waits_by_events() {
     assert_eq!(responses.len(), 8);
     assert_eq!(
         responses[1]["result"]["tools"].as_array().unwrap().len(),
-        56
+        62
     );
     assert_eq!(responses[2]["result"]["structuredContent"]["ok"], true);
     for response in &responses[2..] {
@@ -3133,9 +3133,10 @@ fn a_planning_session_hands_its_plan_to_other_agents() {
     );
 }
 
-/// A spec arrives as a file, as text or as a Claude artifact link; the planner gets the brief.
+/// A spec arrives as a file, as text or as a Claude artifact link; a drafter starts the run and a
+/// person passes its gates from the CLI.
 #[test]
-fn spec_runs_launch_a_planner_that_owns_the_coder_launch() {
+fn spec_runs_start_with_a_drafter_and_pass_gates_from_the_cli() {
     let harness = Harness::new();
     let repo = init_repo(harness.tmp.path());
     let running = harness.boot();
@@ -3160,18 +3161,24 @@ fn spec_runs_launch_a_planner_that_owns_the_coder_launch() {
     assert_eq!(run["spec"]["kind"], "file");
     assert_eq!(run["coder"]["provider"], "claude");
     assert_eq!(run["coder"]["effort"], "medium");
-    let planner = field(&run["planner"], "session_id");
-    let shown = ok(&ctl.run(&["session", "show", &planner], &[]));
-    assert_eq!(shown["title"]["user"], "cache planner");
-    let args = launch_args(&harness, &planner);
+    assert_eq!(run["placement"]["kind"], "worktree");
+    assert!(run["placement"]["branch"]
+        .as_str()
+        .unwrap()
+        .starts_with("spec/cache-"));
+    let id = run["spec_run"].as_str().unwrap().to_owned();
+    let drafter = run["drafter"].as_str().unwrap().to_owned();
+    let shown = ok(&ctl.run(&["session", "show", &drafter], &[]));
+    assert_eq!(shown["title"]["user"], "cache drafter");
+    let args = launch_args(&harness, &drafter);
     assert!(args.contains("--effort high"), "{args}");
     assert!(
-        args.contains("session spawn --provider claude --role executor --effort medium --parent self --name 'cache coder'"),
+        args.contains(&format!("You are the drafter of spec run {id}")),
         "{args}"
     );
     let canonical = fs::canonicalize(&spec).unwrap();
     assert!(
-        args.contains(&format!("The spec is the file {}", canonical.display())),
+        args.contains(&format!("a copy of {}", canonical.display())),
         "{args}"
     );
 
@@ -3188,20 +3195,15 @@ fn spec_runs_launch_a_planner_that_owns_the_coder_launch() {
             "opencode",
             "--worktree",
             "spec/cache",
+            "--delivery",
+            "draft-pr",
         ],
         &[],
     ));
     assert_eq!(mixed["spec"]["kind"], "inline");
-    let args = launch_args(&harness, &field(&mixed["planner"], "session_id"));
-    assert!(
-        args.contains("--provider opencode --role executor --parent self"),
-        "{args}"
-    );
-    assert!(args.contains("--worktree spec/cache"), "{args}");
-    assert!(
-        args.contains("<<<SPEC\nAdd a cache to the loader.\nKeep the public API.\nSPEC>>>"),
-        "{args}"
-    );
+    assert_eq!(mixed["coder"]["provider"], "opencode");
+    assert_eq!(mixed["placement"]["branch"], "spec/cache");
+    assert_eq!(mixed["delivery"], "draft_pr");
 
     // Cursor's effort rides on a model, so mix with an effort alone is refused before any launch.
     let before = ok(&ctl.run(&["session", "list"], &[]))["sessions"]
@@ -3239,6 +3241,43 @@ fn spec_runs_launch_a_planner_that_owns_the_coder_launch() {
         .len();
     assert_eq!(before, after);
 
+    // The drafter hands its spec over; only a person passes the gate.
+    let written = harness.tmp.path().join("resolved.md");
+    fs::write(
+        &written,
+        "# Cache\n\n## Acceptance criteria\n- AC-1: WHEN loaded twice THE SYSTEM SHALL read once\n  - Automatic validation: `true` → exit 0\n",
+    )
+    .unwrap();
+    let as_drafter = [("FORGE_SESSION_ID", drafter.as_str())];
+    ok(&ctl.run(
+        &[
+            "spec",
+            "save",
+            "--kind",
+            "spec",
+            "--file",
+            &written.to_string_lossy(),
+        ],
+        &as_drafter,
+    ));
+    let waiting = ok(&ctl.run(&["spec", "status", "--attention"], &[]));
+    let listed = waiting["spec_runs"].as_array().unwrap();
+    assert!(
+        listed
+            .iter()
+            .any(|r| r["id"] == id.as_str() && r["stage"] == "spec_gate"),
+        "{waiting}"
+    );
+    err(
+        &ctl.run(&["spec", "gate", &id, "--approve"], &as_drafter),
+        5,
+    );
+    err(&ctl.run(&["spec", "gate", &id, "--changes", " "], &[]), 1);
+    ok(&ctl.run(&["spec", "gate", &id, "--approve"], &[]));
+    let shown = ok(&ctl.run(&["spec", "show", &id], &[]));
+    assert_eq!(shown["run"]["stage"], "planning");
+    assert!(shown["spec"].as_str().unwrap().contains("AC-1"));
+
     let brief = ok(&ctl.run(
         &[
             "spec",
@@ -3249,7 +3288,7 @@ fn spec_runs_launch_a_planner_that_owns_the_coder_launch() {
             "--coder",
             "opencode",
         ],
-        &[("FORGE_SESSION_ID", planner.as_str())],
+        &[("FORGE_SESSION_ID", drafter.as_str())],
     ));
     assert_eq!(brief["spec"]["kind"], "claude_artifact");
     let text = brief["brief"].as_str().unwrap();
@@ -3293,16 +3332,9 @@ fn spec_runs_launch_a_planner_that_owns_the_coder_launch() {
         &[],
     ));
     assert_eq!(accounts["coder"]["profile"], work.as_str());
-    let planner = field(&accounts["planner"], "session_id");
-    let shown = ok(&ctl.run(&["session", "show", &planner], &[]));
+    let drafter = accounts["drafter"].as_str().unwrap().to_owned();
+    let shown = ok(&ctl.run(&["session", "show", &drafter], &[]));
     assert_eq!(shown["agent_profile_id"], personal.as_str());
-    let args = launch_args(&harness, &planner);
-    assert!(
-        args.contains(&format!(
-            "--provider claude --profile {work} --role executor"
-        )),
-        "the brief names the coder's profile by UUID: {args}"
-    );
     err(
         &ctl.run(
             &[

@@ -96,8 +96,8 @@ fn migrations_apply_and_user_version_advances() {
     // count of applied migrations, and the assertion is what catches a migration
     // that was silently reordered or dropped.
     assert_eq!(
-        version, 23,
-        "twenty-three migrations applied => user_version == 23"
+        version, 24,
+        "twenty-four migrations applied => user_version == 24"
     );
 
     for table in [
@@ -193,7 +193,7 @@ fn version_two_database_upgrades_existing_projects_into_general() {
         .conn()
         .query_row("PRAGMA user_version", [], |row| row.get(0))
         .unwrap();
-    assert_eq!(version, 23);
+    assert_eq!(version, 24);
 }
 
 /// Migration 6 over a database that already has workspaces: the display_name
@@ -1090,7 +1090,7 @@ fn sessions_schema_is_unchanged() {
         .conn()
         .query_row("PRAGMA user_version", [], |r| r.get(0))
         .unwrap();
-    assert_eq!(version, 23, "every migration up to the reviewed tree");
+    assert_eq!(version, 24, "every migration up to the spec runs");
 
     let (db, _project, workspace_id) = db_with_workspace();
     let mut session = mk_session(workspace_id, SessionState::Running);
@@ -1244,7 +1244,7 @@ fn reset_clears_every_application_table_and_keeps_the_schema() {
         .conn()
         .query_row("PRAGMA user_version", [], |row| row.get(0))
         .unwrap();
-    assert_eq!(version, 23, "reset retains the migrated schema");
+    assert_eq!(version, 24, "reset retains the migrated schema");
 }
 
 // ---- on-disk open ----------------------------------------------------------
@@ -1539,6 +1539,7 @@ fn mk_action(project: ProjectId, label: &str, kind: ActionKind) -> ProjectAction
         cwd: None,
         single_instance: true,
         pinned: false,
+        gate: false,
         ready: ActionReady::None,
         port: None,
         depends_on: Vec::new(),
@@ -1996,4 +1997,78 @@ fn findings_whose_commit_fails_are_rolled_back() {
     let orphan = domain::ReviewId::new();
     assert!(crate::repositories::reviews::insert_findings(conn, orphan, &[mk_finding(1)]).is_err());
     assert!(conn.is_autocommit(), "the transaction was rolled back");
+}
+
+#[test]
+fn a_spec_run_round_trips_as_metadata() {
+    use domain::spec_run::model::{
+        AgentPick, Placement, SourceRef, SpecOptions, SpecRunView, SpecStage,
+    };
+    let (db, project, ws) = db_with_workspace();
+    let store = db.spec_run_store().unwrap();
+    let pick = AgentPick {
+        provider: domain::AgentProviderId::new("claude"),
+        profile: None,
+        effort: Some("high".into()),
+        model: None,
+    };
+    let mut run = SpecRunView {
+        id: domain::SpecRunId::new(),
+        project_id: project,
+        workspace_id: ws,
+        name: "cache".into(),
+        stage: SpecStage::Drafting,
+        route: domain::spec_run::model::Route::Standard,
+        source: SourceRef {
+            kind: "inline".into(),
+            reference: String::new(),
+            sha256: Some("ab".into()),
+        },
+        planner: pick.clone(),
+        coder: pick,
+        options: SpecOptions {
+            placement: Placement::Worktree {
+                branch: "spec/cache".into(),
+                base: None,
+            },
+            delivery: domain::spec_run::model::Delivery::NoCommit,
+            rounds: 3,
+            forge_review: true,
+            session_per_stage: false,
+            publish_spec: false,
+            publish_report: false,
+        },
+        sessions: Vec::new(),
+        coder_workspace_id: None,
+        base_commit: None,
+        dirty_at_launch: Vec::new(),
+        ledger_run: None,
+        tasks: Vec::new(),
+        current_task: 0,
+        round: 0,
+        gate: None,
+        checks: Vec::new(),
+        deviations: Vec::new(),
+        review_id: None,
+        spec_sha256: None,
+        plan_sha256: None,
+        has_research: false,
+        has_plan: false,
+        has_report: false,
+        spec_artifact_url: None,
+        report_artifact_url: None,
+        outcome: None,
+        manual_checked: Vec::new(),
+        attention: None,
+        last_reason: None,
+        created_at: Timestamp::now(),
+        updated_at: Timestamp::now(),
+    };
+    store.upsert(&run).unwrap();
+    run.stage = SpecStage::SpecGate;
+    store.upsert(&run).unwrap();
+    assert_eq!(store.list().unwrap(), vec![run.clone()]);
+
+    assert!(store.delete(run.id).unwrap());
+    assert!(store.list().unwrap().is_empty());
 }

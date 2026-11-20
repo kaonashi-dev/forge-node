@@ -2,7 +2,19 @@
 
 use std::path::{Path, PathBuf};
 
+use crate::orchestration::ToolSurface;
 use crate::{AgentDescriptor, EffortSpelling};
+
+mod brief;
+pub mod model;
+pub mod principles;
+pub mod schema;
+pub mod stages;
+
+pub use brief::{
+    coder_rules, compose_drafter_prompt, compose_planner_prompt, guide, resolve_spec_section,
+    DrafterInput, ReportTo, Tools, MAX_STAGE_INSTRUCTIONS, REPORT_FORMAT,
+};
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum SpecSource {
@@ -32,7 +44,7 @@ pub enum SpecError {
     MissingFile(String),
 }
 
-const ARTIFACT_HOSTS: [&str; 2] = ["claude.ai", "claude.site"];
+pub(crate) const ARTIFACT_HOSTS: [&str; 2] = ["claude.ai", "claude.site"];
 const SPEC_EXTENSIONS: [&str; 4] = ["md", "markdown", "mdx", "txt"];
 
 /// A path-like value that is not a file is an error, never a one-line inline spec.
@@ -61,7 +73,7 @@ pub fn classify(raw: &str, is_file: impl Fn(&Path) -> bool) -> Result<SpecSource
     Ok(SpecSource::Inline(trimmed.to_owned()))
 }
 
-fn link_host(raw: &str) -> Option<String> {
+pub(crate) fn link_host(raw: &str) -> Option<String> {
     if raw.chars().any(char::is_whitespace) {
         return None;
     }
@@ -167,6 +179,8 @@ pub struct SpecRun {
     pub base: Option<String>,
     pub rounds: u32,
     pub planner_is_session: bool,
+    /// How the planner reaches Forge, so the brief names its tools.
+    pub surface: ToolSurface,
 }
 
 fn quote(text: &str) -> String {
@@ -180,7 +194,7 @@ fn quote(text: &str) -> String {
     format!("'{}'", text.replace('\'', r"'\''"))
 }
 
-fn source_section(source: &SpecSource) -> String {
+pub fn source_section(source: &SpecSource) -> String {
     match source {
         SpecSource::ClaudeArtifact(url) => format!(
             "The spec is a Claude artifact: {url}\n\nRead it with your Claude artifact tool \
@@ -199,140 +213,6 @@ fn source_section(source: &SpecSource) -> String {
             format!("The spec follows, between the markers.\n\n<<<SPEC\n{text}\nSPEC>>>")
         }
     }
-}
-
-#[must_use]
-pub fn compose_planner_prompt(run: &SpecRun) -> String {
-    let ctl = quote(&run.forgectl.to_string_lossy());
-    let mut spawn = format!(
-        "{ctl} --json session spawn --provider {}",
-        quote(&run.coder.provider)
-    );
-    if let Some(profile) = &run.coder.profile {
-        spawn.push_str(&format!(" --profile {}", quote(profile)));
-    }
-    spawn.push_str(" --role executor");
-    if let Some(effort) = &run.coder.effort {
-        spawn.push_str(&format!(" --effort {}", quote(effort)));
-    }
-    if let Some(model) = &run.coder.model {
-        spawn.push_str(&format!(" --model {}", quote(model)));
-    }
-    if run.planner_is_session {
-        spawn.push_str(" --parent self");
-    }
-    spawn.push_str(&format!(
-        " --name {}",
-        quote(&format!("{} coder", run.name))
-    ));
-    if let Some(branch) = &run.worktree {
-        spawn.push_str(&format!(" --worktree {}", quote(branch)));
-        if let Some(base) = &run.base {
-            spawn.push_str(&format!(" --base {}", quote(base)));
-        }
-    }
-    spawn.push_str(" --prompt-file <plan file>");
-    let place = if run.worktree.is_some() {
-        "The coder works in the new worktree the result reports as `workspace.path`; review it there."
-    } else {
-        "The coder works in your checkout: do not edit files while it runs."
-    };
-    let rounds = run.rounds;
-    format!(
-        "You are the planner of a spec run in Forge. You own the spec, the plan and the review; \
-another agent session, the coder, writes the code. Do not write or edit the implementation yourself.
-
-The power of the simple: the smallest concrete change that meets the spec wins. Take complexity out \
-before adding any; no abstraction, option, layer or file the spec does not need, and comments only \
-where the code cannot say why.
-
-## The spec
-
-{source}
-
-## 1. Validate the definitions
-
-Read the spec completely and list every acceptance criterion and every change it asks for. Give each one:
-- context: why it exists and which code it touches (file:line);
-- validation: the end state that proves it done and how to check it, preferably a test or command \
-with its expected result; a manual check only when nothing can be automated.
-
-Answer what the code can answer yourself. Collect the rest (items without context or validation, \
-ambiguities, contradictions with the code) and ask the person about all of them at once with your \
-question selector (for example AskUserQuestion): each question with its context, concrete options and \
-your recommendation first. Launch nothing until every item has context and a validation.
-
-## 2. Plan
-
-Write a plan the coder can follow without this conversation, with no open question left in it:
-- the goal and the current state (file:line);
-- each criterion with its context and validation;
-- what is out of scope;
-- small ordered steps naming the files to change, each ending with the check that proves it.
-
-Give the coder these rules in the plan:
-- keep to the power of the simple;
-- for each step, write the test that fails for the expected reason, then the smallest change that \
-passes it; the test uses the code the way its user does; if no honest test is possible, say so and \
-describe the manual check;
-- when the plan and the code disagree, stop and report: expected, found, why it matters, how to proceed;
-- when done, or when a decision is needed, report to the planner with \
-`{ctl} --json session send parent --queue --file <report file>`: per criterion what changed and how it \
-was proven (command and result);
-- do not commit.
-
-Keep the plan under 60 KiB and save it outside the checkout, for example in your temporary directory.
-
-## 3. Launch the coder
-
-{spawn}
-
-Keep the returned `session_id` and use it, never the title. {place}
-
-Send to the coder only with `--queue`: it is submitted as soon as the coder is idle, while `--now` types \
-without pressing Enter and leaves the prompt sitting in its input. The coder's report reaches you the \
-same way, as a prompt once you are idle; you can also follow it with \
-`{ctl} --json session watch <coder id>`.
-
-## 4. Wait
-
-{ctl} --json session wait <coder id> --for idle,waiting,exit --timeout 15m
-
-A timeout (exit 124) is not proof the coder is busy: some agents never report their activity. Read \
-`{ctl} --json session read <coder id> --lines 80`; if the coder has stopped and awaits input, treat it \
-as `idle`, otherwise wait again. `matched` says why a wait returned:
-- `waiting`: read `{ctl} --json session read <coder id> --lines 80`. Answer what the spec or the plan \
-answers with `{ctl} --json session send <coder id> --queue --text '...'`; take anything else to the person \
-with your question selector. Never approve a permission, a command or a destructive action for it.
-- `exit`: the coder ended. Tell the person; relaunch only if they ask.
-- `idle`: review.
-
-## 5. Review
-
-Idle is not proof of completion, and the coder's report is not evidence until you repeat it. Run \
-every criterion's validation yourself, and read `{ctl} --json session changes <coder id>` and the \
-`git diff` from its `base_commit` (`{ctl} --json session show <coder id>`). Sort what you find into: \
-done as planned, deviations, additions not in the plan, missing; write None for an empty group. Flag \
-anything more complex than the spec needs. When the coder disputes a finding, check it rather than \
-accept or repeat it.
-
-## 6. Send the review
-
-If anything must change, send numbered findings (file, problem, expected fix):
-
-{ctl} --json session send <coder id> --queue --file <review file>
-
-At most 8 KiB; for more, send a short prompt naming a file. Then wait again (step 4). If two rounds \
-fail on the same criterion, state the premise they share in one sentence and take it to the person. \
-After {rounds} review round(s), stop and hand what remains to the person.
-
-## 7. Finish
-
-Report each criterion as met or not with its evidence, the review rounds, and what is left open. Do \
-not commit, push, merge or close the coder's session unless the person asks.
-",
-        source = source_section(&run.source),
-    )
 }
 
 #[cfg(test)]
@@ -378,79 +258,5 @@ mod tests {
             SpecSource::Inline("Add a cache to the loader.\nKeep the API.".into())
         );
         assert_eq!(classify("  \n", none), Err(SpecError::Empty));
-    }
-
-    fn run(coder: Coder, worktree: Option<&str>) -> SpecRun {
-        SpecRun {
-            source: SpecSource::Inline("Build it".into()),
-            coder,
-            forgectl: "/Applications/Forge Node.app/Contents/MacOS/forgectl".into(),
-            name: "cache's spec".into(),
-            worktree: worktree.map(str::to_owned),
-            base: worktree.map(|_| "main".to_owned()),
-            rounds: 2,
-            planner_is_session: true,
-        }
-    }
-
-    #[test]
-    fn the_brief_names_the_exact_coder_launch_and_the_review_loop() {
-        let brief = compose_planner_prompt(&run(
-            Coder {
-                provider: "claude".into(),
-                profile: Some("0198a1b2-0000-7000-8000-000000000001".into()),
-                effort: Some("medium".into()),
-                model: None,
-            },
-            None,
-        ));
-        assert!(brief.contains(
-            "'/Applications/Forge Node.app/Contents/MacOS/forgectl' --json session spawn \
-             --provider claude --profile 0198a1b2-0000-7000-8000-000000000001 --role executor --effort medium --parent self \
-             --name 'cache'\\''s spec coder' --prompt-file <plan file>"
-        ));
-        assert!(brief.contains("<<<SPEC\nBuild it\nSPEC>>>"));
-        assert!(brief.contains("--for idle,waiting,exit"));
-        assert!(brief.contains("session send parent --queue --file <report file>"));
-        assert!(brief.contains("After 2 review round(s)"));
-        assert!(brief.contains("AskUserQuestion"));
-        assert!(brief.contains("Launch nothing until every item has context and a validation."));
-        assert!(brief.contains("The power of the simple"));
-        assert!(brief.contains("do not edit files while it runs"));
-
-        let mixed = compose_planner_prompt(&run(
-            Coder {
-                provider: "cursor".into(),
-                profile: None,
-                effort: Some("high".into()),
-                model: Some("gpt-5".into()),
-            },
-            Some("spec/cache"),
-        ));
-        assert!(mixed.contains(
-            "--provider cursor --role executor --effort high --model gpt-5 --parent self"
-        ));
-        assert!(mixed.contains("--worktree spec/cache --base main --prompt-file"));
-        assert!(mixed.contains("workspace.path"));
-    }
-
-    #[test]
-    fn an_artifact_is_read_with_the_artifact_tool_not_fetched() {
-        let mut spec = run(
-            Coder {
-                provider: "opencode".into(),
-                profile: None,
-                effort: None,
-                model: None,
-            },
-            None,
-        );
-        spec.source = SpecSource::ClaudeArtifact("https://claude.ai/public/artifacts/abc".into());
-        spec.planner_is_session = false;
-        let brief = compose_planner_prompt(&spec);
-        assert!(brief.contains("read_artifact"));
-        assert!(!brief.contains("--parent self"));
-        assert!(!brief.contains("--effort"));
-        assert!(!brief.contains("--profile"));
     }
 }

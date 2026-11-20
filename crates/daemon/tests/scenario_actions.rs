@@ -36,6 +36,7 @@ fn action(project_id: ProjectId, label: &str, command: &str) -> ProjectAction {
         cwd: None,
         single_instance: true,
         pinned: false,
+        gate: false,
         ready: ActionReady::None,
         port: None,
         depends_on: Vec::new(),

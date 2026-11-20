@@ -4,7 +4,8 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use domain::{ProjectGroupId, ProjectId, Session, SessionId, Workspace, WorkspaceId};
+use domain::spec_run::model::SpecRunView;
+use domain::{ProjectGroupId, ProjectId, Session, SessionId, SpecRunId, Workspace, WorkspaceId};
 
 /// A JSON array of folded row ids.
 pub const FOLDS_KEY: &str = "ui.sidebar.collapsed";
@@ -356,13 +357,26 @@ pub fn needs_you(sessions: &[Session]) -> Vec<&Session> {
 /// How long a session has waited, shortened.
 #[must_use]
 pub fn waited(session: &Session, now: &domain::Timestamp) -> String {
-    let secs = (now.0 - session.last_activity_at.0).whole_seconds().max(0);
+    waited_since(session.last_activity_at, now)
+}
+
+#[must_use]
+pub fn waited_since(since: domain::Timestamp, now: &domain::Timestamp) -> String {
+    let secs = (now.0 - since.0).whole_seconds().max(0);
     match secs {
         0..60 => "now".to_string(),
         60..3600 => format!("{}m", secs / 60),
         3600..86_400 => format!("{}h", secs / 3600),
         _ => format!("{}d", secs / 86_400),
     }
+}
+
+/// Spec runs waiting on the person at a gate or for attention, the longest-waiting first.
+#[must_use]
+pub fn spec_runs_waiting(runs: &[SpecRunView]) -> Vec<SpecRunId> {
+    let mut out: Vec<&SpecRunView> = runs.iter().filter(|run| run.needs_attention()).collect();
+    out.sort_by_key(|run| run.updated_at);
+    out.into_iter().map(|run| run.id).collect()
 }
 
 #[cfg(test)]
@@ -538,5 +552,21 @@ mod tests {
         let mut late = sessions[at].clone();
         late.last_activity_at = domain::Timestamp::now();
         assert_eq!(waited(&late, &domain::Timestamp::now()), "now");
+    }
+
+    #[test]
+    fn a_spec_run_at_a_gate_or_asking_for_attention_waits_and_a_closed_one_does_not() {
+        use domain::spec_run::model::SpecStage;
+        let now = domain::Timestamp::now();
+        let earlier = domain::Timestamp(now.0 - std::time::Duration::from_secs(600));
+        let at_plan_gate = crate::test_support::spec_run(SpecStage::PlanGate, now);
+        let mut lost_coder = crate::test_support::spec_run(SpecStage::Executing, earlier);
+        lost_coder.attention = Some("the coder session ended".into());
+        let mut closed = crate::test_support::spec_run(SpecStage::Done, earlier);
+        closed.attention = Some("left over".into());
+        let coding = crate::test_support::spec_run(SpecStage::Executing, earlier);
+        let runs = [at_plan_gate.clone(), lost_coder.clone(), closed, coding];
+        assert_eq!(spec_runs_waiting(&runs), [lost_coder.id, at_plan_gate.id]);
+        assert_eq!(waited_since(earlier, &now), "10m");
     }
 }

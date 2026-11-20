@@ -107,6 +107,10 @@ uuid_id!(
     AttemptId
 );
 uuid_id!(ReviewId);
+uuid_id!(
+    /// One spec run: a spec, its plan, its rounds and its report.
+    SpecRunId
+);
 
 /// Stable provider slug, such as `"claude"`, rather than a generated UUID.
 #[derive(Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]

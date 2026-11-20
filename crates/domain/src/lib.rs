@@ -67,8 +67,8 @@ pub use file::{
 };
 pub use ids::{
     AgentProfileId, AgentProviderId, AttemptId, ClientId, ContextId, ProjectActionId,
-    ProjectGroupId, ProjectId, ReviewId, RunId, SessionId, ShareRuleId, TaskId, TerminalId,
-    Timestamp, WorkspaceId,
+    ProjectGroupId, ProjectId, ReviewId, RunId, SessionId, ShareRuleId, SpecRunId, TaskId,
+    TerminalId, Timestamp, WorkspaceId,
 };
 pub use pr_review::{
     builtin_recipes, compose_review_prompt, recipe_or_default, ReviewRecipe, CUSTOM_RECIPE,

@@ -154,6 +154,9 @@ pub struct AppState {
     pub review: Option<crate::pr_review::ReviewDialog>,
     pub open_pr: crate::open_pr::OpenPr,
     pub spec_dialog: Option<crate::spec_run::SpecDialog>,
+    pub spec_panel: Option<crate::spec_run_view::SpecPanel>,
+    /// Spec runs waiting on the person, derived when the store changes.
+    pub spec_waiting: Vec<domain::SpecRunId>,
     pub pr_link: Option<crate::pr_link::LinkDialog>,
     /// A Refresh the person pressed is in flight; cleared by the update.
     pub pr_refreshing: bool,
@@ -273,6 +276,8 @@ impl AppState {
             review: None,
             open_pr: crate::open_pr::OpenPr::default(),
             spec_dialog: None,
+            spec_panel: None,
+            spec_waiting: Vec::new(),
             pr_link: None,
             pr_refreshing: false,
             pr_auto_read: None,
@@ -427,6 +432,7 @@ impl AppState {
             .iter()
             .map(|workspace| WorkspaceChoice { id: workspace.id })
             .collect();
+        self.spec_waiting = crate::rail::spec_runs_waiting(&store.spec_runs);
         if self.terminal.is_fixture() {
             self.fixture_titles
                 .extend(store.sessions.iter().filter_map(|session| {
@@ -602,6 +608,7 @@ impl AppState {
             || self.about
             || self.review.is_some()
             || self.spec_dialog.is_some()
+            || self.spec_panel.is_some()
             || self.pr_link.is_some()
             || self.rename.is_some()
             || self.confirm_close.is_some()
@@ -1144,7 +1151,8 @@ impl AppState {
                 Command::Panel(panel) => self.show_panel(panel),
                 Command::ToggleSidebar => self.sidebar.toggle(),
                 Command::NewWorktree => self.new_worktree_here(),
-                Command::RunSpec => self.open_run_spec(),
+                Command::RunSpec => self.open_run_spec(crate::spec_run::SpecMode::Run),
+                Command::DraftSpec => self.open_run_spec(crate::spec_run::SpecMode::Draft),
                 Command::ReviewPullRequestLink => self.open_pr_link(),
                 Command::Theme(base) => self.choose_theme(base),
                 Command::FindInFiles => self.find_in_files(),
@@ -1957,6 +1965,13 @@ impl AppState {
                         self.pr_refreshing = false;
                     }
                 }
+                if let client::DaemonEvent::SpecRunUpdated(run) = event.as_ref() {
+                    if let Some(store) = &self.store {
+                        self.spec_waiting = crate::rail::spec_runs_waiting(&store.spec_runs);
+                    }
+                    self.spec_run_changed(run);
+                    return true;
+                }
                 if matches!(
                     event.as_ref(),
                     client::DaemonEvent::AgentDetectionChanged { .. }
@@ -2367,6 +2382,9 @@ impl AppState {
                 if label == "RunSpec" {
                     self.spec_run_result(ok, &message);
                 }
+                if label == "SpecGate" {
+                    self.spec_gate_result(ok, &message);
+                }
                 if label == "FetchPullRequest" && !ok {
                     self.pr_link_refused(&message);
                     self.review_link_refused(&message);
@@ -2494,6 +2512,16 @@ impl AppState {
                     return false;
                 }
                 self.apply_review_diff(review_id, result)
+            }
+            UiEvent::SpecRun {
+                generation,
+                spec_run_id,
+                result,
+            } => {
+                if !self.accept_generation(generation) {
+                    return false;
+                }
+                self.apply_spec_run(spec_run_id, result)
             }
         }
     }
@@ -2663,7 +2691,7 @@ impl AppState {
         self.sync_workbench();
         self.close_due();
         let mut changed = self.tabs.reveal(Instant::now());
-        changed |= self.toasts.expire(Instant::now());
+        changed |= self.toasts.expire(clock);
         changed |= self.settings.esc.expire(Instant::now());
         changed |= self.poll_files(tx);
         changed |= self.project_icons.landed();
