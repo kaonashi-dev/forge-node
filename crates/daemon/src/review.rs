@@ -9,16 +9,19 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
+use std::collections::HashSet;
+
 use domain::{
-    ActivityEvidence, ActivityState, AgentProviderId, FindingReaction, ProjectId, ReviewId,
-    ReviewRun, ReviewStage, ReviewStatus, ReviewTarget, SessionId, SessionKind, SessionRole, Tier,
-    Timestamp, WorkspaceId,
+    ActivityEvidence, ActivityState, AgentProviderId, FindingReaction, Hypothesis, ProjectId,
+    ReviewId, ReviewRun, ReviewStage, ReviewStatus, ReviewTarget, SessionId, SessionKind,
+    SessionRole, Tier, Timestamp, WorkspaceId,
 };
 use protocol::{DaemonEvent, ErrorCode, ProtocolError, Response};
 
+use codebase_graph::Graph;
+
 use crate::core::{db_err, Daemon};
 
-const MAX_RUNNING_REVIEWS: usize = 2;
 const MAX_REPO_FILE_BYTES: u64 = 64 * 1024;
 const MAX_REPO_PROMPT_BYTES: u64 = 16 * 1024;
 const REPO_PROMPT: &str = ".forge/review/prompt.md";
@@ -30,6 +33,8 @@ const KEEP_RUNS: u32 = 20;
 const KEEP_DAYS: i64 = 90;
 const MAX_LISTED_REVIEWS: u32 = 100;
 const REVIEWER_TITLE: &str = "Forge Review";
+/// A run at or above this score teaches the knowledge base its patterns.
+const GOOD_SCORE: f32 = 4.0;
 /// How long an idle reviewer's unparseable answer is re-read before the run
 /// fails: the hook can report idle a moment before the transcript is flushed.
 const ANSWER_GRACE: Duration = Duration::from_secs(2);
@@ -48,6 +53,10 @@ pub(crate) enum End {
 }
 
 impl Daemon {
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "one per StartReview field, as the request carries them"
+    )]
     pub(crate) fn start_review(
         self: &Arc<Self>,
         target: ReviewTarget,
@@ -56,8 +65,15 @@ impl Daemon {
         preset: Option<String>,
         instructions: Option<String>,
         options: domain::AgentLaunchOptions,
+        swarm: domain::SwarmOptions,
     ) -> Result<Response, ProtocolError> {
         let workspace_id = target.workspace_id();
+        let size = self.config.review.swarm_size(swarm.size);
+        let hypotheses = if size == 1 && swarm.hypotheses.is_empty() {
+            Vec::new()
+        } else {
+            review_swarm::select(usize::from(size), &swarm.hypotheses)
+        };
         let path = self.workspace_path(workspace_id)?;
         let provider = provider.unwrap_or_else(|| self.config.review.provider.clone());
         let options = domain::AgentLaunchOptions {
@@ -130,9 +146,10 @@ impl Daemon {
         }
         let context = read_context(&path, &resolved.context, &mut notes);
         let key = format!(
-            "{target_key}\0{provider}\0{:?}\0{:?}\0{}\0{:?}\0{}",
+            "{target_key}\0{provider}\0{:?}\0{:?}\0{}\0{:?}\0{}\0{hypotheses:?}",
             options.model, options.effort, resolved.preset, resolved.tier, resolved.instructions
         );
+        let max_workers = self.config.review.max_swarms.max(1);
 
         let id = ReviewId::new();
         {
@@ -146,9 +163,9 @@ impl Daemon {
                     });
                 }
                 // A superseded worker lives on until it sees its cancel, so it still counts.
-                _ if inner.review_workers >= MAX_RUNNING_REVIEWS => {
+                _ if inner.review_workers >= max_workers => {
                     return Err(ProtocolError::conflict(format!(
-                        "{MAX_RUNNING_REVIEWS} reviews are already running"
+                        "{max_workers} reviews are already running"
                     )));
                 }
                 Some(running) => {
@@ -188,6 +205,15 @@ impl Daemon {
             finished_at: None,
             branch,
             tree_oid: None,
+            diagrams: Vec::new(),
+            auto_approvable: false,
+            swarm_size: u8::try_from(hypotheses.len().max(1)).unwrap_or(1),
+            schema_version: if hypotheses.is_empty() {
+                domain::SchemaVersion::V1
+            } else {
+                domain::SchemaVersion::V2
+            },
+            sandbox_run_id: None,
         };
         if let Err(error) = self.review_store.insert_run(&run) {
             self.release_review(&slot, id);
@@ -198,7 +224,11 @@ impl Daemon {
 
         let daemon = Arc::clone(self);
         let mut queued = run.clone();
-        let launch = Launch { provider, options };
+        let launch = Launch {
+            provider,
+            options,
+            swarm: hypotheses,
+        };
         std::thread::Builder::new()
             .name("forge-review".into())
             .spawn(move || daemon.run_review(run, path, launch, base_ref, &resolved, &context))
@@ -364,6 +394,43 @@ impl Daemon {
         }))
     }
 
+    /// One kind of diagram for the range a run reviewed, drawn again from the
+    /// current graph and never stored.
+    pub(crate) fn get_review_diagram(
+        &self,
+        review_id: ReviewId,
+        kind: domain::DiagramKind,
+    ) -> Result<Response, ProtocolError> {
+        let (run, _) = self
+            .review_store
+            .get(review_id)
+            .map_err(db_err)?
+            .ok_or_else(|| ProtocolError::not_found("review"))?;
+        let Response::WorkspaceDiff(diff) = self.get_review_diff(review_id)? else {
+            return Err(ProtocolError::invalid_request("the review has no diff"));
+        };
+        let path = self.workspace_path(run.workspace_id)?;
+        let project = self.workspace_project(run.workspace_id)?;
+        let graph = self
+            .review_store
+            .load_graph(project)
+            .map_err(db_err)?
+            .unwrap_or_default();
+        let changed: Vec<diagram_gen::ChangedFile> = diff
+            .files
+            .into_iter()
+            .filter(|file| !file.binary && !file.truncated)
+            .map(|file| diagram_gen::ChangedFile {
+                text: reviewed_text(&path, &run, &file.path),
+                path: file.path,
+                patch: file.patch,
+            })
+            .collect();
+        Ok(Response::ReviewDiagram(diagram_gen::generate_kind(
+            &changed, &graph, kind,
+        )))
+    }
+
     pub(crate) fn set_finding_feedback(
         &self,
         review_id: ReviewId,
@@ -390,7 +457,8 @@ impl Daemon {
         .map_err(db_err)?;
         finding.reaction = reaction;
         if was_dismissed != (reaction == Some(FindingReaction::Dismiss)) && run.score.is_some() {
-            rescore(&mut run, &findings);
+            let settings = self.auto_approve_settings(run.workspace_id);
+            rescore(&mut run, &findings, &settings);
             self.publish_review(&run);
         }
         Ok(Response::Ack)
@@ -409,7 +477,11 @@ impl Daemon {
         for review_id in restored {
             match self.review_store.get(review_id) {
                 Ok(Some((mut run, findings))) if run.score.is_some() => {
-                    rescore(&mut run, &findings);
+                    rescore(
+                        &mut run,
+                        &findings,
+                        &self.auto_approve_settings(workspace_id),
+                    );
                     self.publish_review(&run);
                 }
                 Ok(_) => {}
@@ -417,6 +489,77 @@ impl Daemon {
             }
         }
         Ok(Response::Ack)
+    }
+
+    pub(crate) fn review_stats(
+        &self,
+        workspace_id: Option<WorkspaceId>,
+    ) -> Result<Response, ProtocolError> {
+        let project = workspace_id
+            .map(|ws| self.workspace_project(ws))
+            .transpose()?;
+        let rows = self.review_store.stats_rows(workspace_id).map_err(db_err)?;
+        let ids: HashSet<String> = rows.iter().map(|row| row.id.clone()).collect();
+        let sandboxes: Vec<(String, bool)> = self
+            .review_store
+            .linked_sandbox_runs()
+            .map_err(db_err)?
+            .into_iter()
+            .filter(|(review, _)| ids.contains(review))
+            .collect();
+        let answered = self
+            .graphs
+            .answered
+            .load(std::sync::atomic::Ordering::Relaxed);
+        let rebuilds = self
+            .graphs
+            .rebuilds
+            .load(std::sync::atomic::Ordering::Relaxed);
+        let swarm: Vec<&persistence::repositories::reviews::StatsRow> =
+            rows.iter().filter(|row| row.swarm_size > 1).collect();
+        Ok(Response::ReviewStats(domain::ReviewStats {
+            runs: u32::try_from(rows.len()).unwrap_or(u32::MAX),
+            latency: [Tier::Base, Tier::Plus, Tier::Apex]
+                .into_iter()
+                .filter_map(|tier| {
+                    let mut seconds: Vec<i64> = rows
+                        .iter()
+                        .filter(|row| row.tier == tier)
+                        .map(|row| row.seconds.max(0))
+                        .collect();
+                    seconds.sort_unstable();
+                    (!seconds.is_empty()).then(|| domain::TierLatency {
+                        tier,
+                        runs: u32::try_from(seconds.len()).unwrap_or(u32::MAX),
+                        p50_secs: percentile(&seconds, 50),
+                        p95_secs: percentile(&seconds, 95),
+                    })
+                })
+                .collect(),
+            graph_hit_rate: rate(answered, answered + rebuilds),
+            swarm_coverage: rate(
+                swarm
+                    .iter()
+                    .map(|row| u64::from(row.hypotheses_found))
+                    .sum(),
+                swarm.iter().map(|row| u64::from(row.swarm_size)).sum(),
+            ),
+            kb_hit_rate: rate(
+                rows.iter().filter(|row| row.cites_kb).count() as u64,
+                rows.len() as u64,
+            ),
+            trex_failure_rate: rate(
+                sandboxes.iter().filter(|(_, failed)| *failed).count() as u64,
+                sandboxes.len() as u64,
+            ),
+            kb_bytes: self.review_store.kb_bytes(project).map_err(db_err)?,
+        }))
+    }
+
+    fn auto_approve_settings(&self, workspace_id: WorkspaceId) -> review::AutoApprove {
+        self.workspace_path(workspace_id)
+            .map(|path| repo_config(&path).auto_approve)
+            .unwrap_or_default()
     }
 
     fn workspace_project(&self, workspace_id: WorkspaceId) -> Result<ProjectId, ProtocolError> {
@@ -461,11 +604,22 @@ impl Daemon {
             self.review_stages(&mut run, stages)
         }))
         .unwrap_or_else(|_| Err(End::Failed("the review worker crashed".into())));
+        let (outcome, patterns) = match outcome {
+            Ok((findings, patterns)) => (Ok(findings), patterns),
+            Err(end) => (Err(end), Vec::new()),
+        };
         // Before the pack goes: the reviewer was given it with `--add-dir`.
         if let Some(session_id) = run.session_id {
             self.stop_reviewer(session_id);
         }
         self.settle_review(&mut run, outcome);
+        if run.status == ReviewStatus::Completed
+            && run.score.is_some_and(|score| score >= GOOD_SCORE)
+        {
+            if let Ok(project) = self.workspace_project(run.workspace_id) {
+                self.remember_patterns(project, &patterns);
+            }
+        }
         if let ReviewTarget::PullRequest { number, .. } = &run.target {
             // `GetReviewDiff` reads the range by oid; once unreachable, a `git gc` may prune it.
             if let Err(error) =
@@ -477,6 +631,7 @@ impl Daemon {
         drop(pack_dir);
         drop(guard);
         self.finish_review(&mut run);
+        crate::actions::run::wake_waiters(&mut self.lock());
         let cutoff = time::OffsetDateTime::now_utc() - time::Duration::days(KEEP_DAYS);
         if let Err(error) =
             self.review_store
@@ -484,6 +639,7 @@ impl Daemon {
         {
             tracing::warn!(%error, "could not prune old reviews");
         }
+        self.prune_kb();
     }
 
     /// A cancel that arrived while the answer was validated still wins, and
@@ -530,7 +686,7 @@ impl Daemon {
             context,
             pack_dir,
         }: Stages<'_>,
-    ) -> Result<Vec<domain::Finding>, End> {
+    ) -> Result<(Vec<domain::Finding>, Vec<String>), End> {
         self.review_stage(run, ReviewStage::Diff)?;
         let pull_request = match &run.target {
             ReviewTarget::PullRequest { number, base, .. } => Some((*number, base.clone())),
@@ -581,6 +737,33 @@ impl Daemon {
         let files: Vec<domain::DiffFile> =
             diff.files.into_iter().map(crate::core::diff_file).collect();
 
+        let mut resolved = resolved.clone();
+        if resolved.auto_tier {
+            resolved.tier = review::auto_tier(&files);
+            run.coverage
+                .notes
+                .push(format!("tier auto: {}", tier_name(resolved.tier)));
+        }
+        run.tier = resolved.tier;
+        let resolved = &resolved;
+        let graph = if resolved.graph.enabled {
+            match self
+                .workspace_project(run.workspace_id)
+                .map_err(|e| e.to_string())
+                .and_then(|project| self.refresh_graph(project, path, &resolved.ignore, false))
+            {
+                Ok((graph, _)) => Some(graph),
+                Err(error) => {
+                    run.coverage
+                        .notes
+                        .push(format!("codebase graph unavailable: {error}"));
+                    None
+                }
+            }
+        } else {
+            None
+        };
+
         self.review_stage(run, ReviewStage::Pack)?;
         let meta = review::PackMeta {
             head_oid: run.head_oid.clone(),
@@ -593,8 +776,49 @@ impl Daemon {
         // A v7 uuid starts with its timestamp; its tail is the random part.
         let uuid = SessionId::new().as_uuid().simple().to_string();
         let nonce = &uuid[uuid.len() - 12..];
-        let (pack, mut coverage) =
+        let (mut pack, mut coverage) =
             review::build_pack(&meta, &commits, &files, resolved, &rules, context, nonce);
+        let kb_budget = review::TierCaps::of(resolved.tier).kb_bytes;
+        let kb = if kb_budget > 0 && resolved.kb_enabled && self.config.review.kb_enabled {
+            self.workspace_project(run.workspace_id)
+                .map(|project| self.kb_excerpts(project, &coverage.included, kb_budget))
+                .unwrap_or_default()
+        } else {
+            Vec::new()
+        };
+        let changed_functions = graph
+            .as_deref()
+            .map(|graph| crate::graph::changed_functions(graph, &files, &coverage.included))
+            .unwrap_or_default();
+        let cross_repo = match graph.as_deref() {
+            Some(graph)
+                if review::TierCaps::of(resolved.tier).cross_repo_bytes > 0
+                    && resolved.graph.cross_repo
+                    && self.config.review.cross_repo_enabled =>
+            {
+                self.cross_repo_signatures(
+                    path,
+                    &resolved.graph.repos,
+                    graph,
+                    &changed_functions,
+                    &mut coverage.notes,
+                )
+            }
+            _ => Vec::new(),
+        };
+        let runtime = if resolved.tier == Tier::Apex && self.config.review.trex_enabled {
+            self.review_sandbox(run, path, pull_request.is_some(), &mut coverage.notes)
+        } else {
+            Vec::new()
+        };
+        let extras = review::Extras {
+            graph: changed_functions,
+            kb,
+            cross_repo,
+            runtime,
+        };
+        let (blocks, prompt_blocks) = review::blocks(&extras, resolved.tier, nonce, &mut coverage);
+        pack.push_str(&blocks);
         coverage
             .notes
             .splice(0..0, std::mem::take(&mut run.coverage.notes));
@@ -613,37 +837,108 @@ impl Daemon {
             .map_err(|error| End::Failed(format!("could not write the review pack: {error}")))?;
 
         self.review_stage(run, ReviewStage::Model)?;
-        let transcript = SessionId::new().as_uuid().to_string();
-        let session_id = match self.create_session_with_options(
-            run.workspace_id,
-            SessionKind::Agent,
-            Some(AgentProviderId::new(launch.provider.as_str())),
-            None,
-            None,
-            SessionRole::Generic,
-            None,
-            Some(review::prompt(resolved, &pack_file, nonce)),
-            true,
-            launch.options.clone(),
-            Some(REVIEWER_TITLE.into()),
-            Some(domain::StructuredReview {
-                session_id: transcript.clone(),
-                add_dir: pack_dir.to_path_buf(),
-            }),
-            false,
-        ) {
-            Ok(Response::SessionCreated { session_id, .. }) => session_id,
-            Ok(_) => return Err(End::Failed("the reviewer did not start".into())),
-            Err(error) => return Err(End::Failed(format!("the reviewer did not start: {error}"))),
+        let mut reviewers = Reviewers {
+            daemon: self,
+            sessions: Vec::new(),
         };
-        run.session_id = Some(session_id);
-        self.publish_review(run);
-        let answer = Answer {
-            transcript: &transcript,
-            provider: &launch.provider,
-            config_dir: self.launch_config_dir(&launch.provider),
-        };
-        let output = self.await_answer(run.id, session_id, path, &answer)?;
+        let mut outputs: Vec<(Option<Hypothesis>, Result<review::ReviewOutput, String>)> =
+            Vec::new();
+        if launch.swarm.is_empty() {
+            let transcript = SessionId::new().as_uuid().to_string();
+            let prompt = review::prompt(resolved, &pack_file, nonce) + &prompt_blocks;
+            let session_id = self.launch_reviewer(
+                run.workspace_id,
+                launch,
+                REVIEWER_TITLE.into(),
+                prompt,
+                &transcript,
+                pack_dir,
+            )?;
+            reviewers.sessions.push(session_id);
+            run.session_id = Some(session_id);
+            self.publish_review(run);
+            // Read after the launch: the launch is what resolves the login-shell environment.
+            let answer = Answer {
+                transcript: &transcript,
+                provider: &launch.provider,
+                config_dir: self.launch_config_dir(&launch.provider),
+            };
+            outputs.push((
+                None,
+                Ok(self.await_answer(run.id, session_id, path, &answer)?),
+            ));
+        } else {
+            let included: Vec<domain::DiffFile> = files
+                .iter()
+                .filter(|file| run.coverage.included.contains(&file.path))
+                .cloned()
+                .collect();
+            let plan = review_swarm::plan(&launch.swarm, &included);
+            let mut agents = Vec::new();
+            for spec in &plan.agents {
+                let name = spec.hypothesis.name();
+                let slice = pack_dir.join(format!("slice-{name}.md"));
+                write_private(&slice, &review_swarm::slice_file(spec, nonce)).map_err(|error| {
+                    End::Failed(format!("could not write the slice for {name}: {error}"))
+                })?;
+                let transcript = SessionId::new().as_uuid().to_string();
+                let prompt = review_swarm::prompt(resolved, &pack_file, &slice, spec, nonce)
+                    + &prompt_blocks;
+                match self.launch_reviewer(
+                    run.workspace_id,
+                    launch,
+                    format!("{REVIEWER_TITLE} · {name}"),
+                    prompt,
+                    &transcript,
+                    pack_dir,
+                ) {
+                    Ok(session) => {
+                        reviewers.sessions.push(session);
+                        agents.push((spec.hypothesis, session, transcript));
+                    }
+                    Err(End::Failed(error)) => outputs.push((Some(spec.hypothesis), Err(error))),
+                    Err(End::Cancelled) => return Err(End::Cancelled),
+                }
+            }
+            run.session_id = agents.first().map(|(_, session, _)| *session);
+            self.publish_review(run);
+            if let Err(error) = self
+                .review_store
+                .set_agent_sessions(run.id, &reviewers.sessions)
+            {
+                tracing::warn!(%error, "could not record the swarm's sessions");
+            }
+            let config_dir = self.launch_config_dir(&launch.provider);
+            let review_id = run.id;
+            let waited: Vec<Result<review::ReviewOutput, End>> = std::thread::scope(|scope| {
+                let waits: Vec<_> = agents
+                    .iter()
+                    .map(|(_, session, transcript)| {
+                        let answer = Answer {
+                            transcript,
+                            provider: &launch.provider,
+                            config_dir: config_dir.clone(),
+                        };
+                        scope.spawn(move || self.await_answer(review_id, *session, path, &answer))
+                    })
+                    .collect();
+                waits
+                    .into_iter()
+                    .map(|wait| {
+                        wait.join()
+                            .unwrap_or_else(|_| Err(End::Failed("the agent's wait crashed".into())))
+                    })
+                    .collect()
+            });
+            for ((hypothesis, _, _), result) in agents.iter().zip(waited) {
+                match result {
+                    Ok(output) => outputs.push((Some(*hypothesis), Ok(output))),
+                    Err(End::Cancelled) => return Err(End::Cancelled),
+                    Err(End::Failed(error)) => outputs.push((Some(*hypothesis), Err(error))),
+                }
+            }
+        }
+        drop(reviewers);
 
         self.review_stage(run, ReviewStage::Validate)?;
         let suppressions = match self
@@ -660,6 +955,16 @@ impl Daemon {
                 Vec::new()
             }
         };
+        let mentioned: HashSet<String> = outputs
+            .iter()
+            .filter_map(|(_, output)| output.as_ref().ok())
+            .flat_map(|output| output.findings.iter().map(|finding| finding.path.clone()))
+            .collect();
+        let patterns: Vec<String> = outputs
+            .iter()
+            .filter_map(|(_, output)| output.as_ref().ok())
+            .flat_map(|output| output.patterns.iter().cloned())
+            .collect();
         let changed: Vec<review::ChangedFile> = files
             .iter()
             .filter(|file| !file.binary)
@@ -669,57 +974,172 @@ impl Daemon {
                     path: file.path.clone(),
                     patch: file.patch.clone(),
                     excluded,
-                    text: (!excluded
-                        && output
-                            .findings
-                            .iter()
-                            .any(|finding| finding.path == file.path))
-                    .then(|| match (pull_request.is_some(), &run.tree_oid) {
-                        (true, _) => read_blob(path, &run.head_oid, &file.path),
-                        (false, Some(tree)) => read_blob(path, tree, &file.path),
-                        (false, None) => {
-                            read_inside(path, Path::new(&file.path), MAX_FILE_TEXT_BYTES)
-                                .ok()
-                                .flatten()
-                        }
-                    })
-                    .flatten(),
+                    text: (!excluded && mentioned.contains(&file.path))
+                        .then(|| reviewed_text(path, run, &file.path))
+                        .flatten(),
                 }
             })
             .collect();
-        let validated = review::validate(output, &changed, &rules, resolved, &suppressions)
-            .map_err(End::Failed)?;
-        if validated.trimmed > 0 {
-            run.coverage.notes.push(format!(
-                "{} finding(s) past max_findings ({}) were left out",
-                validated.trimmed, resolved.max_findings
-            ));
-        }
-        if validated.low_confidence > 0 {
-            run.coverage.notes.push(format!(
-                "{} finding(s) below min_confidence {} were dropped",
-                validated.low_confidence, resolved.min_confidence
-            ));
-        }
-        if validated.suppressed > 0 {
-            run.coverage.notes.push(format!(
-                "{} finding(s) suppressed by feedback",
-                validated.suppressed
-            ));
-        }
-        run.coverage.unverified = validated.unverified;
-        if validated.unverified > 0 {
-            run.coverage.notes.push(format!(
-                "{} finding(s) could not be verified",
-                validated.unverified
-            ));
-        }
-        run.coverage.withheld = validated.withheld;
-        let score = review::score(&validated.findings);
-        run.verdict = Some(review::verdict(&validated.findings, score));
+        let mut tally = Tally::default();
+        let (findings, summary) = if launch.swarm.is_empty() {
+            let Some((_, Ok(output))) = outputs.pop() else {
+                return Err(End::Failed("the reviewer gave no answer".into()));
+            };
+            let validated = review::validate(output, &changed, &rules, resolved, &suppressions)
+                .map_err(End::Failed)?;
+            tally.add(&validated);
+            tally.trimmed = validated.trimmed;
+            run.coverage.withheld = validated.withheld;
+            (validated.findings, validated.summary)
+        } else {
+            let answers: Vec<(Hypothesis, review_swarm::AgentAnswer)> = outputs
+                .into_iter()
+                .filter_map(|(hypothesis, output)| {
+                    let answer = match output.map(|output| {
+                        review::validate(output, &changed, &rules, resolved, &suppressions)
+                    }) {
+                        Ok(Ok(validated)) => {
+                            tally.add(&validated);
+                            review_swarm::AgentAnswer::Validated(validated)
+                        }
+                        Ok(Err(rejected)) => {
+                            review_swarm::AgentAnswer::Uncovered(format!("rejected: {rejected}"))
+                        }
+                        Err(error) => review_swarm::AgentAnswer::Uncovered(error),
+                    };
+                    Some((hypothesis?, answer))
+                })
+                .collect();
+            let reasons: Vec<String> = answers
+                .iter()
+                .filter_map(|(hypothesis, answer)| match answer {
+                    review_swarm::AgentAnswer::Uncovered(reason) => {
+                        Some(format!("{}: {reason}", hypothesis.name()))
+                    }
+                    review_swarm::AgentAnswer::Validated(_) => None,
+                })
+                .collect();
+            let consolidated = review_swarm::consolidate(answers, resolved.max_findings)
+                .ok_or_else(|| {
+                    End::Failed(format!("every swarm agent failed: {}", reasons.join("; ")))
+                })?;
+            run.coverage.notes.extend(consolidated.notes);
+            tally.unverified = consolidated.unverified;
+            run.coverage.withheld = consolidated.withheld;
+            (consolidated.findings, consolidated.summary)
+        };
+        tally.notes(run, resolved);
+        let score = review::score(&findings);
+        run.verdict = Some(review::verdict(&findings, score));
         run.score = Some(score);
-        run.summary = validated.summary;
-        Ok(validated.findings)
+        run.auto_approvable =
+            review::auto_approvable(&resolved.auto_approve, &findings, score, &run.coverage);
+        run.summary = summary;
+        let drawn: Vec<diagram_gen::ChangedFile> = files
+            .iter()
+            .filter(|file| run.coverage.included.contains(&file.path))
+            .map(|file| diagram_gen::ChangedFile {
+                path: file.path.clone(),
+                patch: file.patch.clone(),
+                text: reviewed_text(path, run, &file.path),
+            })
+            .collect();
+        run.diagrams = diagram_gen::generate(&drawn, graph.as_deref().unwrap_or(&Graph::default()));
+        Ok((findings, patterns))
+    }
+
+    /// The sandbox targets for an `apex` run: in the checkout, or for a pull
+    /// request in a detached worktree of its head that goes with the run.
+    fn review_sandbox(
+        &self,
+        run: &mut ReviewRun,
+        path: &Path,
+        pull_request: bool,
+        notes: &mut Vec<String>,
+    ) -> Vec<review::RuntimeResult> {
+        if !path.join(runtime_sandbox::CONFIG_PATH).exists() {
+            notes.push(format!(
+                "TREX: no {}; nothing ran",
+                runtime_sandbox::CONFIG_PATH
+            ));
+            return Vec::new();
+        }
+        let worktree = if pull_request {
+            match crate::sandbox::HeadWorktree::add(
+                &self.forge_paths().home,
+                path,
+                &run.id.to_string(),
+                &run.head_oid,
+            ) {
+                Ok(worktree) => Some(worktree),
+                Err(error) => {
+                    notes.push(format!("TREX: could not check out the head: {error}"));
+                    return Vec::new();
+                }
+            }
+        } else {
+            None
+        };
+        let run_dir = worktree
+            .as_ref()
+            .map_or(path, |worktree| worktree.path.as_path());
+        let id = SessionId::new().as_uuid().to_string();
+        let sandbox = self.run_sandbox_targets(
+            id.clone(),
+            run.workspace_id,
+            Some(run.id),
+            path,
+            run_dir,
+            None,
+        );
+        drop(worktree);
+        run.sandbox_run_id = Some(id);
+        if let Some(error) = &sandbox.error {
+            notes.push(format!("TREX: {error}"));
+        }
+        sandbox
+            .targets
+            .into_iter()
+            .map(|target| review::RuntimeResult {
+                target: target.name,
+                exit_code: target.exit_code,
+                stdout: target.stdout,
+                stderr: target.stderr,
+            })
+            .collect()
+    }
+
+    fn launch_reviewer(
+        self: &Arc<Self>,
+        workspace_id: WorkspaceId,
+        launch: &Launch,
+        title: String,
+        prompt: String,
+        transcript: &str,
+        pack_dir: &Path,
+    ) -> Result<SessionId, End> {
+        match self.create_session_with_options(
+            workspace_id,
+            SessionKind::Agent,
+            Some(AgentProviderId::new(launch.provider.as_str())),
+            None,
+            None,
+            SessionRole::Generic,
+            None,
+            Some(prompt),
+            true,
+            launch.options.clone(),
+            Some(title),
+            Some(domain::StructuredReview {
+                session_id: transcript.to_owned(),
+                add_dir: pack_dir.to_path_buf(),
+            }),
+            false,
+        ) {
+            Ok(Response::SessionCreated { session_id, .. }) => Ok(session_id),
+            Ok(_) => Err(End::Failed("the reviewer did not start".into())),
+            Err(error) => Err(End::Failed(format!("the reviewer did not start: {error}"))),
+        }
     }
 
     /// Fetch the pull request's head into a private ref and diff it against its
@@ -948,8 +1368,8 @@ impl Daemon {
     }
 }
 
-/// Score and verdict over the findings that are not dismissed.
-fn rescore(run: &mut ReviewRun, findings: &[domain::Finding]) {
+/// Score, verdict and `auto_approvable` over the findings that are not dismissed.
+fn rescore(run: &mut ReviewRun, findings: &[domain::Finding], settings: &review::AutoApprove) {
     let standing: Vec<domain::Finding> = findings
         .iter()
         .filter(|finding| finding.reaction != Some(FindingReaction::Dismiss))
@@ -958,6 +1378,7 @@ fn rescore(run: &mut ReviewRun, findings: &[domain::Finding]) {
     let score = review::score(&standing);
     run.verdict = Some(review::verdict(&standing, score));
     run.score = Some(score);
+    run.auto_approvable = review::auto_approvable(settings, &standing, score, &run.coverage);
 }
 
 /// `Instant + Duration` panics on overflow, so an absurd `timeout_secs` is capped.
@@ -965,6 +1386,34 @@ const MAX_ANSWER_SECS: u64 = 24 * 3600;
 
 fn answer_budget(timeout_secs: u64) -> Duration {
     Duration::from_secs(timeout_secs.min(MAX_ANSWER_SECS))
+}
+
+/// Nearest rank over sorted values.
+fn percentile(sorted: &[i64], at: usize) -> u64 {
+    let rank = (sorted.len() * at).div_ceil(100).max(1) - 1;
+    sorted
+        .get(rank.min(sorted.len().saturating_sub(1)))
+        .and_then(|value| u64::try_from(*value).ok())
+        .unwrap_or(0)
+}
+
+/// `part / whole` as a percentage to a tenth.
+fn rate(part: u64, whole: u64) -> Option<f32> {
+    #[allow(
+        clippy::cast_precision_loss,
+        reason = "counts of runs and queries are small"
+    )]
+    let percent = (whole > 0).then(|| (part as f64 * 1000.0 / whole as f64).round() / 10.0);
+    #[allow(clippy::cast_possible_truncation, reason = "a percentage fits an f32")]
+    percent.map(|percent| percent as f32)
+}
+
+fn tier_name(tier: Tier) -> &'static str {
+    match tier {
+        Tier::Base => "base",
+        Tier::Plus => "plus",
+        Tier::Apex => "apex",
+    }
 }
 
 fn unix_now() -> i64 {
@@ -1008,6 +1457,18 @@ fn snapshot(
     git_service::snapshot_tree(path, &paths, &pack_dir.join("index"))
 }
 
+/// A file as the run reviewed it: the pull request's head, the kept tree, or
+/// the working tree when no tree was kept.
+fn reviewed_text(repo: &Path, run: &ReviewRun, file: &str) -> Option<String> {
+    match (&run.target, &run.tree_oid) {
+        (ReviewTarget::PullRequest { .. }, _) => read_blob(repo, &run.head_oid, file),
+        (_, Some(tree)) => read_blob(repo, tree, file),
+        (_, None) => read_inside(repo, Path::new(file), MAX_FILE_TEXT_BYTES)
+            .ok()
+            .flatten(),
+    }
+}
+
 /// `<head>:<path>` from the object store, `None` over [`MAX_FILE_TEXT_BYTES`]
 /// or when it cannot be read.
 fn read_blob(repo: &Path, head: &str, path: &str) -> Option<String> {
@@ -1020,6 +1481,77 @@ fn read_blob(repo: &Path, head: &str, path: &str) -> Option<String> {
 struct Launch {
     provider: String,
     options: domain::AgentLaunchOptions,
+    /// One agent per hypothesis; empty is the single v1 reviewer.
+    swarm: Vec<Hypothesis>,
+}
+
+/// Every reviewer the run launched, stopped however the stage ends.
+struct Reviewers<'a> {
+    daemon: &'a Arc<Daemon>,
+    sessions: Vec<SessionId>,
+}
+
+impl Drop for Reviewers<'_> {
+    fn drop(&mut self) {
+        for session in self.sessions.drain(..) {
+            self.daemon.stop_reviewer(session);
+        }
+    }
+}
+
+/// What validation left out, summed over a run's agents.
+#[derive(Default)]
+struct Tally {
+    trimmed: u32,
+    low_confidence: u32,
+    suppressed: u32,
+    unverified: u32,
+}
+
+impl Tally {
+    fn add(&mut self, validated: &review::Validated) {
+        self.low_confidence += validated.low_confidence;
+        self.suppressed += validated.suppressed;
+        self.unverified += validated.unverified;
+    }
+
+    fn notes(&self, run: &mut ReviewRun, resolved: &review::Resolved) {
+        if self.trimmed > 0 {
+            run.coverage.notes.push(format!(
+                "{} finding(s) past max_findings ({}) were left out",
+                self.trimmed, resolved.max_findings
+            ));
+        }
+        if self.low_confidence > 0 {
+            run.coverage.notes.push(format!(
+                "{} finding(s) below min_confidence {} were dropped",
+                self.low_confidence, resolved.min_confidence
+            ));
+        }
+        if self.suppressed > 0 {
+            run.coverage.notes.push(format!(
+                "{} finding(s) suppressed by feedback",
+                self.suppressed
+            ));
+        }
+        run.coverage.unverified = self.unverified;
+        if self.unverified > 0 {
+            run.coverage.notes.push(format!(
+                "{} finding(s) could not be verified",
+                self.unverified
+            ));
+        }
+    }
+}
+
+fn write_private(file: &Path, text: &str) -> std::io::Result<()> {
+    std::fs::OpenOptions::new()
+        .write(true)
+        .create(true)
+        .truncate(true)
+        .mode(0o600)
+        .open(file)
+        .and_then(|mut handle| handle.write_all(text.as_bytes()))
 }
 
 struct Stages<'a> {
@@ -1120,10 +1652,13 @@ struct ReviewDir {
     problems: Vec<String>,
 }
 
-/// `global` is `[review] instructions`, the lowest instruction layer.
-fn load_review_dir(root: &Path, global: &str) -> ReviewDir {
-    let mut problems = Vec::new();
-    let config = match read_inside(
+/// `.forge/review/config.toml` alone, problems dropped: defaults stand in for a bad file.
+pub(crate) fn repo_config(root: &Path) -> review::Config {
+    read_config(root, &mut Vec::new())
+}
+
+fn read_config(root: &Path, problems: &mut Vec<String>) -> review::Config {
+    match read_inside(
         root,
         Path::new(".forge/review/config.toml"),
         MAX_REPO_FILE_BYTES,
@@ -1138,8 +1673,13 @@ fn load_review_dir(root: &Path, global: &str) -> ReviewDir {
             problems.push(format!(".forge/review/config.toml: {error}; defaults used"));
             review::Config::default()
         }
-    };
-    let mut config = config;
+    }
+}
+
+/// `global` is `[review] instructions`, the lowest instruction layer.
+fn load_review_dir(root: &Path, global: &str) -> ReviewDir {
+    let mut problems = Vec::new();
+    let mut config = read_config(root, &mut problems);
     let global = global.trim();
     if global.len() > review::MAX_INSTRUCTIONS_BYTES {
         problems.push(format!(
@@ -1273,6 +1813,15 @@ fn read_context(
         }
     }
     texts
+}
+
+/// A repository file inside `root`, as [`read_inside`] reads it.
+pub(crate) fn read_repo_file(
+    root: &Path,
+    relative: &str,
+    cap: u64,
+) -> Result<Option<String>, String> {
+    read_inside(root, Path::new(relative), cap)
 }
 
 /// A file of the checkout up to `cap` bytes: `Ok(None)` when it does not

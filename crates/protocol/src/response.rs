@@ -266,6 +266,30 @@ pub enum Response {
     Reviews(Vec<domain::ReviewRun>),
     /// Answers `GetReviewConfig`.
     ReviewConfig(domain::ReviewSettings),
+    /// Answers `GetReviewDiagram`; `None` when the change gives no such diagram.
+    ReviewDiagram(Option<domain::Diagram>),
+    /// Answers `GetReviewStats`.
+    ReviewStats(domain::ReviewStats),
+    /// Answers `StartFixLoop`.
+    FixLoopStarted {
+        workspace_id: domain::WorkspaceId,
+    },
+    /// Answers `RunSandbox`.
+    SandboxStarted {
+        sandbox_run_id: String,
+    },
+    /// Answers `GetSandboxRun`.
+    SandboxRun(Box<domain::SandboxRun>),
+    /// Answers `GetKb`.
+    Kb(Vec<domain::KbFile>),
+    /// Answers `ExportKb`.
+    KbExport(String),
+    /// Answers `RebuildGraph`.
+    GraphRebuilt(domain::GraphStats),
+    /// Answers `QueryGraph`.
+    GraphNodes(Vec<domain::GraphNode>),
+    /// Answers `ExportGraph`.
+    GraphExport(String),
     /// A branch against its pull request's base, answering
     /// `GetBranchCompare`. Boxed like `UsageAnalytics`: it carries a whole diff.
     BranchCompare(Box<BranchCompare>),

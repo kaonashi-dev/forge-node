@@ -42,6 +42,38 @@ pub enum ReviewView {
     #[default]
     Findings,
     Diff,
+    Diagrams,
+    Graph,
+}
+
+/// Files of a run whose graph neighbours the Graph tab lists.
+const MAX_GRAPH_FILES: usize = 20;
+/// Bytes of a sandbox target's output the TREX panel shows.
+const MAX_SANDBOX_TAIL: usize = 2048;
+const FIX_LOOP_ITERATIONS: u32 = 3;
+
+/// One reviewed file's neighbours in the codebase graph.
+#[derive(Clone, Debug, Default)]
+pub struct GraphFile {
+    pub path: String,
+    pub imports: Option<Result<Vec<domain::GraphNode>, String>>,
+    pub external: Option<Result<Vec<domain::GraphNode>, String>>,
+}
+
+/// The Graph tab's read of one run.
+#[derive(Clone, Debug)]
+pub struct ReviewGraph {
+    pub run: ReviewId,
+    pub files: Vec<GraphFile>,
+}
+
+/// A workspace's fix loop as its events report it.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct FixLoopProgress {
+    pub iteration: u32,
+    pub findings: u32,
+    pub done: bool,
+    pub error: Option<String>,
 }
 
 /// One of a checkout's review slots: the daemon runs a workspace review and
@@ -187,6 +219,14 @@ pub struct CodeReview {
     pub offered: Vec<(AgentProviderId, String)>,
     /// Each checkout's lanes in order, extended when a run of a new lane lands.
     lanes: HashMap<WorkspaceId, Vec<Lane>>,
+    pub graph: Option<ReviewGraph>,
+    /// The knowledge base of the workspace whose run cites it, once read.
+    pub kb: Option<(WorkspaceId, Result<Vec<domain::KbFile>, String>)>,
+    pub kb_open: bool,
+    pub sandbox: Option<(ReviewId, Result<domain::SandboxRun, String>)>,
+    /// The run a person pressed Fix Loop on, until they confirm or cancel.
+    pub fix_loop_confirm: Option<ReviewId>,
+    pub fix_loops: HashMap<WorkspaceId, FixLoopProgress>,
 }
 
 impl Default for CodeReview {
@@ -223,6 +263,12 @@ impl Default for CodeReview {
             send_to: HashMap::new(),
             offered: Vec::new(),
             lanes: HashMap::new(),
+            graph: None,
+            kb: None,
+            kb_open: false,
+            sandbox: None,
+            fix_loop_confirm: None,
+            fix_loops: HashMap::new(),
         }
     }
 }
@@ -582,6 +628,7 @@ fn sync(s: &mut AppState) {
             s.code_review.errors.insert(workspace, error);
         }
     }
+    sync_reads(s, workspace, generation);
     if s.code_review.view == ReviewView::Diff
         && let Some(run) = s.code_review.shown_run(workspace)
         && run.status == ReviewStatus::Completed
@@ -608,6 +655,60 @@ fn sync(s: &mut AppState) {
         {
             diff.error = Some(error);
         }
+    }
+}
+
+/// The Graph tab's and the TREX panel's reads, once per shown run.
+fn sync_reads(s: &mut AppState, workspace: WorkspaceId, generation: u64) {
+    let Some(run) = s.code_review.shown_run(workspace).cloned() else {
+        return;
+    };
+    if run.status != ReviewStatus::Completed {
+        return;
+    }
+    if s.code_review.view == ReviewView::Graph
+        && s.code_review
+            .graph
+            .as_ref()
+            .is_none_or(|graph| graph.run != run.id)
+    {
+        let files: Vec<GraphFile> = run
+            .coverage
+            .included
+            .iter()
+            .take(MAX_GRAPH_FILES)
+            .map(|path| GraphFile {
+                path: path.clone(),
+                ..GraphFile::default()
+            })
+            .collect();
+        if let Some(connection) = &s.connection {
+            for file in &files {
+                for query in [
+                    domain::GraphQuery::Imports(file.path.clone()),
+                    domain::GraphQuery::ExternalCalls(file.path.clone()),
+                ] {
+                    let _ = connection.query_graph(
+                        generation,
+                        run.id,
+                        workspace,
+                        file.path.clone(),
+                        query,
+                    );
+                }
+            }
+        }
+        s.code_review.graph = Some(ReviewGraph { run: run.id, files });
+    }
+    if let Some(id) = &run.sandbox_run_id
+        && s.code_review
+            .sandbox
+            .as_ref()
+            .is_none_or(|(read, _)| *read != run.id)
+        && let Some(connection) = &s.connection
+    {
+        s.code_review.sandbox = Some((run.id, Err("Reading the sandbox run…".into())));
+        let _ = connection.get_sandbox_run(generation, run.id, id.clone());
     }
 }
 
@@ -1149,6 +1250,115 @@ impl AppState {
             Err(error) => diff.error = Some(error),
         }
         true
+    }
+
+    pub fn apply_graph_nodes(
+        &mut self,
+        review_id: ReviewId,
+        path: &str,
+        query: &domain::GraphQuery,
+        result: Result<Vec<domain::GraphNode>, String>,
+    ) -> bool {
+        let Some(graph) = self
+            .code_review
+            .graph
+            .as_mut()
+            .filter(|graph| graph.run == review_id)
+        else {
+            return false;
+        };
+        let Some(file) = graph.files.iter_mut().find(|file| file.path == path) else {
+            return false;
+        };
+        match query {
+            domain::GraphQuery::Imports(_) => file.imports = Some(result),
+            _ => file.external = Some(result),
+        }
+        true
+    }
+
+    pub fn apply_kb(
+        &mut self,
+        workspace: WorkspaceId,
+        result: Result<Vec<domain::KbFile>, String>,
+    ) -> bool {
+        self.code_review.kb = Some((workspace, result));
+        true
+    }
+
+    pub fn apply_sandbox_run(
+        &mut self,
+        review_id: ReviewId,
+        result: Result<Box<domain::SandboxRun>, String>,
+    ) -> bool {
+        if self
+            .code_review
+            .sandbox
+            .as_ref()
+            .is_none_or(|(run, _)| *run != review_id)
+        {
+            return false;
+        }
+        self.code_review.sandbox = Some((review_id, result.map(|run| *run)));
+        true
+    }
+
+    pub fn apply_fix_loop(&mut self, workspace: WorkspaceId, progress: FixLoopProgress) -> bool {
+        if progress.done {
+            if let Some(error) = &progress.error {
+                self.toasts.danger("The fix loop stopped", error.clone());
+            } else {
+                self.toasts.neutral(
+                    "The fix loop finished",
+                    Some(format!(
+                        "{} finding(s) left after {} review(s)",
+                        progress.findings, progress.iteration
+                    )),
+                );
+            }
+        }
+        self.code_review.fix_loops.insert(workspace, progress);
+        true
+    }
+
+    pub fn toggle_review_kb(&mut self, workspace: WorkspaceId) {
+        self.code_review.kb_open = !self.code_review.kb_open;
+        if self.code_review.kb_open
+            && self
+                .code_review
+                .kb
+                .as_ref()
+                .is_none_or(|(read, _)| *read != workspace)
+            && let Some(connection) = &self.connection
+            && let Err(error) = connection.get_kb(self.generation, workspace)
+        {
+            self.code_review.kb = Some((workspace, Err(error)));
+        }
+    }
+
+    /// The confirmed fix loop, with the agent "Fix with a new agent" would start.
+    pub fn start_fix_loop(&mut self) {
+        let Some(review_id) = self.code_review.fix_loop_confirm.take() else {
+            return;
+        };
+        let (provider, profile) = match self.prompt_agent() {
+            Ok(agent) => agent,
+            Err(reason) => {
+                self.toasts.danger("The fix loop did not start", reason);
+                return;
+            }
+        };
+        let Some(connection) = &self.connection else {
+            return;
+        };
+        if let Err(error) = connection.start_fix_loop(
+            review_id,
+            Some(FIX_LOOP_ITERATIONS),
+            Some(provider.to_string()),
+            profile,
+        ) {
+            self.toasts.danger("The fix loop did not start", error);
+        }
     }
 
     /// Scrolls the Diff tab to a pull-request finding once the reviewed diff
@@ -1904,6 +2114,17 @@ fn finding_row(
     if lineage {
         head = head.child(lineage_badge(k, finding));
     }
+    if let Some(hypothesis) = finding.hypothesis {
+        head = head.child(
+            crate::ds::chip(
+                k,
+                &crate::theme::roles(k),
+                hypothesis.name(),
+                crate::ds::Tone::Info,
+            )
+            .key(format!("review-hypothesis-{}", finding.id)),
+        );
+    }
     head = head
         .child(
             text(finding.category.clone())
@@ -2200,19 +2421,22 @@ fn report_actions(s: &AppState, k: &Kit, run: &ReviewRun) -> El {
         .items_center()
         .child(
             SegmentedControl::new(
-                &["Findings", "Diff"],
+                &["Findings", "Diff", "Diagrams", "Graph"],
                 Some(match s.code_review.view {
                     ReviewView::Findings => 0,
                     ReviewView::Diff => 1,
+                    ReviewView::Diagrams => 2,
+                    ReviewView::Graph => 3,
                 }),
             )
             .label("Show")
             .fit()
             .on_pick(|s: &mut AppState, index: usize, _| {
-                s.code_review.view = if index == 1 {
-                    ReviewView::Diff
-                } else {
-                    ReviewView::Findings
+                s.code_review.view = match index {
+                    1 => ReviewView::Diff,
+                    2 => ReviewView::Diagrams,
+                    3 => ReviewView::Graph,
+                    _ => ReviewView::Findings,
                 };
             })
             .build(k)
@@ -2236,7 +2460,26 @@ fn report_actions(s: &AppState, k: &Kit, run: &ReviewRun) -> El {
                 .on_press(|s: &mut AppState| s.fix_with_agent())
                 .build(k)
                 .key("review-fix"),
-        );
+        )
+        .child({
+            let looping = s
+                .code_review
+                .fix_loops
+                .get(&run.workspace_id)
+                .is_some_and(|progress| !progress.done);
+            let review_id = run.id;
+            Button::new(if looping {
+                "Fix loop running…"
+            } else {
+                "Fix Loop"
+            })
+            .variant(ButtonVariant::Outline)
+            .control_size(ControlSize::Small)
+            .disabled(fix_blocked || !standing || looping)
+            .on_press(move |s: &mut AppState| s.code_review.fix_loop_confirm = Some(review_id))
+            .build(k)
+            .key("review-fix-loop")
+        });
     if let Some(reason) = send {
         actions = actions.child(note(k, reason));
     }
@@ -2264,6 +2507,310 @@ fn coverage(k: &Kit, run: &ReviewRun) -> El {
         body = body.child(note(k, note_text.clone()));
     }
     body
+}
+
+fn verdict_tone(verdict: Verdict) -> crate::ds::Tone {
+    match verdict {
+        Verdict::Block => crate::ds::Tone::Danger,
+        Verdict::Review => crate::ds::Tone::Warning,
+        Verdict::Ok => crate::ds::Tone::Success,
+    }
+}
+
+fn score_badge(k: &Kit, run: &ReviewRun) -> Option<El> {
+    let verdict = run.verdict?;
+    let approvable = if run.auto_approvable {
+        "auto-approvable"
+    } else {
+        "needs a person"
+    };
+    let label = format!(
+        "Score {} · {} · {approvable}",
+        score_label(run.score),
+        verdict_label(verdict)
+    );
+    Some(
+        row()
+            .key("review-score-badge")
+            .gap(crate::ds::SPACE_3)
+            .items_center()
+            .child(
+                crate::ds::chip(
+                    k,
+                    &crate::theme::roles(k),
+                    score_label(run.score),
+                    verdict_tone(verdict),
+                )
+                .label(label),
+            )
+            .child(note(
+                k,
+                format!("{} · {approvable}", verdict_label(verdict)),
+            )),
+    )
+}
+
+fn palette(k: &Kit) -> crate::diagram_svg::Palette {
+    let roles = crate::theme::roles(k);
+    crate::diagram_svg::Palette {
+        text: roles.text.hex(),
+        muted: roles.muted.hex(),
+        line: roles.border_strong.hex(),
+        fill: roles.surface.hex(),
+        stroke: roles.border_hi.hex(),
+    }
+}
+
+/// Points the widest diagram is rasterized for; a wider drawing is scaled down.
+const DIAGRAM_PT: f32 = 1200.0;
+
+fn diagrams(s: &AppState, k: &Kit, run: &ReviewRun) -> El {
+    let mut body = col()
+        .key("review-diagrams")
+        .w_full()
+        .gap(crate::ds::SPACE_4);
+    if run.diagrams.is_empty() {
+        return body.child(note(k, "This change drew no diagram."));
+    }
+    let palette = palette(k);
+    for (at, diagram) in run.diagrams.iter().enumerate() {
+        let key = format!("review-diagram-{at}");
+        let version = (run.id.to_string(), at, palette.clone());
+        let picture = rune::memo(key.clone(), version, || {
+            let drawn = crate::diagram_svg::svg(diagram, &palette);
+            match &s.images {
+                Some(cache) => {
+                    let size = drawn.width.max(drawn.height).min(DIAGRAM_PT);
+                    let image = cache.svg(drawn.text.into_bytes(), size, 2.0);
+                    el().key(key.clone())
+                        .aspect_fit(drawn.width / drawn.height.max(1.0))
+                        .max_w(drawn.width)
+                        .pixels_fit(image.pixels(), rune::SurfaceFit::Fit)
+                }
+                None => note(k, "This window has no image decoder."),
+            }
+        });
+        body = body
+            .child(section(k, diagram.title.clone()))
+            .child(picture)
+            .child(note(
+                k,
+                "Export: forgectl review show <id> --diagram <kind> --format mermaid",
+            ));
+    }
+    body
+}
+
+fn neighbours(k: &Kit, label: &str, nodes: Option<&Result<Vec<domain::GraphNode>, String>>) -> El {
+    let text_value = match nodes {
+        None => "reading…".to_owned(),
+        Some(Err(error)) => error.clone(),
+        Some(Ok(nodes)) if nodes.is_empty() => "none".to_owned(),
+        Some(Ok(nodes)) => nodes
+            .iter()
+            .map(|node| {
+                if node.path.is_empty() {
+                    node.name.clone()
+                } else if node.kind == domain::NodeKind::File {
+                    node.path.clone()
+                } else {
+                    format!("{}:{} {}", node.path, node.line, node.name)
+                }
+            })
+            .collect::<Vec<_>>()
+            .join(", "),
+    };
+    note(k, format!("{label}: {text_value}"))
+}
+
+fn graph(s: &AppState, k: &Kit) -> El {
+    let mut body = col().key("review-graph").w_full().gap(crate::ds::SPACE_3);
+    let Some(graph) = &s.code_review.graph else {
+        return body.child(note(k, "Reading the codebase graph…"));
+    };
+    for file in &graph.files {
+        body = body
+            .child(
+                text(file.path.clone())
+                    .font(k.ty.mono)
+                    .color(k.c.text_base)
+                    .truncate(),
+            )
+            .child(neighbours(k, "imports", file.imports.as_ref()))
+            .child(neighbours(k, "external calls", file.external.as_ref()));
+    }
+    body
+}
+
+fn kb_section(s: &AppState, k: &Kit, run: &ReviewRun) -> Option<El> {
+    let report = s
+        .code_review
+        .reports
+        .get(&(run.workspace_id, lane(&run.target)))
+        .filter(|report| report.run == run.id)?;
+    let cited = model::kb_refs(&report.findings);
+    if cited.is_empty() {
+        return None;
+    }
+    let workspace = run.workspace_id;
+    let open = s.code_review.kb_open;
+    let mut body = col()
+        .key("review-kb")
+        .w_full()
+        .gap(crate::ds::SPACE_2)
+        .child(
+            Button::new(format!(
+                "{} Knowledge base · {} cited",
+                if open { "▾" } else { "▸" },
+                cited.len()
+            ))
+            .variant(ButtonVariant::GhostMuted)
+            .control_size(ControlSize::Small)
+            .on_press(move |s: &mut AppState| s.toggle_review_kb(workspace))
+            .build(k)
+            .key("review-kb-toggle"),
+        );
+    if !open {
+        return Some(body);
+    }
+    let files = s
+        .code_review
+        .kb
+        .as_ref()
+        .filter(|(read, _)| *read == workspace)
+        .map(|(_, files)| files);
+    for (at, reference) in cited.iter().enumerate() {
+        let excerpt = match files {
+            None => "Reading the knowledge base…".to_owned(),
+            Some(Err(error)) => error.clone(),
+            Some(Ok(files)) => model::kb_excerpt(files, reference)
+                .unwrap_or_else(|| "The knowledge base no longer holds this section.".to_owned()),
+        };
+        body = body.child(
+            col()
+                .key(format!("review-kb-{at}"))
+                .w_full()
+                .gap(crate::ds::SPACE_2)
+                .padding(8.0)
+                .radius(k.radius.sm)
+                .fill(k.c.surface_hover)
+                .child(text(reference.clone()).font(k.ty.mono).color(k.c.text_base))
+                .child(note(k, excerpt)),
+        );
+    }
+    Some(body)
+}
+
+fn sandbox_panel(s: &AppState, k: &Kit, run: &ReviewRun) -> Option<El> {
+    run.sandbox_run_id.as_ref()?;
+    let mut body = col()
+        .key("review-sandbox")
+        .w_full()
+        .gap(crate::ds::SPACE_2)
+        .child(section(k, "Sandbox (TREX)"));
+    let read = s
+        .code_review
+        .sandbox
+        .as_ref()
+        .filter(|(read, _)| *read == run.id)
+        .map(|(_, result)| result);
+    let sandbox = match read {
+        None => return Some(body.child(note(k, "Reading the sandbox run…"))),
+        Some(Err(error)) => return Some(body.child(note(k, error.clone()))),
+        Some(Ok(sandbox)) => sandbox,
+    };
+    if let Some(error) = &sandbox.error {
+        body = body.child(note(k, error.clone()));
+    }
+    for target in &sandbox.targets {
+        let outcome = match (target.timed_out, target.exit_code) {
+            (true, _) => "timed out".to_owned(),
+            (false, Some(0)) => "passed".to_owned(),
+            (false, Some(code)) => format!("exit {code}"),
+            (false, None) => "killed".to_owned(),
+        };
+        let mut item = col()
+            .key(format!("review-sandbox-{}", target.name))
+            .w_full()
+            .gap(crate::ds::SPACE_2)
+            .child(
+                row()
+                    .gap(crate::ds::SPACE_3)
+                    .items_center()
+                    .child(
+                        text(target.name.clone())
+                            .font(k.ty.small_medium)
+                            .color(k.c.text_base),
+                    )
+                    .child(
+                        text(outcome)
+                            .font(k.ty.text_xsmall)
+                            .color(if target.passed() {
+                                k.c.success.fg
+                            } else {
+                                k.c.danger.fg
+                            }),
+                    )
+                    .child(note(k, format!("{} ms", target.duration_ms))),
+            );
+        if !target.passed() {
+            for output in [&target.stdout, &target.stderr] {
+                if !output.trim().is_empty() {
+                    item = item.child(
+                        text(model::tail(output, MAX_SANDBOX_TAIL).to_owned())
+                            .font(k.ty.mono)
+                            .color(k.c.text_muted)
+                            .wrap(),
+                    );
+                }
+            }
+        }
+        body = body.child(item);
+    }
+    Some(body)
+}
+
+/// The confirmation a fix loop needs before any writable agent starts.
+pub fn fix_loop_dialog(s: &AppState, k: &Kit, layer: &mut Vec<El>) {
+    let Some(review_id) = s.code_review.fix_loop_confirm else {
+        return;
+    };
+    let standing = s
+        .code_review
+        .reports
+        .values()
+        .find(|report| report.run == review_id)
+        .map_or(0, |report| {
+            report
+                .findings
+                .iter()
+                .filter(|finding| finding.reaction != Some(FindingReaction::Dismiss))
+                .count()
+        });
+    crate::modal::Modal::new("review-fix-loop-dialog", "Start a fix loop?")
+        .width(crate::modal::WIDTH_PROMPT)
+        .on_close(|s: &mut AppState| s.code_review.fix_loop_confirm = None)
+        .child(note(
+            k,
+            format!(
+                "Forge sends {standing} finding(s) to a new writable agent, reviews the change \
+                 again, and repeats until nothing is found or {FIX_LOOP_ITERATIONS} reviews ran. \
+                 The agent edits this checkout; Forge never commits or pushes."
+            ),
+        ))
+        .footer([
+            Button::new("Cancel")
+                .variant(ButtonVariant::GhostMuted)
+                .on_press(|s: &mut AppState| s.code_review.fix_loop_confirm = None)
+                .build(k)
+                .key("review-fix-loop-cancel"),
+            Button::new("Start fix loop")
+                .variant(ButtonVariant::Contrast)
+                .on_press(|s: &mut AppState| s.start_fix_loop())
+                .build(k)
+                .key("review-fix-loop-start"),
+        ])
+        .build(s, k, layer);
 }
 
 pub fn view(s: &AppState, k: &Kit) -> El {
@@ -2390,6 +2937,9 @@ pub fn view(s: &AppState, k: &Kit) -> El {
                         .wrap(),
                 );
             }
+            if let Some(badge) = score_badge(k, run) {
+                body = body.child(badge);
+            }
             if !run.summary.trim().is_empty() {
                 body = body.child(section(k, "Summary")).child(
                     Markdown::new(run.summary.clone())
@@ -2403,7 +2953,12 @@ pub fn view(s: &AppState, k: &Kit) -> El {
             }
             body = match s.code_review.view {
                 ReviewView::Diff if completed => body.child(reviewed_diff(s, k)),
-                _ => body.child(findings(s, k, run)),
+                ReviewView::Diagrams if completed => body.child(diagrams(s, k, run)),
+                ReviewView::Graph if completed => body.child(graph(s, k)),
+                _ => body
+                    .child(findings(s, k, run))
+                    .children(kb_section(s, k, run))
+                    .children(sandbox_panel(s, k, run)),
             };
             body = body.child(coverage(k, run));
         }
@@ -2464,6 +3019,8 @@ mod tests {
             suggestion: None,
             lineage: Lineage::New,
             reaction: None,
+            hypothesis: None,
+            kb_ref: None,
         }
     }
 
@@ -2496,6 +3053,11 @@ mod tests {
             finished_at: finished.then(Timestamp::now),
             branch: Some("main".into()),
             tree_oid: None,
+            diagrams: Vec::new(),
+            auto_approvable: false,
+            swarm_size: 1,
+            schema_version: domain::SchemaVersion::V1,
+            sandbox_run_id: None,
         }
     }
 
@@ -3363,5 +3925,179 @@ mod tests {
         state.apply_review_run(&live);
         assert_eq!(state.workbench.mode, CenterMode::Changes);
         assert_eq!(state.code_review.follow, None);
+    }
+
+    #[test]
+    fn a_completed_run_shows_its_score_badge_and_hypothesis_chips() {
+        let (mut state, workspace) = fixture_state();
+        let mut run = completed(workspace, workspace_target(workspace));
+        run.score = Some(3.5);
+        run.verdict = Some(Verdict::Review);
+        let mut hunted = finding(1, "a.rs", Some(2), Severity::P1);
+        hunted.hypothesis = Some(domain::Hypothesis::RaceCondition);
+        with_report(
+            &mut state,
+            &run,
+            vec![hunted, finding(2, "a.rs", Some(4), Severity::P2)],
+            vec![],
+            None,
+        );
+        let shown = keys(state);
+        assert!(has(&shown, "review-score-badge"), "{shown:?}");
+        assert!(has(&shown, "review-hypothesis-1"));
+        assert!(
+            !has(&shown, "review-hypothesis-2"),
+            "a single reviewer's finding carries none"
+        );
+        assert!(has(&shown, "review-fix-loop"));
+    }
+
+    #[test]
+    fn the_diagrams_tab_draws_each_diagram_of_the_run() {
+        let (mut state, workspace) = fixture_state();
+        let mut run = completed(workspace, workspace_target(workspace));
+        run.diagrams = vec![domain::Diagram {
+            kind: domain::DiagramKind::Flow,
+            title: "Branches in pick".into(),
+            nodes: vec![domain::DiagramNode {
+                id: "start".into(),
+                label: "pick".into(),
+            }],
+            edges: Vec::new(),
+        }];
+        with_report(&mut state, &run, vec![], vec![], None);
+        state.images = Some(rune::ImageCache::new(std::sync::Arc::new(|| {})));
+        state.code_review.view = ReviewView::Diagrams;
+        let shown = keys(state);
+        assert!(has(&shown, "review-diagrams"), "{shown:?}");
+        assert!(has(&shown, "review-diagram-0"));
+    }
+
+    #[test]
+    fn graph_answers_land_on_their_file_and_a_stale_run_is_ignored() {
+        let (mut state, workspace) = fixture_state();
+        let mut run = completed(workspace, workspace_target(workspace));
+        run.coverage.included = vec!["a.rs".into()];
+        with_report(&mut state, &run, vec![], vec![], None);
+        state.code_review.graph = Some(ReviewGraph {
+            run: run.id,
+            files: vec![GraphFile {
+                path: "a.rs".into(),
+                ..GraphFile::default()
+            }],
+        });
+        let node = domain::GraphNode {
+            kind: domain::NodeKind::File,
+            path: "b.rs".into(),
+            name: "b.rs".into(),
+            line: 0,
+            signature: String::new(),
+        };
+        assert!(state.apply_graph_nodes(
+            run.id,
+            "a.rs",
+            &domain::GraphQuery::Imports("a.rs".into()),
+            Ok(vec![node])
+        ));
+        assert!(!state.apply_graph_nodes(
+            ReviewId::new(),
+            "a.rs",
+            &domain::GraphQuery::Imports("a.rs".into()),
+            Ok(vec![])
+        ));
+        let graph = state.code_review.graph.as_ref().expect("graph");
+        assert!(matches!(&graph.files[0].imports, Some(Ok(nodes)) if nodes.len() == 1));
+        assert!(graph.files[0].external.is_none());
+        state.code_review.view = ReviewView::Graph;
+        let shown = keys(state);
+        assert!(has(&shown, "review-graph"), "{shown:?}");
+    }
+
+    #[test]
+    fn a_cited_knowledge_base_and_a_sandbox_run_have_their_sections() {
+        let (mut state, workspace) = fixture_state();
+        let mut run = completed(workspace, workspace_target(workspace));
+        run.sandbox_run_id = Some("s1".into());
+        let mut cited = finding(1, "a.rs", Some(2), Severity::P1);
+        cited.kb_ref = Some("architecture.md#crates".into());
+        with_report(&mut state, &run, vec![cited], vec![], None);
+        state.code_review.kb_open = true;
+        state.code_review.kb = Some((
+            workspace,
+            Ok(vec![domain::KbFile {
+                file: "architecture.md".into(),
+                content: "# Architecture\n\n## crates\n\n- 3 file(s)\n".into(),
+                source: "daemon".into(),
+                updated_at: None,
+            }]),
+        ));
+        state.code_review.sandbox = Some((
+            run.id,
+            Ok(domain::SandboxRun {
+                id: "s1".into(),
+                workspace_id: workspace,
+                review_id: Some(run.id),
+                targets: vec![domain::SandboxTarget {
+                    name: "test".into(),
+                    exit_code: Some(1),
+                    duration_ms: 3,
+                    timed_out: false,
+                    stdout: "1 failed".into(),
+                    stderr: String::new(),
+                }],
+                error: None,
+                started_at: domain::Timestamp::now(),
+                finished_at: None,
+            }),
+        ));
+        let shown = keys(state);
+        assert!(has(&shown, "review-kb"), "{shown:?}");
+        assert!(has(&shown, "review-kb-0"));
+        assert!(has(&shown, "review-sandbox"));
+        assert!(has(&shown, "review-sandbox-test"));
+    }
+
+    #[test]
+    fn fix_loop_asks_first_and_a_cancel_starts_nothing() {
+        let (mut state, workspace) = fixture_state();
+        let run = completed(workspace, workspace_target(workspace));
+        with_report(
+            &mut state,
+            &run,
+            vec![finding(1, "a.rs", Some(2), Severity::P1)],
+            vec![],
+            None,
+        );
+        state.code_review.fix_loop_confirm = Some(run.id);
+        let shown = keys(state);
+        assert!(
+            has(&shown, "review-fix-loop-dialog")
+                || shown
+                    .iter()
+                    .any(|key| key.starts_with("review-fix-loop-dialog")),
+            "{shown:?}"
+        );
+        assert!(has(&shown, "review-fix-loop-start"));
+
+        let (mut state, workspace) = fixture_state();
+        let run = completed(workspace, workspace_target(workspace));
+        with_report(&mut state, &run, vec![], vec![], None);
+        state.code_review.fix_loop_confirm = Some(run.id);
+        state.apply_fix_loop(
+            workspace,
+            FixLoopProgress {
+                iteration: 1,
+                findings: 0,
+                done: true,
+                error: None,
+            },
+        );
+        assert!(
+            state
+                .code_review
+                .fix_loops
+                .get(&workspace)
+                .is_some_and(|p| p.done)
+        );
     }
 }

@@ -1863,6 +1863,24 @@ impl AppState {
                     self.apply_review_run(run);
                     return true;
                 }
+                if let client::DaemonEvent::FixLoopUpdated {
+                    workspace_id,
+                    iteration,
+                    findings,
+                    done,
+                    error,
+                } = event.as_ref()
+                {
+                    return self.apply_fix_loop(
+                        *workspace_id,
+                        crate::code_review::FixLoopProgress {
+                            iteration: *iteration,
+                            findings: *findings,
+                            done: *done,
+                            error: error.clone(),
+                        },
+                    );
+                }
                 crate::project_ops::observe(self, event.as_ref());
                 if let client::DaemonEvent::ClipboardStore { terminal_id, text } = event.as_ref() {
                     // Only a terminal this window shows may set the clipboard;
@@ -2512,6 +2530,38 @@ impl AppState {
                     return false;
                 }
                 self.apply_review_diff(review_id, result)
+            }
+            UiEvent::GraphNodes {
+                generation,
+                review_id,
+                path,
+                query,
+                result,
+            } => {
+                if !self.accept_generation(generation) {
+                    return false;
+                }
+                self.apply_graph_nodes(review_id, &path, &query, result)
+            }
+            UiEvent::Kb {
+                generation,
+                workspace_id,
+                result,
+            } => {
+                if !self.accept_generation(generation) {
+                    return false;
+                }
+                self.apply_kb(workspace_id, result)
+            }
+            UiEvent::SandboxRun {
+                generation,
+                review_id,
+                result,
+            } => {
+                if !self.accept_generation(generation) {
+                    return false;
+                }
+                self.apply_sandbox_run(review_id, result)
             }
             UiEvent::SpecRun {
                 generation,

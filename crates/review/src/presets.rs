@@ -27,7 +27,10 @@ pub struct Preset {
 #[derive(Clone, Debug, PartialEq)]
 pub struct Resolved {
     pub preset: String,
+    /// `Base` until [`Resolved::auto_tier`] is replaced from the diff.
     pub tier: Tier,
+    /// No run, preset or config chose a tier.
+    pub auto_tier: bool,
     pub categories: Categories,
     /// Enabled and chosen by the preset; the diff's scope is applied later.
     pub rules: Vec<Rule>,
@@ -38,6 +41,10 @@ pub struct Resolved {
     pub min_confidence: f32,
     pub ignore: Vec<String>,
     pub context: ContextSettings,
+    pub graph: crate::config::GraphSettings,
+    pub auto_approve: crate::config::AutoApprove,
+    pub kb_enabled: bool,
+    pub security: crate::config::SecuritySettings,
     pub notes: Vec<String>,
 }
 
@@ -299,9 +306,11 @@ pub fn resolve(
         .filter(|text| !text.is_empty())
         .collect::<Vec<_>>()
         .join("\n\n");
+    let tier = tier.or(chosen.tier).or(config.default_tier);
     Ok(Resolved {
         preset: id,
-        tier: tier.or(chosen.tier).unwrap_or(config.default_tier),
+        tier: tier.unwrap_or_default(),
+        auto_tier: tier.is_none(),
         categories,
         rules,
         instructions,
@@ -311,6 +320,45 @@ pub fn resolve(
         min_confidence: config.min_confidence,
         ignore: config.ignore.clone(),
         context: config.context.clone(),
+        graph: config.graph.clone(),
+        auto_approve: config.auto_approve,
+        kb_enabled: config.kb_enabled,
+        security: config.security.clone(),
         notes,
     })
+}
+
+const AUTO_APEX_BYTES: usize = 1024 * 1024;
+const AUTO_APEX_FILES: usize = 50;
+const AUTO_PLUS_BYTES: usize = 256 * 1024;
+const AUTO_PLUS_PATHS: [&str; 10] = [
+    "auth",
+    "security",
+    "crypto",
+    "secret",
+    "token",
+    "password",
+    "permission",
+    "perf",
+    "bench",
+    "cache",
+];
+
+/// `auto`: apex past 1 MiB of patch or 50 files, plus past 256 KiB or for a
+/// path that names a sensitive area, else base.
+#[must_use]
+pub fn auto_tier(files: &[domain::DiffFile]) -> Tier {
+    let bytes: usize = files.iter().map(|file| file.patch.len()).sum();
+    if bytes > AUTO_APEX_BYTES || files.len() > AUTO_APEX_FILES {
+        return Tier::Apex;
+    }
+    let sensitive = files.iter().any(|file| {
+        let path = file.path.to_ascii_lowercase();
+        AUTO_PLUS_PATHS.iter().any(|word| path.contains(word))
+    });
+    if bytes > AUTO_PLUS_BYTES || sensitive {
+        Tier::Plus
+    } else {
+        Tier::Base
+    }
 }

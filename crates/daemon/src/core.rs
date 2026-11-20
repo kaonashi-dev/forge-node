@@ -120,6 +120,10 @@ pub(crate) struct Inner {
     /// `MAX_RUNNING_REVIEWS` bounds. Not cleared by a factory reset: each
     /// worker still releases its own claim when it ends.
     pub(crate) review_workers: usize,
+    /// Workspaces with a `RunSandbox` in flight; its guard clears the entry.
+    pub(crate) sandboxes: HashSet<WorkspaceId>,
+    /// Workspaces with a fix loop, and whether it was asked to stop.
+    pub(crate) fix_loops: HashMap<WorkspaceId, bool>,
     /// Coalesces `RefreshPullRequests` globally — one refresh covers every host.
     pr_refreshing: bool,
     /// A `RefreshAgentDetection` worker is running.
@@ -173,6 +177,8 @@ pub struct DaemonPaths {
 pub struct Daemon {
     pub(crate) context_writer: persistence::db::ContextWriter,
     pub(crate) review_store: persistence::ReviewStore,
+    /// Own locks: indexing reads every file of a checkout.
+    pub(crate) graphs: crate::graph::Graphs,
     pub(crate) spec_runs: crate::spec_runs::SpecRuns,
     inner: Mutex<Inner>,
     pub(crate) registry: crate::registry::ClientRegistry,
@@ -328,6 +334,7 @@ impl Daemon {
             tracing::info!(interrupted, "interrupted reviews left in flight");
         }
         crate::review::sweep_packs(&paths.forge.home);
+        crate::sandbox::sweep(&paths.forge.home);
         let reviewer_sessions = review_store
             .reviewer_sessions()
             .map_err(|e| e.to_string())?;
@@ -436,6 +443,8 @@ impl Daemon {
             reviews_running: HashMap::new(),
             review_cancel: HashSet::new(),
             review_workers: 0,
+            sandboxes: HashSet::new(),
+            fix_loops: HashMap::new(),
             pr_refreshing: false,
             detecting: false,
             detect_again: false,
@@ -460,6 +469,7 @@ impl Daemon {
         Ok(Arc::new(Daemon {
             context_writer,
             review_store,
+            graphs: crate::graph::Graphs::default(),
             spec_runs,
             inner: Mutex::new(inner),
             registry: crate::registry::ClientRegistry::new(),
@@ -496,6 +506,10 @@ impl Daemon {
             .bound_socket
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(path);
+    }
+
+    pub(crate) fn bound_socket_path(&self) -> Option<PathBuf> {
+        self.bound_socket()
     }
 
     fn bound_socket(&self) -> Option<PathBuf> {
@@ -1004,6 +1018,7 @@ impl Daemon {
                 instructions,
                 model,
                 effort,
+                swarm,
             } => self.start_review(
                 target,
                 tier,
@@ -1011,6 +1026,7 @@ impl Daemon {
                 preset,
                 instructions,
                 domain::AgentLaunchOptions { model, effort },
+                swarm,
             ),
             Request::GetReviewConfig { workspace_id } => self.get_review_config(workspace_id),
             Request::CancelReview { review_id } => self.cancel_review(review_id),
@@ -1029,6 +1045,41 @@ impl Daemon {
                 workspace_id,
                 suppression,
             } => self.clear_review_suppression(workspace_id, &suppression),
+            Request::GetReviewDiagram { review_id, kind } => {
+                self.get_review_diagram(review_id, kind)
+            }
+            Request::GetReviewStats { workspace_id } => self.review_stats(workspace_id),
+            Request::StartFixLoop {
+                review_id,
+                max_iterations,
+                provider,
+                profile_id,
+            } => self.start_fix_loop(review_id, max_iterations, provider, profile_id),
+            Request::CancelFixLoop { workspace_id } => self.cancel_fix_loop(workspace_id),
+            Request::RunSandbox {
+                workspace_id,
+                target,
+            } => self.run_sandbox(workspace_id, target),
+            Request::GetSandboxRun { sandbox_run_id } => self.get_sandbox_run(&sandbox_run_id),
+            Request::GetKb { workspace_id } => self.get_kb(workspace_id),
+            Request::UpdateKbEntry {
+                workspace_id,
+                file,
+                content,
+            } => self.update_kb_entry(workspace_id, &file, &content),
+            Request::ClearKbEntry { workspace_id, file } => {
+                self.clear_kb_entry(workspace_id, &file)
+            }
+            Request::ExportKb { workspace_id } => self.export_kb(workspace_id),
+            Request::RebuildGraph { workspace_id, full } => self.rebuild_graph(workspace_id, full),
+            Request::QueryGraph {
+                workspace_id,
+                query,
+            } => self.query_graph(workspace_id, &query),
+            Request::ExportGraph {
+                workspace_id,
+                format,
+            } => self.export_graph(workspace_id, format),
             Request::GetBranchCompare {
                 workspace_id,
                 base,
@@ -13544,6 +13595,11 @@ mod tests {
             finished_at: None,
             branch: None,
             tree_oid: None,
+            diagrams: Vec::new(),
+            auto_approvable: false,
+            swarm_size: 1,
+            schema_version: domain::SchemaVersion::V1,
+            sandbox_run_id: None,
         };
         daemon.review_store.insert_run(&run).expect("insert run");
         daemon.lock().review_cancel.insert(run.id);
@@ -13563,6 +13619,8 @@ mod tests {
             suggestion: None,
             lineage: domain::Lineage::New,
             reaction: None,
+            hypothesis: None,
+            kb_ref: None,
         };
 
         daemon.settle_review(&mut run, Ok(vec![finding]));

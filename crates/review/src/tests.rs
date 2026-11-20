@@ -1,4 +1,4 @@
-use domain::{DiffFile, DiffStatus, Severity, Tier, Verdict};
+use domain::{Coverage, DiffFile, DiffStatus, Severity, Tier, Verdict};
 
 use super::*;
 
@@ -46,14 +46,19 @@ fn raw(line: Option<u32>, evidence: &str) -> RawFinding {
         body: "b".into(),
         evidence: evidence.into(),
         suggestion: None,
+        hypothesis: None,
+        kb_ref: None,
     }
 }
 
 fn output(findings: Vec<RawFinding>) -> ReviewOutput {
     ReviewOutput {
+        schema: domain::SchemaVersion::V1,
         summary: "sum".into(),
         findings,
         diagram: None,
+        patterns: Vec::new(),
+        coverage_notes: Vec::new(),
     }
 }
 
@@ -266,6 +271,8 @@ fn with(severities: &[Severity]) -> Vec<domain::Finding> {
             suggestion: None,
             lineage: domain::Lineage::New,
             reaction: None,
+            hypothesis: None,
+            kb_ref: None,
         })
         .collect()
 }
@@ -327,14 +334,14 @@ fn the_spec_example_config_parses_and_ignores_unknown_keys() {
     let (config, notes) = Config::parse(SPEC_CONFIG);
     assert!(notes.is_empty(), "{notes:?}");
     assert_eq!(config.language, "es");
-    assert_eq!(config.default_tier, Tier::Plus);
+    assert_eq!(config.default_tier, Some(Tier::Plus));
     assert_eq!(config.ignore.len(), 4);
 }
 
 #[test]
 fn a_bad_config_value_falls_back_with_a_note() {
     let (config, notes) = Config::parse("default_tier = \"ultra\"\nlanguage = \"es\"\n");
-    assert_eq!(config.default_tier, Tier::Base);
+    assert_eq!(config.default_tier, None, "auto is the default");
     assert_eq!(config.language, "es");
     assert_eq!(notes.len(), 1);
 
@@ -785,7 +792,7 @@ fn presets_a_repository_preset_replaces_a_builtin_in_place() {
 #[test]
 fn presets_tier_precedence() {
     let config = Config {
-        default_tier: Tier::Plus,
+        default_tier: Some(Tier::Plus),
         ..Config::default()
     };
     let presets = builtins();
@@ -1237,6 +1244,11 @@ fn lineage_run(
         finished_at: None,
         branch: branch.map(str::to_owned),
         tree_oid: None,
+        diagrams: Vec::new(),
+        auto_approvable: false,
+        swarm_size: 1,
+        schema_version: domain::SchemaVersion::V1,
+        sandbox_run_id: None,
     }
 }
 
@@ -1871,4 +1883,429 @@ fn the_tier_note_counts_only_what_the_cap_cut() {
         "{:?}",
         coverage.notes
     );
+}
+
+#[test]
+fn config_graph_keys_parse_and_bad_values_keep_their_defaults() {
+    let (config, notes) = Config::parse(
+        "[graph]\nenabled = false\ncross_repo = true\nrepos = [\"billing\", \"../shared\"]\n",
+    );
+    assert!(notes.is_empty(), "{notes:?}");
+    assert_eq!(
+        config.graph,
+        GraphSettings {
+            enabled: false,
+            cross_repo: true,
+            repos: vec!["billing".into(), "../shared".into()],
+        }
+    );
+    assert_eq!(Config::default().graph, GraphSettings::default());
+    assert!(GraphSettings::default().enabled);
+
+    let (config, notes) = Config::parse("[graph]\nenabled = \"no\"\nrepos = [1, \"\"]\n");
+    assert!(config.graph.enabled);
+    assert!(config.graph.repos.is_empty());
+    assert_eq!(notes.len(), 3, "{notes:?}");
+    let (_, notes) = Config::parse("graph = 1\n");
+    assert!(notes
+        .iter()
+        .any(|note| note.contains("`[graph]` must be a table")));
+}
+
+#[test]
+fn the_pack_exclusions_are_public_for_the_graph() {
+    assert!(excluded_path("Cargo.lock", &[]));
+    assert!(!excluded_path("web/dist-not/x.ts", &[]));
+    assert!(excluded_path("vendor/lib.rs", &["vendor/**".into()]));
+    assert!(!excluded_path("src/lib.rs", &[]));
+}
+
+#[test]
+fn auto_tier_follows_the_size_and_the_paths_of_the_diff() {
+    assert_eq!(auto_tier(&[diff_file("src/lib.rs", PATCH)]), Tier::Base);
+    assert_eq!(
+        auto_tier(&[diff_file("src/auth/login.rs", PATCH)]),
+        Tier::Plus
+    );
+    assert_eq!(auto_tier(&[diff_file("src/Perf.rs", PATCH)]), Tier::Plus);
+    let big = "x".repeat(300 * 1024);
+    assert_eq!(auto_tier(&[diff_file("src/lib.rs", &big)]), Tier::Plus);
+    let huge = "x".repeat(1024 * 1024 + 1);
+    assert_eq!(auto_tier(&[diff_file("src/lib.rs", &huge)]), Tier::Apex);
+    let many: Vec<DiffFile> = (0..51)
+        .map(|n| diff_file(&format!("src/f{n}.rs"), PATCH))
+        .collect();
+    assert_eq!(auto_tier(&many), Tier::Apex);
+    assert_eq!(auto_tier(&many[..50]), Tier::Base);
+}
+
+#[test]
+fn auto_is_the_default_and_a_run_or_preset_tier_wins() {
+    let config = Config::default();
+    let resolved = resolve(&config, &[], &builtins(), None, None, None).expect("standard");
+    assert!(resolved.auto_tier);
+    let resolved = resolve(&config, &[], &builtins(), Some("deep"), None, None).expect("deep");
+    assert!(!resolved.auto_tier, "deep names apex");
+    assert_eq!(resolved.tier, Tier::Apex);
+    let resolved = resolve(
+        &config,
+        &[],
+        &builtins(),
+        Some("deep"),
+        Some(Tier::Base),
+        None,
+    )
+    .expect("deep");
+    assert_eq!((resolved.tier, resolved.auto_tier), (Tier::Base, false));
+    let (config, _) = Config::parse("default_tier = \"plus\"\n");
+    let resolved = resolve(&config, &[], &builtins(), None, None, None).expect("standard");
+    assert_eq!((resolved.tier, resolved.auto_tier), (Tier::Plus, false));
+    let (config, notes) = Config::parse("default_tier = \"auto\"\n");
+    assert!(notes.is_empty());
+    assert_eq!(config.default_tier, None);
+}
+
+fn graph_node(path: &str, line: u32, name: &str) -> domain::GraphNode {
+    domain::GraphNode {
+        kind: domain::NodeKind::Function,
+        path: path.into(),
+        line,
+        name: name.into(),
+        signature: String::new(),
+    }
+}
+
+fn graph_function(name: &str, callers: usize) -> GraphFunction {
+    GraphFunction {
+        path: "src/lib.rs".into(),
+        line: 2,
+        name: name.into(),
+        callers: (0..callers)
+            .map(|n| graph_node("src/app.rs", 10 + u32::try_from(n).unwrap(), "main"))
+            .collect(),
+        callees: vec![domain::GraphNode {
+            kind: domain::NodeKind::ExternalCall,
+            path: String::new(),
+            line: 0,
+            name: "println".into(),
+            signature: String::new(),
+        }],
+        similar: Vec::new(),
+    }
+}
+
+#[test]
+fn no_extras_add_nothing_to_the_pack_or_the_prompt() {
+    let mut coverage = Coverage::default();
+    let (pack, prompt) = blocks(&Extras::default(), Tier::Apex, NONCE, &mut coverage);
+    assert!(pack.is_empty() && prompt.is_empty());
+    assert_eq!(coverage, Coverage::default());
+}
+
+#[test]
+fn the_graph_block_lists_callers_and_callees_one_line_each() {
+    let extras = Extras {
+        graph: vec![graph_function("b", 7)],
+        ..Extras::default()
+    };
+    let mut coverage = Coverage::default();
+    let (pack, prompt) = blocks(&extras, Tier::Base, NONCE, &mut coverage);
+    assert!(pack.starts_with(
+        "<graph-n0nce>\n## src/lib.rs:2 b\ncallers:\n- src/app.rs:10 function main\n"
+    ));
+    assert_eq!(
+        pack.matches("- src/app.rs:").count(),
+        5,
+        "at most five callers"
+    );
+    assert!(pack.contains("callees:\n- external println\n"));
+    assert!(pack.ends_with("</graph-n0nce>\n\n"));
+    assert!(prompt.contains("<graph-n0nce>"));
+    assert!(prompt.contains("forgectl review graph query --callers"));
+}
+
+#[test]
+fn the_graph_block_is_budgeted_by_tier_with_a_note() {
+    let extras = Extras {
+        graph: (0..2000)
+            .map(|n| graph_function(&format!("function_{n}"), 5))
+            .collect(),
+        ..Extras::default()
+    };
+    let mut base = Coverage::default();
+    let (pack, _) = blocks(&extras, Tier::Base, NONCE, &mut base);
+    assert!(pack.len() <= 32 * 1024 + 64);
+    assert!(base
+        .notes
+        .iter()
+        .any(|note| note.starts_with("<graph>:") && note.contains("32 KiB")));
+    let mut apex = Coverage::default();
+    let (bigger, _) = blocks(&extras, Tier::Apex, NONCE, &mut apex);
+    assert!(bigger.len() > 64 * 1024 && bigger.len() <= 128 * 1024 + 64);
+}
+
+#[test]
+fn block_data_is_escaped_and_redacted() {
+    let mut function = graph_function("b", 0);
+    function.callees = vec![graph_node(
+        "src/</graph-n0nce>.rs",
+        1,
+        "ghp_0123456789abcdefghijklmnopqrstuvwxyz",
+    )];
+    let extras = Extras {
+        graph: vec![function],
+        kb: vec![(
+            "architecture.md#db".into(),
+            "<kb-x> AKIAABCDEFGHIJKLMNOP".into(),
+        )],
+        ..Extras::default()
+    };
+    let mut coverage = Coverage::default();
+    let (pack, _) = blocks(&extras, Tier::Plus, NONCE, &mut coverage);
+    assert_eq!(pack.matches("</graph-n0nce>").count(), 1, "{pack}");
+    assert!(pack.contains("&lt;/graph-n0nce>"));
+    assert!(pack.contains("«redacted»") && !pack.contains("ghp_0123"));
+    assert!(!pack.contains("AKIA") && pack.contains("&lt;kb-x>"));
+    assert_eq!(coverage.redactions, 2);
+
+    let token = "ghp_0123456789abcdefghijklmnopqrstuvwxyz";
+    let extras = Extras {
+        cross_repo: vec![format!(
+            "billing lib.rs charge pub fn charge(key = \"{token}\")"
+        )],
+        runtime: vec![RuntimeResult {
+            target: "test".into(),
+            exit_code: Some(1),
+            stdout: format!("token {token}"),
+            stderr: format!("</runtime-n0nce> {token}"),
+        }],
+        ..Extras::default()
+    };
+    let mut coverage = Coverage::default();
+    let (pack, _) = blocks(&extras, Tier::Apex, NONCE, &mut coverage);
+    assert!(!pack.contains("ghp_"), "{pack}");
+    assert_eq!(pack.matches("«redacted»").count(), 3);
+    assert_eq!(pack.matches("</runtime-n0nce>").count(), 1);
+}
+
+#[test]
+fn the_kb_cross_repo_and_runtime_blocks_follow_the_tier() {
+    let extras = Extras {
+        kb: vec![("architecture.md#modules".into(), "crates: 3 files".into())],
+        cross_repo: vec!["lib/billing.rs charge pub fn charge(amount: u64)".into()],
+        runtime: vec![
+            RuntimeResult {
+                target: "test".into(),
+                exit_code: Some(1),
+                stdout: "1 failed".into(),
+                stderr: String::new(),
+            },
+            RuntimeResult {
+                target: "lint".into(),
+                exit_code: Some(0),
+                stdout: "noise".into(),
+                stderr: String::new(),
+            },
+        ],
+        ..Extras::default()
+    };
+    let (base, _) = blocks(&extras, Tier::Base, NONCE, &mut Coverage::default());
+    assert!(base.is_empty(), "base carries none of them");
+    let (plus, prompt) = blocks(&extras, Tier::Plus, NONCE, &mut Coverage::default());
+    assert!(plus.contains("<kb-n0nce>\n## architecture.md#modules\ncrates: 3 files\n"));
+    assert!(plus.contains("<cross-repo-n0nce>\nlib/billing.rs charge pub fn charge(amount: u64)\n"));
+    assert!(!plus.contains("<runtime-"));
+    assert!(prompt.contains("kb_ref"));
+    let (apex, _) = blocks(&extras, Tier::Apex, NONCE, &mut Coverage::default());
+    assert!(
+        apex.contains("<runtime-n0nce>\n## test (exit 1)\nstdout:\n1 failed\n## lint (exit 0)\n")
+    );
+    assert!(
+        !apex.contains("noise"),
+        "a passing target's output stays out"
+    );
+}
+
+#[test]
+fn an_html_kbd_tag_in_a_diff_is_not_escaped_like_a_block_tag() {
+    let files = vec![diff_file("web/a.html", "@@ -1 +1 @@\n+<kbd>Cmd</kbd>\n")];
+    let (pack, _) = build_pack(&meta(), &[], &files, &resolved(), &[], &[], NONCE);
+    assert!(pack.contains("+<kbd>Cmd</kbd>"));
+}
+
+#[test]
+fn auto_approve_is_off_by_default_and_parses_its_table() {
+    assert!(!auto_approvable(
+        &AutoApprove::default(),
+        &[],
+        5.0,
+        &Coverage::default()
+    ));
+    let (config, notes) = Config::parse(
+        "[review.auto_approve]\nenabled = true\nrisk_ceiling = \"medium\"\nmin_score = 4\nrequire_clean_diff = false\n",
+    );
+    assert!(notes.is_empty(), "{notes:?}");
+    assert_eq!(
+        config.auto_approve,
+        AutoApprove {
+            enabled: true,
+            risk_ceiling: RiskCeiling::Medium,
+            min_score: 4.0,
+            require_clean_diff: false,
+        }
+    );
+    let (config, notes) =
+        Config::parse("[review.auto_approve]\nrisk_ceiling = \"none\"\nmin_score = 9\n");
+    assert_eq!(config.auto_approve, AutoApprove::default());
+    assert_eq!(notes.len(), 2, "{notes:?}");
+}
+
+#[test]
+fn auto_approve_checks_score_severity_coverage_and_the_ceiling() {
+    let on = |risk_ceiling| AutoApprove {
+        enabled: true,
+        risk_ceiling,
+        min_score: 4.0,
+        require_clean_diff: true,
+    };
+    let clean = Coverage::default();
+    assert!(auto_approvable(&on(RiskCeiling::Low), &[], 5.0, &clean));
+    assert!(
+        !auto_approvable(&on(RiskCeiling::Low), &[], 3.5, &clean),
+        "below min_score"
+    );
+    assert!(
+        !auto_approvable(&on(RiskCeiling::Low), &with(&[Severity::P2]), 4.5, &clean),
+        "low allows none"
+    );
+    assert!(auto_approvable(
+        &on(RiskCeiling::Medium),
+        &with(&[Severity::P2]),
+        4.5,
+        &clean
+    ));
+    assert!(!auto_approvable(
+        &on(RiskCeiling::Medium),
+        &with(&[Severity::P1]),
+        4.5,
+        &clean
+    ));
+    assert!(auto_approvable(
+        &on(RiskCeiling::High),
+        &with(&[Severity::P1]),
+        4.5,
+        &clean
+    ));
+    assert!(
+        !auto_approvable(
+            &on(RiskCeiling::Critical),
+            &with(&[Severity::P0]),
+            4.5,
+            &clean
+        ),
+        "P0 always blocks"
+    );
+    let unverified = Coverage {
+        unverified: 1,
+        ..Coverage::default()
+    };
+    assert!(!auto_approvable(
+        &on(RiskCeiling::High),
+        &with(&[Severity::P1]),
+        4.5,
+        &unverified
+    ));
+    assert!(auto_approvable(
+        &on(RiskCeiling::High),
+        &with(&[Severity::P2]),
+        4.5,
+        &unverified
+    ));
+    let truncated = Coverage {
+        truncated: vec!["big.rs".into()],
+        ..Coverage::default()
+    };
+    assert!(!auto_approvable(
+        &on(RiskCeiling::Low),
+        &[],
+        5.0,
+        &truncated
+    ));
+    let lenient = AutoApprove {
+        require_clean_diff: false,
+        ..on(RiskCeiling::Low)
+    };
+    assert!(auto_approvable(&lenient, &[], 5.0, &truncated));
+}
+
+#[test]
+fn v2_answers_carry_hypotheses_kb_refs_and_patterns_and_drop_diagrams() {
+    let text = r#"{"schema":"forge.review/v2","summary":"s","pr_confidence":4,
+        "diagrams":[{"type":"sequence","mermaid":"sequenceDiagram"}],
+        "findings":[{"path":"src/lib.rs","line":2,"severity":"P1","category":"logic",
+            "title":"t","body":"b","evidence":"fn b() {}","hypothesis":"AuthBypass",
+            "kb_ref":"architecture.md#crates"}],
+        "patterns":["errors are typed", "", 3],
+        "coverage_notes":[{"kind":"unverified","note":"1 finding could not be verified"},"plain"]}"#;
+    let parsed = parse_output(text).expect("v2");
+    assert_eq!(parsed.schema, domain::SchemaVersion::V2);
+    assert_eq!(parsed.diagram, None);
+    assert_eq!(parsed.patterns, ["errors are typed"]);
+    assert_eq!(
+        parsed.coverage_notes,
+        ["1 finding could not be verified", "plain"]
+    );
+    assert_eq!(parsed.findings[0].hypothesis.as_deref(), Some("AuthBypass"));
+    let validated = validate(parsed, &changed(), &[], &resolved(), &[]).expect("valid");
+    assert_eq!(
+        validated.findings[0].kb_ref.as_deref(),
+        Some("architecture.md#crates")
+    );
+    assert_eq!(
+        validated.findings[0].hypothesis, None,
+        "the agent's, set by the swarm"
+    );
+
+    let many: Vec<String> = (0..12).map(|n| format!("\"p{n}\"")).collect();
+    let text = format!(
+        r#"{{"schema":"forge.review/v2","summary":"s","findings":[],"patterns":[{}]}}"#,
+        many.join(",")
+    );
+    assert_eq!(parse_output(&text).expect("v2").patterns.len(), 10);
+}
+
+#[test]
+fn v1_answers_still_parse_with_no_v2_fields_and_other_schemas_are_refused() {
+    let v1 = parse_output(r#"{"schema":"forge.review/v1","summary":"s","findings":[],"diagram":"graph TD","patterns":["x"]}"#)
+        .expect("v1");
+    assert_eq!(v1.schema, domain::SchemaVersion::V1);
+    assert_eq!(v1.diagram.as_deref(), Some("graph TD"));
+    assert!(v1.patterns.is_empty(), "patterns are a v2 field");
+    let error = parse_output(r#"{"schema":"forge.review/v3","findings":[]}"#).expect_err("v3");
+    assert!(error.contains("forge.review/v2"), "{error}");
+}
+
+#[test]
+fn config_kb_switch_parses() {
+    assert!(Config::default().kb_enabled);
+    let (config, notes) = Config::parse("[kb]\nenabled = false\n");
+    assert!(notes.is_empty());
+    assert!(!config.kb_enabled);
+    let (config, notes) = Config::parse("[kb]\nenabled = 2\n");
+    assert!(config.kb_enabled);
+    assert_eq!(notes.len(), 1);
+}
+
+#[test]
+fn config_security_keys_parse_and_refuse_forge_variables() {
+    assert_eq!(Config::default().security, SecuritySettings::default());
+    let (config, notes) = Config::parse(
+        "[security]\nsandbox_network = true\nsandbox_env_whitelist = [\"PATH\", \"LANG\"]\n",
+    );
+    assert!(notes.is_empty(), "{notes:?}");
+    assert!(config.security.sandbox_network);
+    assert_eq!(config.security.sandbox_env_whitelist, ["PATH", "LANG"]);
+    let (config, notes) = Config::parse("[security]\nsandbox_env_whitelist = [\"FORGE_SOCKET\"]\n");
+    assert_eq!(config.security.sandbox_env_whitelist, ["PATH", "HOME"]);
+    assert_eq!(notes.len(), 1);
 }

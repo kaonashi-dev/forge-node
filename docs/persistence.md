@@ -186,7 +186,7 @@ ignoring case because a chip and a palette entry name an action by label. A
 run's session (`SessionKind::Task`) is an ordinary `sessions` row; which action
 it runs is runtime-only.
 
-## Schema (v16 — `REVIEWS`, v20–v23)
+## Schema (v16 — `REVIEWS`, v20–v23, v25–v29)
 
 ```sql
 review_runs     (id PK, workspace_id FK→workspaces ON DELETE CASCADE, target,
@@ -226,6 +226,38 @@ it, not a findings column. `REVIEW_FEEDBACK_COUNTED` (v22) adds
 behind it, so they stop counting while each finding stays dismissed.
 `REVIEW_TREE` (v23) adds `tree_oid`, the oid of the tree a workspace run's
 working tree was written to; the diff itself is still never stored.
+
+### Forge Review v2 (v25–v28)
+
+```sql
+codebase_graph_nodes (project_id FK→projects ON DELETE CASCADE, id BLOB, kind, path,
+                      name, span_start, span_end, line, end_line, lang, signature,
+                      git_oid, PRIMARY KEY (project_id, id),
+                      INDEX (project_id, path), (project_id, git_oid), (project_id, name))
+codebase_graph_edges (project_id FK→projects ON DELETE CASCADE, src, dst, kind, weight,
+                      PRIMARY KEY (project_id, src, dst, kind), INDEX (project_id, dst))
+review_runs     + diagrams (JSON, '[]'), auto_approvable, swarm_size (1),
+                  schema_version ('v1'), sandbox_run_id, agent_sessions (JSON, '[]')
+review_findings + hypothesis, kb_ref
+kb_entries      (id PK, project_id FK→projects ON DELETE CASCADE, file, section,
+                 content, source ('daemon' | 'user'), created_at, expires_at)
+sandbox_runs    (id PK, review_run_id FK→review_runs ON DELETE CASCADE (nullable),
+                 workspace_id, targets_run (JSON), targets_failed (JSON names),
+                 stdout_excerpt, stderr_excerpt, exit_code, duration_ms,
+                 started_at, finished_at, error)
+```
+
+`CODEBASE_GRAPH` (v25) is one graph per project, shared by its worktrees and
+keyed by its own node hashes, so the primary key carries the project; a line
+range is stored beside the byte span because the pack cites `path:line`. The
+whole graph carries the `git_oid` it was last brought to. Losing it costs a
+rebuild. `REVIEW_V2` (v26) adds the v2 run and finding fields with defaults that
+read an old row as a v1, single-reviewer run. `KB_ENTRIES` (v27) holds the
+stored knowledge-base files, one row per pattern; `learned-rules.md` and
+`false-positives.json` are never stored. `SANDBOX_RUNS` (v28) keeps a TREX run's
+targets and output tails, never a full log; a manual run has no review. `REVIEW_AGENT_SESSIONS` (v29) adds
+`review_runs.agent_sessions`, a JSON list of every swarm agent's session id:
+startup's read-only set and the prune's keep rule read it beside `session_id`.
 
 ## Repositories (`repositories/`)
 

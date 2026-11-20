@@ -268,6 +268,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "codebase-graph"
+version = "0.1.10"
+dependencies = [
+ "domain",
+ "rmp-serde",
+ "serde",
+ "sha2",
+]
+
+[[package]]
 name = "colorchoice"
 version = "1.0.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -401,6 +411,8 @@ dependencies = [
  "base64",
  "clap",
  "client",
+ "codebase-graph",
+ "diagram-gen",
  "directories",
  "domain",
  "editor-control",
@@ -408,6 +420,7 @@ dependencies = [
  "flume",
  "fs-service",
  "git-service",
+ "knowledge-base",
  "languages",
  "lsp-client",
  "nix 0.31.3",
@@ -415,7 +428,9 @@ dependencies = [
  "persistence",
  "protocol",
  "review",
+ "review-swarm",
  "rmp-serde",
+ "runtime-sandbox",
  "rusqlite",
  "serde",
  "serde_json",
@@ -465,6 +480,15 @@ dependencies = [
  "quote",
  "rustc_version",
  "syn 2.0.119",
+]
+
+[[package]]
+name = "diagram-gen"
+version = "0.1.10"
+dependencies = [
+ "codebase-graph",
+ "domain",
+ "syntax-index",
 ]
 
 [[package]]
@@ -697,6 +721,7 @@ version = "0.1.10"
 dependencies = [
  "clap",
  "client",
+ "codebase-graph",
  "daemon",
  "domain",
  "flume",
@@ -1055,6 +1080,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "knowledge-base"
+version = "0.1.10"
+dependencies = [
+ "domain",
+ "serde_json",
+]
+
+[[package]]
 name = "kqueue"
 version = "1.2.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1363,7 +1396,9 @@ checksum = "9b4f627cb1b25917193a259e49bdad08f671f8d9708acfd5fe0a8c1455d87220"
 name = "persistence"
 version = "0.1.10"
 dependencies = [
+ "codebase-graph",
  "domain",
+ "knowledge-base",
  "review",
  "rusqlite",
  "rusqlite_migration",
@@ -1565,6 +1600,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "review-swarm"
+version = "0.1.10"
+dependencies = [
+ "domain",
+ "review",
+]
+
+[[package]]
 name = "ring"
 version = "0.17.14"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1595,6 +1638,15 @@ checksum = "72f81bee8c8ef9b577d1681a70ebbc962c232461e397b22c208c43c04b67a155"
 dependencies = [
  "rmp",
  "serde",
+]
+
+[[package]]
+name = "runtime-sandbox"
+version = "0.1.10"
+dependencies = [
+ "nix 0.31.3",
+ "tempfile",
+ "toml",
 ]
 
 [[package]]

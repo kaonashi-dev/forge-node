@@ -51,6 +51,11 @@ const SOURCE_EXTENSIONS: [&str; 22] = [
 pub struct TierCaps {
     pub files: usize,
     pub bytes: usize,
+    pub graph_bytes: usize,
+    /// `0` where the tier carries no such block.
+    pub kb_bytes: usize,
+    pub cross_repo_bytes: usize,
+    pub runtime_bytes: usize,
 }
 
 impl TierCaps {
@@ -60,14 +65,26 @@ impl TierCaps {
             Tier::Base => Self {
                 files: 40,
                 bytes: 512 * 1024,
+                graph_bytes: 32 * 1024,
+                kb_bytes: 0,
+                cross_repo_bytes: 0,
+                runtime_bytes: 0,
             },
             Tier::Plus => Self {
                 files: 60,
                 bytes: 1024 * 1024,
+                graph_bytes: 64 * 1024,
+                kb_bytes: 32 * 1024,
+                cross_repo_bytes: 16 * 1024,
+                runtime_bytes: 0,
             },
             Tier::Apex => Self {
                 files: 100,
                 bytes: 2 * 1024 * 1024,
+                graph_bytes: 128 * 1024,
+                kb_bytes: 32 * 1024,
+                cross_repo_bytes: 16 * 1024,
+                runtime_bytes: 32 * 1024,
             },
         }
     }
@@ -211,10 +228,10 @@ pub fn build_pack(
 
 /// No tag of a block, opening or closing, in any case or spacing, survives
 /// inside data, whichever block carries it.
-fn neutralise(text: &str) -> String {
+pub(crate) fn neutralise(text: &str) -> String {
     static TAG: OnceLock<Option<Regex>> = OnceLock::new();
     let tag =
-        TAG.get_or_init(|| Regex::new(r"(?i)<\s*/?\s*(?:diff|project_context|rules|commits)").ok());
+        TAG.get_or_init(|| Regex::new(r"(?i)<\s*/?\s*(?:diff|project_context|rules|commits|(?:graph|kb|cross-repo|runtime|slice)\b)").ok());
     match tag {
         Some(tag) => tag
             .replace_all(text, |found: &regex::Captures<'_>| {
@@ -225,7 +242,7 @@ fn neutralise(text: &str) -> String {
     }
 }
 
-fn attr(value: &str) -> String {
+pub(crate) fn attr(value: &str) -> String {
     let mut out = String::with_capacity(value.len());
     for ch in value.chars() {
         match ch {
@@ -240,6 +257,17 @@ fn attr(value: &str) -> String {
         }
     }
     out
+}
+
+/// Whether the pack leaves `path` out: a lockfile, a secret, generated or
+/// `dist/` output, or a match of one of the `[ignore] paths` globs.
+#[must_use]
+pub fn excluded_path(path: &str, ignore: &[String]) -> bool {
+    let ignores: Vec<glob::Pattern> = ignore
+        .iter()
+        .filter_map(|glob| glob::Pattern::new(glob).ok())
+        .collect();
+    excluded(path, &ignores)
 }
 
 fn excluded(path: &str, ignores: &[glob::Pattern]) -> bool {

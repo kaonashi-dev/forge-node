@@ -551,3 +551,43 @@ impl DefinitionProvider for SyntaxProvider {
         self.lookup(query)
     }
 }
+
+/// What one file declares and refers to, for a whole-project graph.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Symbols {
+    pub definitions: Vec<Symbol>,
+    pub calls: Vec<Reference>,
+    /// The import's path as written: `crate::store::Store`, `./store`, `os.path`.
+    pub imports: Vec<String>,
+    /// `(child, parent)`: an `impl Trait for T`, `extends`, `implements` or base class.
+    pub inherits: Vec<(String, String)>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Symbol {
+    /// The tags capture's kind: `function`, `method`, `class`, `constant`, …
+    pub kind: String,
+    pub name: String,
+    /// Byte range of the whole declaration.
+    pub span: (usize, usize),
+    /// Its first line, at most 200 bytes.
+    pub signature: String,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Reference {
+    pub name: String,
+    /// Byte range of the called name.
+    pub span: (usize, usize),
+}
+
+/// `None` for a path in a language without a compiled grammar, or a parse
+/// that failed.
+#[must_use]
+pub fn symbols(path: &str, source: &str) -> Option<Symbols> {
+    let (_, grammar) = grammar_for(Registry::builtin(), path)?;
+    let compiled = compiled(grammar)?;
+    let mut parser = Parser::new();
+    let tree = extract::parse(&mut parser, compiled, source, &|| false)?;
+    Some(extract::symbols(compiled, &tree, source))
+}

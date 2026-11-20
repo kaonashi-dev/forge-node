@@ -4,10 +4,9 @@
 use domain::{Finding, FindingReaction, ReviewRun, ReviewStage, ReviewTarget, Severity};
 use rune_kit::diff::{Annotation, LineRef, Side};
 
-use super::{Grouping, PROMPT_BUDGET};
+pub use domain::review::findings_prompt;
 
-const PROMPT_HEAD: &str = "Forge Review found these issues in your changes. Fix each one, or say \
-                           why it is not a problem:\n\n";
+use super::{Grouping, PROMPT_BUDGET};
 
 const SEVERITIES: [Severity; 3] = [Severity::P0, Severity::P1, Severity::P2];
 pub const STAGES: [ReviewStage; 4] = [
@@ -86,43 +85,6 @@ pub fn annotations(findings: &[Finding], file_paths: &[&str]) -> Vec<Annotation>
         .collect()
 }
 
-/// Whole findings, in order, within `budget` bytes, and how many did not fit.
-/// Empty when none fits or none is given; `empty_prompt_reason` tells which.
-#[must_use]
-pub fn findings_prompt(findings: &[&Finding], budget: usize) -> (String, usize) {
-    let mut prompt = PROMPT_HEAD.to_string();
-    let mut left_out = 0;
-    for finding in findings {
-        let mut block = format!(
-            "- [{:?}] {}{} — {}\n  {}\n",
-            finding.severity,
-            finding.path,
-            finding
-                .line
-                .map(|line| format!(":{line}"))
-                .unwrap_or_default(),
-            finding.title,
-            finding.body.replace('\n', "\n  "),
-        );
-        if let Some(suggestion) = &finding.suggestion {
-            block.push_str(&format!(
-                "  Suggestion:\n  {}\n",
-                suggestion.replace('\n', "\n  ")
-            ));
-        }
-        block.push('\n');
-        if prompt.len() + block.len() <= budget {
-            prompt.push_str(&block);
-        } else {
-            left_out += 1;
-        }
-    }
-    if left_out == findings.len() {
-        return (String::new(), left_out);
-    }
-    (prompt, left_out)
-}
-
 /// Every finding that is not dismissed, as one prompt within [`PROMPT_BUDGET`].
 #[must_use]
 pub fn standing_prompt(findings: &[Finding]) -> (String, usize) {
@@ -156,6 +118,43 @@ pub fn supersedes(current: Option<&ReviewRun>, next: &ReviewRun) -> bool {
         return next.id > current.id;
     }
     progress(next) >= progress(current)
+}
+
+#[cfg(test)]
+mod kb_tests {
+    use super::*;
+
+    #[test]
+    fn cited_sections_are_listed_once_and_read_by_slug() {
+        let mut a = crate::code_review::tests::finding(1, "a.rs", None, Severity::P1);
+        a.kb_ref = Some("architecture.md#crates-daemon".into());
+        let b = Finding { id: 2, ..a.clone() };
+        assert_eq!(kb_refs(&[a, b]), ["architecture.md#crates-daemon"]);
+        let files = vec![domain::KbFile {
+            file: "architecture.md".into(),
+            content: "# Architecture\n\n## crates/daemon\n\n- 2 file(s)\n\n## web\n\n- 1 file(s)\n"
+                .into(),
+            source: "daemon".into(),
+            updated_at: None,
+        }];
+        assert_eq!(
+            kb_excerpt(&files, "architecture.md#crates-daemon").as_deref(),
+            Some("- 2 file(s)")
+        );
+        assert_eq!(kb_excerpt(&files, "architecture.md#gone"), None);
+        assert!(
+            kb_excerpt(&files, "architecture.md")
+                .is_some_and(|text| text.starts_with("# Architecture"))
+        );
+        assert_eq!(kb_excerpt(&files, "patterns.json#x"), None);
+    }
+
+    #[test]
+    fn a_tail_keeps_the_end_on_a_char_boundary() {
+        assert_eq!(tail("abcdef", 3), "def");
+        assert_eq!(tail("ab", 3), "ab");
+        assert_eq!(tail("aé", 1), "");
+    }
 }
 
 #[cfg(test)]
@@ -280,4 +279,61 @@ mod tests {
 
         assert_eq!(findings_prompt(&[&big], PROMPT_BUDGET), (String::new(), 1));
     }
+}
+
+/// The knowledge-base sections the findings cite, each once, in order.
+#[must_use]
+pub fn kb_refs(findings: &[Finding]) -> Vec<String> {
+    let mut cited: Vec<String> = Vec::new();
+    for reference in findings
+        .iter()
+        .filter_map(|finding| finding.kb_ref.as_ref())
+    {
+        if !cited.contains(reference) {
+            cited.push(reference.clone());
+        }
+    }
+    cited
+}
+
+/// The text a `file#section` reference names: the `## ` heading whose slug
+/// is the section, or the whole file without one.
+#[must_use]
+pub fn kb_excerpt(files: &[domain::KbFile], reference: &str) -> Option<String> {
+    let (name, section) = reference.split_once('#').unwrap_or((reference, ""));
+    let file = files.iter().find(|file| file.file == name)?;
+    if section.is_empty() {
+        return Some(file.content.clone());
+    }
+    let slug = |heading: &str| {
+        heading
+            .chars()
+            .map(|c| {
+                if c.is_alphanumeric() {
+                    c.to_ascii_lowercase()
+                } else {
+                    '-'
+                }
+            })
+            .collect::<String>()
+            .trim_matches('-')
+            .to_owned()
+    };
+    file.content.split("\n## ").skip(1).find_map(|part| {
+        let (heading, body) = part.split_once('\n').unwrap_or((part, ""));
+        (slug(heading.trim()) == section).then(|| body.trim().to_owned())
+    })
+}
+
+/// The last `max` bytes of `text`, on a char boundary.
+#[must_use]
+pub fn tail(text: &str, max: usize) -> &str {
+    if text.len() <= max {
+        return text;
+    }
+    let mut start = text.len() - max;
+    while !text.is_char_boundary(start) {
+        start += 1;
+    }
+    &text[start..]
 }

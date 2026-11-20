@@ -225,6 +225,8 @@ pub fn validate(
             suggestion: raw.suggestion,
             lineage: domain::Lineage::New,
             reaction: None,
+            hypothesis: None,
+            kb_ref: raw.kb_ref,
         };
         match kept.iter_mut().find(|other| overlaps(other, &finding)) {
             Some(other) if finding.severity < other.severity => *other = finding,
@@ -281,8 +283,11 @@ fn redacted(mut raw: RawFinding) -> RawFinding {
     for text in [&mut raw.title, &mut raw.body, &mut raw.evidence] {
         *text = redact(text).0;
     }
-    if let Some(suggestion) = raw.suggestion.as_mut() {
-        *suggestion = redact(suggestion).0;
+    for text in [raw.suggestion.as_mut(), raw.kb_ref.as_mut()]
+        .into_iter()
+        .flatten()
+    {
+        *text = redact(text).0;
     }
     raw
 }
@@ -403,4 +408,30 @@ pub fn verdict(findings: &[Finding], score: f32) -> Verdict {
     } else {
         Verdict::Ok
     }
+}
+
+/// Whether `[review.auto_approve]` would let a run with these standing
+/// findings through. P0 always blocks, and so does a P1 the run could not
+/// fully check.
+#[must_use]
+pub fn auto_approvable(
+    settings: &crate::config::AutoApprove,
+    findings: &[Finding],
+    score: f32,
+    coverage: &domain::Coverage,
+) -> bool {
+    use crate::config::RiskCeiling;
+    let worst = findings.iter().map(|finding| finding.severity).min();
+    let within = match (settings.risk_ceiling, worst) {
+        (_, None) => true,
+        (_, Some(Severity::P0)) | (RiskCeiling::Low, Some(_)) => false,
+        (RiskCeiling::Medium, Some(severity)) => severity >= Severity::P2,
+        (RiskCeiling::High | RiskCeiling::Critical, Some(_)) => true,
+    };
+    let unchecked_p1 = coverage.unverified > 0 && worst == Some(Severity::P1);
+    settings.enabled
+        && score >= settings.min_score
+        && within
+        && !unchecked_p1
+        && (!settings.require_clean_diff || coverage.truncated.is_empty())
 }
