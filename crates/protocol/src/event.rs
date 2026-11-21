@@ -220,6 +220,13 @@ pub enum DaemonEvent {
     },
     /// A `RunSandbox` finished; the same run `GetSandboxRun` reads.
     SandboxFinished(Box<domain::SandboxRun>),
+    /// A project's first graph build, started by a `QueryGraph` or `ExportGraph`,
+    /// finished; `error` when it failed, so a client asks again only on success.
+    GraphIndexed {
+        project_id: ProjectId,
+        #[serde(default)]
+        error: Option<String>,
+    },
     /// A fix loop moved: `iteration` reviews have run, the last with
     /// `findings` standing. `done` once it stopped, with `error` when it failed.
     FixLoopUpdated {

@@ -1863,6 +1863,10 @@ impl AppState {
                     self.apply_review_run(run);
                     return true;
                 }
+                if let client::DaemonEvent::GraphIndexed { error, .. } = event.as_ref() {
+                    crate::code_review::graph_indexed(self, error.as_deref());
+                    return true;
+                }
                 if let client::DaemonEvent::FixLoopUpdated {
                     workspace_id,
                     iteration,

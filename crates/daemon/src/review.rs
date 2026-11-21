@@ -9,7 +9,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 
 use domain::{
     ActivityEvidence, ActivityState, AgentProviderId, FindingReaction, Hypothesis, ProjectId,
@@ -29,6 +29,7 @@ const PROJECT_DOCS: [&str; 2] = ["AGENTS.md", "CLAUDE.md"];
 const MAX_RULE_FILES: usize = 100;
 const MAX_PRESET_FILES: usize = 50;
 const MAX_FILE_TEXT_BYTES: u64 = 2 * 1024 * 1024;
+const MAX_REVIEWED_BYTES: u64 = 64 * 1024 * 1024;
 const KEEP_RUNS: u32 = 20;
 const KEEP_DAYS: i64 = 90;
 const MAX_LISTED_REVIEWS: u32 = 100;
@@ -416,12 +417,23 @@ impl Daemon {
             .load_graph(project)
             .map_err(db_err)?
             .unwrap_or_default();
-        let changed: Vec<diagram_gen::ChangedFile> = diff
+        let files: Vec<domain::DiffFile> = diff
             .files
             .into_iter()
             .filter(|file| !file.binary && !file.truncated)
+            .collect();
+        let read: Vec<&str> = files.iter().map(|file| file.path.as_str()).collect();
+        let mut texts = reviewed_texts(&path, &run, &read);
+        let graph = if matches!(run.target, ReviewTarget::PullRequest { .. }) {
+            let ignore = repo_config(&path).ignore;
+            head_overlay(&graph, &files, &texts, &ignore, &run.head_oid)
+        } else {
+            graph
+        };
+        let changed: Vec<diagram_gen::ChangedFile> = files
+            .into_iter()
             .map(|file| diagram_gen::ChangedFile {
-                text: reviewed_text(&path, &run, &file.path),
+                text: texts.remove(&file.path),
                 path: file.path,
                 patch: file.patch,
             })
@@ -756,7 +768,10 @@ impl Daemon {
                 .map_err(|e| e.to_string())
                 .and_then(|project| self.refresh_graph(project, path, &resolved.ignore, false))
             {
-                Ok((graph, _)) => Some(graph),
+                Ok((graph, stats)) => {
+                    run.coverage.notes.extend(stats.notes);
+                    Some(graph)
+                }
                 Err(error) => {
                     run.coverage
                         .notes
@@ -789,6 +804,22 @@ impl Daemon {
                 .unwrap_or_default()
         } else {
             Vec::new()
+        };
+        let read: Vec<&str> = files
+            .iter()
+            .filter(|file| !file.binary && !coverage.excluded.contains(&file.path))
+            .map(|file| file.path.as_str())
+            .collect();
+        let texts = reviewed_texts(path, run, &read);
+        let graph = match graph {
+            Some(graph) if pull_request.is_some() => Some(Arc::new(head_overlay(
+                &graph,
+                &files,
+                &texts,
+                &resolved.ignore,
+                &run.head_oid,
+            ))),
+            graph => graph,
         };
         let changed_functions = graph
             .as_deref()
@@ -985,7 +1016,7 @@ impl Daemon {
                     patch: file.patch.clone(),
                     excluded,
                     text: (!excluded && mentioned.contains(&file.path))
-                        .then(|| reviewed_text(path, run, &file.path))
+                        .then(|| texts.get(&file.path).cloned())
                         .flatten(),
                 }
             })
@@ -1051,7 +1082,7 @@ impl Daemon {
             .map(|file| diagram_gen::ChangedFile {
                 path: file.path.clone(),
                 patch: file.patch.clone(),
-                text: reviewed_text(path, run, &file.path),
+                text: texts.get(&file.path).cloned(),
             })
             .collect();
         run.diagrams = diagram_gen::generate(&drawn, graph.as_deref().unwrap_or(&Graph::default()));
@@ -1474,25 +1505,54 @@ fn snapshot(
     git_service::snapshot_tree(path, &paths, &pack_dir.join("index"))
 }
 
-/// A file as the run reviewed it: the pull request's head, the kept tree, or
-/// the working tree when no tree was kept.
-fn reviewed_text(repo: &Path, run: &ReviewRun, file: &str) -> Option<String> {
-    match (&run.target, &run.tree_oid) {
-        (ReviewTarget::PullRequest { .. }, _) => read_blob(repo, &run.head_oid, file),
-        (_, Some(tree)) => read_blob(repo, tree, file),
-        (_, None) => read_inside(repo, Path::new(file), MAX_FILE_TEXT_BYTES)
-            .ok()
-            .flatten(),
-    }
+/// The files as the run reviewed them: the pull request's head or the kept
+/// tree in one batched object-store read, else the working tree. A file over
+/// [`MAX_FILE_TEXT_BYTES`], past [`MAX_REVIEWED_BYTES`] or unreadable is absent.
+fn reviewed_texts(repo: &Path, run: &ReviewRun, files: &[&str]) -> HashMap<String, String> {
+    let rev = match (&run.target, &run.tree_oid) {
+        (ReviewTarget::PullRequest { .. }, _) => Some(run.head_oid.as_str()),
+        (_, Some(tree)) => Some(tree.as_str()),
+        (_, None) => None,
+    };
+    let texts = match rev {
+        Some(rev) => {
+            git_service::read_blobs(repo, rev, files, MAX_FILE_TEXT_BYTES, MAX_REVIEWED_BYTES)
+        }
+        None => files
+            .iter()
+            .map(|file| {
+                read_inside(repo, Path::new(file), MAX_FILE_TEXT_BYTES)
+                    .ok()
+                    .flatten()
+            })
+            .collect(),
+    };
+    files
+        .iter()
+        .zip(texts)
+        .filter_map(|(file, text)| Some(((*file).to_owned(), text?)))
+        .collect()
 }
 
-/// `<head>:<path>` from the object store, `None` over [`MAX_FILE_TEXT_BYTES`]
-/// or when it cannot be read.
-fn read_blob(repo: &Path, head: &str, path: &str) -> Option<String> {
-    let object = format!("{head}:{path}");
-    let cap = usize::try_from(MAX_FILE_TEXT_BYTES).unwrap_or(usize::MAX);
-    let out = git_service::run_git_bounded(Some(repo), &["cat-file", "blob", &object], cap).ok()?;
-    out.success().then_some(out.stdout)
+/// `graph` as of the pull request's head: its changed files as fetched and
+/// its deleted ones gone, so a hunk's lines meet the functions they belong to.
+fn head_overlay(
+    graph: &Graph,
+    files: &[domain::DiffFile],
+    texts: &HashMap<String, String>,
+    ignore: &[String],
+    head: &str,
+) -> Graph {
+    let removed: Vec<String> = files
+        .iter()
+        .filter(|file| file.status == domain::DiffStatus::Deleted)
+        .map(|file| file.path.clone())
+        .collect();
+    let read: Vec<(String, String)> = files
+        .iter()
+        .filter_map(|file| Some((file.path.clone(), texts.get(&file.path)?.clone())))
+        .collect();
+    crate::graph::overlay(graph, read, &removed, ignore, head)
 }
 
 struct Launch {

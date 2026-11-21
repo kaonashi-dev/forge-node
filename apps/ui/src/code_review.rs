@@ -50,6 +50,7 @@ pub enum ReviewView {
 const MAX_GRAPH_FILES: usize = 20;
 /// Bytes of a sandbox target's output the TREX panel shows.
 const MAX_SANDBOX_TAIL: usize = 2048;
+const SANDBOX_READING: &str = "Reading the sandbox run…";
 const FIX_LOOP_ITERATIONS: u32 = 3;
 
 /// One reviewed file's neighbours in the codebase graph.
@@ -65,6 +66,18 @@ pub struct GraphFile {
 pub struct ReviewGraph {
     pub run: ReviewId,
     pub files: Vec<GraphFile>,
+    /// The daemon is building the project's first graph; asked again on `GraphIndexed`.
+    pub indexing: bool,
+}
+
+impl ReviewGraph {
+    fn waiting(&self) -> bool {
+        self.indexing
+            || self
+                .files
+                .iter()
+                .any(|file| file.imports.is_none() || file.external.is_none())
+    }
 }
 
 /// A workspace's fix loop as its events report it.
@@ -571,6 +584,39 @@ pub fn reconnected(s: &mut AppState) {
     if s.code_review.diff.as_ref().is_some_and(|diff| !diff.loaded) {
         s.code_review.diff = None;
     }
+    if s.code_review
+        .graph
+        .as_ref()
+        .is_some_and(ReviewGraph::waiting)
+    {
+        s.code_review.graph = None;
+    }
+    if s.code_review
+        .sandbox
+        .as_ref()
+        .is_some_and(|(_, read)| matches!(read, Err(note) if note == SANDBOX_READING))
+    {
+        s.code_review.sandbox = None;
+    }
+}
+
+/// The project's first graph finished building: an indexing read is asked
+/// again, or shows why the build failed.
+pub fn graph_indexed(s: &mut AppState, error: Option<&str>) {
+    let Some(graph) = s.code_review.graph.as_mut().filter(|graph| graph.indexing) else {
+        return;
+    };
+    let Some(error) = error else {
+        s.code_review.graph = None;
+        sync(s);
+        return;
+    };
+    graph.indexing = false;
+    for file in &mut graph.files {
+        for read in [&mut file.imports, &mut file.external] {
+            read.get_or_insert_with(|| Err(error.to_owned()));
+        }
+    }
 }
 
 fn sync(s: &mut AppState) {
@@ -701,7 +747,11 @@ fn sync_reads(s: &mut AppState, workspace: WorkspaceId, generation: u64) {
                 }
             }
         }
-        s.code_review.graph = Some(ReviewGraph { run: run.id, files });
+        s.code_review.graph = Some(ReviewGraph {
+            run: run.id,
+            files,
+            indexing: false,
+        });
     }
     if let Some(id) = &run.sandbox_run_id
         && s.code_review
@@ -710,7 +760,7 @@ fn sync_reads(s: &mut AppState, workspace: WorkspaceId, generation: u64) {
             .is_none_or(|(read, _)| *read != run.id)
         && let Some(connection) = &s.connection
     {
-        s.code_review.sandbox = Some((run.id, Err("Reading the sandbox run…".into())));
+        s.code_review.sandbox = Some((run.id, Err(SANDBOX_READING.into())));
         let _ = connection.get_sandbox_run(generation, run.id, id.clone());
     }
 }
@@ -1267,7 +1317,7 @@ impl AppState {
         review_id: ReviewId,
         path: &str,
         query: &domain::GraphQuery,
-        result: Result<Vec<domain::GraphNode>, String>,
+        result: Result<Option<Vec<domain::GraphNode>>, String>,
     ) -> bool {
         let Some(graph) = self
             .code_review
@@ -1279,6 +1329,14 @@ impl AppState {
         };
         let Some(file) = graph.files.iter_mut().find(|file| file.path == path) else {
             return false;
+        };
+        let result = match result {
+            Ok(Some(nodes)) => Ok(nodes),
+            Ok(None) => {
+                graph.indexing = true;
+                return true;
+            }
+            Err(error) => Err(error),
         };
         match query {
             domain::GraphQuery::Imports(_) => file.imports = Some(result),
@@ -2650,6 +2708,9 @@ fn graph(s: &AppState, k: &Kit) -> El {
     let Some(graph) = &s.code_review.graph else {
         return body.child(note(k, "Reading the codebase graph…"));
     };
+    if graph.indexing {
+        return body.child(note(k, "Indexing the codebase graph…").key("review-graph-indexing"));
+    }
     for file in &graph.files {
         body = body
             .child(
@@ -2737,7 +2798,7 @@ fn sandbox_panel(s: &AppState, k: &Kit, run: &ReviewRun) -> Option<El> {
         .filter(|(read, _)| *read == run.id)
         .map(|(_, result)| result);
     let sandbox = match read {
-        None => return Some(body.child(note(k, "Reading the sandbox run…"))),
+        None => return Some(body.child(note(k, SANDBOX_READING))),
         Some(Err(error)) => return Some(body.child(note(k, error.clone()))),
         Some(Ok(sandbox)) => sandbox,
     };
@@ -4037,6 +4098,7 @@ mod tests {
                 path: "a.rs".into(),
                 ..GraphFile::default()
             }],
+            indexing: false,
         });
         let node = domain::GraphNode {
             kind: domain::NodeKind::File,
@@ -4049,13 +4111,13 @@ mod tests {
             run.id,
             "a.rs",
             &domain::GraphQuery::Imports("a.rs".into()),
-            Ok(vec![node])
+            Ok(Some(vec![node]))
         ));
         assert!(!state.apply_graph_nodes(
             ReviewId::new(),
             "a.rs",
             &domain::GraphQuery::Imports("a.rs".into()),
-            Ok(vec![])
+            Ok(Some(vec![]))
         ));
         let graph = state.code_review.graph.as_ref().expect("graph");
         assert!(matches!(&graph.files[0].imports, Some(Ok(nodes)) if nodes.len() == 1));
@@ -4063,6 +4125,81 @@ mod tests {
         state.code_review.view = ReviewView::Graph;
         let shown = keys(state);
         assert!(has(&shown, "review-graph"), "{shown:?}");
+    }
+
+    #[test]
+    fn reads_left_waiting_by_a_dropped_connection_are_asked_again() {
+        let (mut state, workspace) = fixture_state();
+        let run = completed(workspace, workspace_target(workspace));
+        let pending = |indexing| ReviewGraph {
+            run: run.id,
+            files: vec![GraphFile {
+                path: "a.rs".into(),
+                imports: Some(Ok(vec![])),
+                external: None,
+            }],
+            indexing,
+        };
+        state.code_review.graph = Some(pending(false));
+        state.code_review.sandbox = Some((run.id, Err(SANDBOX_READING.into())));
+        reconnected(&mut state);
+        assert!(state.code_review.graph.is_none());
+        assert!(state.code_review.sandbox.is_none());
+
+        let mut answered = pending(false);
+        answered.files[0].external = Some(Ok(vec![]));
+        state.code_review.graph = Some(answered);
+        state.code_review.sandbox = Some((run.id, Err("no such run".into())));
+        reconnected(&mut state);
+        assert!(state.code_review.graph.is_some(), "an answered read stays");
+        assert!(state.code_review.sandbox.is_some());
+    }
+
+    #[test]
+    fn an_indexing_graph_waits_for_its_build_and_shows_a_failed_one() {
+        let (mut state, workspace) = fixture_state();
+        let mut run = completed(workspace, workspace_target(workspace));
+        run.coverage.included = vec!["a.rs".into()];
+        with_report(&mut state, &run, vec![], vec![], None);
+        state.code_review.graph = Some(ReviewGraph {
+            run: run.id,
+            files: vec![GraphFile {
+                path: "a.rs".into(),
+                ..GraphFile::default()
+            }],
+            indexing: false,
+        });
+        assert!(state.apply_graph_nodes(
+            run.id,
+            "a.rs",
+            &domain::GraphQuery::Imports("a.rs".into()),
+            Ok(None)
+        ));
+        assert!(state.code_review.graph.as_ref().expect("graph").indexing);
+
+        graph_indexed(&mut state, Some("the checkout has no commit to index"));
+        let graph = state.code_review.graph.as_ref().expect("graph");
+        assert!(!graph.indexing);
+        assert!(matches!(&graph.files[0].imports, Some(Err(error)) if error.contains("no commit")));
+
+        state.code_review.graph.as_mut().expect("graph").indexing = true;
+        graph_indexed(&mut state, None);
+        assert!(
+            state
+                .code_review
+                .graph
+                .as_ref()
+                .is_none_or(|graph| !graph.indexing),
+            "a finished build asks again"
+        );
+
+        state.code_review.graph = Some(ReviewGraph {
+            run: run.id,
+            files: Vec::new(),
+            indexing: true,
+        });
+        state.code_review.view = ReviewView::Graph;
+        assert!(has(&keys(state), "review-graph-indexing"));
     }
 
     #[test]

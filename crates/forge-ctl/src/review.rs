@@ -466,7 +466,7 @@ fn graph(app: &App, client: &Client, cmd: GraphCmd) -> Result<(), u8> {
                 workspace_id: workspace.id,
                 query,
             };
-            json!({ "nodes": flatten(&app.call(client, request, false)?), "source": "daemon" })
+            json!({ "nodes": flatten(&graph_read(app, client, workspace.id, request)?), "source": "daemon" })
         }
         GraphCmd::Show { workspace, format } => {
             let workspace = target_workspace(app, &store, workspace.as_deref())?;
@@ -477,7 +477,7 @@ fn graph(app: &App, client: &Client, cmd: GraphCmd) -> Result<(), u8> {
                     GraphFormatArg::Mermaid => domain::GraphFormat::Mermaid,
                 },
             };
-            let text = flatten(&app.call(client, request, false)?);
+            let text = flatten(&graph_read(app, client, workspace.id, request)?);
             if !app.json {
                 println!("{}", text.as_str().unwrap_or_default());
                 return Ok(());
@@ -487,6 +487,26 @@ fn graph(app: &App, client: &Client, cmd: GraphCmd) -> Result<(), u8> {
     };
     app.print_ok(response);
     Ok(())
+}
+
+/// A read that found no graph yet started the project's first build; a CLI
+/// waits for it with a synchronous rebuild instead of the event.
+fn graph_read(
+    app: &App,
+    client: &Client,
+    workspace_id: domain::WorkspaceId,
+    request: Request,
+) -> Result<Response, u8> {
+    let response = app.call(client, request.clone(), false)?;
+    if !matches!(response, Response::GraphIndexing) {
+        return Ok(response);
+    }
+    let rebuild = Request::RebuildGraph {
+        workspace_id,
+        full: false,
+    };
+    app.call(client, rebuild, true)?;
+    app.call(client, request, false)
 }
 
 fn fix_loop(

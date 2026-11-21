@@ -40,6 +40,14 @@ pub struct Graph {
     pub edges: Vec<Edge>,
 }
 
+/// See [`Graph::delta`]: rows to write, and edges outside the replaced paths to delete.
+#[derive(Clone, Debug, Default)]
+pub struct Delta {
+    pub nodes: Vec<Node>,
+    pub edges: Vec<Edge>,
+    pub stale: Vec<Edge>,
+}
+
 /// A parsed file, as the daemon read it.
 #[derive(Clone, Debug, Default)]
 pub struct FileInput {
@@ -281,7 +289,8 @@ impl Update {
 impl Graph {
     /// Replaces the files in `update` and drops `removed`, then resolves the
     /// new files' references against the whole graph. An edge from an
-    /// untouched file into a replaced one follows its target by kind and name.
+    /// untouched file into a replaced one follows its target by kind and name,
+    /// and its external calls resolve again against the functions `update` defines.
     pub fn apply(&mut self, update: Update, removed: &[String], git_oid: &str) {
         let Update {
             nodes,
@@ -312,6 +321,11 @@ impl Graph {
             }
         }
         self.edges = kept_edges;
+        let defined: HashMap<NodeId, String> = nodes
+            .iter()
+            .filter(|n| n.kind == NodeKind::Function)
+            .map(|n| (external(&n.name).id, n.name.clone()))
+            .collect();
         self.nodes.extend(nodes);
         self.edges.extend(edges);
         self.git_oid = git_oid.to_owned();
@@ -320,6 +334,18 @@ impl Graph {
         let mut added = Vec::new();
         {
             let lookup = Lookup::new(&self.nodes);
+            let place: HashMap<NodeId, &str> =
+                self.nodes.iter().map(|n| (n.id, n.path.as_str())).collect();
+            let mut imports: HashMap<NodeId, Vec<NodeId>> = HashMap::new();
+            for edge in self.edges.iter().filter(|e| e.kind == EdgeKind::Imports) {
+                imports.entry(edge.src).or_default().push(edge.dst);
+            }
+            // As a full build resolves the call: from the caller's file and what it imports.
+            let resolve_call = |caller: NodeId, name: &str| {
+                let path = place.get(&caller).copied().unwrap_or_default();
+                let file = node_id(NodeKind::File, path, path, (0, 0));
+                lookup.function(name, path, imports.get(&file).map_or(&[], Vec::as_slice))
+            };
             for file in &pending {
                 let imported = lookup.imported_files(&file.path, &file.imports);
                 let file_id = node_id(NodeKind::File, &file.path, &file.path, (0, 0));
@@ -351,7 +377,7 @@ impl Graph {
                 let dst = match (same, edge.kind) {
                     (Some(id), _) => Some(id),
                     (None, EdgeKind::Calls) => {
-                        Some(lookup.function(&target.name, "", &[]).unwrap_or_else(|| {
+                        Some(resolve_call(edge.src, &target.name).unwrap_or_else(|| {
                             externals
                                 .entry(target.name.clone())
                                 .or_insert_with(|| external(&target.name))
@@ -362,6 +388,20 @@ impl Graph {
                 };
                 if let Some(dst) = dst {
                     added.push((edge.src, dst, edge.kind));
+                }
+            }
+            // An untouched file's external call may now name a function this update defines.
+            if !defined.is_empty() {
+                for edge in &mut self.edges {
+                    let Some(name) = defined
+                        .get(&edge.dst)
+                        .filter(|_| edge.kind == EdgeKind::Calls)
+                    else {
+                        continue;
+                    };
+                    if let Some(dst) = resolve_call(edge.src, name) {
+                        edge.dst = dst;
+                    }
                 }
             }
         }
@@ -386,6 +426,48 @@ impl Graph {
         self.nodes
             .sort_by(|a, b| (&a.path, a.span, &a.name).cmp(&(&b.path, b.span, &b.name)));
         self.edges.sort_by_key(|e| (e.src, e.dst, e.kind));
+    }
+
+    /// What a store holding `base` needs to hold `self`, once it has dropped
+    /// the nodes of `paths` (the files an update replaced or removed) and every
+    /// edge touching them.
+    #[must_use]
+    pub fn delta(&self, base: &Graph, paths: &[String]) -> Delta {
+        let touched: HashSet<&str> = paths.iter().map(String::as_str).collect();
+        let ids: HashSet<NodeId> = self
+            .nodes
+            .iter()
+            .filter(|n| touched.contains(n.path.as_str()))
+            .map(|n| n.id)
+            .collect();
+        let before: HashSet<&Edge> = base.edges.iter().collect();
+        let after: HashSet<&Edge> = self.edges.iter().collect();
+        let edges: Vec<Edge> = self
+            .edges
+            .iter()
+            .filter(|e| ids.contains(&e.src) || ids.contains(&e.dst) || !before.contains(e))
+            .copied()
+            .collect();
+        let stale = base
+            .edges
+            .iter()
+            .filter(|e| !after.contains(e))
+            .copied()
+            .collect();
+        let reached: HashSet<NodeId> = edges.iter().flat_map(|e| [e.src, e.dst]).collect();
+        let nodes = self
+            .nodes
+            .iter()
+            .filter(|n| {
+                ids.contains(&n.id) || (n.kind == NodeKind::ExternalCall && reached.contains(&n.id))
+            })
+            .cloned()
+            .collect();
+        Delta {
+            nodes,
+            edges,
+            stale,
+        }
     }
 
     #[must_use]

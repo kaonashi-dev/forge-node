@@ -1496,10 +1496,19 @@ const PR_FILE: &str = "fn pr_only() -> u32 {\n    40 + 2\n}\n";
 fn pull_request_checkout() -> (tempfile::TempDir, tempfile::TempDir, String) {
     let source = seeded_repo();
     git(source.path(), &["checkout", "-q", "--", "main.rs"]);
+    pull_request_from(&source, "pr.rs", PR_FILE)
+}
+
+/// As [`pull_request_checkout`], from a clean `source` whose pull request writes `file`.
+fn pull_request_from(
+    source: &test_support::TempRepo,
+    file: &str,
+    text: &str,
+) -> (tempfile::TempDir, tempfile::TempDir, String) {
     git(source.path(), &["checkout", "-qb", "topic"]);
-    std::fs::write(source.path().join("pr.rs"), PR_FILE).expect("pr.rs");
-    git(source.path(), &["add", "pr.rs"]);
-    git(source.path(), &["commit", "-qm", "add pr_only"]);
+    std::fs::write(source.path().join(file), text).expect("pull request file");
+    git(source.path(), &["add", file]);
+    git(source.path(), &["commit", "-qm", "pull request"]);
     let head = rev_parse(source.path(), "HEAD");
     let origin = tempfile::tempdir_in("/tmp").expect("origin");
     let bare = origin.path().join("origin.git");
@@ -2251,6 +2260,150 @@ fn a_repository_can_turn_the_graph_off() {
     assert!(
         !repo.path().join(".forge/review/graph").exists(),
         "not built"
+    );
+}
+
+fn callees(client: &client::Client, workspace_id: WorkspaceId, name: &str) -> Vec<String> {
+    match client.request(Request::QueryGraph {
+        workspace_id,
+        query: domain::GraphQuery::Callees(name.into()),
+    }) {
+        Ok(Response::GraphNodes(nodes)) => nodes.into_iter().map(|node| node.name).collect(),
+        other => panic!("expected GraphNodes, got {other:?}"),
+    }
+}
+
+const MAIN_CALLING_EXTRA: &str =
+    "mod lib;\n\nfn main() {\n    let sum = lib::total(2, 3);\n    extra(sum);\n}\n";
+
+#[test]
+fn a_graph_query_on_an_unindexed_project_answers_at_once_and_builds_behind_it() {
+    let harness = common::Harness::new();
+    let repo = cross_file_repo();
+    let daemon = harness.boot_with(v1);
+    let client = daemon.connect("scenario-review");
+    let events = client.events();
+    let workspace = workspace_at(&client, repo.path());
+
+    let first = client.request(Request::QueryGraph {
+        workspace_id: workspace,
+        query: domain::GraphQuery::Callers("total".into()),
+    });
+    assert_eq!(first.expect("QueryGraph"), Response::GraphIndexing);
+    common::wait_for(&events, common::DEADLINE, |event| {
+        matches!(event, DaemonEvent::GraphIndexed { error: None, .. })
+    })
+    .expect("the first build reports");
+    assert_eq!(callees(&client, workspace, "main"), ["total"]);
+}
+
+#[test]
+fn a_graph_rereads_a_dirty_edit_after_a_failed_cache_write_or_a_restart() {
+    let harness = common::Harness::new();
+    let repo = cross_file_repo();
+    let daemon = harness.boot_with(v1);
+    let client = daemon.connect("scenario-review");
+    let workspace = workspace_at(&client, repo.path());
+    std::fs::create_dir_all(repo.path().join(".forge/review/graph/cache.bin/in-the-way"))
+        .expect("a directory where cache.bin goes");
+
+    std::fs::write(repo.path().join("main.rs"), MAIN_CALLING_EXTRA).expect("edit");
+    let stats = rebuild_graph(&client, workspace, false);
+    assert!(
+        stats.notes.iter().any(|note| note.contains("cache.bin")),
+        "{stats:?}"
+    );
+    assert!(callees(&client, workspace, "main").contains(&"extra".to_owned()));
+    git(repo.path(), &["checkout", "-q", "--", "main.rs"]);
+    rebuild_graph(&client, workspace, false);
+    assert!(!callees(&client, workspace, "main").contains(&"extra".to_owned()));
+
+    std::fs::remove_dir_all(repo.path().join(".forge/review/graph/cache.bin")).expect("rm");
+    std::fs::write(repo.path().join("main.rs"), MAIN_CALLING_EXTRA).expect("edit");
+    let stats = rebuild_graph(&client, workspace, false);
+    assert!(stats.notes.is_empty(), "{stats:?}");
+    drop(client);
+    drop(daemon);
+    git(repo.path(), &["checkout", "-q", "--", "main.rs"]);
+    let daemon = harness.boot_with(v1);
+    let client = daemon.connect("scenario-review");
+    rebuild_graph(&client, workspace, false);
+    assert!(
+        !callees(&client, workspace, "main").contains(&"extra".to_owned()),
+        "the reverted file was re-read after the restart"
+    );
+}
+
+#[test]
+fn the_graph_cache_never_writes_through_a_symlink_in_the_checkout() {
+    let harness = common::Harness::new();
+    let daemon = harness.boot_with(v1);
+    let client = daemon.connect("scenario-review");
+    let elsewhere = tempfile::tempdir().expect("elsewhere");
+    let victim = elsewhere.path().join("victim");
+    std::fs::write(&victim, "keep").expect("victim");
+
+    let repo = cross_file_repo();
+    std::fs::create_dir_all(repo.path().join(".forge/review/graph")).expect("dir");
+    std::os::unix::fs::symlink(
+        &victim,
+        repo.path().join(".forge/review/graph/cache.bin.tmp"),
+    )
+    .expect("symlink");
+    let workspace = workspace_at(&client, repo.path());
+    let stats = rebuild_graph(&client, workspace, false);
+    assert!(stats.notes.is_empty(), "{stats:?}");
+    assert_eq!(std::fs::read_to_string(&victim).expect("victim"), "keep");
+    let cache =
+        std::fs::read(repo.path().join(".forge/review/graph/cache.bin")).expect("cache.bin");
+    codebase_graph::Graph::decode(&cache).expect("cache.bin decodes");
+
+    let linked = cross_file_repo();
+    std::os::unix::fs::symlink(elsewhere.path(), linked.path().join(".forge")).expect("symlink");
+    let workspace = workspace_at(&client, linked.path());
+    let stats = rebuild_graph(&client, workspace, false);
+    assert!(stats.nodes > 0, "SQLite still holds the graph: {stats:?}");
+    assert!(
+        stats.notes.iter().any(|note| note.contains("cache.bin")),
+        "{stats:?}"
+    );
+    assert!(!elsewhere.path().join("review").exists());
+}
+
+#[test]
+fn a_pull_requests_graph_maps_its_hunks_onto_the_heads_functions() {
+    let harness = common::Harness::new();
+    install_reviewer(&harness, &answer(&[]), Reviewer::Answers);
+    let source = cross_file_repo();
+    git(source.path(), &["checkout", "-q", "--", "lib.rs"]);
+    let head_lib = "pub fn discount(price: u32) -> u32 {\n    price / 10\n}\n\n\
+                    pub fn total(price: u32, qty: u32) -> u32 {\n    price * qty - discount(price)\n}\n";
+    let (_origin, checkout, _head) = pull_request_from(&source, "lib.rs", head_lib);
+    let daemon = boot(&harness);
+    let client = daemon.connect("scenario-review");
+    let events = client.events();
+    let workspace = workspace_at(&client, checkout.path());
+
+    review_to_completion(
+        &harness,
+        &client,
+        &events,
+        ReviewTarget::PullRequest {
+            workspace_id: workspace,
+            number: 1,
+            base: Some("main".into()),
+        },
+    );
+    let pack = std::fs::read_to_string(harness.root().join("pack.md")).expect("pack");
+    assert!(pack.contains("## lib.rs:1 discount\n"), "{pack}");
+    assert!(
+        pack.contains("## lib.rs:5 total\ncallers:\n- main.rs:3 function main\n"),
+        "{pack}"
+    );
+    assert!(!pack.contains("## lib.rs:1 total"), "{pack}");
+    assert!(
+        callees(&client, workspace, "total").is_empty(),
+        "the stored graph is the checkout's, not the pull request's"
     );
 }
 

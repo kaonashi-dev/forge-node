@@ -212,6 +212,7 @@ pub fn run_git(repo: Option<&Path>, args: &[&str]) -> Result<GitOutput, GitError
         false,
         None,
         Capture::Drain(MAX_CAPTURE_BYTES),
+        None,
     )
     .map(|(output, _)| output)
 }
@@ -239,6 +240,7 @@ pub fn run_git_bounded(
         false,
         None,
         Capture::Refuse(limit.min(MAX_CAPTURE_BYTES)),
+        None,
     )
     .map(|(output, _)| output)
 }
@@ -265,6 +267,7 @@ pub fn run_git_prefix(
         false,
         None,
         Capture::Prefix(limit.min(MAX_CAPTURE_BYTES)),
+        None,
     )
 }
 
@@ -284,6 +287,7 @@ pub(crate) fn run_git_with_index(
         false,
         Some(index),
         Capture::Drain(MAX_CAPTURE_BYTES),
+        None,
     )
     .map(|(output, _)| output)
 }
@@ -329,6 +333,7 @@ pub fn run_git_network(
         true,
         None,
         Capture::Refuse(MAX_CAPTURE_BYTES),
+        None,
     )
     .map(|(output, _)| output)
 }
@@ -340,7 +345,51 @@ fn run_git_inner(
     network: bool,
     index: Option<&Path>,
     capture: Capture,
+    input: Option<Vec<u8>>,
 ) -> Result<(GitOutput, bool), GitError> {
+    let (output, cut) = run_git_raw(repo, args, timeout, network, index, capture, input)?;
+    Ok((
+        GitOutput {
+            stdout: decode(output.stdout),
+            stderr: decode(output.stderr),
+            status: output.status.code().unwrap_or(-1),
+            truncated: cut,
+        },
+        cut,
+    ))
+}
+
+/// [`run_git_bounded`] with `input` written to stdin, and stdout kept as bytes.
+///
+/// # Errors
+/// As [`run_git_bounded`].
+pub(crate) fn run_git_input(
+    repo: &Path,
+    args: &[&str],
+    input: Vec<u8>,
+    limit: usize,
+) -> Result<std::process::Output, GitError> {
+    run_git_raw(
+        Some(repo),
+        args,
+        GIT_TIMEOUT,
+        false,
+        None,
+        Capture::Refuse(limit.min(MAX_CAPTURE_BYTES)),
+        Some(input),
+    )
+    .map(|(output, _)| output)
+}
+
+fn run_git_raw(
+    repo: Option<&Path>,
+    args: &[&str],
+    timeout: Duration,
+    network: bool,
+    index: Option<&Path>,
+    capture: Capture,
+    input: Option<Vec<u8>>,
+) -> Result<(std::process::Output, bool), GitError> {
     use std::os::unix::process::CommandExt as _;
 
     let mut cmd = Command::new("git");
@@ -359,7 +408,11 @@ fn run_git_inner(
         // message. No application command here ever wants an editor.
         .env("GIT_EDITOR", "true")
         .env("GIT_SEQUENCE_EDITOR", "true")
-        .stdin(Stdio::null())
+        .stdin(if input.is_some() {
+            Stdio::piped()
+        } else {
+            Stdio::null()
+        })
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         // A separate process group so a timeout can terminate the *whole* tree
@@ -388,8 +441,16 @@ fn run_git_inner(
 
     tracing::debug!(target: "git", ?repo, ?args, network, "run git");
 
-    let child = cmd.spawn()?;
+    let mut child = cmd.spawn()?;
     let pid = child.id();
+    if let (Some(input), Some(mut stdin)) = (input, child.stdin.take()) {
+        // Its own thread: git writes stdout while it reads, and a timeout's
+        // group kill closes the pipe, so the write ends either way.
+        std::thread::spawn(move || {
+            use std::io::Write as _;
+            let _ = stdin.write_all(&input);
+        });
+    }
 
     // Wait (and drain the pipes) on a worker thread so the main thread can
     // enforce a wall-clock timeout with `recv_timeout` (std has none built in).
@@ -405,15 +466,7 @@ fn run_git_inner(
     });
 
     match rx.recv_timeout(timeout) {
-        Ok(Ok((output, cut))) => Ok((
-            GitOutput {
-                stdout: decode(output.stdout),
-                stderr: decode(output.stderr),
-                status: output.status.code().unwrap_or(-1),
-                truncated: cut,
-            },
-            cut,
-        )),
+        Ok(Ok(captured)) => Ok(captured),
         Ok(Err(e)) => Err(match e.get_ref().and_then(|inner| inner.downcast_ref()) {
             Some(&OverLimit(limit)) => GitError::OutputLimit { limit },
             None => GitError::Io(e),

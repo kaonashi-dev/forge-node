@@ -548,6 +548,9 @@ pub struct GraphStats {
     /// Files listed but not parsed (over a budget, unreadable, no grammar is not one).
     pub skipped: Vec<String>,
     pub git_oid: String,
+    /// What the build could not do besides the graph, such as writing `cache.bin`.
+    #[serde(default)]
+    pub notes: Vec<String>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]

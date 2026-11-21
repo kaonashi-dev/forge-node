@@ -303,10 +303,23 @@ lists `git ls-files --cached --others --exclude-standard` minus the pack's
 exclusions and `[ignore] paths`, and parses at most 20 000 files and 64 MiB
 (the rest is `skipped` in the stats, never silently dropped). Later builds
 re-parse only `git diff --name-only <graph oid> HEAD`, `git status` and what was
-dirty last time, and an edge from an untouched file into a re-parsed one follows
-its target by kind and name. Names, paths and signatures are redacted before
+dirty last time (kept in `codebase_graph_dirty`, so a restart does not forget
+it), and an edge from an untouched file into a re-parsed one follows its target
+by kind and name, as does an untouched file's external call once a re-parsed
+file defines that name; only what changed is written back. Names, paths and signatures are redacted before
 they are stored. One build per project at a time, and `.forge/review/graph/index.lock`
-(`flock`) serializes daemons on one checkout. Nothing of this holds the core lock.
+(`flock`) serializes daemons on one checkout. Every component of that directory
+must be a real directory and `cache.bin` is renamed from a freshly created temp
+file, so a symlink committed there is never written through; when it cannot be
+written, the build still stands (SQLite is the graph) and says so in
+`GraphStats.notes`. A query on a project with no graph answers
+`GraphIndexing` and builds it on its own thread. Nothing of this holds the core lock.
+
+A pull request's graph is the project's with the changed files indexed from the
+fetched head in memory, read by `git_service::read_blobs`
+(one `cat-file --batch-check`, then `--batch` per 4 MiB, never a process per
+file), so its hunks meet the head's functions; neither the checkout nor the
+stored graph changes. The same batched read serves validation and the diagrams.
 
 `<graph-N>` lists, for each function a new-side hunk touches, up to 5 callers,
 5 callees and 3 similar functions (same-kind functions whose callee sets have a

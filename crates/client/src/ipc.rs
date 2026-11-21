@@ -764,7 +764,8 @@ impl Client {
         }
     }
 
-    /// One question to the workspace's project graph.
+    /// One question to the workspace's project graph; `None` while the
+    /// project's first graph builds, until `DaemonEvent::GraphIndexed`.
     ///
     /// # Errors
     /// [`ClientError`] on a transport failure or a refusal from the daemon.
@@ -772,12 +773,13 @@ impl Client {
         &self,
         workspace_id: domain::WorkspaceId,
         query: domain::GraphQuery,
-    ) -> Result<Vec<domain::GraphNode>, ClientError> {
+    ) -> Result<Option<Vec<domain::GraphNode>>, ClientError> {
         match self.request(Request::QueryGraph {
             workspace_id,
             query,
         })? {
-            Response::GraphNodes(nodes) => Ok(nodes),
+            Response::GraphNodes(nodes) => Ok(Some(nodes)),
+            Response::GraphIndexing => Ok(None),
             _ => Err(ClientError::UnexpectedResponse {
                 expected: "GraphNodes",
             }),

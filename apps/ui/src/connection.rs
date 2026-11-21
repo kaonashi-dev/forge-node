@@ -609,7 +609,7 @@ pub enum UiEvent {
         review_id: domain::ReviewId,
         path: String,
         query: domain::GraphQuery,
-        result: Result<Vec<domain::GraphNode>, String>,
+        result: Result<Option<Vec<domain::GraphNode>>, String>,
     },
     Kb {
         generation: u64,

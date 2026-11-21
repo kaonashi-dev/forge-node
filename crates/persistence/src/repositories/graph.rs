@@ -1,7 +1,7 @@
 //! A project's codebase graph. Ids are the graph's own hashes; kinds are
 //! explicit tags, like every other enum column.
 
-use codebase_graph::{Edge, EdgeKind, Graph, Node, NodeId, NodeKind};
+use codebase_graph::{Delta, Edge, EdgeKind, Graph, Node, NodeId, NodeKind};
 use domain::ProjectId;
 use rusqlite::{params, params_from_iter, Connection, Row, Transaction};
 
@@ -130,11 +130,16 @@ fn insert(
     Ok(())
 }
 
-/// Every row of the project's graph replaced by `graph`'s.
+/// Every row of the project's graph replaced by `graph`'s, and its dirty paths by `dirty`.
 ///
 /// # Errors
 /// Returns [`DbError`] on a failed statement; the transaction is rolled back.
-pub fn replace(conn: &mut Connection, project: ProjectId, graph: &Graph) -> Result<(), DbError> {
+pub fn replace(
+    conn: &mut Connection,
+    project: ProjectId,
+    graph: &Graph,
+    dirty: &[String],
+) -> Result<(), DbError> {
     let tx = conn.transaction()?;
     let id = project.to_string();
     tx.execute(
@@ -146,13 +151,15 @@ pub fn replace(conn: &mut Connection, project: ProjectId, graph: &Graph) -> Resu
         [&id],
     )?;
     insert(&tx, project, &graph.git_oid, &graph.nodes, &graph.edges)?;
+    set_dirty(&tx, project, dirty)?;
     tx.commit()?;
     Ok(())
 }
 
-/// The nodes of `paths` and every edge touching them replaced by `nodes` and
-/// `edges`; external calls nothing calls any more are dropped, and the whole
-/// graph is stamped with `git_oid`.
+/// The nodes of `paths` and every edge touching them replaced by `delta`'s,
+/// with its stale edges deleted; external calls nothing calls any more are
+/// dropped, the whole graph is stamped with `git_oid` and its dirty paths
+/// replaced by `dirty`.
 ///
 /// # Errors
 /// Returns [`DbError`] on a failed statement; the transaction is rolled back.
@@ -161,8 +168,8 @@ pub fn replace_paths(
     project: ProjectId,
     git_oid: &str,
     paths: &[String],
-    nodes: &[Node],
-    edges: &[Edge],
+    delta: &Delta,
+    dirty: &[String],
 ) -> Result<(), DbError> {
     let tx = conn.transaction()?;
     let id = project.to_string();
@@ -183,7 +190,22 @@ pub fn replace_paths(
         "DELETE FROM codebase_graph_nodes WHERE project_id = ?1 AND path IN (SELECT path FROM graph_paths)",
         [&id],
     )?;
-    insert(&tx, project, git_oid, nodes, edges)?;
+    {
+        let mut stale = tx.prepare_cached(
+            "DELETE FROM codebase_graph_edges \
+             WHERE project_id = ?1 AND src = ?2 AND dst = ?3 AND kind = ?4",
+        )?;
+        for e in &delta.stale {
+            stale.execute(params![
+                id,
+                e.src.as_slice(),
+                e.dst.as_slice(),
+                edge_tag(e.kind)?
+            ])?;
+        }
+    }
+    insert(&tx, project, git_oid, &delta.nodes, &delta.edges)?;
+    set_dirty(&tx, project, dirty)?;
     tx.execute(
         "DELETE FROM codebase_graph_nodes WHERE project_id = ?1 AND kind = 'ExternalCall' \
          AND id NOT IN (SELECT dst FROM codebase_graph_edges WHERE project_id = ?1)",
@@ -196,6 +218,35 @@ pub fn replace_paths(
     tx.execute_batch("DELETE FROM graph_paths;")?;
     tx.commit()?;
     Ok(())
+}
+
+fn set_dirty(tx: &Transaction<'_>, project: ProjectId, dirty: &[String]) -> Result<(), DbError> {
+    let id = project.to_string();
+    tx.execute(
+        "DELETE FROM codebase_graph_dirty WHERE project_id = ?1",
+        [&id],
+    )?;
+    let mut add = tx.prepare_cached(
+        "INSERT OR IGNORE INTO codebase_graph_dirty (project_id, path) VALUES (?1, ?2)",
+    )?;
+    for path in dirty {
+        add.execute(params![id, path])?;
+    }
+    Ok(())
+}
+
+/// The paths the project's last graph build read from a dirty working tree.
+///
+/// # Errors
+/// Returns [`DbError`] on a failed statement.
+pub fn dirty(conn: &Connection, project: ProjectId) -> Result<Vec<String>, DbError> {
+    let mut statement = conn.prepare_cached(
+        "SELECT path FROM codebase_graph_dirty WHERE project_id = ?1 ORDER BY path",
+    )?;
+    let paths = statement
+        .query_map([project.to_string()], |row| row.get(0))?
+        .collect::<Result<Vec<String>, _>>()?;
+    Ok(paths)
 }
 
 /// `None` when the project has no graph.

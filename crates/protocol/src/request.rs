@@ -857,13 +857,14 @@ pub enum Request {
         #[serde(default)]
         full: bool,
     },
-    /// One query over the project's stored graph → `Response::GraphNodes`;
-    /// builds the graph first when the project has none.
+    /// One query over the project's stored graph → `Response::GraphNodes`, or
+    /// `Response::GraphIndexing` while a project with none builds its first.
     QueryGraph {
         workspace_id: WorkspaceId,
         query: domain::GraphQuery,
     },
-    /// The project's graph as text → `Response::GraphExport`, at most 2 000 nodes.
+    /// The project's graph as text → `Response::GraphExport`, at most 2 000
+    /// nodes; `Response::GraphIndexing` like `QueryGraph`.
     ExportGraph {
         workspace_id: WorkspaceId,
         format: domain::GraphFormat,

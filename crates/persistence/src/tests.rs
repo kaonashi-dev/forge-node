@@ -96,8 +96,8 @@ fn migrations_apply_and_user_version_advances() {
     // count of applied migrations, and the assertion is what catches a migration
     // that was silently reordered or dropped.
     assert_eq!(
-        version, 30,
-        "thirty migrations applied => user_version == 30"
+        version, 31,
+        "thirty-one migrations applied => user_version == 31"
     );
 
     for table in [
@@ -193,7 +193,7 @@ fn version_two_database_upgrades_existing_projects_into_general() {
         .conn()
         .query_row("PRAGMA user_version", [], |row| row.get(0))
         .unwrap();
-    assert_eq!(version, 30);
+    assert_eq!(version, 31);
 }
 
 /// Migration 6 over a database that already has workspaces: the display_name
@@ -1090,7 +1090,7 @@ fn sessions_schema_is_unchanged() {
         .conn()
         .query_row("PRAGMA user_version", [], |r| r.get(0))
         .unwrap();
-    assert_eq!(version, 30, "every migration up to the spec runs");
+    assert_eq!(version, 31, "every migration up to the spec runs");
 
     let (db, _project, workspace_id) = db_with_workspace();
     let mut session = mk_session(workspace_id, SessionState::Running);
@@ -1244,7 +1244,7 @@ fn reset_clears_every_application_table_and_keeps_the_schema() {
         .conn()
         .query_row("PRAGMA user_version", [], |row| row.get(0))
         .unwrap();
-    assert_eq!(version, 30, "reset retains the migrated schema");
+    assert_eq!(version, 31, "reset retains the migrated schema");
 }
 
 // ---- on-disk open ----------------------------------------------------------
@@ -2179,7 +2179,7 @@ fn a_projects_graph_round_trips_and_is_queried_by_name() {
         ],
         "oid1",
     );
-    store.replace_graph(project, &graph).unwrap();
+    store.replace_graph(project, &graph, &[]).unwrap();
     assert_eq!(store.load_graph(project).unwrap(), Some(graph));
     let named = store.graph_nodes_named(project, "open").unwrap();
     assert_eq!(named.len(), 1);
@@ -2205,39 +2205,77 @@ fn replacing_a_set_of_paths_matches_the_incremental_graph() {
         ],
         "oid1",
     );
-    store.replace_graph(project, &graph).unwrap();
+    store.replace_graph(project, &graph, &[]).unwrap();
 
-    let mut update = codebase_graph::Update::new();
-    update.add(graph_file(
-        "src/b.rs",
-        "\n\nfn open() {}\nfn log() {}\n",
-        &["open", "log"],
-        &[],
-    ));
-    graph.apply(update, &[], "oid2");
-    let changed: Vec<String> = vec!["src/b.rs".into()];
-    let ids: std::collections::HashSet<_> = graph
+    let b = "\n\nfn open() {}\nfn log() {}\n";
+    store_update(
+        &store,
+        project,
+        &mut graph,
+        vec![graph_file("src/b.rs", b, &["open", "log"], &[])],
+    );
+    assert_eq!(store.load_graph(project).unwrap(), Some(graph.clone()));
+
+    store_update(
+        &store,
+        project,
+        &mut graph,
+        vec![graph_file("src/b.rs", "fn log() {}\n", &["log"], &[])],
+    );
+    assert!(graph
         .nodes
         .iter()
-        .filter(|n| changed.contains(&n.path))
-        .map(|n| n.id)
-        .collect();
-    let nodes: Vec<_> = graph
-        .nodes
-        .iter()
-        .filter(|n| ids.contains(&n.id))
-        .cloned()
-        .collect();
-    let edges: Vec<_> = graph
-        .edges
-        .iter()
-        .filter(|e| ids.contains(&e.src) || ids.contains(&e.dst))
-        .copied()
-        .collect();
-    store
-        .replace_graph_paths(project, "oid2", &changed, &nodes, &edges)
-        .unwrap();
+        .any(|n| n.kind == codebase_graph::NodeKind::ExternalCall));
     assert_eq!(store.load_graph(project).unwrap(), Some(graph));
+}
+
+/// Applies `files` to `graph` and stores only what changed, as an incremental build does.
+fn store_update(
+    store: &crate::ReviewStore,
+    project: ProjectId,
+    graph: &mut codebase_graph::Graph,
+    files: Vec<codebase_graph::FileInput>,
+) {
+    let base = graph.clone();
+    let changed: Vec<String> = files.iter().map(|file| file.path.clone()).collect();
+    let mut update = codebase_graph::Update::new();
+    for file in files {
+        update.add(file);
+    }
+    graph.apply(update, &[], "oid2");
+    store
+        .replace_graph_paths(
+            project,
+            "oid2",
+            &changed,
+            &graph.delta(&base, &changed),
+            &[],
+        )
+        .unwrap();
+}
+
+#[test]
+fn a_graphs_dirty_paths_are_replaced_with_it() {
+    let (db, project, _) = db_with_workspace();
+    let store = db.review_store().unwrap();
+    let graph = graph_of(
+        vec![graph_file("src/b.rs", "fn open() {}\n", &["open"], &[])],
+        "oid1",
+    );
+    store
+        .replace_graph(project, &graph, &["src/b.rs".into()])
+        .unwrap();
+    assert_eq!(store.graph_dirty_paths(project).unwrap(), ["src/b.rs"]);
+    store
+        .replace_graph_paths(
+            project,
+            "oid1",
+            &["src/b.rs".into()],
+            &codebase_graph::Delta::default(),
+            &[],
+        )
+        .unwrap();
+    assert!(store.graph_dirty_paths(project).unwrap().is_empty());
 }
 
 #[test]
@@ -2251,7 +2289,7 @@ fn a_graph_goes_with_its_project() {
         vec![graph_file("src/b.rs", "fn open() {}\n", &["open"], &[])],
         "oid1",
     );
-    store.replace_graph(project, &graph).unwrap();
+    store.replace_graph(project, &graph, &[]).unwrap();
     db.projects().delete(project).unwrap();
     assert_eq!(store.load_graph(project).unwrap(), None);
 }

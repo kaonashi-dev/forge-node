@@ -290,6 +290,9 @@ pub enum Response {
     GraphNodes(Vec<domain::GraphNode>),
     /// Answers `ExportGraph`.
     GraphExport(String),
+    /// Answers `QueryGraph` or `ExportGraph` for a project with no graph yet: its
+    /// first build has started off the request, and `DaemonEvent::GraphIndexed` follows.
+    GraphIndexing,
     /// A branch against its pull request's base, answering
     /// `GetBranchCompare`. Boxed like `UsageAnalytics`: it carries a whole diff.
     BranchCompare(Box<BranchCompare>),

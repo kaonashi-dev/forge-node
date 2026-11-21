@@ -173,8 +173,9 @@ impl ReviewStore {
         &self,
         project: domain::ProjectId,
         graph: &codebase_graph::Graph,
+        dirty: &[String],
     ) -> Result<(), DbError> {
-        crate::repositories::graph::replace(&mut self.conn(), project, graph)
+        crate::repositories::graph::replace(&mut self.conn(), project, graph, dirty)
     }
 
     pub fn replace_graph_paths(
@@ -182,17 +183,21 @@ impl ReviewStore {
         project: domain::ProjectId,
         git_oid: &str,
         paths: &[String],
-        nodes: &[codebase_graph::Node],
-        edges: &[codebase_graph::Edge],
+        delta: &codebase_graph::Delta,
+        dirty: &[String],
     ) -> Result<(), DbError> {
         crate::repositories::graph::replace_paths(
             &mut self.conn(),
             project,
             git_oid,
             paths,
-            nodes,
-            edges,
+            delta,
+            dirty,
         )
+    }
+
+    pub fn graph_dirty_paths(&self, project: domain::ProjectId) -> Result<Vec<String>, DbError> {
+        crate::repositories::graph::dirty(&self.conn(), project)
     }
 
     pub fn load_graph(
@@ -577,6 +582,7 @@ impl Db {
         tx.execute_batch(
             "DELETE FROM sandbox_runs;
              DELETE FROM kb_entries;
+             DELETE FROM codebase_graph_dirty;
              DELETE FROM codebase_graph_edges;
              DELETE FROM codebase_graph_nodes;
              DELETE FROM spec_runs;

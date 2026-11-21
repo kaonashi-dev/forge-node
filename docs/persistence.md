@@ -186,7 +186,7 @@ ignoring case because a chip and a palette entry name an action by label. A
 run's session (`SessionKind::Task`) is an ordinary `sessions` row; which action
 it runs is runtime-only.
 
-## Schema (v16 — `REVIEWS`, v20–v23, v25–v30)
+## Schema (v16 — `REVIEWS`, v20–v23, v25–v31)
 
 ```sql
 review_runs     (id PK, workspace_id FK→workspaces ON DELETE CASCADE, target,
@@ -263,6 +263,9 @@ startup's read-only set and the prune's keep rule read it beside `session_id`.
 `SANDBOX_APPROVALS` (v30) keeps the SHA-256 of the `sandbox.toml` a person
 approved per project, and `sandbox_runs.unapproved_hash`, the hash of a file
 that did not run because it was not that one.
+`CODEBASE_GRAPH_DIRTY` (v31) keeps the paths a project's last graph build read
+from a dirty working tree, replaced in the build's own transaction, so the next
+build re-reads them even after a restart and a revert left them clean.
 
 ## Repositories (`repositories/`)
 

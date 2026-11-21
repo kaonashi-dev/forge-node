@@ -720,6 +720,16 @@ CREATE TABLE sandbox_approvals (
 ALTER TABLE sandbox_runs ADD COLUMN unapproved_hash TEXT;
 ";
 
+/// The paths a project's last graph build read from a dirty working tree: the
+/// next build re-reads them, even after a restart and a revert left them clean.
+pub const CODEBASE_GRAPH_DIRTY: &str = "
+CREATE TABLE codebase_graph_dirty (
+    project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+    path       TEXT NOT NULL,
+    PRIMARY KEY (project_id, path)
+);
+";
+
 /// The full, ordered migration set. Appended to over time; never reordered.
 #[must_use]
 pub fn migrations() -> Migrations<'static> {
@@ -754,5 +764,6 @@ pub fn migrations() -> Migrations<'static> {
         M::up(SANDBOX_RUNS),
         M::up(REVIEW_AGENT_SESSIONS),
         M::up(SANDBOX_APPROVALS),
+        M::up(CODEBASE_GRAPH_DIRTY),
     ])
 }

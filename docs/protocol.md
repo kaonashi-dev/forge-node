@@ -5,7 +5,7 @@ defined in `crates/protocol` and is transport-agnostic; the transport itself is
 a Unix domain socket (ADR-004). The GUI-side implementation is
 `crates/client` (`Client` + `Store`).
 
-`PROTOCOL_VERSION = 43` (`protocol::PROTOCOL_VERSION` is the source).
+`PROTOCOL_VERSION = 44` (`protocol::PROTOCOL_VERSION` is the source).
 
 ## Transport & framing
 
@@ -181,10 +181,10 @@ DaemonMessage::Event    (DaemonEvent)
 | | `ClearReviewSuppression { workspace_id, suppression }` | `Ack`; lifts one of `ReviewSettings::suppressions`: a fingerprint's dismissals are deleted, a rule's or category's stop counting and stay dismissed. |
 | | `ListReviews { workspace_id, limit }` | `Response::Reviews`, newest first, without findings; `limit` is clamped to 100. |
 | | `StartReview { …, swarm }` | `swarm: SwarmOptions { size, hypotheses }` (default: `[review] swarm_default` agents); size 1 with no hypotheses is the single v1 reviewer. |
-| | `GetReviewDiagram { review_id, kind }` | `Response::ReviewDiagram(Option<Diagram>)` — one kind drawn again for exactly the range the run reviewed, from the current graph. Stores nothing. |
-| | `RebuildGraph { workspace_id, full }` | `Response::GraphRebuilt(GraphStats)` — the project's graph brought up to date from this checkout (`full` re-parses every file). Synchronous, off the core lock. |
-| | `QueryGraph { workspace_id, query }` | `Response::GraphNodes(Vec<GraphNode>)` — callers, callees, similar, path, imports or external calls; builds the graph first when the project has none. |
-| | `ExportGraph { workspace_id, format }` | `Response::GraphExport(String)` — DOT or mermaid, at most 2 000 nodes with a line saying how many were left out. |
+| | `GetReviewDiagram { review_id, kind }` | `Response::ReviewDiagram(Option<Diagram>)` — one kind drawn again for exactly the range the run reviewed, from the current graph (for a pull request, with its changed files indexed from the fetched head over it). Stores nothing. |
+| | `RebuildGraph { workspace_id, full }` | `Response::GraphRebuilt(GraphStats)` — the project's graph brought up to date from this checkout (`full` re-parses every file). Synchronous, off the core lock. `GraphStats.notes` says what was not done besides the graph, such as writing `cache.bin`. |
+| | `QueryGraph { workspace_id, query }` | `Response::GraphNodes(Vec<GraphNode>)` — callers, callees, similar, path, imports or external calls; `Response::GraphIndexing` at once when the project has none yet, after starting its first build on its own thread (one per project however many ask), and `GraphIndexed` follows. |
+| | `ExportGraph { workspace_id, format }` | `Response::GraphExport(String)` — DOT or mermaid, at most 2 000 nodes with a line saying how many were left out; `GraphIndexing` like `QueryGraph`. |
 | | `GetKb { workspace_id }` | `Response::Kb(Vec<KbFile>)` — the project's four knowledge-base files, the two derived from feedback included. |
 | | `UpdateKbEntry { workspace_id, file, content }` | `Ack`; a person's `architecture.md` or `patterns.json` (a JSON list of strings), redacted. `InvalidRequest` for a derived file, bad JSON or a cap. |
 | | `ClearKbEntry { workspace_id, file }` / `ExportKb { workspace_id }` | `Ack` / `Response::KbExport(String)`, one Markdown document. |
@@ -273,6 +273,7 @@ Removed relative to the v1 plan: `FocusSession` (pure GUI state) and generic
 | `AgentProfilesChanged { profiles }` | The whole set after any profile write (§13.4) — like usage and detection, a merge would strand a deleted profile. |
 | `ReviewUpdated { run }` | A Forge Review changed status or stage. Compact: findings are read with `GetReview` once the run is `Completed`. |
 | `SandboxFinished(SandboxRun)` | A `RunSandbox` ended. |
+| `GraphIndexed { project_id, error }` | The first build a `QueryGraph` or `ExportGraph` started ended; a client asks again only without `error`. |
 | `FixLoopUpdated { workspace_id, iteration, findings, done, error }` | A fix loop ran another review, or stopped (`done`). |
 | `ProjectActionsChanged { project_id, actions }` | One project's whole action set after `SetProjectActions`. |
 | `ProjectSharesChanged { project_id, rules }` | One project's whole rule set after any write (§14.2), for the same reason as the profiles event. |

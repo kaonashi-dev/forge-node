@@ -390,3 +390,82 @@ fn exports_name_nodes_and_edges_and_say_what_the_cap_left_out() {
         graph.nodes.len() - 2
     )));
 }
+
+fn apply_to(mut graph: Graph, files: Vec<FileInput>, removed: &[String]) -> Graph {
+    let mut update = Update::new();
+    for file in files {
+        update.add(file);
+    }
+    graph.apply(update, removed, "oid1");
+    graph
+}
+
+fn store_without_open() -> FileInput {
+    let source = "pub const LIMIT: usize = 4;\nfn check(n: usize) {}\n";
+    file(
+        "src/store.rs",
+        source,
+        &[
+            ("constant", "LIMIT", "pub const LIMIT"),
+            ("function", "check", "fn check"),
+        ],
+        &[],
+    )
+}
+
+#[test]
+fn a_new_file_defining_an_external_call_links_it_like_a_full_build() {
+    let helper = || {
+        file(
+            "src/help.rs",
+            "pub fn println() {}\n",
+            &[("function", "println", "pub fn println")],
+            &[],
+        )
+    };
+    let incremental = apply_to(build(project()), vec![helper()], &[]);
+    let mut all = project();
+    all.push(helper());
+    assert_eq!(incremental, build(all));
+    assert!(has_edge(
+        &incremental,
+        ("src/app.rs", "log"),
+        ("src/help.rs", "println"),
+        EdgeKind::Calls
+    ));
+    assert!(!incremental
+        .nodes
+        .iter()
+        .any(|n| n.kind == NodeKind::ExternalCall));
+}
+
+#[test]
+fn a_call_into_a_moved_function_is_redirected_like_a_full_build() {
+    let moved = || {
+        file(
+            "src/open.rs",
+            "pub fn open() {}\n",
+            &[("function", "open", "pub fn open")],
+            &[],
+        )
+    };
+    let incremental = apply_to(build(project()), vec![store_without_open(), moved()], &[]);
+    let app = project().remove(1);
+    let full = build(vec![store_without_open(), moved(), app.clone()]);
+    assert_eq!(incremental, full);
+    assert!(has_edge(
+        &incremental,
+        ("src/app.rs", "main"),
+        ("src/open.rs", "open"),
+        EdgeKind::Calls
+    ));
+
+    let gone = apply_to(build(project()), vec![store_without_open()], &[]);
+    assert_eq!(gone, build(vec![store_without_open(), app]));
+    assert!(has_edge(
+        &gone,
+        ("src/app.rs", "main"),
+        ("", "open"),
+        EdgeKind::Calls
+    ));
+}

@@ -25,9 +25,8 @@ pub(crate) const GRAPH_DIR: &str = ".forge/review/graph";
 pub(crate) struct Graphs {
     loaded: Mutex<HashMap<ProjectId, Arc<Graph>>>,
     building: Mutex<HashMap<ProjectId, Arc<Mutex<()>>>>,
-    /// Paths read from a dirty working tree by the last build, re-read by the
-    /// next one even if the tree is clean again by then.
-    dirty: Mutex<HashMap<ProjectId, Vec<String>>>,
+    /// Projects whose first build a query started, until it finishes.
+    indexing: Mutex<HashSet<ProjectId>>,
     /// When each project's graph was last brought up to date by this daemon.
     built: Mutex<HashMap<ProjectId, std::time::Instant>>,
     pub(crate) answered: AtomicU64,
@@ -59,6 +58,18 @@ impl Graphs {
     }
 }
 
+/// Clears its project's `indexing` mark however the build ends, a failed spawn included.
+struct Indexing {
+    daemon: Arc<Daemon>,
+    project: ProjectId,
+}
+
+impl Drop for Indexing {
+    fn drop(&mut self) {
+        unpoisoned(&self.daemon.graphs.indexing).remove(&self.project);
+    }
+}
+
 fn unpoisoned<T>(mutex: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
     mutex
         .lock()
@@ -87,11 +98,19 @@ impl Daemon {
                 .map_err(|error| format!("could not read the stored graph: {error}"))?
                 .map(Arc::new),
         };
-        let dir = graph_dir(checkout)?;
-        let _lock = lock_index(&dir)?;
-        let was_dirty = unpoisoned(&self.graphs.dirty)
-            .remove(&project)
-            .unwrap_or_default();
+        let mut stats = GraphStats {
+            git_oid: head.clone(),
+            ..GraphStats::default()
+        };
+        // `cache.bin` only serves an offline `forgectl`; SQLite is the graph.
+        let cache = graph_dir(checkout).and_then(|dir| lock_index(&dir).map(|lock| (dir, lock)));
+        if let Err(error) = &cache {
+            stats.notes.push(format!("cache.bin not written: {error}"));
+        }
+        let was_dirty = self
+            .review_store
+            .graph_dirty_paths(project)
+            .map_err(|error| format!("could not read the stored graph: {error}"))?;
         let (base, listed, incremental) = match stored.filter(|_| !full) {
             Some(stored) => match changed_paths(checkout, &stored.git_oid, &head) {
                 Some(mut paths) => {
@@ -106,11 +125,9 @@ impl Daemon {
             },
             None => (Arc::new(Graph::default()), list_files(checkout)?, false),
         };
-        let dirty = dirty_paths(checkout);
-        let mut stats = GraphStats {
-            git_oid: head.clone(),
-            ..GraphStats::default()
-        };
+        let mut dirty = dirty_paths(checkout);
+        // Stored unredacted to be re-read, so a path redaction would change is left out.
+        dirty.retain(|path| redacted(path) == *path);
         if incremental && listed.is_empty() && base.git_oid == head {
             stats.nodes = count(base.nodes.len());
             stats.edges = count(base.edges.len());
@@ -121,41 +138,21 @@ impl Daemon {
         graph.apply(update, &removed, &head);
         let stored = if incremental {
             let touched: Vec<String> = read.iter().chain(&removed).cloned().collect();
-            let touched_set: HashSet<&str> = touched.iter().map(String::as_str).collect();
-            let ids: HashSet<codebase_graph::NodeId> = graph
-                .nodes
-                .iter()
-                .filter(|n| touched_set.contains(n.path.as_str()))
-                .map(|n| n.id)
-                .collect();
-            let edges: Vec<codebase_graph::Edge> = graph
-                .edges
-                .iter()
-                .filter(|e| ids.contains(&e.src) || ids.contains(&e.dst))
-                .copied()
-                .collect();
-            let reached: HashSet<codebase_graph::NodeId> =
-                edges.iter().flat_map(|e| [e.src, e.dst]).collect();
-            let nodes: Vec<codebase_graph::Node> = graph
-                .nodes
-                .iter()
-                .filter(|n| {
-                    ids.contains(&n.id)
-                        || (n.kind == domain::NodeKind::ExternalCall && reached.contains(&n.id))
-                })
-                .cloned()
-                .collect();
+            let delta = graph.delta(&base, &touched);
             self.review_store
-                .replace_graph_paths(project, &head, &touched, &nodes, &edges)
+                .replace_graph_paths(project, &head, &touched, &delta, &dirty)
         } else {
-            self.review_store.replace_graph(project, &graph)
+            self.review_store.replace_graph(project, &graph, &dirty)
         };
         stored.map_err(|error| format!("could not store the graph: {error}"))?;
-        write_cache(&dir, &graph)?;
+        if let Ok((dir, _)) = &cache {
+            if let Err(error) = write_cache(dir, &graph) {
+                stats.notes.push(error);
+            }
+        }
         if !incremental || base.git_oid != head {
             self.refresh_architecture(project, &graph);
         }
-        unpoisoned(&self.graphs.dirty).insert(project, dirty);
         self.graphs.rebuilds.fetch_add(1, Ordering::Relaxed);
         stats.nodes = count(graph.nodes.len());
         stats.edges = count(graph.edges.len());
@@ -283,28 +280,65 @@ impl Daemon {
         Ok(Response::GraphRebuilt(stats))
     }
 
-    /// The stored graph, built first when the project has none.
-    fn stored_graph(&self, workspace_id: WorkspaceId) -> Result<Arc<Graph>, ProtocolError> {
+    /// The stored graph; `None` when the project has none, after starting its
+    /// first build off the request path.
+    fn stored_graph(
+        self: &Arc<Self>,
+        workspace_id: WorkspaceId,
+    ) -> Result<Option<Arc<Graph>>, ProtocolError> {
         let (project, path, ignore) = self.graph_target(workspace_id)?;
         if let Some(graph) = self.graphs.cached(project) {
-            return Ok(graph);
+            return Ok(Some(graph));
         }
         if let Some(graph) = self.review_store.load_graph(project).map_err(db_err)? {
             let graph = Arc::new(graph);
             self.graphs.keep(project, Arc::clone(&graph));
-            return Ok(graph);
+            return Ok(Some(graph));
         }
-        self.refresh_graph(project, &path, &ignore, false)
-            .map(|(graph, _)| graph)
-            .map_err(ProtocolError::invalid_request)
+        self.index_in_background(project, path, ignore);
+        Ok(None)
+    }
+
+    /// One build per project however many queries ask; `GraphIndexed` reports it.
+    fn index_in_background(
+        self: &Arc<Self>,
+        project: ProjectId,
+        path: PathBuf,
+        ignore: Vec<String>,
+    ) {
+        if !unpoisoned(&self.graphs.indexing).insert(project) {
+            return;
+        }
+        let guard = Indexing {
+            daemon: Arc::clone(self),
+            project,
+        };
+        let spawned = std::thread::Builder::new()
+            .name("forge-graph".into())
+            .spawn(move || {
+                let daemon = Arc::clone(&guard.daemon);
+                let error = daemon.refresh_graph(project, &path, &ignore, false).err();
+                drop(guard);
+                daemon
+                    .registry
+                    .broadcast_domain(protocol::DaemonEvent::GraphIndexed {
+                        project_id: project,
+                        error,
+                    });
+            });
+        if let Err(error) = spawned {
+            tracing::warn!(%error, "could not start the graph build");
+        }
     }
 
     pub(crate) fn query_graph(
-        &self,
+        self: &Arc<Self>,
         workspace_id: WorkspaceId,
         query: &GraphQuery,
     ) -> Result<Response, ProtocolError> {
-        let graph = self.stored_graph(workspace_id)?;
+        let Some(graph) = self.stored_graph(workspace_id)? else {
+            return Ok(Response::GraphIndexing);
+        };
         self.graphs.answered.fetch_add(1, Ordering::Relaxed);
         let nodes = graph
             .index()
@@ -316,11 +350,13 @@ impl Daemon {
     }
 
     pub(crate) fn export_graph(
-        &self,
+        self: &Arc<Self>,
         workspace_id: WorkspaceId,
         format: GraphFormat,
     ) -> Result<Response, ProtocolError> {
-        let graph = self.stored_graph(workspace_id)?;
+        let Some(graph) = self.stored_graph(workspace_id)? else {
+            return Ok(Response::GraphIndexing);
+        };
         Ok(Response::GraphExport(match format {
             GraphFormat::Mermaid => graph.to_mermaid(MAX_EXPORT_NODES),
             _ => graph.to_dot(MAX_EXPORT_NODES),
@@ -333,25 +369,40 @@ fn count(n: usize) -> u32 {
 }
 
 /// `<checkout>/.forge/review/graph`, created with a `.gitignore` of `*` so the
-/// checkout stays clean; refused when it resolves outside the checkout.
+/// checkout stays clean. Every component must be a real directory: a
+/// repository can commit a symlink in its place.
 fn graph_dir(checkout: &Path) -> Result<PathBuf, String> {
-    let dir = checkout.join(GRAPH_DIR);
-    std::fs::DirBuilder::new()
-        .recursive(true)
-        .mode(0o700)
-        .create(&dir)
-        .map_err(|error| format!("could not create {GRAPH_DIR}: {error}"))?;
-    let root = std::fs::canonicalize(checkout).map_err(|error| error.to_string())?;
-    let real = std::fs::canonicalize(&dir).map_err(|error| error.to_string())?;
-    if !real.starts_with(&root) {
-        return Err(format!("{GRAPH_DIR} resolves outside the checkout"));
+    let mut dir = std::fs::canonicalize(checkout).map_err(|error| error.to_string())?;
+    for part in Path::new(GRAPH_DIR).components() {
+        dir.push(part);
+        match std::fs::symlink_metadata(&dir) {
+            Ok(meta) if meta.is_dir() => {}
+            Ok(_) => return Err(format!("{GRAPH_DIR} is not a directory in the checkout")),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                std::fs::DirBuilder::new()
+                    .mode(0o700)
+                    .create(&dir)
+                    .map_err(|error| format!("could not create {GRAPH_DIR}: {error}"))?;
+            }
+            Err(error) => return Err(format!("could not read {GRAPH_DIR}: {error}")),
+        }
     }
-    let ignore = real.join(".gitignore");
-    if !ignore.exists() {
-        std::fs::write(&ignore, "*\n")
-            .map_err(|error| format!("could not write {GRAPH_DIR}/.gitignore: {error}"))?;
+    match create_private(&dir.join(".gitignore")).and_then(|mut file| file.write_all(b"*\n")) {
+        Err(error) if error.kind() != std::io::ErrorKind::AlreadyExists => {
+            return Err(format!("could not write {GRAPH_DIR}/.gitignore: {error}"));
+        }
+        _ => {}
     }
-    Ok(real)
+    Ok(dir)
+}
+
+/// A new `0600` file; refuses an existing path, a symlink included.
+fn create_private(path: &Path) -> std::io::Result<std::fs::File> {
+    std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .mode(0o600)
+        .open(path)
 }
 
 /// Held for the build: another daemon indexing the same checkout waits.
@@ -361,6 +412,7 @@ fn lock_index(dir: &Path) -> Result<nix::fcntl::Flock<std::fs::File>, String> {
         .truncate(false)
         .write(true)
         .mode(0o600)
+        .custom_flags(nix::fcntl::OFlag::O_NOFOLLOW.bits())
         .open(dir.join("index.lock"))
         .map_err(|error| format!("could not open the graph lock: {error}"))?;
     nix::fcntl::Flock::lock(file, nix::fcntl::FlockArg::LockExclusive)
@@ -369,16 +421,15 @@ fn lock_index(dir: &Path) -> Result<nix::fcntl::Flock<std::fs::File>, String> {
 
 fn write_cache(dir: &Path, graph: &Graph) -> Result<(), String> {
     let bytes = graph.encode()?;
-    let temp = dir.join("cache.bin.tmp");
-    std::fs::OpenOptions::new()
-        .write(true)
-        .create(true)
-        .truncate(true)
-        .mode(0o600)
-        .open(&temp)
+    let nonce = domain::SessionId::new().as_uuid().simple().to_string();
+    let temp = dir.join(format!("cache.bin.{nonce}.tmp"));
+    let written = create_private(&temp)
         .and_then(|mut file| file.write_all(&bytes))
-        .and_then(|()| std::fs::rename(&temp, dir.join("cache.bin")))
-        .map_err(|error| format!("could not write cache.bin: {error}"))
+        .and_then(|()| std::fs::rename(&temp, dir.join("cache.bin")));
+    if written.is_err() {
+        let _ = std::fs::remove_file(&temp);
+    }
+    written.map_err(|error| format!("could not write cache.bin: {error}"))
 }
 
 fn nul_paths(stdout: &str) -> Vec<String> {
@@ -550,6 +601,30 @@ fn file_input(path: &str, source: String) -> FileInput {
             .collect(),
         source,
     }
+}
+
+/// `graph` with `texts` (`(path, contents)`) indexed over it and `removed`
+/// dropped, as of `git_oid`: a revision other than the checkout's, built in
+/// memory without reading the checkout or changing the stored graph.
+pub(crate) fn overlay(
+    graph: &Graph,
+    texts: Vec<(String, String)>,
+    removed: &[String],
+    ignore: &[String],
+    git_oid: &str,
+) -> Graph {
+    let mut update = Update::new();
+    let mut gone: Vec<String> = removed.iter().map(|path| redacted(path)).collect();
+    for (path, text) in texts {
+        if path.starts_with(".forge/review/graph/") || review::excluded_path(&path, ignore) {
+            gone.push(redacted(&path));
+            continue;
+        }
+        update.add(file_input(&path, text));
+    }
+    let mut graph = graph.clone();
+    graph.apply(update, &gone, git_oid);
+    graph
 }
 
 /// Each function a new-side hunk of an included file touches, with its
