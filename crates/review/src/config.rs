@@ -123,23 +123,6 @@ impl Default for AutoApprove {
     }
 }
 
-/// `[security]`: what a TREX target may reach.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct SecuritySettings {
-    pub sandbox_network: bool,
-    /// Variables copied from the daemon's environment into a target's.
-    pub sandbox_env_whitelist: Vec<String>,
-}
-
-impl Default for SecuritySettings {
-    fn default() -> Self {
-        Self {
-            sandbox_network: false,
-            sandbox_env_whitelist: vec!["PATH".to_owned(), "HOME".to_owned()],
-        }
-    }
-}
-
 /// `.forge/review/config.toml`; every key it does not know is ignored.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Config {
@@ -160,7 +143,6 @@ pub struct Config {
     /// `[kb] enabled`: the knowledge base in `plus` and `apex` packs.
     pub kb_enabled: bool,
     pub auto_approve: AutoApprove,
-    pub security: SecuritySettings,
     /// Instructions under the preset's, lowest first. Filled by the caller,
     /// never from `config.toml`.
     pub base_instructions: Vec<String>,
@@ -181,7 +163,6 @@ impl Default for Config {
             graph: GraphSettings::default(),
             kb_enabled: true,
             auto_approve: AutoApprove::default(),
-            security: SecuritySettings::default(),
             base_instructions: Vec::new(),
         }
     }
@@ -333,46 +314,12 @@ impl Config {
             }
             Some(_) => notes.push("review config: `[kb]` must be a table".into()),
         }
-        match table.get("security") {
-            None => {}
-            Some(Value::Table(security)) => {
-                parse_security(security, &mut config.security, &mut notes);
-            }
-            Some(_) => notes.push("review config: `[security]` must be a table".into()),
+        if table.contains_key("security") {
+            notes.push(
+                "review config: `[security]` is ignored; the TREX sandbox policy is the daemon's `[review]` sandbox_network and sandbox_env_whitelist".into(),
+            );
         }
         (config, notes)
-    }
-}
-
-fn parse_security(table: &toml::Table, settings: &mut SecuritySettings, notes: &mut Vec<String>) {
-    parse_bool(
-        table,
-        "security",
-        "sandbox_network",
-        &mut settings.sandbox_network,
-        notes,
-    );
-    match table.get("sandbox_env_whitelist").map(Value::as_array) {
-        None => {}
-        Some(Some(names)) => {
-            let valid: Option<Vec<String>> = names
-                .iter()
-                .map(|name| {
-                    name.as_str()
-                        .filter(|name| !name.is_empty() && !name.starts_with("FORGE_"))
-                        .map(str::to_owned)
-                })
-                .collect();
-            match valid {
-                Some(names) => settings.sandbox_env_whitelist = names,
-                None => notes.push(
-                    "review config: `[security] sandbox_env_whitelist` must list variable names, none of them FORGE_*; PATH and HOME used".into(),
-                ),
-            }
-        }
-        Some(None) => {
-            notes.push("review config: `[security] sandbox_env_whitelist` must be a list".into())
-        }
     }
 }
 

@@ -237,9 +237,6 @@ cross_repo = false              # needs [review] cross_repo_enabled too
 repos = ["billing", "../shared"] # registered Forge projects: a name, or a path to a project's root
 [kb]
 enabled = true                  # the knowledge base in plus and apex packs
-[security]
-sandbox_network = false         # TREX targets get no network
-sandbox_env_whitelist = ["PATH", "HOME"]
 [review.auto_approve]
 enabled = false
 risk_ceiling = "low"            # low (no findings) | medium (P2) | high (P1) | critical (anything but P0)
@@ -424,24 +421,41 @@ name = "test"
 command = "cargo test --workspace"
 ```
 
+A repository can **offer** targets but never run one, the trust model of
+[project actions](./actions.md). The file runs only while its SHA-256 is the one
+a person approved for the project (`ApproveSandboxConfig`: **Approve
+sandbox.toml** in the TREX panel, or `forgectl review sandbox approve`, which
+shows the file and asks first). An unapproved or changed file runs nothing: the
+run's `error` says so and `unapproved_hash` carries the hash to approve, which
+is refused with `PreconditionFailed` once the file changes again.
+
 Each target runs as `/usr/bin/sandbox-exec -p <profile> /bin/sh -c <command>`
-in its own process group, killed whole at its timeout and reaped within a
-bound. The profile allows everything else and denies the network (unless
-`[security] sandbox_network`), writes outside the run directory, the cache
-(`<checkout>/.forge/review/sandbox/cache/`, beside a `.gitignore` of `*`) and
+in its own process group, killed whole when its leader exits or times out. The
+leader is signalled only before it is reaped, so its pid and group cannot have
+been recycled; a descendant that left the group is waited out within a bound.
+The profile allows everything else and denies the network (unless the daemon's
+`[review] sandbox_network`), writes outside the run directory, the cache
+(`<checkout>/.forge/review/sandbox/cache/`, beside a `.gitignore` of `*`; a
+symlink on its way, or a path resolving outside the checkout, is refused) and
 `$TMPDIR`, reading data under Forge's home and socket directory, except the
-run directory itself, and connecting to Forge's socket even with the network
-on. The environment is cleared, then holds the
-`sandbox_env_whitelist` names from the daemon's resolved environment, `[env]`
-and `FORGE_SANDBOX_CACHE`; a `FORGE_*` name from either is dropped. The last 8 KiB of stdout and stderr is kept,
-redacted. Elsewhere than macOS a run says "TREX unsupported on this platform".
+run and cache directories themselves (a managed worktree lives under Forge's
+home), and connecting to Forge's socket even with the network on. The
+environment is cleared, then holds the `[review] sandbox_env_whitelist` names
+from the daemon's resolved environment, `[env]` and `FORGE_SANDBOX_CACHE`; a
+`FORGE_*` name from either is dropped. The policy is the user's alone: a
+repository's `[security]` section in `config.toml` is ignored with a note. The
+last 8 KiB of stdout and stderr is kept, redacted. Elsewhere than macOS a run
+says "TREX unsupported on this platform".
 
 An `apex` run with `[review] trex_enabled` runs every target before its agents
 launch: a workspace run in the checkout, a pull request in a detached worktree
 of its head under `<forge home>/review-sandbox/<run>`, removed with the run and
-swept at startup. `<runtime-N>` gives each target's exit and a failing target's
-output; the `sandbox_runs` row is linked to the run (`sandbox_run_id`).
-`RunSandbox` runs the targets by hand, one per workspace at a time.
+swept at startup. Each target's timeout is cut to what is left of the run's
+`[review] timeout_secs`, counted from when the run started, and before each
+target a cancel or a spent budget stops the stage with a note. `<runtime-N>`
+gives each target's exit and a failing target's output; the `sandbox_runs` row
+is linked to the run (`sandbox_run_id`). `RunSandbox` runs the targets by hand,
+one per workspace at a time, under the same approval and without the budget.
 
 ### Fix loop
 
@@ -480,6 +494,8 @@ knowledge base's size.
 | `kb_enabled` | `true` | the knowledge base: refreshed, learned and packed |
 | `cross_repo_enabled` | `false` | other projects' signatures, when the repository lists them |
 | `trex_enabled` | `false` | run `sandbox.toml`'s targets before an `apex` review |
+| `sandbox_network` | `false` | TREX targets may use the network |
+| `sandbox_env_whitelist` | `["PATH", "HOME"]` | variables copied into a TREX target's environment; `FORGE_*` is dropped |
 
 A reviewer is launched in the provider's **read-only** mode *and* with the
 structured-review flag: Claude gets `--session-id` with a UUID Forge minted (so
@@ -501,13 +517,15 @@ capability is refused, never downgraded to one that can write —
   show [--format dot|mermaid]` (MCP `review_graph_query`); `kb show [--file f]`,
   `kb edit <file>`, `kb export [--output path]` (MCP `review_kb_get`);
   `sandbox run [--target name]` (exit 1 when a target failed) and `sandbox
-  results <id>` (MCP `review_sandbox_run`); `fix-loop [--review id]
+  results <id>` (MCP `review_sandbox_run`); `sandbox approve [--yes]` (no MCP
+  tool: an agent must not approve the commands it is about to run); `fix-loop [--review id]
   [--max-iters N] [--yes]`; `stats`.
 - The Review mode shows a score badge above the summary, a **Diagrams** tab
   (each diagram drawn as SVG from theme colours), a **Graph** tab (each
   reviewed file's imports and external calls), a hypothesis chip on swarm
   findings, a collapsible knowledge-base section with the cited entries, the
-  TREX targets of an `apex` run, and **Fix Loop** beside Fix with a new agent.
+  TREX targets of an `apex` run (with **Approve sandbox.toml** when the file
+  did not run for want of approval), and **Fix Loop** beside Fix with a new agent.
 - The GUI's **Review** mode starts a run, shows stage and progress, groups
   findings by severity or file, marks lineage and lists what was resolved, takes
   feedback, lists suppressions with Undo, sends findings to an agent, and

@@ -44,7 +44,6 @@ pub struct Resolved {
     pub graph: crate::config::GraphSettings,
     pub auto_approve: crate::config::AutoApprove,
     pub kb_enabled: bool,
-    pub security: crate::config::SecuritySettings,
     pub notes: Vec<String>,
 }
 
@@ -323,7 +322,6 @@ pub fn resolve(
         graph: config.graph.clone(),
         auto_approve: config.auto_approve,
         kb_enabled: config.kb_enabled,
-        security: config.security.clone(),
         notes,
     })
 }

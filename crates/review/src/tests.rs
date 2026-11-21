@@ -2297,15 +2297,11 @@ fn config_kb_switch_parses() {
 }
 
 #[test]
-fn config_security_keys_parse_and_refuse_forge_variables() {
-    assert_eq!(Config::default().security, SecuritySettings::default());
+fn a_repository_security_section_is_ignored_with_a_note() {
     let (config, notes) = Config::parse(
-        "[security]\nsandbox_network = true\nsandbox_env_whitelist = [\"PATH\", \"LANG\"]\n",
+        "max_findings = 7\n[security]\nsandbox_network = true\nsandbox_env_whitelist = [\"AWS_SECRET_ACCESS_KEY\"]\n",
     );
-    assert!(notes.is_empty(), "{notes:?}");
-    assert!(config.security.sandbox_network);
-    assert_eq!(config.security.sandbox_env_whitelist, ["PATH", "LANG"]);
-    let (config, notes) = Config::parse("[security]\nsandbox_env_whitelist = [\"FORGE_SOCKET\"]\n");
-    assert_eq!(config.security.sandbox_env_whitelist, ["PATH", "HOME"]);
-    assert_eq!(notes.len(), 1);
+    assert_eq!(config.max_findings, 7, "the rest of the file still applies");
+    assert_eq!(notes.len(), 1, "{notes:?}");
+    assert!(notes[0].contains("`[security]` is ignored"), "{notes:?}");
 }

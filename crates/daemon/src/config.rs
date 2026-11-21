@@ -368,6 +368,11 @@ pub struct ReviewConfig {
     pub cross_repo_enabled: bool,
     /// Run `.forge/review/sandbox.toml`'s targets before an `apex` review.
     pub trex_enabled: bool,
+    /// TREX targets may use the network. Only ever the user's choice, never a repository's.
+    pub sandbox_network: bool,
+    /// Variables copied from the daemon's environment into a TREX target's; a
+    /// `FORGE_*` name is dropped.
+    pub sandbox_env_whitelist: Vec<String>,
 }
 
 impl ReviewConfig {
@@ -390,6 +395,8 @@ impl Default for ReviewConfig {
             kb_enabled: true,
             cross_repo_enabled: false,
             trex_enabled: false,
+            sandbox_network: false,
+            sandbox_env_whitelist: vec!["PATH".to_owned(), "HOME".to_owned()],
         }
     }
 }
@@ -845,6 +852,19 @@ mod tests {
         assert_eq!(c.review.swarm_size(Some(5)), 5);
         assert_eq!(c.review.max_swarms, 4);
         assert!(c.review.trex_enabled);
+    }
+
+    #[test]
+    fn the_sandbox_policy_defaults_to_no_network_and_path_and_home() {
+        let c = Config::default();
+        assert!(!c.review.sandbox_network);
+        assert_eq!(c.review.sandbox_env_whitelist, ["PATH", "HOME"]);
+        let c: Config = toml::from_str(
+            "[review]\nsandbox_network = true\nsandbox_env_whitelist = [\"LANG\"]\n",
+        )
+        .unwrap();
+        assert!(c.review.sandbox_network);
+        assert_eq!(c.review.sandbox_env_whitelist, ["LANG"]);
     }
 
     #[test]

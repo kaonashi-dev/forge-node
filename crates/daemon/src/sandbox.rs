@@ -1,10 +1,13 @@
 //! TREX in the daemon: the repository's sandbox targets for an `apex`
 //! review, or by hand. Runs on its caller's worker thread, never under the
-//! core lock; the file is always the user's checkout's, never a pull request's.
+//! core lock; the file is always the user's checkout's, never a pull request's,
+//! and runs only while it hashes to the copy the person approved for the project.
 
+use std::io::Write as _;
 use std::os::unix::fs::DirBuilderExt;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use std::time::Instant;
 
 use domain::{ReviewId, SandboxRun, SandboxTarget, Timestamp, WorkspaceId};
 use protocol::{DaemonEvent, ErrorCode, ProtocolError, Response};
@@ -13,6 +16,14 @@ use crate::core::{db_err, Daemon};
 
 const WORKTREES_DIR: &str = "review-sandbox";
 const CACHE_DIR: &str = ".forge/review/sandbox/cache";
+
+/// The review a run belongs to, and what ends its targets early: both are
+/// checked before each target starts.
+pub(crate) struct ForReview<'a> {
+    pub(crate) id: ReviewId,
+    pub(crate) deadline: Instant,
+    pub(crate) cancelled: &'a dyn Fn() -> bool,
+}
 
 /// Remove every run worktree a crash left behind; run before any review can start.
 pub(crate) fn sweep(home: &Path) {
@@ -77,6 +88,47 @@ fn canonical(path: &Path) -> PathBuf {
     std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf())
 }
 
+/// `<checkout>/.forge/review/sandbox/cache`, created and canonical. The
+/// repository commits what it likes, so a symlink on the way, or a path that
+/// resolves outside the checkout, is refused rather than made writable.
+fn cache_dir(checkout: &Path) -> Result<PathBuf, String> {
+    let root = std::fs::canonicalize(checkout)
+        .map_err(|error| format!("cannot resolve the checkout: {error}"))?;
+    let mut path = root.clone();
+    for part in Path::new(CACHE_DIR).components() {
+        path.push(part);
+        match std::fs::symlink_metadata(&path) {
+            Ok(meta) if meta.file_type().is_symlink() => {
+                return Err(format!(
+                    "{} is a symlink; TREX will not write through it",
+                    path.strip_prefix(&root).unwrap_or(&path).display()
+                ));
+            }
+            Err(error) if error.kind() != std::io::ErrorKind::NotFound => {
+                return Err(error.to_string());
+            }
+            _ => {}
+        }
+    }
+    std::fs::create_dir_all(&path)
+        .map_err(|error| format!("could not create {CACHE_DIR}: {error}"))?;
+    let cache = std::fs::canonicalize(&path).map_err(|error| error.to_string())?;
+    if !cache.starts_with(&root) {
+        return Err(format!("{CACHE_DIR} resolves outside the checkout"));
+    }
+    // `create_new` never follows a symlink, dangling or not.
+    match std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(cache.with_file_name(".gitignore"))
+    {
+        Ok(mut file) => file.write_all(b"*\n").map_err(|error| error.to_string())?,
+        Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {}
+        Err(error) => return Err(error.to_string()),
+    }
+    Ok(cache)
+}
+
 impl Daemon {
     /// Every target of `checkout`'s `sandbox.toml` (or just `only`), run in
     /// `run_dir`, stored and returned. Never fails: what stopped it is `error`.
@@ -84,7 +136,7 @@ impl Daemon {
         &self,
         id: String,
         workspace_id: WorkspaceId,
-        review_id: Option<ReviewId>,
+        review: Option<ForReview<'_>>,
         checkout: &Path,
         run_dir: &Path,
         only: Option<&str>,
@@ -92,13 +144,15 @@ impl Daemon {
         let mut run = SandboxRun {
             id,
             workspace_id,
-            review_id,
+            review_id: review.as_ref().map(|review| review.id),
             targets: Vec::new(),
             error: None,
+            unapproved_hash: None,
             started_at: Timestamp::now(),
             finished_at: None,
         };
-        if let Err(error) = self.sandbox_targets(&mut run, checkout, run_dir, only) {
+        if let Err(error) = self.sandbox_targets(&mut run, review.as_ref(), checkout, run_dir, only)
+        {
             run.error = Some(error);
         }
         run.finished_at = Some(Timestamp::now());
@@ -111,6 +165,7 @@ impl Daemon {
     fn sandbox_targets(
         &self,
         run: &mut SandboxRun,
+        review: Option<&ForReview<'_>>,
         checkout: &Path,
         run_dir: &Path,
         only: Option<&str>,
@@ -124,15 +179,9 @@ impl Daemon {
             runtime_sandbox::MAX_CONFIG_BYTES,
         )?
         .ok_or_else(|| format!("no {}", runtime_sandbox::CONFIG_PATH))?;
+        self.require_approved(run, &text)?;
         let config = runtime_sandbox::parse(&text)?;
-        let security = crate::review::repo_config(checkout).security;
-        let cache = checkout.join(CACHE_DIR);
-        std::fs::create_dir_all(&cache)
-            .map_err(|error| format!("could not create {CACHE_DIR}: {error}"))?;
-        let ignore = checkout.join(".forge/review/sandbox/.gitignore");
-        if !ignore.exists() {
-            std::fs::write(&ignore, "*\n").map_err(|error| error.to_string())?;
-        }
+        let cache = cache_dir(checkout)?;
         let mut denied = vec![canonical(&self.forge_paths().home)];
         if let Some(socket) = self
             .bound_socket_path()
@@ -142,15 +191,15 @@ impl Daemon {
         }
         let policy = runtime_sandbox::Policy {
             run_dir: canonical(run_dir),
-            cache_dir: canonical(&cache),
+            cache_dir: cache,
             tmp_dir: canonical(&std::env::temp_dir()),
             denied_reads: denied,
-            network: security.sandbox_network,
+            network: self.config.review.sandbox_network,
             socket: self.bound_socket_path().map(|socket| canonical(&socket)),
         };
         let resolved = |name: &str| self.launch_var(name).or_else(|| std::env::var(name).ok());
         let env = runtime_sandbox::environment(
-            &security.sandbox_env_whitelist,
+            &self.config.review.sandbox_env_whitelist,
             &resolved,
             &config.env,
             &policy.cache_dir,
@@ -167,7 +216,25 @@ impl Daemon {
             ));
         }
         for target in targets {
-            let result = runtime_sandbox::run_target(target, config.timeout, &policy, &env)?;
+            let timeout = match review {
+                None => config.timeout,
+                Some(review) => {
+                    let stopped = if (review.cancelled)() {
+                        Some("the review was cancelled")
+                    } else if Instant::now() >= review.deadline {
+                        Some("the review's time budget ran out")
+                    } else {
+                        None
+                    };
+                    if let Some(why) = stopped {
+                        return Err(format!("stopped before `{}`: {why}", target.name));
+                    }
+                    config
+                        .timeout
+                        .min(review.deadline.saturating_duration_since(Instant::now()))
+                }
+            };
+            let result = runtime_sandbox::run_target(target, timeout, &policy, &env)?;
             run.targets.push(SandboxTarget {
                 name: result.name,
                 exit_code: result.exit_code,
@@ -178,6 +245,61 @@ impl Daemon {
             });
         }
         Ok(())
+    }
+
+    /// Refuses, recording the hash for `ApproveSandboxConfig`, unless `text`
+    /// is the copy the person approved for the workspace's project.
+    fn require_approved(&self, run: &mut SandboxRun, text: &str) -> Result<(), String> {
+        let project = self
+            .workspace_project(run.workspace_id)
+            .map_err(|error| error.message)?;
+        let approved = self
+            .review_store
+            .approved_sandbox(project)
+            .map_err(|error| error.to_string())?;
+        let file_hash = crate::actions::repo::hash(text.as_bytes());
+        if approved.as_deref() == Some(file_hash.as_str()) {
+            return Ok(());
+        }
+        run.unapproved_hash = Some(file_hash);
+        Err(format!(
+            "{} {}; nothing ran",
+            runtime_sandbox::CONFIG_PATH,
+            if approved.is_some() {
+                "changed since it was approved"
+            } else {
+                "is not approved for this project"
+            }
+        ))
+    }
+
+    pub(crate) fn approve_sandbox_config(
+        &self,
+        workspace_id: WorkspaceId,
+        file_hash: &str,
+    ) -> Result<Response, ProtocolError> {
+        let checkout = self.workspace_path(workspace_id)?;
+        let project = self.workspace_project(workspace_id)?;
+        let text = crate::review::read_repo_file(
+            &checkout,
+            runtime_sandbox::CONFIG_PATH,
+            runtime_sandbox::MAX_CONFIG_BYTES,
+        )
+        .map_err(|error| {
+            ProtocolError::invalid_request(format!("{}: {error}", runtime_sandbox::CONFIG_PATH))
+        })?
+        .ok_or_else(|| ProtocolError::not_found(runtime_sandbox::CONFIG_PATH))?;
+        if crate::actions::repo::hash(text.as_bytes()) != file_hash {
+            return Err(ProtocolError::precondition_failed(format!(
+                "{} changed; read it again before approving it",
+                runtime_sandbox::CONFIG_PATH
+            )));
+        }
+        runtime_sandbox::parse(&text).map_err(ProtocolError::invalid_request)?;
+        self.review_store
+            .approve_sandbox(project, file_hash)
+            .map_err(db_err)?;
+        Ok(Response::Ack)
     }
 
     pub(crate) fn run_sandbox(

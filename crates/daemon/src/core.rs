@@ -1061,6 +1061,10 @@ impl Daemon {
                 target,
             } => self.run_sandbox(workspace_id, target),
             Request::GetSandboxRun { sandbox_run_id } => self.get_sandbox_run(&sandbox_run_id),
+            Request::ApproveSandboxConfig {
+                workspace_id,
+                file_hash,
+            } => self.approve_sandbox_config(workspace_id, &file_hash),
             Request::GetKb { workspace_id } => self.get_kb(workspace_id),
             Request::UpdateKbEntry {
                 workspace_id,

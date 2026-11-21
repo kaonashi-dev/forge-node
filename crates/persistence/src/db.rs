@@ -286,6 +286,18 @@ impl ReviewStore {
         crate::repositories::sandbox::linked(&self.conn())
     }
 
+    pub fn approve_sandbox(
+        &self,
+        project: domain::ProjectId,
+        file_hash: &str,
+    ) -> Result<(), DbError> {
+        crate::repositories::sandbox::approve(&self.conn(), project, file_hash)
+    }
+
+    pub fn approved_sandbox(&self, project: domain::ProjectId) -> Result<Option<String>, DbError> {
+        crate::repositories::sandbox::approved(&self.conn(), project)
+    }
+
     pub fn stats_rows(
         &self,
         workspace: Option<domain::WorkspaceId>,

@@ -136,6 +136,15 @@ pub(crate) enum SandboxCmd {
     },
     /// A sandbox run's targets and output tails.
     Results { id: String },
+    /// Let TREX run the checkout's `sandbox.toml` for its project, as it is
+    /// now. Shows the file and asks first; a later change needs approving again.
+    Approve {
+        #[arg(long)]
+        workspace: Option<String>,
+        /// Approve without asking.
+        #[arg(long)]
+        yes: bool,
+    },
 }
 
 #[derive(Subcommand)]
@@ -574,8 +583,83 @@ fn fix_loop(
     Ok(())
 }
 
+fn approve_sandbox(
+    app: &App,
+    client: &Client,
+    workspace: Option<&str>,
+    yes: bool,
+) -> Result<(), u8> {
+    use sha2::Digest as _;
+    use std::io::{BufRead as _, IsTerminal as _, Read as _, Write as _};
+
+    let store = places::load(app, client)?;
+    let workspace = target_workspace(app, &store, workspace)?;
+    let path = workspace.path.join(runtime_sandbox::CONFIG_PATH);
+    let unreadable = |message: String| app.fail(4, "not_found", &message, json!({}), vec![]);
+    let size = std::fs::metadata(&path)
+        .map_err(|error| unreadable(format!("{}: {error}", path.display())))?
+        .len();
+    if size > runtime_sandbox::MAX_CONFIG_BYTES {
+        return Err(app.fail(
+            1,
+            "invalid_request",
+            &format!(
+                "{} is over {} bytes",
+                runtime_sandbox::CONFIG_PATH,
+                runtime_sandbox::MAX_CONFIG_BYTES
+            ),
+            json!({}),
+            vec![],
+        ));
+    }
+    let mut text = String::new();
+    std::fs::File::open(&path)
+        .and_then(|file| {
+            file.take(runtime_sandbox::MAX_CONFIG_BYTES)
+                .read_to_string(&mut text)
+        })
+        .map_err(|error| unreadable(format!("{}: {error}", path.display())))?;
+    let file_hash: String = sha2::Sha256::digest(text.as_bytes())
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect();
+    if !yes {
+        if !std::io::stdin().is_terminal() {
+            return Err(usage_code(
+                app,
+                "approving sandbox.toml lets every apex review run its commands: confirm on a terminal or pass --yes",
+                &["forgectl", "review", "sandbox", "approve", "--yes"],
+            ));
+        }
+        eprintln!("{}:\n\n{text}", path.display());
+        eprint!("Run these commands in the sandbox for this project's reviews? [y/N] ");
+        let _ = std::io::stderr().flush();
+        let mut answer = String::new();
+        let _ = std::io::stdin().lock().read_line(&mut answer);
+        if !matches!(answer.trim(), "y" | "Y" | "yes") {
+            return Err(app.fail(
+                1,
+                "declined",
+                "sandbox.toml was not approved",
+                json!({}),
+                vec![],
+            ));
+        }
+    }
+    let request = Request::ApproveSandboxConfig {
+        workspace_id: workspace.id,
+        file_hash: file_hash.clone(),
+    };
+    app.call(client, request, true)?;
+    app.print_ok(json!({ "workspace_id": workspace.id, "file_hash": file_hash }));
+    Ok(())
+}
+
 fn sandbox(app: &App, client: &Client, cmd: SandboxCmd) -> Result<(), u8> {
     let run = match cmd {
+        SandboxCmd::Approve { workspace, yes } => {
+            return approve_sandbox(app, client, workspace.as_deref(), yes)
+        }
         SandboxCmd::Results { id } => {
             match app.call(client, Request::GetSandboxRun { sandbox_run_id: id }, false)? {
                 Response::SandboxRun(run) => *run,

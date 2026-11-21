@@ -708,6 +708,18 @@ CREATE INDEX idx_sandbox_runs_review ON sandbox_runs (review_run_id);
 pub const REVIEW_AGENT_SESSIONS: &str =
     "ALTER TABLE review_runs ADD COLUMN agent_sessions TEXT NOT NULL DEFAULT '[]';";
 
+/// The `sandbox.toml` hash a person approved for each project; a run whose
+/// file hashes otherwise records that hash instead of running anything.
+pub const SANDBOX_APPROVALS: &str = "
+CREATE TABLE sandbox_approvals (
+    project_id  TEXT PRIMARY KEY REFERENCES projects(id) ON DELETE CASCADE,
+    file_hash   TEXT NOT NULL,
+    approved_at TEXT NOT NULL
+);
+
+ALTER TABLE sandbox_runs ADD COLUMN unapproved_hash TEXT;
+";
+
 /// The full, ordered migration set. Appended to over time; never reordered.
 #[must_use]
 pub fn migrations() -> Migrations<'static> {
@@ -741,5 +753,6 @@ pub fn migrations() -> Migrations<'static> {
         M::up(KB_ENTRIES),
         M::up(SANDBOX_RUNS),
         M::up(REVIEW_AGENT_SESSIONS),
+        M::up(SANDBOX_APPROVALS),
     ])
 }

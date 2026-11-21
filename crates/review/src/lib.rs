@@ -13,8 +13,8 @@ mod validate;
 
 pub use blocks::{blocks, Extras, GraphFunction, RuntimeResult};
 pub use config::{
-    AutoApprove, Categories, Config, ContextSettings, GraphSettings, RiskCeiling, SecuritySettings,
-    Strictness, CATEGORIES,
+    AutoApprove, Categories, Config, ContextSettings, GraphSettings, RiskCeiling, Strictness,
+    CATEGORIES,
 };
 pub use lineage::{mark_lineage, resolved, same_lineage};
 pub use output::{parse_output, RawFinding, ReviewOutput, SCHEMA, SCHEMA_V2};

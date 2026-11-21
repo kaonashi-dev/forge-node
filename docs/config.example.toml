@@ -197,6 +197,10 @@ max_swarms = 2                  # review workers alive daemon-wide
 kb_enabled = true               # the project knowledge base, in plus and apex packs
 cross_repo_enabled = false      # other projects' signatures, when .forge/review lists them
 trex_enabled = false            # run .forge/review/sandbox.toml before an apex review (macOS)
+# What a TREX target may reach. Only this file decides it; a repository's
+# .forge/review/config.toml cannot. A FORGE_* name is dropped.
+sandbox_network = false
+sandbox_env_whitelist = ["PATH", "HOME"]
 
 [pull_requests]
 # "Open PR" runs your default agent in the background: it drafts the title,

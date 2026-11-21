@@ -812,6 +812,25 @@ impl Client {
         }
     }
 
+    /// Approve the workspace's `sandbox.toml` for its project, as long as it
+    /// still hashes to `file_hash`.
+    ///
+    /// # Errors
+    /// [`ClientError`] on a transport failure or a refusal from the daemon.
+    pub fn approve_sandbox_config(
+        &self,
+        workspace_id: domain::WorkspaceId,
+        file_hash: String,
+    ) -> Result<(), ClientError> {
+        match self.request(Request::ApproveSandboxConfig {
+            workspace_id,
+            file_hash,
+        })? {
+            Response::Ack => Ok(()),
+            _ => Err(ClientError::UnexpectedResponse { expected: "Ack" }),
+        }
+    }
+
     /// Start a fix loop on a workspace review; the person confirmed it first.
     ///
     /// # Errors

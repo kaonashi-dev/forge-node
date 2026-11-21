@@ -667,6 +667,17 @@ fn sandbox_run_waits_for_its_targets_and_fails_on_a_failing_one() {
     let _running = harness.boot();
     let client = connect(&harness.socket);
     let workspace = add_project(&client, &repo).to_string();
+    ok(&harness.ctl(
+        &[
+            "review",
+            "sandbox",
+            "approve",
+            "--workspace",
+            &workspace,
+            "--yes",
+        ],
+        &[],
+    ));
 
     let passed = ok(&harness.ctl(
         &[
@@ -703,6 +714,79 @@ fn sandbox_run_waits_for_its_targets_and_fails_on_a_failing_one() {
         results["review_id"].is_null(),
         "a manual run belongs to no review"
     );
+}
+
+#[cfg(target_os = "macos")]
+#[test]
+fn only_an_approved_sandbox_file_runs_and_approving_asks_first() {
+    let harness = Harness::new();
+    let repo = graph_repo(harness.tmp.path());
+    fs::create_dir_all(repo.join(".forge/review")).unwrap();
+    let file = repo.join(".forge/review/sandbox.toml");
+    fs::write(
+        &file,
+        "[[targets]]\nname = \"t\"\ncommand = \"echo ran > ran\"\n",
+    )
+    .unwrap();
+    let _running = harness.boot();
+    let client = connect(&harness.socket);
+    let workspace = add_project(&client, &repo).to_string();
+    let run = || {
+        harness.ctl(
+            &["review", "sandbox", "run", "--workspace", &workspace],
+            &[],
+        )
+    };
+
+    let refused = err(&run(), 1);
+    assert!(
+        refused["message"]
+            .as_str()
+            .unwrap()
+            .contains("is not approved"),
+        "{refused}"
+    );
+    assert!(refused["details"]["unapproved_hash"].is_string());
+    assert!(!repo.join("ran").exists(), "nothing ran");
+
+    let asked = err(
+        &harness.ctl(
+            &["review", "sandbox", "approve", "--workspace", &workspace],
+            &[],
+        ),
+        2,
+    );
+    assert!(asked["message"].as_str().unwrap().contains("--yes"));
+
+    let approved = ok(&harness.ctl(
+        &[
+            "review",
+            "sandbox",
+            "approve",
+            "--workspace",
+            &workspace,
+            "--yes",
+        ],
+        &[],
+    ));
+    assert_eq!(approved["file_hash"], refused["details"]["unapproved_hash"]);
+    ok(&run());
+    assert!(repo.join("ran").exists());
+
+    fs::write(
+        &file,
+        "[[targets]]\nname = \"t\"\ncommand = \"echo again > again\"\n",
+    )
+    .unwrap();
+    let changed = err(&run(), 1);
+    assert!(
+        changed["message"]
+            .as_str()
+            .unwrap()
+            .contains("changed since it was approved"),
+        "{changed}"
+    );
+    assert!(!repo.join("again").exists());
 }
 
 #[test]
@@ -873,6 +957,7 @@ fn stats_report_latency_and_rates_over_the_stored_runs() {
                 stderr: String::new(),
             }],
             error: None,
+            unapproved_hash: None,
             started_at: domain::Timestamp::now(),
             finished_at: None,
         })

@@ -1,14 +1,14 @@
 //! TREX: a repository's `.forge/review/sandbox.toml` targets run as written,
 //! under macOS `sandbox-exec`, with no network, writes only to the run, the
 //! cache and the temp directory, no view of Forge's own socket or home, and a
-//! cleared environment. Each target is its own process group, killed whole at
-//! its timeout, and only the tail of its output is kept.
+//! cleared environment. Each target is its own process group, killed whole when
+//! its leader exits or times out, and only the tail of its output is kept.
 
 use std::collections::VecDeque;
 use std::io::Read;
 use std::os::unix::process::CommandExt as _;
 use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
+use std::process::{Child, Command, ExitStatus, Stdio};
 use std::sync::{mpsc, Arc, Mutex};
 use std::time::{Duration, Instant};
 
@@ -136,13 +136,15 @@ pub fn profile(policy: &Policy) -> String {
         quoted(&policy.tmp_dir),
     ));
     // Data, not metadata: a shell resolves its directory through every
-    // ancestor. The run directory stays reachable even inside a denied one,
-    // as a pull request's head checked out under Forge's home is.
+    // ancestor. The run and cache directories stay reachable even inside a
+    // denied one, as a pull request's head or a managed worktree under
+    // Forge's home is.
     for path in &policy.denied_reads {
         out.push_str(&format!(
-            "(deny file-read-data file-write* (require-all (subpath {}) (require-not (subpath {}))))\n",
+            "(deny file-read-data file-write* (require-all (subpath {}) (require-not (require-any (subpath {}) (subpath {})))))\n",
             quoted(path),
             quoted(&policy.run_dir),
+            quoted(&policy.cache_dir),
         ));
     }
     out
@@ -222,12 +224,34 @@ fn text(tail: &Arc<Mutex<Tail>>) -> String {
     String::from_utf8_lossy(&bytes).into_owned()
 }
 
-fn kill_group(pid: u32) {
+/// Blocks until `pid` has exited, without reaping it.
+fn await_exit(pid: u32) {
+    let id: libc::id_t = pid;
+    let mut info = std::mem::MaybeUninit::<libc::siginfo_t>::zeroed();
+    loop {
+        // SAFETY: `info` is valid, writable storage for one `siginfo_t` for the whole call.
+        let rc = unsafe {
+            libc::waitid(
+                libc::P_PID,
+                id,
+                info.as_mut_ptr(),
+                libc::WEXITED | libc::WNOWAIT,
+            )
+        };
+        if rc == 0 || std::io::Error::last_os_error().kind() != std::io::ErrorKind::Interrupted {
+            return;
+        }
+    }
+}
+
+/// `leader` is still unreaped, because only [`reap`] reaps and it takes the
+/// `Child`: its pid and process group cannot have been recycled.
+fn kill_group(leader: &Child) {
     #[allow(
         clippy::cast_possible_wrap,
         reason = "a pid always fits in i32 on unix"
     )]
-    let raw = pid as i32;
+    let raw = leader.id() as i32;
     let _ = nix::sys::signal::kill(
         nix::unistd::Pid::from_raw(-raw),
         nix::sys::signal::Signal::SIGKILL,
@@ -236,6 +260,20 @@ fn kill_group(pid: u32) {
         nix::unistd::Pid::from_raw(raw),
         nix::sys::signal::Signal::SIGKILL,
     );
+}
+
+/// The leader's status if it has exited; otherwise a thread waits for it.
+fn reap(mut leader: Child) -> Option<ExitStatus> {
+    match leader.try_wait() {
+        Ok(Some(status)) => Some(status),
+        Ok(None) => {
+            std::thread::spawn(move || {
+                let _ = leader.wait();
+            });
+            None
+        }
+        Err(_) => None,
+    }
 }
 
 /// Run one target in `policy.run_dir`.
@@ -287,20 +325,20 @@ pub fn run_target(
             let _ = drained.send(());
         });
     }
-    let (tx, rx) = mpsc::channel();
+    let (exited_tx, exited) = mpsc::channel();
     std::thread::spawn(move || {
-        let _ = tx.send(child.wait());
+        await_exit(pid);
+        let _ = exited_tx.send(());
     });
-    let (status, timed_out) = match rx.recv_timeout(timeout) {
-        Ok(status) => (status.ok(), false),
-        Err(_) => {
-            kill_group(pid);
-            (rx.recv_timeout(REAP_GRACE).ok().and_then(Result::ok), true)
-        }
-    };
+    let timed_out = exited.recv_timeout(timeout).is_err();
+    // After a normal exit too: a backgrounded descendant would keep running.
+    kill_group(&child);
+    if timed_out {
+        let _ = exited.recv_timeout(REAP_GRACE);
+    }
+    let status = reap(child);
     // A descendant that left the group could hold a pipe open; its output is
     // read for as long as the grace allows and the rest is left behind.
-    kill_group(pid);
     let deadline = Instant::now() + REAP_GRACE;
     for _ in 0..2 {
         let left = deadline.saturating_duration_since(Instant::now());

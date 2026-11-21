@@ -224,6 +224,8 @@ pub struct CodeReview {
     pub kb: Option<(WorkspaceId, Result<Vec<domain::KbFile>, String>)>,
     pub kb_open: bool,
     pub sandbox: Option<(ReviewId, Result<domain::SandboxRun, String>)>,
+    /// The `sandbox.toml` hash last sent for approval, until the daemon refuses it.
+    pub sandbox_approved: Option<String>,
     /// The run a person pressed Fix Loop on, until they confirm or cancel.
     pub fix_loop_confirm: Option<ReviewId>,
     pub fix_loops: HashMap<WorkspaceId, FixLoopProgress>,
@@ -267,6 +269,7 @@ impl Default for CodeReview {
             kb: None,
             kb_open: false,
             sandbox: None,
+            sandbox_approved: None,
             fix_loop_confirm: None,
             fix_loops: HashMap::new(),
         }
@@ -1183,6 +1186,13 @@ impl AppState {
         if label == "SendSessionPrompt" && ok {
             self.toasts.success(message.to_string(), None);
         }
+        if label == "ApproveSandboxConfig" {
+            if ok {
+                self.toasts.success(message.to_string(), None);
+            } else {
+                self.code_review.sandbox_approved = None;
+            }
+        }
         if ok || !matches!(label, "StartReview" | "CancelReview" | "GetReview") {
             return;
         }
@@ -1333,6 +1343,18 @@ impl AppState {
             && let Err(error) = connection.get_kb(self.generation, workspace)
         {
             self.code_review.kb = Some((workspace, Err(error)));
+        }
+    }
+
+    /// Approves exactly the `sandbox.toml` the run refused; the daemon refuses
+    /// in turn if the file changed since.
+    pub fn approve_sandbox(&mut self, workspace_id: WorkspaceId, file_hash: String) {
+        let Some(connection) = &self.connection else {
+            return;
+        };
+        match connection.approve_sandbox_config(workspace_id, file_hash.clone()) {
+            Ok(()) => self.code_review.sandbox_approved = Some(file_hash),
+            Err(error) => self.toasts.danger("sandbox.toml was not approved", error),
         }
     }
 
@@ -2722,6 +2744,36 @@ fn sandbox_panel(s: &AppState, k: &Kit, run: &ReviewRun) -> Option<El> {
     if let Some(error) = &sandbox.error {
         body = body.child(note(k, error.clone()));
     }
+    if let Some(hash) = &sandbox.unapproved_hash {
+        let approved = s.code_review.sandbox_approved.as_ref() == Some(hash);
+        let (workspace_id, hash) = (sandbox.workspace_id, hash.clone());
+        body = body.child(
+            row()
+                .gap(crate::ds::SPACE_3)
+                .items_center()
+                .child(
+                    Button::new(if approved {
+                        "Approved"
+                    } else {
+                        "Approve sandbox.toml"
+                    })
+                    .variant(ButtonVariant::Outline)
+                    .control_size(ControlSize::Small)
+                    .disabled(approved)
+                    .on_press(move |s: &mut AppState| s.approve_sandbox(workspace_id, hash.clone()))
+                    .build(k)
+                    .key("review-sandbox-approve"),
+                )
+                .child(note(
+                    k,
+                    if approved {
+                        "The next apex review runs it."
+                    } else {
+                        "Its commands run in the sandbox on every apex review until the file changes."
+                    },
+                )),
+        );
+    }
     for target in &sandbox.targets {
         let outcome = match (target.timed_out, target.exit_code) {
             (true, _) => "timed out".to_owned(),
@@ -4046,6 +4098,7 @@ mod tests {
                     stderr: String::new(),
                 }],
                 error: None,
+                unapproved_hash: None,
                 started_at: domain::Timestamp::now(),
                 finished_at: None,
             }),
@@ -4055,6 +4108,30 @@ mod tests {
         assert!(has(&shown, "review-kb-0"));
         assert!(has(&shown, "review-sandbox"));
         assert!(has(&shown, "review-sandbox-test"));
+        assert!(!has(&shown, "review-sandbox-approve"));
+    }
+
+    #[test]
+    fn an_unapproved_sandbox_file_offers_its_approval() {
+        let (mut state, workspace) = fixture_state();
+        let mut run = completed(workspace, workspace_target(workspace));
+        run.sandbox_run_id = Some("s1".into());
+        with_report(&mut state, &run, vec![], vec![], None);
+        state.code_review.sandbox = Some((
+            run.id,
+            Ok(domain::SandboxRun {
+                id: "s1".into(),
+                workspace_id: workspace,
+                review_id: Some(run.id),
+                targets: Vec::new(),
+                error: Some("sandbox.toml is not approved for this project; nothing ran".into()),
+                unapproved_hash: Some("abc".into()),
+                started_at: domain::Timestamp::now(),
+                finished_at: None,
+            }),
+        ));
+        let shown = keys(state);
+        assert!(has(&shown, "review-sandbox-approve"), "{shown:?}");
     }
 
     #[test]

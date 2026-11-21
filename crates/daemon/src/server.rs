@@ -460,6 +460,7 @@ fn request_name(request: &Request) -> &'static str {
         Request::CancelFixLoop { .. } => "CancelFixLoop",
         Request::RunSandbox { .. } => "RunSandbox",
         Request::GetSandboxRun { .. } => "GetSandboxRun",
+        Request::ApproveSandboxConfig { .. } => "ApproveSandboxConfig",
         Request::GetKb { .. } => "GetKb",
         Request::UpdateKbEntry { .. } => "UpdateKbEntry",
         Request::ClearKbEntry { .. } => "ClearKbEntry",

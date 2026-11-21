@@ -2768,6 +2768,41 @@ fn write_sandbox(repo: &Path, targets: &[(&str, &str)]) {
     std::fs::write(repo.join(".forge/review/sandbox.toml"), text).expect("sandbox.toml");
 }
 
+fn sandbox_hash(repo: &Path) -> String {
+    let text =
+        std::fs::read_to_string(repo.join(".forge/review/sandbox.toml")).expect("sandbox.toml");
+    daemon::actions::repo::hash(text.as_bytes())
+}
+
+fn approve_sandbox(
+    client: &client::Client,
+    workspace_id: WorkspaceId,
+    file_hash: String,
+) -> Result<Response, client::ClientError> {
+    client.request(Request::ApproveSandboxConfig {
+        workspace_id,
+        file_hash,
+    })
+}
+
+fn apex_run(
+    client: &client::Client,
+    events: &flume::Receiver<DaemonEvent>,
+    workspace_id: WorkspaceId,
+) -> (ReviewRun, domain::SandboxRun) {
+    let id = start_target(
+        client,
+        ReviewTarget::Workspace {
+            workspace_id,
+            base: None,
+        },
+        domain::Tier::Apex,
+    );
+    let done = wait_run(events, id, |run| run.status.is_finished());
+    let sandbox = sandbox_run(client, &done.sandbox_run_id.clone().expect("linked"));
+    (done, sandbox)
+}
+
 #[cfg(target_os = "macos")]
 #[test]
 fn an_apex_run_packs_its_sandbox_failures_and_links_the_run() {
@@ -2785,6 +2820,7 @@ fn an_apex_run_packs_its_sandbox_failures_and_links_the_run() {
     let client = daemon.connect("scenario-review");
     let events = client.events();
     let workspace = workspace_at(&client, repo.path());
+    approve_sandbox(&client, workspace, sandbox_hash(repo.path())).expect("approved");
 
     let apex = start_target(
         &client,
@@ -2838,6 +2874,7 @@ fn a_pull_requests_sandbox_runs_in_a_worktree_of_its_head_that_is_gone_after() {
     let client = daemon.connect("scenario-review");
     let events = client.events();
     let workspace = workspace_at(&client, checkout.path());
+    approve_sandbox(&client, workspace, sandbox_hash(checkout.path())).expect("approved");
     assert!(
         !checkout.path().join("pr.rs").exists(),
         "only the head has it"
@@ -2869,6 +2906,235 @@ fn a_pull_requests_sandbox_runs_in_a_worktree_of_its_head_that_is_gone_after() {
         .forge_home()
         .join("review-sandbox")
         .join(run.to_string())
+        .exists());
+}
+
+#[cfg(target_os = "macos")]
+#[test]
+fn sandbox_toml_runs_only_while_it_is_the_copy_the_person_approved() {
+    let harness = common::Harness::new();
+    install_reviewer(&harness, &answer(&[]), Reviewer::AnswersAndExits);
+    let repo = seeded_repo();
+    write_sandbox(
+        repo.path(),
+        &[("mark", "echo ran > \"$FORGE_SANDBOX_CACHE/ran\"")],
+    );
+    let marker = repo.path().join(".forge/review/sandbox/cache/ran");
+    let daemon = boot_configured(&harness, |config| config.review.trex_enabled = true);
+    let client = daemon.connect("scenario-review");
+    let events = client.events();
+    let workspace = workspace_at(&client, repo.path());
+
+    let (done, sandbox) = apex_run(&client, &events, workspace);
+    assert_eq!(done.status, ReviewStatus::Completed, "{:?}", done.error);
+    assert!(sandbox.targets.is_empty());
+    assert!(
+        sandbox
+            .error
+            .as_deref()
+            .is_some_and(|error| error.contains("is not approved")),
+        "{sandbox:?}"
+    );
+    assert!(
+        done.coverage
+            .notes
+            .iter()
+            .any(|note| note.starts_with("TREX:") && note.contains("is not approved")),
+        "{:?}",
+        done.coverage.notes
+    );
+    assert!(!marker.exists(), "nothing ran");
+    let offered = sandbox.unapproved_hash.expect("the hash to approve");
+    assert_eq!(offered, sandbox_hash(repo.path()));
+
+    match approve_sandbox(&client, workspace, "0".repeat(64)) {
+        Err(client::ClientError::Protocol(error)) => {
+            assert_eq!(error.code, ErrorCode::PreconditionFailed);
+        }
+        other => panic!("expected PreconditionFailed, got {other:?}"),
+    }
+    approve_sandbox(&client, workspace, offered).expect("approved");
+    let (_, sandbox) = apex_run(&client, &events, workspace);
+    assert_eq!(sandbox.error, None);
+    assert!(sandbox.targets[0].passed(), "{sandbox:?}");
+    assert!(marker.exists());
+
+    std::fs::remove_file(&marker).expect("marker");
+    write_sandbox(
+        repo.path(),
+        &[("mark", "echo again > \"$FORGE_SANDBOX_CACHE/ran\"")],
+    );
+    let (_, sandbox) = apex_run(&client, &events, workspace);
+    assert!(
+        sandbox
+            .error
+            .as_deref()
+            .is_some_and(|error| error.contains("changed since it was approved")),
+        "{sandbox:?}"
+    );
+    assert_eq!(sandbox.unapproved_hash, Some(sandbox_hash(repo.path())));
+    assert!(!marker.exists(), "a changed file does not run");
+}
+
+#[cfg(target_os = "macos")]
+#[test]
+fn a_repository_cannot_turn_the_sandbox_network_on_but_the_user_can() {
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("listen");
+    let port = listener.local_addr().expect("addr").port();
+    let probe = format!("/usr/bin/nc -z -w 2 127.0.0.1 {port}");
+    let reach = |network: bool| {
+        let harness = common::Harness::new();
+        install_reviewer(&harness, &answer(&[]), Reviewer::AnswersAndExits);
+        let repo = seeded_repo();
+        write_sandbox(repo.path(), &[("net", probe.as_str())]);
+        std::fs::write(
+            repo.path().join(".forge/review/config.toml"),
+            "[security]\nsandbox_network = true\nsandbox_env_whitelist = [\"PATH\", \"HOME\"]\n",
+        )
+        .expect("config");
+        let daemon = boot_configured(&harness, |config| {
+            config.review.trex_enabled = true;
+            config.review.sandbox_network = network;
+        });
+        let client = daemon.connect("scenario-review");
+        let events = client.events();
+        let workspace = workspace_at(&client, repo.path());
+        approve_sandbox(&client, workspace, sandbox_hash(repo.path())).expect("approved");
+        let (done, sandbox) = apex_run(&client, &events, workspace);
+        assert_eq!(done.status, ReviewStatus::Completed, "{:?}", done.error);
+        assert!(
+            done.coverage
+                .notes
+                .iter()
+                .any(|note| note.contains("`[security]` is ignored")),
+            "{:?}",
+            done.coverage.notes
+        );
+        sandbox.targets[0].passed()
+    };
+    assert!(!reach(false), "the repository asked for the network");
+    assert!(reach(true), "the user's config grants it");
+}
+
+#[cfg(target_os = "macos")]
+#[test]
+fn a_cache_directory_committed_as_a_symlink_is_refused() {
+    let harness = common::Harness::new();
+    install_reviewer(&harness, &answer(&[]), Reviewer::AnswersAndExits);
+    let repo = seeded_repo();
+    let elsewhere = tempfile::tempdir().expect("elsewhere");
+    write_sandbox(
+        repo.path(),
+        &[("mark", "echo x > \"$FORGE_SANDBOX_CACHE/x\"")],
+    );
+    std::fs::create_dir_all(repo.path().join(".forge/review/sandbox")).expect("dir");
+    std::os::unix::fs::symlink(
+        elsewhere.path(),
+        repo.path().join(".forge/review/sandbox/cache"),
+    )
+    .expect("symlink");
+    let daemon = boot_configured(&harness, |config| config.review.trex_enabled = true);
+    let client = daemon.connect("scenario-review");
+    let events = client.events();
+    let workspace = workspace_at(&client, repo.path());
+    approve_sandbox(&client, workspace, sandbox_hash(repo.path())).expect("approved");
+
+    let (_, sandbox) = apex_run(&client, &events, workspace);
+    assert!(sandbox.targets.is_empty(), "{sandbox:?}");
+    assert!(
+        sandbox
+            .error
+            .as_deref()
+            .is_some_and(|error| error.contains("is a symlink")),
+        "{sandbox:?}"
+    );
+    assert!(!elsewhere.path().join("x").exists());
+}
+
+#[cfg(target_os = "macos")]
+#[test]
+fn an_apex_runs_targets_stop_at_the_reviews_budget() {
+    let harness = common::Harness::new();
+    install_reviewer(&harness, &answer(&[]), Reviewer::AnswersAndExits);
+    let repo = seeded_repo();
+    write_sandbox(
+        repo.path(),
+        &[
+            ("slow", "/bin/sleep 60"),
+            ("next", "echo ran > \"$FORGE_SANDBOX_CACHE/next\""),
+        ],
+    );
+    let daemon = boot_configured(&harness, |config| {
+        config.review.trex_enabled = true;
+        config.review.timeout_secs = 3;
+    });
+    let client = daemon.connect("scenario-review");
+    let events = client.events();
+    let workspace = workspace_at(&client, repo.path());
+    approve_sandbox(&client, workspace, sandbox_hash(repo.path())).expect("approved");
+
+    let (done, sandbox) = apex_run(&client, &events, workspace);
+    assert_eq!(done.status, ReviewStatus::Completed, "{:?}", done.error);
+    assert_eq!(sandbox.targets.len(), 1, "{sandbox:?}");
+    assert!(sandbox.targets[0].timed_out);
+    assert!(sandbox.targets[0].duration_ms < 10_000, "{sandbox:?}");
+    assert!(
+        sandbox
+            .error
+            .as_deref()
+            .is_some_and(|error| error.contains("stopped before `next`")),
+        "{sandbox:?}"
+    );
+    assert!(!repo
+        .path()
+        .join(".forge/review/sandbox/cache/next")
+        .exists());
+}
+
+#[cfg(target_os = "macos")]
+#[test]
+fn a_cancelled_apex_run_starts_no_further_target() {
+    let harness = common::Harness::new();
+    install_reviewer(&harness, &answer(&[]), Reviewer::AnswersAndExits);
+    let repo = seeded_repo();
+    write_sandbox(
+        repo.path(),
+        &[
+            ("slow", "/bin/sleep 3"),
+            ("next", "echo ran > \"$FORGE_SANDBOX_CACHE/next\""),
+        ],
+    );
+    let daemon = boot_configured(&harness, |config| config.review.trex_enabled = true);
+    let client = daemon.connect("scenario-review");
+    let events = client.events();
+    let workspace = workspace_at(&client, repo.path());
+    approve_sandbox(&client, workspace, sandbox_hash(repo.path())).expect("approved");
+
+    let id = start_target(
+        &client,
+        ReviewTarget::Workspace {
+            workspace_id: workspace,
+            base: None,
+        },
+        domain::Tier::Apex,
+    );
+    wait_run(&events, id, |run| run.stage == Some(ReviewStage::Pack));
+    client
+        .request(Request::CancelReview { review_id: id })
+        .expect("cancel");
+    let done = wait_run(&events, id, |run| run.status.is_finished());
+    assert_eq!(done.status, ReviewStatus::Cancelled);
+    let sandbox = sandbox_run(&client, &done.sandbox_run_id.clone().expect("linked"));
+    assert!(
+        sandbox
+            .error
+            .as_deref()
+            .is_some_and(|error| error.contains("the review was cancelled")),
+        "{sandbox:?}"
+    );
+    assert!(!repo
+        .path()
+        .join(".forge/review/sandbox/cache/next")
         .exists());
 }
 

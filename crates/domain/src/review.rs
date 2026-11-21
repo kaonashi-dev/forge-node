@@ -271,9 +271,14 @@ pub struct SandboxRun {
     #[serde(default)]
     pub review_id: Option<ReviewId>,
     pub targets: Vec<SandboxTarget>,
-    /// Why nothing ran: no file, a bad file, an unsupported platform.
+    /// Why nothing ran: no file, a bad file, an unapproved file, an
+    /// unsupported platform; or why the run stopped early.
     #[serde(default)]
     pub error: Option<String>,
+    /// The SHA-256 of a `sandbox.toml` that did not run because the project
+    /// has not approved it; `ApproveSandboxConfig` with this hash approves it.
+    #[serde(default)]
+    pub unapproved_hash: Option<String>,
     pub started_at: Timestamp,
     #[serde(default)]
     pub finished_at: Option<Timestamp>,

@@ -729,8 +729,10 @@ dependencies = [
  "insta",
  "persistence",
  "protocol",
+ "runtime-sandbox",
  "serde",
  "serde_json",
+ "sha2",
  "tempfile",
  "test-support",
  "tokio",
@@ -1644,6 +1646,7 @@ dependencies = [
 name = "runtime-sandbox"
 version = "0.1.10"
 dependencies = [
+ "libc",
  "nix 0.31.3",
  "tempfile",
  "toml",

@@ -5,7 +5,7 @@ defined in `crates/protocol` and is transport-agnostic; the transport itself is
 a Unix domain socket (ADR-004). The GUI-side implementation is
 `crates/client` (`Client` + `Store`).
 
-`PROTOCOL_VERSION = 41` (`protocol::PROTOCOL_VERSION` is the source).
+`PROTOCOL_VERSION = 43` (`protocol::PROTOCOL_VERSION` is the source).
 
 ## Transport & framing
 
@@ -190,6 +190,7 @@ DaemonMessage::Event    (DaemonEvent)
 | | `ClearKbEntry { workspace_id, file }` / `ExportKb { workspace_id }` | `Ack` / `Response::KbExport(String)`, one Markdown document. |
 | | `RunSandbox { workspace_id, target }` | `Response::SandboxStarted { sandbox_run_id }`, then `SandboxFinished`. `Conflict` while one runs for the workspace. |
 | | `GetSandboxRun { sandbox_run_id }` | `Response::SandboxRun(SandboxRun)`. |
+| | `ApproveSandboxConfig { workspace_id, file_hash }` | `Ack`; TREX runs the project's `sandbox.toml` while it hashes to `file_hash`. `PreconditionFailed` when the file no longer does, `NotFound` without one, `InvalidRequest` for a bad one. A person's request: no MCP tool sends it. |
 | | `StartFixLoop { review_id, max_iterations, provider, profile_id }` | `Response::FixLoopStarted { workspace_id }`, then `FixLoopUpdated`. `InvalidRequest` for a pull-request review, `Conflict` while a loop runs for the workspace. A person's request: no MCP tool sends it. |
 | | `CancelFixLoop { workspace_id }` | `Ack`; `NotFound` when no loop runs. |
 | | `GetReviewStats { workspace_id }` | `Response::ReviewStats` — latency per tier and the graph, swarm, knowledge-base and TREX rates. |

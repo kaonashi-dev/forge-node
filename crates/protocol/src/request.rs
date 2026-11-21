@@ -843,6 +843,13 @@ pub enum Request {
     GetSandboxRun {
         sandbox_run_id: String,
     },
+    /// Let TREX run the workspace's `sandbox.toml` for its project while the
+    /// file hashes to `file_hash` → `Ack`. `PreconditionFailed` when it no
+    /// longer does, `NotFound` without a file, `InvalidRequest` for a bad one.
+    ApproveSandboxConfig {
+        workspace_id: WorkspaceId,
+        file_hash: String,
+    },
     /// Bring the workspace's project graph up to date from its checkout →
     /// `Response::GraphRebuilt`. `full` re-parses every file. Local, synchronous.
     RebuildGraph {

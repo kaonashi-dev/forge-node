@@ -234,12 +234,78 @@ fn elsewhere_trex_is_unsupported() {
 fn a_run_inside_a_denied_directory_still_works_and_its_siblings_stay_denied() {
     let mut run = run();
     let home = run.policy.denied_reads[0].clone();
-    let inside = home.join("review-sandbox").join("r1");
-    std::fs::create_dir_all(&inside).expect("dir");
+    let inside = home.join("worktrees").join("w1");
+    let cache = inside.join(".forge/review/sandbox/cache");
+    std::fs::create_dir_all(&cache).expect("dir");
     std::fs::write(inside.join("pr.rs"), "x").expect("file");
     run.policy.run_dir = inside;
+    run.policy.cache_dir = cache.clone();
     assert!(go(&run, "test -f pr.rs && echo ok > out").passed());
+    assert!(go(&run, &format!("echo x > {}", cache.join("c").display())).passed());
     assert!(!go(&run, &format!("cat {}", home.join("secret").display())).passed());
+}
+
+#[test]
+fn a_denied_directory_exempts_the_run_and_the_cache_it_contains() {
+    let home = PathBuf::from("/forge");
+    let policy = Policy {
+        run_dir: home.join("worktrees/w1"),
+        cache_dir: home.join("worktrees/w1/.forge/review/sandbox/cache"),
+        tmp_dir: PathBuf::from("/tmp"),
+        denied_reads: vec![home],
+        network: false,
+        socket: None,
+    };
+    assert!(profile(&policy).contains(
+        "(deny file-read-data file-write* (require-all (subpath \"/forge\") \
+         (require-not (require-any (subpath \"/forge/worktrees/w1\") \
+         (subpath \"/forge/worktrees/w1/.forge/review/sandbox/cache\")))))\n"
+    ));
+}
+
+/// `true` while `pid` is a child of this process that nobody has reaped; never reaps it.
+#[cfg(target_os = "macos")]
+fn unreaped_child(pid: i32) -> bool {
+    let mut info = std::mem::MaybeUninit::<libc::siginfo_t>::zeroed();
+    // SAFETY: `info` is valid, writable storage for one `siginfo_t` for the whole call.
+    let rc = unsafe {
+        libc::waitid(
+            libc::P_PID,
+            pid.unsigned_abs(),
+            info.as_mut_ptr(),
+            libc::WEXITED | libc::WNOHANG | libc::WNOWAIT,
+        )
+    };
+    rc == 0
+}
+
+#[cfg(target_os = "macos")]
+#[test]
+fn a_normal_exit_kills_what_it_left_running_and_then_reaps_its_leader() {
+    let run = run();
+    let result = go(&run, "echo $$ > leader; sleep 100 & echo $! > pid; exit 0");
+    assert!(result.passed(), "{result:?}");
+    assert!(
+        result.duration < REAP_GRACE,
+        "the leftover was killed, not waited out"
+    );
+    let read = |name: &str| -> i32 {
+        std::fs::read_to_string(run.policy.run_dir.join(name))
+            .expect("pid")
+            .trim()
+            .parse()
+            .expect("number")
+    };
+    assert!(
+        !unreaped_child(read("leader")),
+        "run_target reaps its leader before it returns"
+    );
+    let sleeper = nix::unistd::Pid::from_raw(read("pid"));
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while nix::sys::signal::kill(sleeper, None).is_ok() && Instant::now() < deadline {
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    assert!(nix::sys::signal::kill(sleeper, None).is_err());
 }
 
 #[test]

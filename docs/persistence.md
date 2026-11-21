@@ -186,7 +186,7 @@ ignoring case because a chip and a palette entry name an action by label. A
 run's session (`SessionKind::Task`) is an ordinary `sessions` row; which action
 it runs is runtime-only.
 
-## Schema (v16 — `REVIEWS`, v20–v23, v25–v29)
+## Schema (v16 — `REVIEWS`, v20–v23, v25–v30)
 
 ```sql
 review_runs     (id PK, workspace_id FK→workspaces ON DELETE CASCADE, target,
@@ -244,7 +244,9 @@ kb_entries      (id PK, project_id FK→projects ON DELETE CASCADE, file, sectio
 sandbox_runs    (id PK, review_run_id FK→review_runs ON DELETE CASCADE (nullable),
                  workspace_id, targets_run (JSON), targets_failed (JSON names),
                  stdout_excerpt, stderr_excerpt, exit_code, duration_ms,
-                 started_at, finished_at, error)
+                 started_at, finished_at, error, unapproved_hash)
+sandbox_approvals (project_id PK FK→projects ON DELETE CASCADE, file_hash,
+                   approved_at)
 ```
 
 `CODEBASE_GRAPH` (v25) is one graph per project, shared by its worktrees and
@@ -258,6 +260,9 @@ stored knowledge-base files, one row per pattern; `learned-rules.md` and
 targets and output tails, never a full log; a manual run has no review. `REVIEW_AGENT_SESSIONS` (v29) adds
 `review_runs.agent_sessions`, a JSON list of every swarm agent's session id:
 startup's read-only set and the prune's keep rule read it beside `session_id`.
+`SANDBOX_APPROVALS` (v30) keeps the SHA-256 of the `sandbox.toml` a person
+approved per project, and `sandbox_runs.unapproved_hash`, the hash of a file
+that did not run because it was not that one.
 
 ## Repositories (`repositories/`)
 

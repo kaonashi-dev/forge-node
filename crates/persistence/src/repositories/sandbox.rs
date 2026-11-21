@@ -1,6 +1,6 @@
 //! `sandbox_runs`: what TREX ran and how it ended.
 
-use domain::{SandboxRun, SandboxTarget};
+use domain::{ProjectId, SandboxRun, SandboxTarget, Timestamp};
 use rusqlite::{params, Connection, OptionalExtension};
 
 use crate::db::DbError;
@@ -17,12 +17,14 @@ pub fn upsert(conn: &Connection, run: &SandboxRun) -> Result<(), DbError> {
         .map_err(|e| DbError::Encode(e.to_string()))?;
     conn.execute(
         "INSERT INTO sandbox_runs (id, review_run_id, workspace_id, targets_run, targets_failed, \
-         stdout_excerpt, stderr_excerpt, exit_code, duration_ms, started_at, finished_at, error) \
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12) \
+         stdout_excerpt, stderr_excerpt, exit_code, duration_ms, started_at, finished_at, error, \
+         unapproved_hash) \
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13) \
          ON CONFLICT(id) DO UPDATE SET targets_run = excluded.targets_run, \
          targets_failed = excluded.targets_failed, stdout_excerpt = excluded.stdout_excerpt, \
          stderr_excerpt = excluded.stderr_excerpt, exit_code = excluded.exit_code, \
-         duration_ms = excluded.duration_ms, finished_at = excluded.finished_at, error = excluded.error",
+         duration_ms = excluded.duration_ms, finished_at = excluded.finished_at, error = excluded.error, \
+         unapproved_hash = excluded.unapproved_hash",
         params![
             run.id,
             run.review_id.map(|id| id.to_string()),
@@ -36,6 +38,7 @@ pub fn upsert(conn: &Connection, run: &SandboxRun) -> Result<(), DbError> {
             ts_to_str(&run.started_at),
             run.finished_at.as_ref().map(ts_to_str),
             run.error,
+            run.unapproved_hash,
         ],
     )?;
     Ok(())
@@ -46,8 +49,8 @@ pub fn upsert(conn: &Connection, run: &SandboxRun) -> Result<(), DbError> {
 pub fn get(conn: &Connection, id: &str) -> Result<Option<SandboxRun>, DbError> {
     let row = conn
         .query_row(
-            "SELECT id, review_run_id, workspace_id, targets_run, started_at, finished_at, error \
-             FROM sandbox_runs WHERE id = ?1",
+            "SELECT id, review_run_id, workspace_id, targets_run, started_at, finished_at, error, \
+             unapproved_hash FROM sandbox_runs WHERE id = ?1",
             [id],
             |row| {
                 Ok((
@@ -58,11 +61,14 @@ pub fn get(conn: &Connection, id: &str) -> Result<Option<SandboxRun>, DbError> {
                     row.get::<_, String>(4)?,
                     row.get::<_, Option<String>>(5)?,
                     row.get::<_, Option<String>>(6)?,
+                    row.get::<_, Option<String>>(7)?,
                 ))
             },
         )
         .optional()?;
-    let Some((id, review, workspace, targets, started_at, finished_at, error)) = row else {
+    let Some((id, review, workspace, targets, started_at, finished_at, error, unapproved_hash)) =
+        row
+    else {
         return Ok(None);
     };
     Ok(Some(SandboxRun {
@@ -72,6 +78,7 @@ pub fn get(conn: &Connection, id: &str) -> Result<Option<SandboxRun>, DbError> {
         targets: serde_json::from_str(&targets)
             .map_err(|e| DbError::decode("sandbox targets", &targets, e))?,
         error,
+        unapproved_hash,
         started_at: ts_from_str(&started_at)?,
         finished_at: ts_from_opt(finished_at)?,
     }))
@@ -92,4 +99,32 @@ pub fn linked(conn: &Connection) -> Result<Vec<(String, bool)>, DbError> {
         ))
     })?;
     Ok(rows.collect::<Result<Vec<_>, _>>()?)
+}
+
+/// # Errors
+/// Returns [`DbError`] on a failed statement.
+pub fn approve(conn: &Connection, project_id: ProjectId, file_hash: &str) -> Result<(), DbError> {
+    conn.execute(
+        "INSERT INTO sandbox_approvals (project_id, file_hash, approved_at) VALUES (?1, ?2, ?3) \
+         ON CONFLICT(project_id) DO UPDATE SET file_hash = excluded.file_hash, \
+         approved_at = excluded.approved_at",
+        params![
+            project_id.to_string(),
+            file_hash,
+            ts_to_str(&Timestamp::now())
+        ],
+    )?;
+    Ok(())
+}
+
+/// # Errors
+/// Returns [`DbError`] on a failed statement.
+pub fn approved(conn: &Connection, project_id: ProjectId) -> Result<Option<String>, DbError> {
+    Ok(conn
+        .query_row(
+            "SELECT file_hash FROM sandbox_approvals WHERE project_id = ?1",
+            [project_id.to_string()],
+            |row| row.get(0),
+        )
+        .optional()?)
 }

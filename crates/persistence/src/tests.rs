@@ -96,8 +96,8 @@ fn migrations_apply_and_user_version_advances() {
     // count of applied migrations, and the assertion is what catches a migration
     // that was silently reordered or dropped.
     assert_eq!(
-        version, 29,
-        "twenty-nine migrations applied => user_version == 29"
+        version, 30,
+        "thirty migrations applied => user_version == 30"
     );
 
     for table in [
@@ -193,7 +193,7 @@ fn version_two_database_upgrades_existing_projects_into_general() {
         .conn()
         .query_row("PRAGMA user_version", [], |row| row.get(0))
         .unwrap();
-    assert_eq!(version, 29);
+    assert_eq!(version, 30);
 }
 
 /// Migration 6 over a database that already has workspaces: the display_name
@@ -1090,7 +1090,7 @@ fn sessions_schema_is_unchanged() {
         .conn()
         .query_row("PRAGMA user_version", [], |r| r.get(0))
         .unwrap();
-    assert_eq!(version, 29, "every migration up to the spec runs");
+    assert_eq!(version, 30, "every migration up to the spec runs");
 
     let (db, _project, workspace_id) = db_with_workspace();
     let mut session = mk_session(workspace_id, SessionState::Running);
@@ -1244,7 +1244,7 @@ fn reset_clears_every_application_table_and_keeps_the_schema() {
         .conn()
         .query_row("PRAGMA user_version", [], |row| row.get(0))
         .unwrap();
-    assert_eq!(version, 29, "reset retains the migrated schema");
+    assert_eq!(version, 30, "reset retains the migrated schema");
 }
 
 // ---- on-disk open ----------------------------------------------------------
@@ -2411,6 +2411,7 @@ fn a_sandbox_run_round_trips_and_goes_with_its_review() {
         review_id: Some(review.id),
         targets: vec![target("lint", Some(0)), target("test", Some(1))],
         error: None,
+        unapproved_hash: Some("abc".into()),
         started_at: Timestamp::now(),
         finished_at: Some(Timestamp::now()),
     };
@@ -2433,4 +2434,25 @@ fn a_sandbox_run_round_trips_and_goes_with_its_review() {
         "cascades with its review"
     );
     assert!(store.sandbox_run("s2").unwrap().is_some());
+}
+
+#[test]
+fn a_sandbox_approval_is_one_hash_per_project_and_goes_with_it() {
+    let (db, project, _) = db_with_workspace();
+    let store = db.review_store().unwrap();
+    assert_eq!(store.approved_sandbox(project).unwrap(), None);
+    store.approve_sandbox(project, "aaa").unwrap();
+    store.approve_sandbox(project, "bbb").unwrap();
+    assert_eq!(
+        store.approved_sandbox(project).unwrap().as_deref(),
+        Some("bbb")
+    );
+    db.conn()
+        .execute_batch("DELETE FROM workspaces; DELETE FROM projects;")
+        .unwrap();
+    assert_eq!(
+        store.approved_sandbox(project).unwrap(),
+        None,
+        "cascades with its project"
+    );
 }

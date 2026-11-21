@@ -257,6 +257,10 @@ pub enum Command {
         review_id: domain::ReviewId,
         sandbox_run_id: String,
     },
+    ApproveSandboxConfig {
+        workspace_id: WorkspaceId,
+        file_hash: String,
+    },
     StartFixLoop {
         review_id: domain::ReviewId,
         max_iterations: Option<u32>,
@@ -1028,6 +1032,17 @@ impl ConnectionHandle {
             generation,
             review_id,
             sandbox_run_id,
+        })
+    }
+
+    pub fn approve_sandbox_config(
+        &self,
+        workspace_id: WorkspaceId,
+        file_hash: String,
+    ) -> Result<(), String> {
+        self.send(Command::ApproveSandboxConfig {
+            workspace_id,
+            file_hash,
         })
     }
 
@@ -2280,6 +2295,16 @@ fn handle_fixture_command(
                 review_id,
                 result: Err("the recorded snapshot has no review store".into()),
             }]);
+        }
+        Command::ApproveSandboxConfig { .. } => {
+            fixture_result(
+                generation,
+                "ApproveSandboxConfig",
+                Err("the recorded snapshot has no review store".into()),
+                sink,
+                metrics,
+                started,
+            );
         }
         Command::StartFixLoop { .. } => {
             fixture_result(
@@ -3759,6 +3784,24 @@ fn handle_live_command(
                 result,
             }]);
         }
+        Command::ApproveSandboxConfig {
+            workspace_id,
+            file_hash,
+        } => {
+            metrics.note_socket_op();
+            let result = client
+                .approve_sandbox_config(workspace_id, file_hash)
+                .map(|()| "sandbox.toml approved: the next apex review runs it.".to_string())
+                .map_err(|error| error.to_string());
+            live_result(
+                generation,
+                "ApproveSandboxConfig",
+                result,
+                sink,
+                metrics,
+                started,
+            );
+        }
         Command::StartFixLoop {
             review_id,
             max_iterations,
@@ -4801,6 +4844,7 @@ fn command_label(command: &Command) -> &'static str {
         Command::QueryGraph { .. } => "QueryGraph",
         Command::GetKb { .. } => "GetKb",
         Command::GetSandboxRun { .. } => "GetSandboxRun",
+        Command::ApproveSandboxConfig { .. } => "ApproveSandboxConfig",
         Command::StartFixLoop { .. } => "StartFixLoop",
         Command::SendSessionPrompt { .. } => "SendSessionPrompt",
         Command::StopDaemon { .. } => "StopDaemon",

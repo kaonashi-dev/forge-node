@@ -562,7 +562,10 @@ impl Daemon {
             .unwrap_or_default()
     }
 
-    fn workspace_project(&self, workspace_id: WorkspaceId) -> Result<ProjectId, ProtocolError> {
+    pub(crate) fn workspace_project(
+        &self,
+        workspace_id: WorkspaceId,
+    ) -> Result<ProjectId, ProtocolError> {
         self.lock()
             .workspaces
             .get(&workspace_id)
@@ -687,6 +690,7 @@ impl Daemon {
             pack_dir,
         }: Stages<'_>,
     ) -> Result<(Vec<domain::Finding>, Vec<String>), End> {
+        let budget_ends = Instant::now() + answer_budget(self.config.review.timeout_secs);
         self.review_stage(run, ReviewStage::Diff)?;
         let pull_request = match &run.target {
             ReviewTarget::PullRequest { number, base, .. } => Some((*number, base.clone())),
@@ -807,7 +811,13 @@ impl Daemon {
             _ => Vec::new(),
         };
         let runtime = if resolved.tier == Tier::Apex && self.config.review.trex_enabled {
-            self.review_sandbox(run, path, pull_request.is_some(), &mut coverage.notes)
+            self.review_sandbox(
+                run,
+                path,
+                pull_request.is_some(),
+                budget_ends,
+                &mut coverage.notes,
+            )
         } else {
             Vec::new()
         };
@@ -1055,6 +1065,7 @@ impl Daemon {
         run: &mut ReviewRun,
         path: &Path,
         pull_request: bool,
+        deadline: Instant,
         notes: &mut Vec<String>,
     ) -> Vec<review::RuntimeResult> {
         if !path.join(runtime_sandbox::CONFIG_PATH).exists() {
@@ -1084,10 +1095,16 @@ impl Daemon {
             .as_ref()
             .map_or(path, |worktree| worktree.path.as_path());
         let id = SessionId::new().as_uuid().to_string();
+        let review_id = run.id;
+        let cancelled = || self.lock().review_cancel.contains(&review_id);
         let sandbox = self.run_sandbox_targets(
             id.clone(),
             run.workspace_id,
-            Some(run.id),
+            Some(crate::sandbox::ForReview {
+                id: review_id,
+                deadline,
+                cancelled: &cancelled,
+            }),
             path,
             run_dir,
             None,
