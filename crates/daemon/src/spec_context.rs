@@ -32,14 +32,28 @@ fn check_ref(root: &Path, cited: &CodeRef) -> Result<(), String> {
     if !path.is_file() {
         return Err(format!("code context {at}: {} is not a file", cited.path));
     }
-    let lines = line_count(&path).map_err(|e| format!("code context {at}: {e}"))?;
-    match lines {
-        Some(lines) if lines < u64::from(cited.line) => Err(format!(
+    let found = has_line(&path, u64::from(cited.line), MAX_SCANNED_BYTES)
+        .map_err(|e| format!("code context {at}: {e}"))?;
+    match found {
+        Lines::Reached => Ok(()),
+        Lines::Short(lines) => Err(format!(
             "code context {at}: {} has {lines} lines",
             cited.path
         )),
-        _ => Ok(()),
+        Lines::Unread => Err(format!(
+            "code context {at}: the line is past the first {} MiB of {}, which Forge does not read",
+            MAX_SCANNED_BYTES / (1024 * 1024),
+            cited.path
+        )),
     }
+}
+
+enum Lines {
+    Reached,
+    /// The whole file was read and has this many lines.
+    Short(u64),
+    /// The cap ended the read before the line.
+    Unread,
 }
 
 enum Miss {
@@ -69,28 +83,29 @@ fn inside(root: &Path, cited: &str) -> Result<PathBuf, Miss> {
     }
 }
 
-/// `None` when the file is longer than [`MAX_SCANNED_BYTES`] and every cited line counts.
-fn line_count(path: &Path) -> std::io::Result<Option<u64>> {
+/// Reads until line `needed` exists, the file ends, or more than `cap` bytes are read.
+fn has_line(path: &Path, needed: u64, cap: u64) -> std::io::Result<Lines> {
     let file = std::fs::File::open(path)?;
-    let mut reader = BufReader::new(file.take(MAX_SCANNED_BYTES + 1));
-    let mut lines = 0u64;
+    let mut reader = BufReader::new(file.take(cap + 1));
+    let mut newlines = 0u64;
+    let mut partial = false;
     let mut read = 0u64;
-    let mut last = b'\n';
     loop {
         let chunk = reader.fill_buf()?;
-        if chunk.is_empty() {
-            break;
-        }
-        lines += chunk.iter().filter(|b| **b == b'\n').count() as u64;
+        let Some(&last) = chunk.last() else { break };
+        newlines += chunk.iter().filter(|b| **b == b'\n').count() as u64;
+        partial = last != b'\n';
         read += chunk.len() as u64;
-        last = chunk[chunk.len() - 1];
         let len = chunk.len();
         reader.consume(len);
+        if newlines + u64::from(partial) >= needed {
+            return Ok(Lines::Reached);
+        }
     }
-    if read > MAX_SCANNED_BYTES {
-        return Ok(None);
+    if read > cap {
+        return Ok(Lines::Unread);
     }
-    Ok(Some(lines + u64::from(last != b'\n')))
+    Ok(Lines::Short(newlines + u64::from(partial)))
 }
 
 /// A program with a slash is a file of the checkout; a bare one is looked up along the launch
@@ -185,6 +200,17 @@ mod tests {
                 "code context link.rs:2: link.rs is outside the checkout".to_owned(),
             ]
         );
+    }
+
+    #[test]
+    fn a_line_past_the_read_cap_is_reported_unread_not_present() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("big.rs");
+        std::fs::write(&path, "a\nb\nc\nd\n").unwrap();
+        assert!(matches!(has_line(&path, 2, 4).unwrap(), Lines::Reached));
+        assert!(matches!(has_line(&path, 4, 4).unwrap(), Lines::Unread));
+        assert!(matches!(has_line(&path, 4, 100).unwrap(), Lines::Reached));
+        assert!(matches!(has_line(&path, 5, 100).unwrap(), Lines::Short(4)));
     }
 
     #[test]

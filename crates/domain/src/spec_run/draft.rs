@@ -359,13 +359,22 @@ fn code_ref(token: &str) -> Option<CodeRef> {
     let end = lines.rsplit('-').next()?;
     let line: u32 = end.parse().ok()?;
     let first = lines.split('-').next()?;
-    let looks_like_path = path.contains('/') || path.contains('.');
+    let looks_like_path = path.contains('/') || path.contains('.') || is_root_file_name(path);
     (looks_like_path && line > 0 && first.parse::<u32>().is_ok() && !path.contains("://")).then(
         || CodeRef {
             path: path.to_owned(),
             line,
         },
     )
+}
+
+/// `Makefile`, `README`, `Dockerfile`: capitalized so that prose such as `ratio 3:2` or
+/// `step:1` is not taken for a file.
+fn is_root_file_name(name: &str) -> bool {
+    name.as_bytes().first().is_some_and(u8::is_ascii_uppercase)
+        && name
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'-')
 }
 
 /// Words `/bin/sh` runs itself, which no `PATH` lookup finds.
@@ -382,14 +391,41 @@ pub fn validation_programs(doc: &SpecDoc) -> Vec<(String, String)> {
         .iter()
         .filter_map(|criterion| {
             let command = criterion.automatic.as_deref()?;
-            let program = command
-                .split_whitespace()
-                .find(|word| !is_assignment(word))?;
+            let program = shell_words(command).find(|word| !is_assignment(word))?;
             let plain = !program.starts_with(['(', '{', '\'', '"', '$', '~']);
             (plain && !SHELL_BUILTINS.contains(&program))
                 .then(|| (criterion.id.clone(), program.to_owned()))
         })
         .collect()
+}
+
+/// Words split on whitespace outside quotes, the quotes kept: `LABEL="a b" cargo` is two words.
+fn shell_words(command: &str) -> impl Iterator<Item = &str> {
+    let mut rest = command.trim_start();
+    std::iter::from_fn(move || {
+        if rest.is_empty() {
+            return None;
+        }
+        let mut quote: Option<char> = None;
+        let end = rest
+            .char_indices()
+            .find(|&(_, c)| match quote {
+                Some(open) if c == open => {
+                    quote = None;
+                    false
+                }
+                Some(_) => false,
+                None if c == '\'' || c == '"' => {
+                    quote = Some(c);
+                    false
+                }
+                None => c.is_whitespace(),
+            })
+            .map_or(rest.len(), |(at, _)| at);
+        let word = &rest[..end];
+        rest = rest[end..].trim_start();
+        Some(word)
+    })
 }
 
 fn is_assignment(word: &str) -> bool {
@@ -546,6 +582,7 @@ mod tests {
 - `crates/daemon/src/spec_runs.rs:687` saves the spec (also crates/daemon/src/spec_runs.rs:687).\n\
 - docs/spec-runs.md:46-60, the checks; https://example.com:443 is not a path; ratio 3:2\n\
 - src/lib.rs:10:5 builds it\n\
+- Makefile:200 runs the gate; step:1 is prose\n\
 \n## Assumptions\n- src/after.rs:1\n";
         assert_eq!(
             code_context_refs(text),
@@ -562,6 +599,10 @@ mod tests {
                     path: "src/lib.rs".into(),
                     line: 10
                 },
+                CodeRef {
+                    path: "Makefile".into(),
+                    line: 200
+                },
             ]
         );
     }
@@ -575,7 +616,8 @@ mod tests {
 - AC-4: WHEN a THE SYSTEM SHALL b\n  - Automatic validation: `(cd x && make)` → 0\n\
 - AC-5: WHEN a THE SYSTEM SHALL b\n  - Manual validation: look\n\
 - AC-6: WHEN a THE SYSTEM SHALL b\n  - Automatic validation: `if cargo test; then exit 0; fi` → 0\n\
-- AC-7: WHEN a THE SYSTEM SHALL b\n  - Automatic validation: `~/bin/tool --check` → 0",
+- AC-7: WHEN a THE SYSTEM SHALL b\n  - Automatic validation: `~/bin/tool --check` → 0\n\
+- AC-8: WHEN a THE SYSTEM SHALL b\n  - Automatic validation: `LABEL=\"cache test\" X='a b' bun test` → 0",
         )
         .unwrap();
         assert_eq!(
@@ -583,6 +625,7 @@ mod tests {
             [
                 ("AC-1".to_owned(), "cargo".to_owned()),
                 ("AC-3".to_owned(), "scripts/dev".to_owned()),
+                ("AC-8".to_owned(), "bun".to_owned()),
             ]
         );
     }
@@ -608,5 +651,21 @@ mod tests {
             }
         );
         assert!(criteria_diff(&new, &new).is_empty());
+
+        let steps = |manual: &str, expected: &str| {
+            parse_spec(&format!(
+                "- AC-1: WHEN a THE SYSTEM SHALL b\n  - Automatic validation: `true` → {expected}\n\
+- AC-2: WHEN c THE SYSTEM SHALL d\n  - Manual validation:\n    1. {manual}\n"
+            ))
+            .unwrap()
+        };
+        assert_eq!(
+            criteria_diff(
+                &steps("open it", "exit 0"),
+                &steps("open it twice", "exit 1")
+            )
+            .changed,
+            ["AC-1", "AC-2"]
+        );
     }
 }

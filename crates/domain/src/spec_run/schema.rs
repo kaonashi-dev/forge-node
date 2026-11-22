@@ -27,6 +27,9 @@ pub struct Criterion {
     /// The first backticked command of its automatic validation.
     pub automatic: Option<String>,
     pub manual: bool,
+    /// Every non-empty line under the criterion up to the next one or a heading, trimmed: its
+    /// validations with their expected results and manual steps.
+    pub detail: Vec<String>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -107,6 +110,7 @@ pub fn parse_spec(text: &str) -> Result<SpecDoc, Vec<String>> {
                 text: rest.to_owned(),
                 automatic: None,
                 manual: false,
+                detail: Vec::new(),
             });
             open = true;
             continue;
@@ -117,6 +121,9 @@ pub fn parse_spec(text: &str) -> Result<SpecDoc, Vec<String>> {
         let Some(current) = criteria.last_mut().filter(|_| open) else {
             continue;
         };
+        if !line.trim().is_empty() {
+            current.detail.push(line.trim().to_owned());
+        }
         let lower = line.to_lowercase();
         if !(lower.contains("validation") || lower.contains("validación")) {
             continue;
