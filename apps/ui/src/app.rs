@@ -613,6 +613,7 @@ impl AppState {
             || self.rename.is_some()
             || self.confirm_close.is_some()
             || self.settings.confirm_reset
+            || self.settings.confirm_restart
             || self.history.confirm_delete.is_some()
             || self.storage.migration.confirm.is_some()
             || self.projects.actions.is_some()
@@ -1798,12 +1799,16 @@ impl AppState {
                 }
                 let first = self.generation == 0;
                 self.generation = generation;
+                // A retry keeps the reason the last attempt failed rather than
+                // repainting it with the socket path every few hundred ms.
+                if first || self.status != LinkStatus::Reconnecting {
+                    self.status_detail = detail;
+                }
                 self.status = if first {
                     LinkStatus::Connecting
                 } else {
                     LinkStatus::Reconnecting
                 };
-                self.status_detail = detail;
                 self.terminal.on_generation(generation);
                 true
             }
@@ -2222,6 +2227,10 @@ impl AppState {
                     return false;
                 }
                 self.apply_migration(action, result);
+                true
+            }
+            UiEvent::DaemonRestart { result } => {
+                self.daemon_restarted(result);
                 true
             }
             UiEvent::PreferenceFailed {
@@ -4067,6 +4076,28 @@ mod tests {
         assert_eq!(state.terminal.attach.held_bytes(), 0);
         assert!(!state.terminal.is_live());
         assert!(matches!(rx.try_recv(), Err(flume::TryRecvError::Empty)));
+    }
+
+    #[test]
+    fn a_retry_keeps_the_reason_the_connection_failed() {
+        let shared = SharedTerminal::new();
+        let (mut state, _rx, _terminal) = attaching_state(&shared);
+        let mut tx = Tx::default();
+        state.apply_events(
+            vec![
+                UiEvent::Disconnected {
+                    generation: 1,
+                    reason: "protocol 43 is not 47".to_string(),
+                },
+                UiEvent::Connecting {
+                    generation: 2,
+                    detail: "socket /tmp/daemon.sock".to_string(),
+                },
+            ],
+            &mut tx,
+        );
+        assert_eq!(state.status, LinkStatus::Reconnecting);
+        assert_eq!(state.status_detail, "protocol 43 is not 47");
     }
 
     #[test]

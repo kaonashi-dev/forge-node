@@ -24,6 +24,12 @@ enum Command {
     },
     /// Print runtime statistics from a running daemon.
     Stats,
+    /// Stop the running daemon by signal, whatever protocol it speaks; it is
+    /// killed when it still runs `--grace` seconds after SIGTERM.
+    Stop {
+        #[arg(long, default_value_t = 10)]
+        grace: u64,
+    },
     /// List, read, or spawn child sessions against a running daemon.
     Session(SessionCli),
     /// Send or list context envelopes against a running daemon.
@@ -57,6 +63,7 @@ fn main() -> anyhow::Result<()> {
             Ok(())
         }
         Command::Stats => daemon::stats(),
+        Command::Stop { grace } => daemon::stop_running(std::time::Duration::from_secs(grace)),
         Command::Session(cli) => session_cli::run_session(cli),
         Command::Context(cli) => session_cli::run_context(cli),
         Command::MigrateHome {

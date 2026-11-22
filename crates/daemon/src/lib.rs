@@ -39,6 +39,7 @@ pub mod shares;
 mod shutdown;
 mod spec_runs;
 mod spec_sandbox;
+mod stop;
 pub mod terminal;
 pub mod terminfo;
 pub mod usage_stats;
@@ -156,6 +157,21 @@ pub fn stats() -> anyhow::Result<()> {
     println!("sessions.orphaned={}", stats.sessions_by_state.orphaned);
     println!("open_terminals={}", stats.open_terminals);
     println!("connected_clients={}", stats.connected_clients);
+    Ok(())
+}
+
+/// Stop the daemon holding this socket's lock — the `stop` subcommand.
+pub fn stop_running(grace: std::time::Duration) -> anyhow::Result<()> {
+    match stop::stop(&paths::lock_path()?, grace)? {
+        stop::Stopped::NotRunning => println!("not running"),
+        stop::Stopped::Exited { pid } => println!("stopped pid {pid}"),
+        stop::Stopped::Killed { pid } => {
+            println!(
+                "killed pid {pid}: still running {}s after SIGTERM",
+                grace.as_secs()
+            );
+        }
+    }
     Ok(())
 }
 

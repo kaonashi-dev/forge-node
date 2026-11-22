@@ -170,6 +170,9 @@ pub struct Settings {
     pub esc: EscAgain,
     /// Factory reset waits for this to be confirmed.
     pub confirm_reset: bool,
+    pub confirm_restart: bool,
+    /// A `forge-daemon stop` is running for a restart.
+    pub restarting: bool,
     pub profile: Option<ProfileForm>,
     /// What each provider's Command field holds, by provider id.
     pub commands: HashMap<String, TextEdit>,
@@ -275,6 +278,7 @@ impl AppState {
     pub fn close_settings(&mut self) {
         self.settings.esc.reset();
         self.settings.confirm_reset = false;
+        self.settings.confirm_restart = false;
         self.show_mode(crate::workbench::CenterMode::Session);
     }
 
@@ -299,6 +303,7 @@ impl AppState {
             || mods.shift
             || self.palette.open
             || self.settings.confirm_reset
+            || self.settings.confirm_restart
             || self.settings.field_focused()
             || self.projects.field_focused()
         {
@@ -502,6 +507,7 @@ pub fn page(s: &AppState, k: &Kit) -> El {
 /// Overlays a settings page asks for.
 pub fn dialogs(s: &AppState, k: &Kit, layer: &mut Vec<El>) {
     general::reset_dialog(s, k, layer);
+    general::restart_dialog(s, k, layer);
 }
 
 #[cfg(test)]

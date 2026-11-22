@@ -244,6 +244,7 @@ running `make run-live` there.
 | `make install-local` | macOS release build, install in Applications, and relaunch the GUI |
 | `scripts/dev daemon` | Run an isolated development daemon |
 | `forge-daemon info` | Print resolved runtime paths and effective configuration |
+| `forge-daemon stop` | Stop the daemon that holds the lock by signal (SIGTERM, then SIGKILL after `--grace`, default 10 s); reaches one that speaks another protocol or stopped answering |
 
 CI runs the workspace and Rune gates on macOS, split into `fmt`, clippy and test
 jobs so lint and the two workspaces do not queue behind each other. `cargo deny
