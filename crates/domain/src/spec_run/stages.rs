@@ -64,24 +64,6 @@ the current task",
         }
     }
 
-    fn graph(&self) -> String {
-        match self.tools.surface {
-            ToolSurface::Mcp => {
-                "`review_graph_query` (query callers, callees, similar or imports; \
-function: its name)"
-                    .to_owned()
-            }
-            ToolSurface::Cli => format!(
-                "`{} --json review graph query --callers|--callees|--similar|--imports <function>`",
-                self.tools.ctl
-            ),
-        }
-    }
-
-    fn kb(&self) -> String {
-        self.tools.tool("review_kb_get", "review kb show")
-    }
-
     fn inbox(&self) -> String {
         self.tools.tool("inbox", "inbox")
     }
@@ -159,7 +141,7 @@ for changes or rejects it in Forge; their text reaches you as a prompt.
         name = ctx.name,
         spec = ctx.path("spec.md"),
         research = ctx.save("research"),
-        graph = ctx.graph(),
+        graph = ctx.tools.graph(),
         plan = ctx.save("plan"),
     )
 }
@@ -335,7 +317,7 @@ checks: a met needs a check of this round that passed.
         spec = ctx.path("spec.md"),
         plan = ctx.path("plan.md"),
         base = input.base_commit,
-        kb = ctx.kb(),
+        kb = ctx.tools.kb(),
         round_tool = ctx.round(),
         report_tool = ctx.report(),
     )

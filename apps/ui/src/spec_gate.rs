@@ -2,9 +2,10 @@
 //! `spec_run_view` only draws it.
 
 use domain::Timestamp;
+use domain::spec_run::draft::{SpecKind, spec_block};
 use domain::spec_run::model::{
-    Delivery, GateDecision, GateKind, NextAction, Placement, Route, RunOutcome, SpecOptions,
-    SpecRunView, SpecStage,
+    CriteriaDiff, Delivery, GateDecision, GateKind, NextAction, Placement, Route, RunOutcome,
+    SpecOptions, SpecRunView, SpecStage,
 };
 use domain::spec_run::schema::{CriterionState, ReportCriterion, report_block};
 
@@ -239,9 +240,173 @@ pub fn criteria_rows(report: &str) -> Vec<CriterionRow> {
     })
 }
 
+/// One review hypothesis as G1 shows it: what the spec did with it, and why Forge suggests it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct RiskRow {
+    pub name: String,
+    pub handled: String,
+    /// Covered by a criterion or declared out of scope.
+    pub weighed: bool,
+    pub suggested: Option<String>,
+}
+
+/// What G1 shows beside the spec: its readiness, its risks and Forge's warnings.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct DraftSummary {
+    pub kind: Option<&'static str>,
+    pub readiness: Vec<(&'static str, &'static str)>,
+    pub risks: Vec<RiskRow>,
+    pub warnings: Vec<String>,
+    /// `None` for a spec saved once.
+    pub changes: Option<String>,
+}
+
+/// Declared risks first, in the spec's order; a suggestion the spec did not weigh follows.
+#[must_use]
+pub fn draft_summary(run: &SpecRunView, spec: Option<&str>) -> DraftSummary {
+    let block = spec.and_then(spec_block);
+    let mut risks: Vec<RiskRow> = block
+        .iter()
+        .flat_map(|block| &block.risks)
+        .map(|risk| RiskRow {
+            name: risk.hypothesis.clone(),
+            handled: risk_handling(&risk.criteria, risk.out_of_scope.as_deref()),
+            weighed: !risk.criteria.is_empty()
+                || risk
+                    .out_of_scope
+                    .as_deref()
+                    .is_some_and(|why| !why.trim().is_empty()),
+            suggested: None,
+        })
+        .collect();
+    for choice in &run.suggested_risks {
+        let name = choice.hypothesis.name();
+        match risks.iter_mut().find(|row| row.name == name) {
+            Some(row) => row.suggested = Some(choice.reason.clone()),
+            None => risks.push(RiskRow {
+                name: name.to_owned(),
+                handled: "not weighed in the spec".to_owned(),
+                weighed: false,
+                suggested: Some(choice.reason.clone()),
+            }),
+        }
+    }
+    DraftSummary {
+        kind: block.as_ref().map(|block| match block.kind {
+            SpecKind::Bug => "bug",
+            SpecKind::Feature => "feature",
+            SpecKind::Change => "change",
+        }),
+        readiness: block.as_ref().map_or_else(Vec::new, |block| {
+            block
+                .readiness
+                .categories()
+                .into_iter()
+                .map(|(name, rating)| (name, rating.as_str()))
+                .collect()
+        }),
+        risks,
+        warnings: run.spec_warnings.clone(),
+        changes: run.spec_changes.as_ref().map(changes_line),
+    }
+}
+
+fn risk_handling(criteria: &[String], out_of_scope: Option<&str>) -> String {
+    match out_of_scope.map(str::trim).filter(|why| !why.is_empty()) {
+        _ if !criteria.is_empty() => format!("covered by {}", criteria.join(", ")),
+        Some(why) => format!("out of scope: {why}"),
+        None => "neither covered nor out of scope".to_owned(),
+    }
+}
+
+#[must_use]
+pub fn changes_line(diff: &CriteriaDiff) -> String {
+    if diff.is_empty() {
+        return "No criterion changed since the last save.".to_owned();
+    }
+    [
+        ("Added", &diff.added),
+        ("Removed", &diff.removed),
+        ("Changed", &diff.changed),
+    ]
+    .into_iter()
+    .filter(|(_, ids)| !ids.is_empty())
+    .map(|(what, ids)| format!("{what} {}", ids.join(", ")))
+    .collect::<Vec<_>>()
+    .join(" · ")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn g1_shows_readiness_declared_and_suggested_risks_and_the_criteria_diff() {
+        let mut run = crate::test_support::spec_run(SpecStage::SpecGate, Timestamp::now());
+        run.spec_warnings = vec!["AC-1 hedges (might): state what THE SYSTEM SHALL do".into()];
+        run.spec_changes = Some(CriteriaDiff {
+            added: vec!["AC-3".into()],
+            removed: vec![],
+            changed: vec!["AC-1".into(), "AC-2".into()],
+        });
+        run.suggested_risks = vec![
+            domain::HypothesisChoice {
+                hypothesis: domain::Hypothesis::RaceCondition,
+                reason: "spec: lock ×2".into(),
+            },
+            domain::HypothesisChoice {
+                hypothesis: domain::Hypothesis::MemoryDiskDrift,
+                reason: "spec: cache ×1".into(),
+            },
+        ];
+        let spec = "# x\n\n```json\n{\"schema\": \"forge.spec/v1\", \"kind\": \"bug\", \"readiness\": \
+{\"scope\": \"clear\", \"data\": \"partial\", \"user_flow\": \"clear\", \"performance_security\": \"clear\", \
+\"integrations\": \"clear\", \"edge_cases\": \"clear\", \"terminology\": \"clear\", \"done_signal\": \"clear\"}, \
+\"reproduction\": {\"reachability\": \"automatic\"}, \"risks\": [{\"hypothesis\": \"RaceCondition\", \
+\"criteria\": [\"AC-2\"]}, {\"hypothesis\": \"MigrationGap\", \"out_of_scope\": \"no schema change\"}]}\n```\n";
+        let summary = draft_summary(&run, Some(spec));
+        assert_eq!(summary.kind, Some("bug"));
+        assert_eq!(summary.readiness[1], ("data", "Partial"));
+        assert_eq!(summary.readiness.len(), 8);
+        assert_eq!(
+            summary.risks,
+            [
+                RiskRow {
+                    name: "RaceCondition".into(),
+                    handled: "covered by AC-2".into(),
+                    weighed: true,
+                    suggested: Some("spec: lock ×2".into()),
+                },
+                RiskRow {
+                    name: "MigrationGap".into(),
+                    handled: "out of scope: no schema change".into(),
+                    weighed: true,
+                    suggested: None,
+                },
+                RiskRow {
+                    name: "MemoryDiskDrift".into(),
+                    handled: "not weighed in the spec".into(),
+                    weighed: false,
+                    suggested: Some("spec: cache ×1".into()),
+                },
+            ]
+        );
+        assert_eq!(summary.warnings, run.spec_warnings);
+        assert_eq!(
+            summary.changes.as_deref(),
+            Some("Added AC-3 · Changed AC-1, AC-2")
+        );
+
+        let bare = draft_summary(
+            &crate::test_support::spec_run(SpecStage::SpecGate, Timestamp::now()),
+            None,
+        );
+        assert_eq!(bare, DraftSummary::default());
+        assert_eq!(
+            changes_line(&CriteriaDiff::default()),
+            "No criterion changed since the last save."
+        );
+    }
 
     fn options(placement: Placement, delivery: Delivery) -> SpecOptions {
         SpecOptions {

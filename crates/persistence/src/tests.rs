@@ -2107,6 +2107,9 @@ fn a_spec_run_round_trips_as_metadata() {
         manual_checked: Vec::new(),
         attention: None,
         last_reason: None,
+        spec_warnings: Vec::new(),
+        spec_changes: None,
+        suggested_risks: Vec::new(),
         created_at: Timestamp::now(),
         updated_at: Timestamp::now(),
     };

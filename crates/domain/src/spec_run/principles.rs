@@ -33,10 +33,32 @@ Ask with your question tool (AskUserQuestion for Claude) in batches of at most 4
 first: scope, then security, then experience, then technical. Write each answer into the section \
 of the spec it affects, replacing the text it contradicts.";
 
+/// Follows "rate each category Clear, Partial or Missing in <where>: ".
 pub const READINESS: &str = "\
-Before asking for approval, rate each category Clear, Partial or Missing in a table: scope, data, \
-user flow, performance and security, integrations, edge cases, terminology, done signal. Do not \
-ask for approval while one is Missing.";
+scope, data, user flow, performance and security, integrations, edge cases, terminology, done \
+signal. A spec with one Missing or left out is not ready: ask until none is.";
+
+/// The hypothesis families Forge Review hunts, named as `crate::Hypothesis::name` spells them.
+pub const RISKS: &str = "\
+Reviews of the change hunt these defect families; name the ones this change could fall into \
+and cover each with a criterion, or declare it out of scope with why: UntrustedRepoInput (a path, \
+symlink or file the checkout controls), MemoryDiskDrift (state lost or wrong after a restart, a \
+stale cache), LifecycleCancelRetry (a cancel or retry that leaves work or a flag behind), \
+TransitionCleanup (what a reconnect, restart or replacement leaves pending), RaceCondition, \
+MigrationGap, BrokenContract, MissingValidation, AuthBypass.";
+
+pub const SPEC_BLOCK: &str = "\
+```json
+{\"schema\": \"forge.spec/v1\", \"kind\": \"bug | feature | change\",
+ \"readiness\": {\"scope\": \"clear\", \"data\": \"clear\", \"user_flow\": \"partial\",
+               \"performance_security\": \"clear\", \"integrations\": \"clear\",
+               \"edge_cases\": \"partial\", \"terminology\": \"clear\", \"done_signal\": \"clear\"},
+ \"reproduction\": {\"reachability\": \"automatic | sequence | adversarial\",
+                  \"trigger\": \"what sets it off\", \"command\": \"what shows it\"},
+ \"risks\": [{\"hypothesis\": \"RaceCondition\", \"criteria\": [\"AC-2\"]},
+           {\"hypothesis\": \"MigrationGap\", \"out_of_scope\": \"no schema change\"}]}
+```
+`reproduction` is required for a bug and left out otherwise.";
 
 pub const ARTIFACT_RULES: &str = "\
 ## Publishing as a Claude artifact

@@ -46,7 +46,28 @@ own rounds, and the gate runs after the last task.
 ## What Forge checks
 
 - A spec needs at least one `AC-n`, each with an automatic or manual
-  validation, and no repeated id. The spec and the plan are pinned by their SHA-256 when
+  validation, and no repeated id. A spec being saved also needs its
+  `forge.spec/v1` block (`domain::spec_run::draft`): `kind` (`bug`, `feature`
+  or `change`), all eight readiness categories rated `clear`, `partial` or
+  `missing` with none `missing`, and for a bug a `reproduction` naming its
+  reachability (`automatic`, `sequence` or `adversarial`). A criterion that
+  hedges or lacks SHALL, a reproduction without trigger or command, and a risk
+  that names an unknown hypothesis or criterion or is neither covered nor out of
+  scope are warnings: the save answers them in `SpecArtifactSaved` and keeps
+  them in `spec_warnings`, with the criteria added, removed or changed since the
+  previous save in `spec_changes`, for G1. An approved spec is re-read with the
+  criteria checks alone, so a run approved before the block existed still reads.
+- Saving a spec also checks it against the run's checkout, off every lock: each
+  `path:line` under "Code context" (at most 64, each file read to 8 MiB) must
+  name a file inside the checkout, after symlinks, with that many lines, and
+  each automatic validation's program must be an executable: a path in the
+  checkout, an absolute path, or a name on the launch environment's `PATH`
+  (shell builtins are skipped). A miss is a warning, like the ones above.
+- Forge scores `source.md` and the code context's paths with the review
+  hypotheses' signals (`review_hypotheses::suggest`, at most four) and keeps
+  them in `suggested_risks`; the drafter's prompt names them at launch. G1 shows
+  the kind, the readiness, the declared and suggested risks, the warnings and
+  the criteria diff beside the spec. The spec and the plan are pinned by their SHA-256 when
   saved; one edited on disk afterwards stops the run instead of changing what
   Forge checks.
 - A plan's `forge.spec_plan/v1` block names, per step, the criteria it serves
@@ -79,7 +100,9 @@ own rounds, and the gate runs after the last task.
   the background PR agent with the report as the base of the body, and Forge
   appends the report's criteria table when the agent left it out.
 - The Forge Review that follows the report runs one reviewer, whatever
-  `[review] reviewers` says.
+  `[review] reviewers` says, and is given the approved spec's "Out of scope"
+  as its instructions, so it reads it as acknowledged scope and does not report
+  what the spec leaves out as missing.
 
 ## The checks' sandbox
 
@@ -104,6 +127,12 @@ says `not sandboxed: <reason>`, its record carries the reason in
 `not_sandboxed`, and the planner's review prompt shows it beside the result.
 
 ## What the agents are told to use
+
+The drafter, while it investigates, asks the same graph who calls what the change
+would touch and reads the knowledge base, both named for its `ToolSurface`; it
+weighs the review hypothesis families as risks, each covered by a criterion or
+out of scope, and writes "Out of scope" under the heading Forge Review
+recognizes as acknowledged scope.
 
 The planner's research step asks the codebase graph who calls each function a
 criterion touches and what it calls (MCP `review_graph_query`, CLI `forgectl

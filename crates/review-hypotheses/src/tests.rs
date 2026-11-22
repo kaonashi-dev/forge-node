@@ -384,3 +384,14 @@ fn every_hypothesis_has_its_own_instruction_and_keywords() {
     assert_eq!(lifecycle.agents[0].slice_paths, ["src/cancel.rs"]);
     assert_eq!(lifecycle.agents[1].slice_paths, ["src/fs.rs"]);
 }
+
+#[test]
+fn a_spec_source_suggests_the_risks_its_words_and_paths_name() {
+    let source = "Cancel the fetch when the tab closes.\nThe retry must not run after a cancel.\n\
+Keep the cache across a restart.";
+    let chosen = suggest(source, &["crates/daemon/src/cache.rs".to_owned()], 2);
+    let names: Vec<&str> = chosen.iter().map(|c| c.hypothesis.name()).collect();
+    assert_eq!(names, ["MemoryDiskDrift", "LifecycleCancelRetry"]);
+    assert_eq!(chosen[0].reason, "spec: cache ×2, restart ×1");
+    assert!(suggest("Rename the button label.", &[], 4).is_empty());
+}

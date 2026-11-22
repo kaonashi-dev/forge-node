@@ -656,7 +656,7 @@ fn save(app: &App, client: &Client, args: SaveArgs) -> Result<(), u8> {
         KindArg::Exit => (SpecArtifactKind::Exit, schema::MAX_SPEC_BYTES),
     };
     let content = read_text(app, &args.file, cap)?;
-    app.call(
+    let response = app.call(
         client,
         Request::SaveSpecArtifact {
             spec_run_id,
@@ -667,7 +667,11 @@ fn save(app: &App, client: &Client, args: SaveArgs) -> Result<(), u8> {
         },
         true,
     )?;
-    app.print_ok(json!({ "saved": kind }));
+    let warnings = match response {
+        Response::SpecArtifactSaved { warnings } => warnings,
+        _ => Vec::new(),
+    };
+    app.print_ok(json!({ "saved": kind, "warnings": warnings }));
     Ok(())
 }
 

@@ -6,6 +6,7 @@ use crate::orchestration::ToolSurface;
 use crate::{AgentDescriptor, EffortSpelling};
 
 mod brief;
+pub mod draft;
 pub mod model;
 pub mod principles;
 pub mod schema;
@@ -13,7 +14,7 @@ pub mod stages;
 
 pub use brief::{
     coder_rules, compose_drafter_prompt, compose_planner_prompt, guide, resolve_spec_section,
-    DrafterInput, ReportTo, Tools, MAX_STAGE_INSTRUCTIONS, REPORT_FORMAT,
+    DrafterInput, ReportTo, SpecFor, Tools, MAX_STAGE_INSTRUCTIONS, REPORT_FORMAT,
 };
 
 #[derive(Clone, Debug, PartialEq, Eq)]
