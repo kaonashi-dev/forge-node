@@ -696,8 +696,9 @@ pub enum Request {
         coder: AgentPick,
         options: SpecOptions,
     },
-    /// A run agent hands over its spec, research, plan or early exit → `Ack`. Validated before
-    /// it is kept; `InvalidRequest` lists every reason. `spec_run_id: None` is the caller's run.
+    /// A run agent hands over its spec, research, plan or early exit →
+    /// `Response::SpecArtifactSaved`. Validated before it is kept; `InvalidRequest` lists every
+    /// reason. `spec_run_id: None` is the caller's run.
     SaveSpecArtifact {
         #[serde(default)]
         spec_run_id: Option<SpecRunId>,

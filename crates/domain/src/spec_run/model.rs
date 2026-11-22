@@ -4,8 +4,8 @@
 use serde::{Deserialize, Serialize};
 
 use crate::{
-    AgentProfileId, AgentProviderId, ProjectActionId, ProjectId, ReviewId, RunId, SessionId,
-    SpecRunId, TaskId, Timestamp, WorkspaceId,
+    AgentProfileId, AgentProviderId, HypothesisChoice, ProjectActionId, ProjectId, ReviewId, RunId,
+    SessionId, SpecRunId, TaskId, Timestamp, WorkspaceId,
 };
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -231,6 +231,25 @@ impl RunOutcome {
     }
 }
 
+/// Criterion ids, each list sorted.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CriteriaDiff {
+    #[serde(default)]
+    pub added: Vec<String>,
+    #[serde(default)]
+    pub removed: Vec<String>,
+    /// Same id, different text or validation.
+    #[serde(default)]
+    pub changed: Vec<String>,
+}
+
+impl CriteriaDiff {
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.added.is_empty() && self.removed.is_empty() && self.changed.is_empty()
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SpecRunView {
     pub id: SpecRunId,
@@ -302,6 +321,15 @@ pub struct SpecRunView {
     /// The last text a gate decision sent to an agent.
     #[serde(default)]
     pub last_reason: Option<String>,
+    /// What the last saved spec was warned about without being refused, for G1.
+    #[serde(default)]
+    pub spec_warnings: Vec<String>,
+    /// The last saved spec's criteria against the one it replaced; `None` for the first save.
+    #[serde(default)]
+    pub spec_changes: Option<CriteriaDiff>,
+    /// Review hypotheses the source and the spec's code context point at, scored like a diff.
+    #[serde(default)]
+    pub suggested_risks: Vec<HypothesisChoice>,
     pub created_at: Timestamp,
     pub updated_at: Timestamp,
 }

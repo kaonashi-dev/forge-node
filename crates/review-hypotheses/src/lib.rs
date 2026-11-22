@@ -326,10 +326,52 @@ pub fn select(size: usize, explicit: &[Hypothesis], files: &[DiffFile]) -> Vec<H
     chosen
 }
 
+/// Risks a spec could carry, scored like a diff's signals: each of the source's first
+/// [`MAX_SCORED_LINES`] lines counts once, each path it touches [`PATH_WEIGHT`]. At most
+/// `limit`, strongest first, none below the score [`select`] would pick.
+#[must_use]
+pub fn suggest(source: &str, paths: &[String], limit: usize) -> Vec<HypothesisChoice> {
+    let lines = source
+        .lines()
+        .take(MAX_SCORED_LINES)
+        .map(|line| (clip(line, MAX_SCORED_LINE_BYTES), 1));
+    let paths = paths.iter().map(|path| (path.as_str(), PATH_WEIGHT));
+    let mut scored = score_texts(lines.chain(paths), "spec");
+    scored.retain(|(_, score, _)| *score >= MIN_SCORE);
+    scored.sort_by_key(|(hypothesis, score, _)| {
+        (
+            std::cmp::Reverse(*score),
+            ORDER.iter().position(|h| h == hypothesis),
+        )
+    });
+    scored
+        .into_iter()
+        .take(limit)
+        .map(|(hypothesis, _, reason)| HypothesisChoice { hypothesis, reason })
+        .collect()
+}
+
 /// Each hypothesis with signals and its score: one per added line naming one
 /// of them, [`PATH_WEIGHT`] per path that does. The reason names its most
 /// frequent signals.
 fn score(files: &[DiffFile]) -> Vec<(Hypothesis, u32, String)> {
+    let paths = files.iter().map(|file| (file.path.as_str(), PATH_WEIGHT));
+    let added = files
+        .iter()
+        .flat_map(|file| {
+            file.patch
+                .lines()
+                .filter(|line| line.starts_with('+') && !line.starts_with("+++"))
+        })
+        .take(MAX_SCORED_LINES)
+        .map(|line| (clip(&line[1..], MAX_SCORED_LINE_BYTES), 1));
+    score_texts(paths.chain(added), "diff")
+}
+
+fn score_texts<'a>(
+    texts: impl Iterator<Item = (&'a str, u32)>,
+    origin: &str,
+) -> Vec<(Hypothesis, u32, String)> {
     let candidates: Vec<(Hypothesis, &[&str])> = ORDER
         .iter()
         .map(|&hypothesis| (hypothesis, signals(hypothesis)))
@@ -355,16 +397,8 @@ fn score(files: &[DiffFile]) -> Vec<(Hypothesis, u32, String)> {
             }
         }
     };
-    for file in files {
-        tally(&file.path, PATH_WEIGHT);
-    }
-    let added = files.iter().flat_map(|file| {
-        file.patch
-            .lines()
-            .filter(|line| line.starts_with('+') && !line.starts_with("+++"))
-    });
-    for line in added.take(MAX_SCORED_LINES) {
-        tally(clip(&line[1..], MAX_SCORED_LINE_BYTES), 1);
+    for (text, weight) in texts {
+        tally(text, weight);
     }
     candidates
         .iter()
@@ -383,7 +417,11 @@ fn score(files: &[DiffFile]) -> Vec<(Hypothesis, u32, String)> {
                 .take(REASON_SIGNALS)
                 .map(|(word, n)| format!("{word} ×{n}"))
                 .collect();
-            (*hypothesis, score, format!("diff: {}", listed.join(", ")))
+            (
+                *hypothesis,
+                score,
+                format!("{origin}: {}", listed.join(", ")),
+            )
         })
         .collect()
 }

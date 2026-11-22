@@ -3245,11 +3245,14 @@ fn spec_runs_start_with_a_drafter_and_pass_gates_from_the_cli() {
     let written = harness.tmp.path().join("resolved.md");
     fs::write(
         &written,
-        "# Cache\n\n## Acceptance criteria\n- AC-1: WHEN loaded twice THE SYSTEM SHALL read once\n  - Automatic validation: `true` → exit 0\n",
+        "# Cache\n\n## Acceptance criteria\n- AC-1: WHEN loaded twice THE SYSTEM SHALL read once\n  - Automatic validation: `true` → exit 0\n\n\
+```json\n{\"schema\": \"forge.spec/v1\", \"kind\": \"change\", \"readiness\": {\"scope\": \"clear\", \"data\": \"clear\", \
+\"user_flow\": \"clear\", \"performance_security\": \"clear\", \"integrations\": \"clear\", \"edge_cases\": \"clear\", \
+\"terminology\": \"clear\", \"done_signal\": \"clear\"}, \"risks\": [{\"hypothesis\": \"RaceCondition\"}]}\n```\n",
     )
     .unwrap();
     let as_drafter = [("FORGE_SESSION_ID", drafter.as_str())];
-    ok(&ctl.run(
+    let saved = ok(&ctl.run(
         &[
             "spec",
             "save",
@@ -3260,6 +3263,11 @@ fn spec_runs_start_with_a_drafter_and_pass_gates_from_the_cli() {
         ],
         &as_drafter,
     ));
+    assert_eq!(
+        saved["warnings"],
+        json!(["risk RaceCondition is neither covered by a criterion nor declared out of scope"]),
+        "{saved}"
+    );
     let waiting = ok(&ctl.run(&["spec", "status", "--attention"], &[]));
     let listed = waiting["spec_runs"].as_array().unwrap();
     assert!(

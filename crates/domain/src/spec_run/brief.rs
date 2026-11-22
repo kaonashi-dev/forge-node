@@ -3,7 +3,9 @@
 
 use std::sync::LazyLock;
 
-use super::principles::{ARTIFACT_RULES, POWER_OF_THE_SIMPLE, PRINCIPLES, QUESTIONS, READINESS};
+use super::principles::{
+    ARTIFACT_RULES, POWER_OF_THE_SIMPLE, PRINCIPLES, QUESTIONS, READINESS, RISKS, SPEC_BLOCK,
+};
 use super::{quote, source_section, SpecRun};
 use crate::orchestration::ToolSurface;
 
@@ -85,6 +87,24 @@ impl Tools {
     }
 
     #[must_use]
+    pub fn graph(&self) -> String {
+        if self.mcp() {
+            "`review_graph_query` (query callers, callees, similar or imports; function: its name)"
+                .to_owned()
+        } else {
+            format!(
+                "`{} --json review graph query --callers|--callees|--similar|--imports <function>`",
+                self.ctl
+            )
+        }
+    }
+
+    #[must_use]
+    pub fn kb(&self) -> String {
+        self.tool("review_kb_get", "review kb show")
+    }
+
+    #[must_use]
     pub fn tool(&self, mcp: &str, cli: &str) -> String {
         if self.mcp() {
             format!("`{mcp}`")
@@ -150,36 +170,70 @@ you are idle."
     }
 }
 
+/// Where the resolved spec goes: only a spec saved through Forge carries the block it checks.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SpecFor {
+    /// `forgectl spec brief`: the planner keeps the spec in its own session.
+    Brief,
+    /// A spec run's drafter, whose spec `spec_save` validates.
+    Forge,
+}
+
 /// Stage 1 text, shared by a Run Spec planner and a Draft Spec drafter.
 #[must_use]
-pub fn resolve_spec_section(questions_with: &str) -> String {
+pub fn resolve_spec_section(questions_with: &str, tools: &Tools, spec_for: SpecFor) -> String {
+    let (readiness_in, ending) = match spec_for {
+        SpecFor::Brief => ("a table", String::new()),
+        SpecFor::Forge => (
+            "the block's `readiness`",
+            format!(" It ends with the block below, filled in.\n\n{SPEC_BLOCK}"),
+        ),
+    };
     format!(
         "## 1. Resolve the spec
 
 1. Understand. Write your hypothesis in one sentence with your confidence (for example 70 %). \
 Below 70 %, say what is missing. What the code answers is not asked.
-2. Investigate without opinion. Describe what exists, with file:line, proposing nothing yet. Send \
-wide searches to subagents to protect your context.
+2. Investigate without opinion. Describe what exists, with file:line, proposing nothing yet. Ask \
+the codebase graph who calls each function the change would touch and what it calls ({graph}), \
+and read the project's architecture notes and learned rules ({kb}). Send wide searches to \
+subagents to protect your context.
 3. Reproduce, if it is a bug. Find a command or test that shows the failure, then check whether the \
 behaviour is intended (docs, comments, git blame, earlier issues). The verdict is bug, intended or \
-unclear; in doubt it stays unclear.
-4. Ask what is left. {questions_with}
-5. Write the resolved spec: every criterion gets a stable id (AC-1, AC-2…) and a validation, \
+unclear; in doubt it stays unclear. Record how the failure is reached: automatic (a command or \
+test alone shows it), sequence (a person's steps in order) or adversarial (only crafted input \
+does), with its trigger and the command.
+4. Weigh the risks. {RISKS}
+5. Ask what is left. {questions_with}
+6. Write the resolved spec: every criterion gets a stable id (AC-1, AC-2…) and a validation, \
 preferably a command with its expected result; a manual check only when nothing can be automated.
 
+Before asking for approval, rate each category Clear, Partial or Missing in {readiness_in}: \
 {READINESS}
 
-The resolved spec has these sections: Problem; Acceptance criteria (AC-n: WHEN <event> THE SYSTEM \
-SHALL <behaviour>, then `Automatic validation: <command> → <expected>` or `Manual validation: \
-<steps>`); Unchanged behaviour; Out of scope; Boundaries (Always / Ask first / Never); Assumptions; \
-Clarifications (Q → A); Code context (facts with file:line). Its header names the route: short \
-(at most 3 criteria, no protocol or schema change), standard, or full (several capabilities \
-tested apart).
+The resolved spec has these sections:
+- Problem. For a bug: actual → expected → the mechanism, with file:line, then the reproduction.
+- Acceptance criteria, declarative EARS: `AC-n: WHEN <event> THE SYSTEM SHALL <behaviour>`, never \
+\"might\", \"could\" or \"should consider\"; then `Automatic validation: <command> → <expected>` or \
+`Manual validation: <steps>`.
+- Risks: each family you weighed, with the criteria that cover it or why it is out of scope.
+- Unchanged behaviour.
+- Out of scope, under a heading that reads exactly `## Out of scope`. It excuses a feature left \
+out, never a defect: a defect in what the change touches is a criterion.
+- Boundaries (Always / Ask first / Never); Assumptions; Clarifications (Q → A).
+- Context: where the idea came from. When the source names another product, the spec names each \
+capability by what it does and that product's name appears only here.
+- Code context: facts with file:line. Every path and document you cite must exist; open it first.
+
+Its header names the route: short (at most 3 criteria, no protocol or schema change), standard, or \
+full (several capabilities tested apart).{ending}
 
 Ending without a spec is a valid result, not a failure: needs_details (only the reporter has the \
 information), intended_behavior (say why it is not a bug), not_actionable, or too_big (propose how \
 to split it). Each one is reported with its evidence.
-"
+",
+        graph = tools.graph(),
+        kb = tools.kb(),
     )
 }
 
@@ -320,7 +374,7 @@ Finish with the report. Do not commit, push, merge or close the coder's session 
 asks.
 ",
         source = source_section(&run.source),
-        resolve = resolve_spec_section(&questions),
+        resolve = resolve_spec_section(&questions, &tools, SpecFor::Brief),
         plan = plan_section(DEFAULT_GATE),
         wait = tools.wait("<coder id>"),
         read = tools.read("<coder id>"),
@@ -398,6 +452,23 @@ pub struct DrafterInput<'a> {
     pub source: &'a str,
     pub tools: &'a Tools,
     pub publish_artifact: bool,
+    /// Forge's scoring of the source, strongest first; a hint to weigh, not a verdict.
+    pub suggested_risks: &'a [crate::HypothesisChoice],
+}
+
+fn suggested_risks_line(risks: &[crate::HypothesisChoice]) -> String {
+    if risks.is_empty() {
+        return String::new();
+    }
+    let named: Vec<String> = risks
+        .iter()
+        .map(|risk| format!("{} ({})", risk.hypothesis.name(), risk.reason))
+        .collect();
+    format!(
+        "\nForge's reading of the source's words points at these risks: {}. Weigh them in step 4 \
+with the others.\n",
+        named.join("; ")
+    )
 }
 
 #[must_use]
@@ -434,20 +505,23 @@ write or edit code and you do not commit: you read, search, run read-only comman
 ## The source
 
 {source}
-
+{suggested}
 {resolve}
 ## Hand it over
 
 - Write the spec to a file outside the checkout and save it with {save}{mcp_args}. Forge refuses \
-a spec without at least one AC-n carrying a validation, or with a repeated id; fix what it refuses \
-and save again.
+a spec without at least one AC-n carrying a validation, with a repeated id, without the \
+`forge.spec/v1` block, with a readiness category Missing, or a bug whose reproduction names no \
+reachability; fix what it refuses and save again. It accepts with `warnings` a hedged criterion or \
+a risk left uncovered: fix those too before you stop, or say in Assumptions why one stays.
 - An early exit is saved with {exit}: the first line names the exit (needs_details, \
 intended_behavior, not_actionable or too_big) and the rest is its evidence.
 - Then stop. The person approves, asks for changes or rejects in Forge, never in this terminal. \
 Their text reaches you as a prompt: write each answer into the section it affects and save again.
 {publish}",
         source = input.source,
-        resolve = resolve_spec_section(QUESTIONS),
+        suggested = suggested_risks_line(input.suggested_risks),
+        resolve = resolve_spec_section(QUESTIONS, input.tools, SpecFor::Forge),
     )
 }
 
@@ -591,6 +665,7 @@ mod tests {
             source: "Make the loader faster.",
             tools: &tools,
             publish_artifact: true,
+            suggested_risks: &[],
         })
     }
 
@@ -627,9 +702,86 @@ mod tests {
             source: "x",
             tools: &Tools::new(ToolSurface::Cli, std::path::Path::new("/bin/forgectl")),
             publish_artifact: false,
+            suggested_risks: &[],
         });
         assert!(cli.contains("`/bin/forgectl --json spec save r1 --kind spec --file <spec file>`"));
         assert!(!cli.contains("artifact_url"));
+
+        assert!(text.contains("`review_graph_query` (query callers, callees"));
+        assert!(text.contains("`review_kb_get`"));
+        assert!(!text.contains("forgectl"), "{text}");
+        assert!(cli.contains(
+            "`/bin/forgectl --json review graph query --callers|--callees|--similar|--imports <function>`"
+        ));
+        assert!(cli.contains("`/bin/forgectl --json review kb show`"));
+        assert!(!cli.contains("`review_graph_query`"));
+    }
+
+    #[test]
+    fn the_drafter_is_told_what_forge_now_checks() {
+        let text = drafter_prompt_for_test();
+        for asked in [
+            "actual → expected → the mechanism, with file:line",
+            "automatic (a command or test alone shows it), sequence",
+            "THE SYSTEM SHALL <behaviour>`, never \"might\", \"could\" or \"should consider\"",
+            "a heading that reads exactly `## Out of scope`",
+            "never a defect",
+            "that product's name appears only here",
+            "Every path and document you cite must exist",
+            "\"schema\": \"forge.spec/v1\"",
+            "UntrustedRepoInput",
+            "with `warnings`",
+        ] {
+            assert!(text.contains(asked), "{asked}");
+        }
+    }
+
+    #[test]
+    fn suggested_risks_reach_the_drafter_with_their_reason() {
+        let tools = Tools::new(ToolSurface::Mcp, std::path::Path::new("/bin/forgectl"));
+        let risks = [crate::HypothesisChoice {
+            hypothesis: crate::Hypothesis::MemoryDiskDrift,
+            reason: "spec: cache ×2".into(),
+        }];
+        let text = compose_drafter_prompt(&DrafterInput {
+            spec_run_id: "r1",
+            source: "Keep the cache.",
+            tools: &tools,
+            publish_artifact: false,
+            suggested_risks: &risks,
+        });
+        assert!(text.contains("points at these risks: MemoryDiskDrift (spec: cache ×2)."));
+        assert!(!drafter_prompt_for_test().contains("points at these risks"));
+    }
+
+    #[test]
+    fn only_a_spec_forge_saves_carries_the_block() {
+        let brief = compose_planner_prompt(&run(claude(), None));
+        assert!(!brief.contains("forge.spec/v1"), "{brief}");
+        assert!(brief.contains("Clear, Partial or Missing in a table"));
+        assert!(drafter_prompt_for_test().contains("Clear, Partial or Missing in the block's"));
+    }
+
+    #[test]
+    fn the_risk_families_are_hypotheses_review_knows() {
+        let named: Vec<&str> = RISKS
+            .split(|c: char| !c.is_ascii_alphanumeric())
+            .filter(|w| w.len() > 1 && w.chars().skip(1).any(|c| c.is_ascii_uppercase()))
+            .collect();
+        assert_eq!(named.len(), 9, "{named:?}");
+        for name in named {
+            assert!(crate::Hypothesis::from_name(name).is_some(), "{name}");
+        }
+    }
+
+    #[test]
+    fn the_block_template_is_a_valid_block_once_filled_in() {
+        let filled = SPEC_BLOCK
+            .replace("bug | feature | change", "bug")
+            .replace("automatic | sequence | adversarial", "sequence");
+        let block = super::super::draft::spec_block(&filled).expect("the template parses");
+        assert_eq!(block.kind, super::super::draft::SpecKind::Bug);
+        assert_eq!(block.risks.len(), 2);
     }
 
     #[test]

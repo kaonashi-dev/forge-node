@@ -245,7 +245,7 @@ impl PlanDoc {
     }
 }
 
-fn find_block(text: &str, schema: &str) -> Option<Value> {
+pub(super) fn find_block(text: &str, schema: &str) -> Option<Value> {
     text.match_indices('{').find_map(|(at, _)| {
         let mut stream = serde_json::Deserializer::from_str(&text[at..]).into_iter::<Value>();
         match stream.next() {

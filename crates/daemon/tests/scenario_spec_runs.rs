@@ -79,8 +79,10 @@ fn worktree(branch: &str) -> Placement {
 const SPEC: &str = "# Loader cache\nRoute: standard · Source: idea\n\n## Problem\nSlow.\n\n\
 ## Acceptance criteria\n\
 - AC-1: WHEN the loader runs THE SYSTEM SHALL write done.txt\n  - Automatic validation: `test -f done.txt` → exit 0\n\
-- AC-2: WHEN asked THE SYSTEM SHALL say fast\n  - Automatic validation: `grep -q fast done.txt` → exit 0\n\n\
-## Out of scope\nNone\n";
+- AC-2: WHEN asked THE SYSTEM SHALL say fast\n  - Automatic validation: `/usr/bin/grep -q fast done.txt` → exit 0\n\n\
+## Out of scope\n- Windows support\n\n```json\n{\"schema\": \"forge.spec/v1\", \"kind\": \"feature\", \"readiness\": {\"scope\": \"clear\", \"data\": \"clear\", \
+\"user_flow\": \"clear\", \"performance_security\": \"clear\", \"integrations\": \"clear\", \"edge_cases\": \"clear\", \
+\"terminology\": \"clear\", \"done_signal\": \"clear\"}}\n```\n";
 
 fn plan(ac1: &str, ac2: &str, gate: Option<&str>) -> String {
     let gate = gate
@@ -316,7 +318,21 @@ fn a_spec_run_passes_its_gates_and_meets_only_what_a_check_proved() {
     )
     .expect_err("refused");
     assert_eq!(refused.code, ErrorCode::InvalidRequest);
-    save(&client, id, drafter, SpecArtifactKind::Spec, SPEC).expect("spec saved");
+    let missing = save(
+        &client,
+        id,
+        drafter,
+        SpecArtifactKind::Spec,
+        &SPEC.replace("\"data\": \"clear\"", "\"data\": \"missing\""),
+    )
+    .expect_err("refused");
+    assert!(missing.message.contains("data is Missing"), "{missing:?}");
+    let saved = save(&client, id, drafter, SpecArtifactKind::Spec, SPEC).expect("spec saved");
+    assert!(
+        matches!(saved, Response::SpecArtifactSaved { ref warnings } if warnings.is_empty()),
+        "{saved:?}"
+    );
+    assert_eq!(detail(&client, id).run.spec_changes, None);
 
     // AC-11: no reason is refused; a reason reaches the drafter verbatim.
     let bare = gate(
@@ -352,7 +368,37 @@ fn a_spec_run_passes_its_gates_and_meets_only_what_a_check_proved() {
         matches!(own, client::ClientError::Protocol(ref e) if e.code == ErrorCode::Conflict || e.code == ErrorCode::PreconditionFailed),
         "{own:?}"
     );
-    save(&client, id, drafter, SpecArtifactKind::Spec, SPEC).expect("spec saved again");
+    let reworded = SPEC
+        .replace("SHALL say fast", "SHALL say fast, if possible")
+        .replace(
+            "## Out of scope",
+            "## Code context\n- `README.md:1` names the repo; src/cache.rs:3 keeps reads\n\n## Out of scope",
+        );
+    let saved =
+        save(&client, id, drafter, SpecArtifactKind::Spec, &reworded).expect("spec saved again");
+    let Response::SpecArtifactSaved { warnings } = saved else {
+        panic!("{saved:?}");
+    };
+    assert_eq!(
+        warnings,
+        [
+            "AC-2 hedges (if possible): state what THE SYSTEM SHALL do",
+            "code context src/cache.rs:3: src/cache.rs does not exist in the checkout",
+        ]
+    );
+    let run = detail(&client, id).run;
+    assert_eq!(run.spec_warnings, warnings);
+    let suggested: Vec<&str> = run
+        .suggested_risks
+        .iter()
+        .map(|risk| risk.hypothesis.name())
+        .collect();
+    assert_eq!(suggested, ["MemoryDiskDrift"]);
+    let changes = run
+        .spec_changes
+        .expect("a second save is diffed against the first");
+    assert_eq!(changes.changed, ["AC-2"]);
+    assert!(changes.added.is_empty() && changes.removed.is_empty());
     gate(&client, id, GateKind::Spec, approve()).expect("G1");
     let run = wait_stage(&client, id, SpecStage::Planning);
     let planner = run.session(SpecRole::Planner).expect("planner");
@@ -496,7 +542,7 @@ fn a_spec_run_passes_its_gates_and_meets_only_what_a_check_proved() {
     let after = detail(&client, id);
     assert_eq!(after.run.source.sha256, before.run.source.sha256);
     assert!(after.run.source.sha256.is_some());
-    assert_eq!(after.spec.as_deref(), Some(SPEC));
+    assert_eq!(after.spec.as_deref(), Some(reworded.as_str()));
     assert!(after
         .plan
         .as_deref()
@@ -550,10 +596,22 @@ fn without_a_worktree_the_review_leaves_out_what_was_already_modified() {
 
     // The configured default is three reviewers; a spec run's Forge Review asks for one.
     let review_id = run.review_id.expect("the report started Forge Review");
-    match client.request(Request::GetReview { review_id }) {
-        Ok(Response::Review { run, .. }) => assert_eq!(run.reviewers, 1, "{run:?}"),
+    let review = || match client.request(Request::GetReview { review_id }) {
+        Ok(Response::Review { run, .. }) => *run,
         other => panic!("GetReview: {other:?}"),
-    }
+    };
+    assert_eq!(review().reviewers, 1);
+    assert!(
+        common::poll_until(Duration::from_secs(30), || review()
+            .coverage
+            .acknowledged_scope
+            .is_some()),
+        "the approved spec's scope never reached the review"
+    );
+    assert_eq!(
+        review().coverage.acknowledged_scope.as_deref(),
+        Some("## Out of scope\n- Windows support")
+    );
 }
 
 #[test]

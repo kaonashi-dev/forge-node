@@ -1545,12 +1545,14 @@ impl Daemon {
 
     /// `gh` with the login shell's `PATH`, captured off the core lock first.
     pub(crate) fn github_cli(&self) -> git_service::GitHubCli {
+        self.config.github.cli(self.launch_path_entries())
+    }
+
+    /// The login shell's `PATH`, the one sessions are launched with; captured off the lock.
+    pub(crate) fn launch_path_entries(&self) -> Vec<PathBuf> {
         self.ensure_env();
-        let path_entries = {
-            let mut inner = self.lock();
-            self.resolved_env(&mut inner).path_entries
-        };
-        self.config.github.cli(path_entries)
+        let mut inner = self.lock();
+        self.resolved_env(&mut inner).path_entries
     }
 
     pub(crate) fn forge_paths(&self) -> &client::ForgePaths {

@@ -18,6 +18,7 @@ use crate::spec_gate::{self, Choices, CriterionRow, Next};
 
 const DOCUMENT_MAX_H: f32 = 320.0;
 const ID_W: f32 = 64.0;
+const LABEL_W: f32 = 176.0;
 const STATE_W: f32 = 96.0;
 const DELIVERIES: [(Delivery, &str); 3] = [
     (Delivery::NoCommit, "No commit"),
@@ -29,6 +30,7 @@ pub struct SpecPanel {
     pub run: SpecRunId,
     pub detail: Option<Box<SpecRunDetail>>,
     pub criteria: Vec<CriterionRow>,
+    pub draft: spec_gate::DraftSummary,
     /// The `updated_at` the last read was asked for.
     pub asked: Option<Timestamp>,
     pub load_error: Option<String>,
@@ -56,6 +58,7 @@ impl SpecPanel {
             run,
             detail: None,
             criteria: Vec::new(),
+            draft: spec_gate::DraftSummary::default(),
             asked: None,
             load_error: None,
             seeded: None,
@@ -171,6 +174,7 @@ impl AppState {
                     .as_deref()
                     .map(spec_gate::criteria_rows)
                     .unwrap_or_default();
+                panel.draft = spec_gate::draft_summary(&detail.run, detail.spec.as_deref());
                 panel.detail = Some(detail);
                 panel.load_error = None;
             }
@@ -674,12 +678,98 @@ fn result_gate(k: &Kit, panel: &SpecPanel, run: &SpecRunView, detail: &SpecRunDe
     )
 }
 
+fn label_row(k: &Kit, key: String, label: &str, value: String, ink: rune::Color) -> El {
+    row()
+        .key(key)
+        .w_full()
+        .gap(crate::ds::SPACE_4)
+        .items_start()
+        .child(
+            text(label.to_owned())
+                .font(k.ty.small_medium)
+                .color(k.c.text_base)
+                .w(LABEL_W),
+        )
+        .child(
+            text(value)
+                .font(k.ty.small)
+                .color(ink)
+                .wrap()
+                .grow(1.0)
+                .min_w(0.0),
+        )
+}
+
+fn draft_summary(k: &Kit, summary: &spec_gate::DraftSummary) -> El {
+    let mut section = col()
+        .key("spec-draft-summary")
+        .w_full()
+        .gap(crate::ds::SPACE_2);
+    if let Some(kind) = summary.kind {
+        section = section.child(faint(k, format!("Kind: {kind}")));
+    }
+    if let Some(changes) = &summary.changes {
+        section = section.child(faint(k, changes.clone()).key("spec-criteria-diff"));
+    }
+    if !summary.readiness.is_empty() {
+        section = section.child(heading(k, "Readiness"));
+        for (name, rating) in &summary.readiness {
+            let ink = if *rating == "Clear" {
+                k.c.text_muted
+            } else {
+                k.c.warning.fg
+            };
+            section = section.child(label_row(
+                k,
+                format!("spec-readiness-{name}"),
+                name,
+                (*rating).to_owned(),
+                ink,
+            ));
+        }
+    }
+    if !summary.risks.is_empty() {
+        section = section.child(heading(k, "Risks"));
+        for (index, risk) in summary.risks.iter().enumerate() {
+            let value = match &risk.suggested {
+                Some(reason) => format!("{} · suggested by Forge ({reason})", risk.handled),
+                None => risk.handled.clone(),
+            };
+            section = section.child(label_row(
+                k,
+                format!("spec-risk-{index}"),
+                &risk.name,
+                value,
+                if risk.weighed {
+                    k.c.text_muted
+                } else {
+                    k.c.warning.fg
+                },
+            ));
+        }
+    }
+    if !summary.warnings.is_empty() {
+        section = section.child(heading(k, "Warnings"));
+        for (index, warning) in summary.warnings.iter().enumerate() {
+            section = section.child(
+                text(warning.clone())
+                    .font(k.ty.small)
+                    .color(k.c.warning.fg)
+                    .wrap()
+                    .key(format!("spec-warning-{index}")),
+            );
+        }
+    }
+    section
+}
+
 fn stage_body(k: &Kit, panel: &SpecPanel, run: &SpecRunView, detail: &SpecRunDetail) -> El {
     let mut body = col().key("spec-stage").w_full().gap(crate::ds::SPACE_6);
     match run.stage {
         SpecStage::SpecGate => {
             body = body
                 .child(faint(k, format!("Route: {}", route_label(run.route))))
+                .child(draft_summary(k, &panel.draft))
                 .child(document(
                     k,
                     "spec-document",

@@ -5,9 +5,9 @@ defined in `crates/protocol` and is transport-agnostic; the transport itself is
 a Unix domain socket (ADR-004). The GUI-side implementation is
 `crates/client` (`Client` + `Store`).
 
-`PROTOCOL_VERSION = 47` (`protocol::PROTOCOL_VERSION` is the source). Protocol 47 added
-`SpecOptions::checks_offline` and `CheckRecord::not_sandboxed` to the spec-run types, each
-defaulted when absent.
+`PROTOCOL_VERSION = 48` (`protocol::PROTOCOL_VERSION` is the source). Protocol 48 answers
+`SaveSpecArtifact` with `SpecArtifactSaved { warnings }` instead of `Ack`, and adds
+`SpecRunView::spec_warnings`, `spec_changes` and `suggested_risks`, each defaulted when absent.
 
 ## Transport & framing
 

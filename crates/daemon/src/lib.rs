@@ -37,6 +37,7 @@ pub mod server;
 pub mod session_cli;
 pub mod shares;
 mod shutdown;
+mod spec_context;
 mod spec_runs;
 mod spec_sandbox;
 pub mod terminal;

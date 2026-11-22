@@ -248,6 +248,11 @@ pub enum Response {
     },
     /// Answers `GetSpecRun`.
     SpecRun(Box<domain::spec_run::model::SpecRunDetail>),
+    /// Answers `SaveSpecArtifact`: what Forge kept and warns about without refusing, in the
+    /// order it found it. Every kind but a spec answers with none.
+    SpecArtifactSaved {
+        warnings: Vec<String>,
+    },
     /// Answers `StartReview`; may name a run already in flight.
     ReviewStarted {
         review_id: domain::ReviewId,

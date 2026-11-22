@@ -10,6 +10,7 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, PoisonError};
 use std::time::{Duration, Instant};
 
+use domain::spec_run::draft;
 use domain::spec_run::model::{
     AgentPick, CheckRecord, Delivery, GateDecision, GateKind, NextAction, Placement, Route,
     SourceRef, SpecArtifactKind, SpecOptions, SpecRole, SpecRunDetail, SpecRunSource, SpecRunView,
@@ -389,6 +390,9 @@ pub(crate) fn start(
         manual_checked: Vec::new(),
         attention: None,
         last_reason: None,
+        spec_warnings: Vec::new(),
+        spec_changes: None,
+        suggested_risks: Vec::new(),
         created_at: now,
         updated_at: now,
     };
@@ -456,6 +460,36 @@ fn fail_start(daemon: &Daemon, id: SpecRunId, why: &str) {
     });
 }
 
+const SUGGESTED_RISKS: usize = 4;
+
+/// Scored on `source.md`, which a link or an artifact never has, and the spec's context paths.
+fn suggest_risks(dir: &Path, paths: &[String]) -> Vec<domain::HypothesisChoice> {
+    let source = read_file(dir, "source.md", schema::MAX_SPEC_BYTES).unwrap_or_default();
+    review_hypotheses::suggest(&source, paths, SUGGESTED_RISKS)
+}
+
+/// What the spec says about the run's checkout that the checkout contradicts; read off every
+/// lock, each file bounded.
+fn checkout_warnings(
+    daemon: &Daemon,
+    run: &SpecRunView,
+    refs: &[draft::CodeRef],
+    doc: &SpecDoc,
+) -> Vec<String> {
+    let Ok(root) = daemon.workspace_path(run.workspace_id) else {
+        return vec![
+            "the run's checkout is gone; code context and validations were not checked".to_owned(),
+        ];
+    };
+    let mut warnings = crate::spec_context::check_refs(&root, refs);
+    let programs = draft::validation_programs(doc);
+    if !programs.is_empty() {
+        let path = daemon.launch_path_entries();
+        warnings.extend(crate::spec_context::check_programs(&root, &programs, &path));
+    }
+    warnings
+}
+
 fn launch_drafter(
     daemon: &Arc<Daemon>,
     run: &SpecRunView,
@@ -463,12 +497,22 @@ fn launch_drafter(
 ) -> Result<SessionId, ProtocolError> {
     let tools = tools(daemon, &run.planner);
     let source = drafter_source(dir, &run.source);
+    let suggested = suggest_risks(dir, &[]);
     let prompt = compose_drafter_prompt(&DrafterInput {
         spec_run_id: &run.id.to_string(),
         source: &source,
         tools: &tools,
         publish_artifact: run.options.publish_spec,
+        suggested_risks: &suggested,
     });
+    if !suggested.is_empty() {
+        if let Err(error) = update(daemon, run.id, |run| {
+            run.suggested_risks.clone_from(&suggested);
+            Ok(())
+        }) {
+            tracing::warn!(spec_run = %run.id, %error, "could not keep the suggested risks");
+        }
+    }
     launch_agent(daemon, run, SpecRole::Drafter, prompt).inspect_err(|error| {
         fail_start(
             daemon,
@@ -697,11 +741,17 @@ pub(crate) fn save(
         schema::validate_artifact_url(url).map_err(ProtocolError::invalid_request)?;
     }
     let dir = dir_of(daemon, run.id);
+    let mut warnings = Vec::new();
     match kind {
         SpecArtifactKind::Spec => {
             author(&run, caller, SpecRole::Drafter)?;
             expect_stage(&run, &[SpecStage::Drafting, SpecStage::SpecGate])?;
-            let doc = schema::parse_spec(&content).map_err(|e| invalid("spec refused", e))?;
+            let checked = draft::check_spec(&content).map_err(|e| invalid("spec refused", e))?;
+            let doc = checked.doc;
+            warnings = checked.warnings;
+            let changes = read_file(&dir, "spec.md", schema::MAX_SPEC_BYTES)
+                .and_then(|old| schema::parse_spec(&old).ok())
+                .map(|old| draft::criteria_diff(&old, &doc));
             let gate = if doc.route == Route::Short {
                 let actions = project_actions(daemon, run.project_id);
                 Some(
@@ -712,6 +762,16 @@ pub(crate) fn save(
             } else {
                 None
             };
+            let refs = draft::code_context_refs(&content);
+            warnings.extend(checkout_warnings(daemon, &run, &refs, &doc));
+            let paths: Vec<String> = refs.into_iter().map(|r| r.path).collect();
+            let suggested = suggest_risks(&dir, &paths);
+            // The checks above can take a while; a G1 decided meanwhile must not find spec.md
+            // replaced under the hash it approved.
+            expect_stage(
+                &daemon.spec_runs.get(run.id)?,
+                &[SpecStage::Drafting, SpecStage::SpecGate],
+            )?;
             write_file(&dir, "spec.md", &content)?;
             let sha = sha256(&content);
             update(daemon, run.id, |run| {
@@ -720,6 +780,9 @@ pub(crate) fn save(
                 run.spec_sha256 = Some(sha);
                 run.has_plan = gate.is_some();
                 run.gate = gate;
+                run.spec_warnings.clone_from(&warnings);
+                run.spec_changes = changes;
+                run.suggested_risks = suggested;
                 if artifact_url.is_some() {
                     run.spec_artifact_url = artifact_url;
                 }
@@ -780,7 +843,7 @@ pub(crate) fn save(
         }
         _ => return Err(ProtocolError::invalid_request("unknown artifact kind")),
     }
-    Ok(Response::Ack)
+    Ok(Response::SpecArtifactSaved { warnings })
 }
 
 // ----- Gates -----
@@ -1897,7 +1960,7 @@ fn start_forge_review(daemon: &Arc<Daemon>, run: &SpecRunView) {
         None,
         None,
         None,
-        None,
+        approved_scope(daemon, run),
         domain::AgentLaunchOptions::default(),
         domain::ReviewerOptions {
             count: Some(1),
@@ -1918,6 +1981,16 @@ fn start_forge_review(daemon: &Arc<Daemon>, run: &SpecRunView) {
             format!("Forge Review did not start: {}", error.message),
         ),
     }
+}
+
+/// The approved spec's "Out of scope" as review instructions, which Forge Review reads back as
+/// acknowledged scope: the run does not pass a pull request description.
+fn approved_scope(daemon: &Daemon, run: &SpecRunView) -> Option<String> {
+    let (text, _) = approved_spec(&dir_of(daemon, run.id), run.spec_sha256.as_deref()).ok()?;
+    let scope = review::acknowledged_scope(&draft::prose(&text))?;
+    Some(format!(
+        "The approved spec of this change declares what it leaves out:\n\n{scope}"
+    ))
 }
 
 fn another_round(
