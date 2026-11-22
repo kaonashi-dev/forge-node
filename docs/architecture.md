@@ -63,9 +63,10 @@ codebase-graph   a project's code graph (files, functions, classes, calls,
                  imports, inheritance), its queries and cache.bin — pure
 diagram-gen      a change's sequence/ER/class/flow diagrams from the diff and the
                  graph — pure, deterministic
-review-swarm     hypotheses, slices and the consolidation of a review swarm — pure
+review-hypotheses
+                 hypotheses, slices and the consolidation of parallel reviewers — pure
 knowledge-base   a project's review knowledge base rendered as four files — pure
-runtime-sandbox  TREX: sandbox.toml targets under macOS sandbox-exec, process
+runtime-sandbox  sandbox checks: checks.toml targets under macOS sandbox-exec, process
                  groups, bounded output
 git-service      git CLI wrapper (LC_ALL=C, 30s local timeout), repo + worktree ops
 fs-service       workspace list/read/write/search; paths stay inside the checkout;
@@ -93,11 +94,11 @@ Dependency direction is one-way and enforced by `Cargo.toml`:
 `forge-ui → {client, domain, editor-control, terminal-input}`,
 `client → {protocol, terminal-input, domain}`,
 `daemon → {agents, client, editor-control, fs-service, git-service, languages,
-review, review-swarm, codebase-graph, diagram-gen, knowledge-base, runtime-sandbox,
+review, review-hypotheses, codebase-graph, diagram-gen, knowledge-base, runtime-sandbox,
 syntax-index, external-index, lsp-client, persistence, protocol,
 terminal-core, terminal-input, domain}`, `fs-service → {git-service, languages}`,
 `codebase-graph → domain`, `diagram-gen → {codebase-graph, domain}`,
-`review-swarm → {review, domain}`, `knowledge-base → domain` (and `serde_json`),
+`review-hypotheses → {review, domain}`, `knowledge-base → domain` (and `serde_json`),
 `runtime-sandbox` → none of ours (`nix`, `toml`),
 `persistence → {codebase-graph, knowledge-base, review, domain}`,
 `{syntax-index, external-index} → {fs-service, git-service, languages}`,

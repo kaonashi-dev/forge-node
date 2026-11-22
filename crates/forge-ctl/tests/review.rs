@@ -660,7 +660,7 @@ fn sandbox_run_waits_for_its_targets_and_fails_on_a_failing_one() {
     let repo = graph_repo(harness.tmp.path());
     fs::create_dir_all(repo.join(".forge/review")).unwrap();
     fs::write(
-        repo.join(".forge/review/sandbox.toml"),
+        repo.join(".forge/review/checks.toml"),
         "[[targets]]\nname = \"pass\"\ncommand = \"echo ok\"\n[[targets]]\nname = \"fail\"\ncommand = \"echo nope >&2; exit 4\"\n",
     )
     .unwrap();
@@ -670,7 +670,7 @@ fn sandbox_run_waits_for_its_targets_and_fails_on_a_failing_one() {
     ok(&harness.ctl(
         &[
             "review",
-            "sandbox",
+            "checks",
             "approve",
             "--workspace",
             &workspace,
@@ -682,7 +682,7 @@ fn sandbox_run_waits_for_its_targets_and_fails_on_a_failing_one() {
     let passed = ok(&harness.ctl(
         &[
             "review",
-            "sandbox",
+            "checks",
             "run",
             "--workspace",
             &workspace,
@@ -696,10 +696,7 @@ fn sandbox_run_waits_for_its_targets_and_fails_on_a_failing_one() {
     let id = passed["id"].as_str().unwrap().to_owned();
 
     let failed = err(
-        &harness.ctl(
-            &["review", "sandbox", "run", "--workspace", &workspace],
-            &[],
-        ),
+        &harness.ctl(&["review", "checks", "run", "--workspace", &workspace], &[]),
         1,
     );
     assert_eq!(failed["code"], "sandbox_failed");
@@ -708,7 +705,7 @@ fn sandbox_run_waits_for_its_targets_and_fails_on_a_failing_one() {
     assert_eq!(targets[1]["exit_code"], 4);
     assert_eq!(targets[1]["stderr"], "nope\n");
 
-    let results = ok(&harness.ctl(&["review", "sandbox", "results", &id], &[]));
+    let results = ok(&harness.ctl(&["review", "checks", "results", &id], &[]));
     assert_eq!(results["id"], id.as_str());
     assert!(
         results["review_id"].is_null(),
@@ -722,7 +719,7 @@ fn only_an_approved_sandbox_file_runs_and_approving_asks_first() {
     let harness = Harness::new();
     let repo = graph_repo(harness.tmp.path());
     fs::create_dir_all(repo.join(".forge/review")).unwrap();
-    let file = repo.join(".forge/review/sandbox.toml");
+    let file = repo.join(".forge/review/checks.toml");
     fs::write(
         &file,
         "[[targets]]\nname = \"t\"\ncommand = \"echo ran > ran\"\n",
@@ -731,12 +728,7 @@ fn only_an_approved_sandbox_file_runs_and_approving_asks_first() {
     let _running = harness.boot();
     let client = connect(&harness.socket);
     let workspace = add_project(&client, &repo).to_string();
-    let run = || {
-        harness.ctl(
-            &["review", "sandbox", "run", "--workspace", &workspace],
-            &[],
-        )
-    };
+    let run = || harness.ctl(&["review", "checks", "run", "--workspace", &workspace], &[]);
 
     let refused = err(&run(), 1);
     assert!(
@@ -751,7 +743,7 @@ fn only_an_approved_sandbox_file_runs_and_approving_asks_first() {
 
     let asked = err(
         &harness.ctl(
-            &["review", "sandbox", "approve", "--workspace", &workspace],
+            &["review", "checks", "approve", "--workspace", &workspace],
             &[],
         ),
         2,
@@ -761,7 +753,7 @@ fn only_an_approved_sandbox_file_runs_and_approving_asks_first() {
     let approved = ok(&harness.ctl(
         &[
             "review",
-            "sandbox",
+            "checks",
             "approve",
             "--workspace",
             &workspace,
@@ -844,7 +836,7 @@ fn seeded_run(
     workspace: WorkspaceId,
     tier: domain::Tier,
     seconds: u32,
-    swarm: u8,
+    reviewers: u8,
 ) -> domain::ReviewRun {
     let at = |s: u32| {
         domain::Timestamp::parse_rfc3339(&format!("2026-01-01T00:{:02}:{:02}Z", s / 60, s % 60))
@@ -876,7 +868,7 @@ fn seeded_run(
         tree_oid: None,
         diagrams: Vec::new(),
         auto_approvable: false,
-        swarm_size: swarm,
+        reviewers,
         schema_version: domain::SchemaVersion::V1,
         sandbox_run_id: None,
     }
@@ -921,10 +913,10 @@ fn stats_report_latency_and_rates_over_the_stored_runs() {
         .unwrap();
     for seconds in [10, 30, 20] {
         store
-            .insert_run(&seeded_run(workspace, domain::Tier::Base, seconds, 1))
+            .insert_run(&seeded_run(workspace, domain::Tier::Quick, seconds, 1))
             .unwrap();
     }
-    let cited = seeded_run(workspace, domain::Tier::Base, 20, 1);
+    let cited = seeded_run(workspace, domain::Tier::Quick, 20, 1);
     store.insert_run(&cited).unwrap();
     store
         .insert_findings(
@@ -932,11 +924,11 @@ fn stats_report_latency_and_rates_over_the_stored_runs() {
             &[seeded_finding(1, None, Some("architecture.md#core"))],
         )
         .unwrap();
-    let swarm = seeded_run(workspace, domain::Tier::Apex, 40, 3);
-    store.insert_run(&swarm).unwrap();
+    let parallel = seeded_run(workspace, domain::Tier::Deep, 40, 3);
+    store.insert_run(&parallel).unwrap();
     store
         .insert_findings(
-            swarm.id,
+            parallel.id,
             &[
                 seeded_finding(1, Some(domain::Hypothesis::AuthBypass), None),
                 seeded_finding(2, Some(domain::Hypothesis::AuthBypass), None),
@@ -947,7 +939,7 @@ fn stats_report_latency_and_rates_over_the_stored_runs() {
         .save_sandbox_run(&domain::SandboxRun {
             id: "s".into(),
             workspace_id: workspace,
-            review_id: Some(swarm.id),
+            review_id: Some(parallel.id),
             targets: vec![domain::SandboxTarget {
                 name: "test".into(),
                 exit_code: Some(1),
@@ -970,18 +962,18 @@ fn stats_report_latency_and_rates_over_the_stored_runs() {
     assert_eq!(stats["runs"], 5);
     assert_eq!(
         stats["latency"][0],
-        json!({ "tier": "base", "runs": 4, "p50_secs": 20, "p95_secs": 30 })
+        json!({ "tier": "quick", "runs": 4, "p50_secs": 20, "p95_secs": 30 })
     );
     assert_eq!(
         stats["latency"][1],
-        json!({ "tier": "apex", "runs": 1, "p50_secs": 40, "p95_secs": 40 })
+        json!({ "tier": "deep", "runs": 1, "p50_secs": 40, "p95_secs": 40 })
     );
     assert!(
-        (stats["swarm_coverage"].as_f64().unwrap() - 33.3).abs() < 0.01,
+        (stats["hypothesis_coverage"].as_f64().unwrap() - 33.3).abs() < 0.01,
         "{stats}"
     );
     assert_eq!(stats["kb_hit_rate"], 20.0);
-    assert_eq!(stats["trex_failure_rate"], 100.0);
+    assert_eq!(stats["sandbox_checks_failure_rate"], 100.0);
     assert!(stats["graph_hit_rate"].is_null(), "no query asked yet");
     ok(&harness.ctl(
         &[

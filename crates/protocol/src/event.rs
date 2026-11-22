@@ -218,8 +218,8 @@ pub enum DaemonEvent {
     ReviewUpdated {
         run: domain::ReviewRun,
     },
-    /// A `RunSandbox` finished; the same run `GetSandboxRun` reads.
-    SandboxFinished(Box<domain::SandboxRun>),
+    /// A `RunSandboxChecks` finished; the same run `GetSandboxChecks` reads.
+    SandboxChecksFinished(Box<domain::SandboxRun>),
     /// A project's first graph build, started by a `QueryGraph` or `ExportGraph`,
     /// finished; `error` when it failed, so a client asks again only on success.
     GraphIndexed {

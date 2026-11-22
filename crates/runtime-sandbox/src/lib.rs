@@ -1,4 +1,4 @@
-//! TREX: a repository's `.forge/review/sandbox.toml` targets run as written,
+//! Sandbox checks: a repository's `.forge/review/checks.toml` targets run as written,
 //! under macOS `sandbox-exec`, with no network, writes only to the run, the
 //! cache and the temp directory, no view of Forge's own socket or home, and a
 //! cleared environment. Each target is its own process group, killed whole when
@@ -12,9 +12,11 @@ use std::process::{Child, Command, ExitStatus, Stdio};
 use std::sync::{mpsc, Arc, Mutex};
 use std::time::{Duration, Instant};
 
-pub const CONFIG_PATH: &str = ".forge/review/sandbox.toml";
+pub const CONFIG_PATH: &str = ".forge/review/checks.toml";
+/// `CONFIG_PATH`'s earlier name: never read, only pointed out by [`missing`].
+const RENAMED_FROM: &str = ".forge/review/sandbox.toml";
 pub const MAX_CONFIG_BYTES: u64 = 16 * 1024;
-pub const UNSUPPORTED: &str = "TREX unsupported on this platform";
+pub const UNSUPPORTED: &str = "Sandbox checks are unsupported on this platform";
 const DEFAULT_TIMEOUT_SECS: u64 = 600;
 const MAX_TIMEOUT_SECS: u64 = 3600;
 const MAX_TARGETS: usize = 32;
@@ -38,18 +40,28 @@ pub struct SandboxConfig {
     pub targets: Vec<Target>,
 }
 
+/// Why `checkout` has nothing to run, naming the rename when it still has the earlier file.
+#[must_use]
+pub fn missing(checkout: &Path) -> String {
+    if checkout.join(RENAMED_FROM).exists() {
+        format!("no {CONFIG_PATH}; rename {RENAMED_FROM} to it")
+    } else {
+        format!("no {CONFIG_PATH}")
+    }
+}
+
 /// # Errors
 /// Invalid TOML, a target without a name or a command, a duplicate name, or none at all.
 pub fn parse(text: &str) -> Result<SandboxConfig, String> {
     let table: toml::Table = text.parse().map_err(|error: toml::de::Error| {
-        format!("sandbox.toml is not valid TOML: {}", error.message())
+        format!("checks.toml is not valid TOML: {}", error.message())
     })?;
     let timeout = match table.get("timeout_secs") {
         None => DEFAULT_TIMEOUT_SECS,
         Some(toml::Value::Integer(n)) if *n > 0 => u64::try_from(*n)
             .unwrap_or(MAX_TIMEOUT_SECS)
             .min(MAX_TIMEOUT_SECS),
-        Some(_) => return Err("sandbox.toml: `timeout_secs` must be a positive integer".into()),
+        Some(_) => return Err("checks.toml: `timeout_secs` must be a positive integer".into()),
     };
     let mut env = Vec::new();
     match table.get("env") {
@@ -58,17 +70,17 @@ pub fn parse(text: &str) -> Result<SandboxConfig, String> {
             for (name, value) in values {
                 let value = value
                     .as_str()
-                    .ok_or_else(|| format!("sandbox.toml: `[env] {name}` must be a string"))?;
+                    .ok_or_else(|| format!("checks.toml: `[env] {name}` must be a string"))?;
                 env.push((name.clone(), value.to_owned()));
             }
         }
-        Some(_) => return Err("sandbox.toml: `[env]` must be a table".into()),
+        Some(_) => return Err("checks.toml: `[env]` must be a table".into()),
     }
     let mut targets: Vec<Target> = Vec::new();
     let listed = table
         .get("targets")
         .and_then(toml::Value::as_array)
-        .ok_or_else(|| "sandbox.toml: no `[[targets]]`".to_owned())?;
+        .ok_or_else(|| "checks.toml: no `[[targets]]`".to_owned())?;
     for item in listed.iter().take(MAX_TARGETS) {
         let field = |key: &str| {
             item.get(key)
@@ -77,10 +89,10 @@ pub fn parse(text: &str) -> Result<SandboxConfig, String> {
                 .filter(|v| !v.is_empty())
         };
         let (Some(name), Some(command)) = (field("name"), field("command")) else {
-            return Err("sandbox.toml: every target needs a `name` and a `command`".into());
+            return Err("checks.toml: every target needs a `name` and a `command`".into());
         };
         if targets.iter().any(|t| t.name == name) {
-            return Err(format!("sandbox.toml: target `{name}` is listed twice"));
+            return Err(format!("checks.toml: target `{name}` is listed twice"));
         }
         targets.push(Target {
             name: name.to_owned(),
@@ -88,7 +100,7 @@ pub fn parse(text: &str) -> Result<SandboxConfig, String> {
         });
     }
     if targets.is_empty() {
-        return Err("sandbox.toml: no `[[targets]]`".into());
+        return Err("checks.toml: no `[[targets]]`".into());
     }
     Ok(SandboxConfig {
         timeout: Duration::from_secs(timeout),

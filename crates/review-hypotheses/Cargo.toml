@@ -1,5 +1,5 @@
 [package]
-name = "review-swarm"
+name = "review-hypotheses"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true

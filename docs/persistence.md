@@ -236,7 +236,7 @@ codebase_graph_nodes (project_id FK→projects ON DELETE CASCADE, id BLOB, kind,
                       INDEX (project_id, path), (project_id, git_oid), (project_id, name))
 codebase_graph_edges (project_id FK→projects ON DELETE CASCADE, src, dst, kind, weight,
                       PRIMARY KEY (project_id, src, dst, kind), INDEX (project_id, dst))
-review_runs     + diagrams (JSON, '[]'), auto_approvable, swarm_size (1),
+review_runs     + diagrams (JSON, '[]'), auto_approvable, swarm_size (1, read as `reviewers`),
                   schema_version ('v1'), sandbox_run_id, agent_sessions (JSON, '[]')
 review_findings + hypothesis, kb_ref
 kb_entries      (id PK, project_id FK→projects ON DELETE CASCADE, file, section,
@@ -256,11 +256,11 @@ whole graph carries the `git_oid` it was last brought to. Losing it costs a
 rebuild. `REVIEW_V2` (v26) adds the v2 run and finding fields with defaults that
 read an old row as a v1, single-reviewer run. `KB_ENTRIES` (v27) holds the
 stored knowledge-base files, one row per pattern; `learned-rules.md` and
-`false-positives.json` are never stored. `SANDBOX_RUNS` (v28) keeps a TREX run's
+`false-positives.json` are never stored. `SANDBOX_RUNS` (v28) keeps a sandbox-checks run's
 targets and output tails, never a full log; a manual run has no review. `REVIEW_AGENT_SESSIONS` (v29) adds
-`review_runs.agent_sessions`, a JSON list of every swarm agent's session id:
+`review_runs.agent_sessions`, a JSON list of every reviewer's session id:
 startup's read-only set and the prune's keep rule read it beside `session_id`.
-`SANDBOX_APPROVALS` (v30) keeps the SHA-256 of the `sandbox.toml` a person
+`SANDBOX_APPROVALS` (v30) keeps the SHA-256 of the `checks.toml` a person
 approved per project, and `sandbox_runs.unapproved_hash`, the hash of a file
 that did not run because it was not that one.
 `CODEBASE_GRAPH_DIRTY` (v31) keeps the paths a project's last graph build read

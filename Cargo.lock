@@ -428,7 +428,7 @@ dependencies = [
  "persistence",
  "protocol",
  "review",
- "review-swarm",
+ "review-hypotheses",
  "rmp-serde",
  "runtime-sandbox",
  "rusqlite",
@@ -1602,7 +1602,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "review-swarm"
+name = "review-hypotheses"
 version = "0.1.10"
 dependencies = [
  "domain",

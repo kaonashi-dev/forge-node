@@ -27,7 +27,7 @@ pub struct Preset {
 #[derive(Clone, Debug, PartialEq)]
 pub struct Resolved {
     pub preset: String,
-    /// `Base` until [`Resolved::auto_tier`] is replaced from the diff.
+    /// `Quick` until [`Resolved::auto_tier`] is replaced from the diff.
     pub tier: Tier,
     /// No run, preset or config chose a tier.
     pub auto_tier: bool,
@@ -89,7 +89,7 @@ pub fn builtins() -> Vec<Preset> {
             "deep",
             "Deep review",
             "Reads the surrounding code too — design, edge cases, cost.",
-            Some(Tier::Apex),
+            Some(Tier::Deep),
             &CATEGORIES.map(|name| (name, true)),
             "Review the change against the code around it, not only against itself: open the \
              files it touches and their callers. Look for a case the change does not handle, an \
@@ -173,10 +173,10 @@ fn parse_preset(id: &str, text: &str) -> Result<Preset, String> {
     };
     let tier = match table.get("tier").map(|v| v.as_str()) {
         None => None,
-        Some(Some("base")) => Some(Tier::Base),
-        Some(Some("plus")) => Some(Tier::Plus),
-        Some(Some("apex")) => Some(Tier::Apex),
-        Some(_) => return Err("`tier` must be base, plus or apex".into()),
+        Some(name) => Some(
+            name.and_then(Tier::parse)
+                .ok_or("`tier` must be quick, standard or deep")?,
+        ),
     };
     let rules = match table.get("rules") {
         None => vec!["*".to_owned()],
@@ -326,10 +326,10 @@ pub fn resolve(
     })
 }
 
-const AUTO_APEX_BYTES: usize = 1024 * 1024;
-const AUTO_APEX_FILES: usize = 50;
-const AUTO_PLUS_BYTES: usize = 256 * 1024;
-const AUTO_PLUS_PATHS: [&str; 10] = [
+const AUTO_DEEP_BYTES: usize = 1024 * 1024;
+const AUTO_DEEP_FILES: usize = 50;
+const AUTO_STANDARD_BYTES: usize = 256 * 1024;
+const AUTO_STANDARD_PATHS: [&str; 10] = [
     "auth",
     "security",
     "crypto",
@@ -342,21 +342,21 @@ const AUTO_PLUS_PATHS: [&str; 10] = [
     "cache",
 ];
 
-/// `auto`: apex past 1 MiB of patch or 50 files, plus past 256 KiB or for a
-/// path that names a sensitive area, else base.
+/// `auto`: deep past 1 MiB of patch or 50 files, standard past 256 KiB or for a
+/// path that names a sensitive area, else quick.
 #[must_use]
 pub fn auto_tier(files: &[domain::DiffFile]) -> Tier {
     let bytes: usize = files.iter().map(|file| file.patch.len()).sum();
-    if bytes > AUTO_APEX_BYTES || files.len() > AUTO_APEX_FILES {
-        return Tier::Apex;
+    if bytes > AUTO_DEEP_BYTES || files.len() > AUTO_DEEP_FILES {
+        return Tier::Deep;
     }
     let sensitive = files.iter().any(|file| {
         let path = file.path.to_ascii_lowercase();
-        AUTO_PLUS_PATHS.iter().any(|word| path.contains(word))
+        AUTO_STANDARD_PATHS.iter().any(|word| path.contains(word))
     });
-    if bytes > AUTO_PLUS_BYTES || sensitive {
-        Tier::Plus
+    if bytes > AUTO_STANDARD_BYTES || sensitive {
+        Tier::Standard
     } else {
-        Tier::Base
+        Tier::Quick
     }
 }

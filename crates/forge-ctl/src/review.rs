@@ -38,9 +38,9 @@ pub(crate) enum ReviewCmd {
         /// The reviewer's effort level; defaults to `[review] effort`, then the provider's own.
         #[arg(long)]
         effort: Option<String>,
-        /// Reviewer agents, 1 to 8; defaults to `[review] swarm_default`.
+        /// Reviewer agents, 1 to 8; defaults to `[review] reviewers`.
         #[arg(long, value_parser = clap::value_parser!(u8).range(1..=8))]
-        swarm_size: Option<u8>,
+        reviewers: Option<u8>,
         /// A hypothesis for one agent (`AuthBypass`, `RaceCondition`, …); repeat for more.
         #[arg(long = "hypothesis", alias = "hypotheses", value_parser = parse_hypothesis)]
         hypotheses: Vec<domain::Hypothesis>,
@@ -69,7 +69,7 @@ pub(crate) enum ReviewCmd {
         #[command(subcommand)]
         cmd: RulesCmd,
     },
-    /// Latency by tier and the graph, swarm, knowledge-base and sandbox rates.
+    /// Latency by tier and the graph, hypothesis-coverage, knowledge-base and sandbox-checks rates.
     Stats {
         /// One workspace; every one when left out.
         #[arg(long)]
@@ -89,10 +89,10 @@ pub(crate) enum ReviewCmd {
         #[arg(long)]
         yes: bool,
     },
-    /// `.forge/review/sandbox.toml`'s targets, run under the macOS sandbox.
-    Sandbox {
+    /// `.forge/review/checks.toml`'s targets, run under the macOS sandbox.
+    Checks {
         #[command(subcommand)]
-        cmd: SandboxCmd,
+        cmd: ChecksCmd,
     },
     /// The project's review knowledge base.
     Kb {
@@ -110,9 +110,9 @@ pub(crate) enum ReviewCmd {
         /// Defaults to `./review-bench-<unix seconds>`.
         #[arg(long)]
         out: Option<PathBuf>,
-        /// Reviewer agents per case, 1 to 8; defaults to `[review] swarm_default`.
+        /// Reviewer agents per case, 1 to 8; defaults to `[review] reviewers`.
         #[arg(long, value_parser = clap::value_parser!(u8).range(1..=8))]
-        swarm_size: Option<u8>,
+        reviewers: Option<u8>,
     },
 }
 
@@ -126,7 +126,7 @@ pub(crate) enum RulesCmd {
 }
 
 #[derive(Subcommand)]
-pub(crate) enum SandboxCmd {
+pub(crate) enum ChecksCmd {
     /// Run every target (or one) and wait; exit 1 when one failed.
     Run {
         #[arg(long)]
@@ -136,7 +136,7 @@ pub(crate) enum SandboxCmd {
     },
     /// A sandbox run's targets and output tails.
     Results { id: String },
-    /// Let TREX run the checkout's `sandbox.toml` for its project, as it is
+    /// Let sandbox checks run the checkout's `checks.toml` for its project, as it is
     /// now. Shows the file and asks first; a later change needs approving again.
     Approve {
         #[arg(long)]
@@ -239,17 +239,20 @@ pub(crate) enum GraphFormatArg {
 
 #[derive(Clone, Copy, clap::ValueEnum)]
 pub(crate) enum TierArg {
-    Base,
-    Plus,
-    Apex,
+    #[value(alias = "base")]
+    Quick,
+    #[value(alias = "plus")]
+    Standard,
+    #[value(alias = "apex")]
+    Deep,
 }
 
 impl From<TierArg> for Tier {
     fn from(tier: TierArg) -> Self {
         match tier {
-            TierArg::Base => Tier::Base,
-            TierArg::Plus => Tier::Plus,
-            TierArg::Apex => Tier::Apex,
+            TierArg::Quick => Tier::Quick,
+            TierArg::Standard => Tier::Standard,
+            TierArg::Deep => Tier::Deep,
         }
     }
 }
@@ -270,7 +273,7 @@ pub(crate) fn dispatch(app: &App, client: &Client, cmd: ReviewCmd) -> Result<(),
             instructions,
             model,
             effort,
-            swarm_size,
+            reviewers,
             hypotheses,
             wait,
         } => {
@@ -295,8 +298,8 @@ pub(crate) fn dispatch(app: &App, client: &Client, cmd: ReviewCmd) -> Result<(),
                 instructions,
                 model,
                 effort,
-                swarm: domain::SwarmOptions {
-                    size: swarm_size,
+                reviewers: domain::ReviewerOptions {
+                    count: reviewers,
                     hypotheses,
                 },
             };
@@ -414,7 +417,7 @@ pub(crate) fn dispatch(app: &App, client: &Client, cmd: ReviewCmd) -> Result<(),
         }
         ReviewCmd::Graph { cmd } => graph(app, client, cmd),
         ReviewCmd::Kb { cmd } => kb(app, client, cmd),
-        ReviewCmd::Sandbox { cmd } => sandbox(app, client, cmd),
+        ReviewCmd::Checks { cmd } => checks(app, client, cmd),
         ReviewCmd::Stats { workspace } => {
             let workspace_id = match workspace {
                 Some(raw) => {
@@ -443,8 +446,8 @@ pub(crate) fn dispatch(app: &App, client: &Client, cmd: ReviewCmd) -> Result<(),
         ReviewCmd::Bench {
             corpus,
             out,
-            swarm_size,
-        } => bench(app, client, &corpus, out, swarm_size),
+            reviewers,
+        } => bench(app, client, &corpus, out, reviewers),
     }
 }
 
@@ -647,8 +650,8 @@ fn approve_sandbox(
         if !std::io::stdin().is_terminal() {
             return Err(usage_code(
                 app,
-                "approving sandbox.toml lets every apex review run its commands: confirm on a terminal or pass --yes",
-                &["forgectl", "review", "sandbox", "approve", "--yes"],
+                "approving checks.toml lets every deep review run its commands: confirm on a terminal or pass --yes",
+                &["forgectl", "review", "checks", "approve", "--yes"],
             ));
         }
         eprintln!("{}:\n\n{text}", path.display());
@@ -660,13 +663,13 @@ fn approve_sandbox(
             return Err(app.fail(
                 1,
                 "declined",
-                "sandbox.toml was not approved",
+                "checks.toml was not approved",
                 json!({}),
                 vec![],
             ));
         }
     }
-    let request = Request::ApproveSandboxConfig {
+    let request = Request::ApproveSandboxChecks {
         workspace_id: workspace.id,
         file_hash: file_hash.clone(),
     };
@@ -675,47 +678,52 @@ fn approve_sandbox(
     Ok(())
 }
 
-fn sandbox(app: &App, client: &Client, cmd: SandboxCmd) -> Result<(), u8> {
+fn checks(app: &App, client: &Client, cmd: ChecksCmd) -> Result<(), u8> {
     let run = match cmd {
-        SandboxCmd::Approve { workspace, yes } => {
+        ChecksCmd::Approve { workspace, yes } => {
             return approve_sandbox(app, client, workspace.as_deref(), yes)
         }
-        SandboxCmd::Results { id } => {
-            match app.call(client, Request::GetSandboxRun { sandbox_run_id: id }, false)? {
-                Response::SandboxRun(run) => *run,
+        ChecksCmd::Results { id } => {
+            match app.call(
+                client,
+                Request::GetSandboxChecks { sandbox_run_id: id },
+                false,
+            )? {
+                Response::SandboxChecks(run) => *run,
                 _ => {
                     return Err(app.fail(
                         1,
                         "internal",
-                        "GetSandboxRun was not understood",
+                        "GetSandboxChecks was not understood",
                         json!({}),
                         vec![],
                     ))
                 }
             }
         }
-        SandboxCmd::Run { workspace, target } => {
+        ChecksCmd::Run { workspace, target } => {
             let store = places::load(app, client)?;
             let workspace = target_workspace(app, &store, workspace.as_deref())?;
             let until = Instant::now() + app.review_wait;
             let events = client.events();
-            let request = Request::RunSandbox {
+            let request = Request::RunSandboxChecks {
                 workspace_id: workspace.id,
                 target,
             };
-            let Response::SandboxStarted { sandbox_run_id } = app.call(client, request, true)?
+            let Response::SandboxChecksStarted { sandbox_run_id } =
+                app.call(client, request, true)?
             else {
                 return Err(app.fail(
                     1,
                     "internal",
-                    "RunSandbox was not understood",
+                    "RunSandboxChecks was not understood",
                     json!({}),
                     vec![],
                 ));
             };
             let mut finished = None;
             let woke = app.await_event(&events, until, |event| match event {
-                DaemonEvent::SandboxFinished(run) if run.id == sandbox_run_id => {
+                DaemonEvent::SandboxChecksFinished(run) if run.id == sandbox_run_id => {
                     finished = Some((**run).clone());
                     true
                 }
@@ -728,7 +736,7 @@ fn sandbox(app: &App, client: &Client, cmd: SandboxCmd) -> Result<(), u8> {
                         "timeout",
                         "the sandbox is still running",
                         json!({ "sandbox_run_id": sandbox_run_id }),
-                        next(&["forgectl", "review", "sandbox", "results", &sandbox_run_id]),
+                        next(&["forgectl", "review", "checks", "results", &sandbox_run_id]),
                     ));
                 }
                 (_, Some(run)) => run,
@@ -741,7 +749,7 @@ fn sandbox(app: &App, client: &Client, cmd: SandboxCmd) -> Result<(), u8> {
             "sandbox_failed",
             run.error.as_deref().unwrap_or("a target failed"),
             json!(run),
-            next(&["forgectl", "review", "sandbox", "results", &run.id]),
+            next(&["forgectl", "review", "checks", "results", &run.id]),
         ));
     }
     app.print_ok(json!(run));
@@ -1169,7 +1177,7 @@ fn bench(
     client: &Client,
     corpus: &Path,
     out: Option<PathBuf>,
-    swarm_size: Option<u8>,
+    reviewers: Option<u8>,
 ) -> Result<(), u8> {
     let bad = |message: String| {
         app.fail(
@@ -1216,7 +1224,7 @@ fn bench(
     for case in &parsed.cases {
         let started = Instant::now();
         let worktree = scratch.join(&case.id);
-        let row = match bench_case(app, client, &repo, &worktree, case, swarm_size) {
+        let row = match bench_case(app, client, &repo, &worktree, case, reviewers) {
             Ok((run, findings)) => {
                 let hit = findings.iter().any(|f| {
                     f.path == case.path
@@ -1296,7 +1304,7 @@ fn bench_case(
     repo: &Path,
     worktree: &Path,
     case: &Case,
-    swarm_size: Option<u8>,
+    reviewers: Option<u8>,
 ) -> Result<(ReviewRun, Vec<domain::Finding>), String> {
     let path = worktree.to_string_lossy();
     git(repo, &["worktree", "add", "--detach", &path, &case.commit])?;
@@ -1334,8 +1342,8 @@ fn bench_case(
             instructions: None,
             model: None,
             effort: None,
-            swarm: domain::SwarmOptions {
-                size: swarm_size,
+            reviewers: domain::ReviewerOptions {
+                count: reviewers,
                 hypotheses: Vec::new(),
             },
         },

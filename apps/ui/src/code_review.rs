@@ -48,7 +48,7 @@ pub enum ReviewView {
 
 /// Files of a run whose graph neighbours the Graph tab lists.
 const MAX_GRAPH_FILES: usize = 20;
-/// Bytes of a sandbox target's output the TREX panel shows.
+/// Bytes of a sandbox target's output the Sandbox checks section shows.
 const MAX_SANDBOX_TAIL: usize = 2048;
 const SANDBOX_READING: &str = "Reading the sandbox run…";
 const FIX_LOOP_ITERATIONS: u32 = 3;
@@ -237,7 +237,7 @@ pub struct CodeReview {
     pub kb: Option<(WorkspaceId, Result<Vec<domain::KbFile>, String>)>,
     pub kb_open: bool,
     pub sandbox: Option<(ReviewId, Result<domain::SandboxRun, String>)>,
-    /// The `sandbox.toml` hash last sent for approval, until the daemon refuses it.
+    /// The `checks.toml` hash last sent for approval, until the daemon refuses it.
     pub sandbox_approved: Option<String>,
     /// The run a person pressed Fix Loop on, until they confirm or cancel.
     pub fix_loop_confirm: Option<ReviewId>,
@@ -507,15 +507,6 @@ pub fn status_label(status: ReviewStatus) -> &'static str {
     }
 }
 
-#[must_use]
-pub fn tier_label(tier: Tier) -> &'static str {
-    match tier {
-        Tier::Base => "base",
-        Tier::Plus => "plus",
-        Tier::Apex => "apex",
-    }
-}
-
 fn verdict_ink(k: &Kit, verdict: Verdict) -> rune::Color {
     match verdict {
         Verdict::Block => k.c.danger.fg,
@@ -707,7 +698,7 @@ fn sync(s: &mut AppState) {
     }
 }
 
-/// The Graph tab's and the TREX panel's reads, once per shown run.
+/// The Graph tab's and the Sandbox checks section's reads, once per shown run.
 fn sync_reads(s: &mut AppState, workspace: WorkspaceId, generation: u64) {
     let Some(run) = s.code_review.shown_run(workspace).cloned() else {
         return;
@@ -761,7 +752,7 @@ fn sync_reads(s: &mut AppState, workspace: WorkspaceId, generation: u64) {
         && let Some(connection) = &s.connection
     {
         s.code_review.sandbox = Some((run.id, Err(SANDBOX_READING.into())));
-        let _ = connection.get_sandbox_run(generation, run.id, id.clone());
+        let _ = connection.get_sandbox_checks(generation, run.id, id.clone());
     }
 }
 
@@ -1236,7 +1227,7 @@ impl AppState {
         if label == "SendSessionPrompt" && ok {
             self.toasts.success(message.to_string(), None);
         }
-        if label == "ApproveSandboxConfig" {
+        if label == "ApproveSandboxChecks" {
             if ok {
                 self.toasts.success(message.to_string(), None);
             } else {
@@ -1404,15 +1395,15 @@ impl AppState {
         }
     }
 
-    /// Approves exactly the `sandbox.toml` the run refused; the daemon refuses
+    /// Approves exactly the `checks.toml` the run refused; the daemon refuses
     /// in turn if the file changed since.
     pub fn approve_sandbox(&mut self, workspace_id: WorkspaceId, file_hash: String) {
         let Some(connection) = &self.connection else {
             return;
         };
-        match connection.approve_sandbox_config(workspace_id, file_hash.clone()) {
+        match connection.approve_sandbox_checks(workspace_id, file_hash.clone()) {
             Ok(()) => self.code_review.sandbox_approved = Some(file_hash),
-            Err(error) => self.toasts.danger("sandbox.toml was not approved", error),
+            Err(error) => self.toasts.danger("checks.toml was not approved", error),
         }
     }
 
@@ -1740,16 +1731,16 @@ fn setup(s: &AppState, k: &Kit) -> El {
         body = body.child(presets.build(k).key("review-presets"));
         body = body.child(
             SegmentedControl::new(
-                &["Default tier", "Base", "Plus", "Apex"],
+                &["Default tier", "Quick", "Standard", "Deep"],
                 tier_index(s.code_review.tier),
             )
             .label("Tier")
             .fit()
             .on_pick(|s: &mut AppState, index: usize, _| {
                 s.code_review.tier = match index {
-                    1 => Some(Tier::Base),
-                    2 => Some(Tier::Plus),
-                    3 => Some(Tier::Apex),
+                    1 => Some(Tier::Quick),
+                    2 => Some(Tier::Standard),
+                    3 => Some(Tier::Deep),
                     _ => None,
                 };
             })
@@ -1965,9 +1956,9 @@ fn pinned_subject(k: &Kit, pin: &PinnedPullRequest) -> El {
 fn tier_index(tier: Option<Tier>) -> Option<usize> {
     match tier {
         None => Some(0),
-        Some(Tier::Base) => Some(1),
-        Some(Tier::Plus) => Some(2),
-        Some(Tier::Apex) => Some(3),
+        Some(Tier::Quick) => Some(1),
+        Some(Tier::Standard) => Some(2),
+        Some(Tier::Deep) => Some(3),
     }
 }
 
@@ -2010,7 +2001,7 @@ fn run_header(k: &Kit, run: &ReviewRun, head: Option<&str>) -> El {
                 .color(k.c.text_base),
         )
         .child(
-            text(tier_label(run.tier))
+            text(run.tier.name())
                 .font(k.ty.text_xsmall)
                 .color(k.c.text_faint),
         )
@@ -2790,7 +2781,7 @@ fn sandbox_panel(s: &AppState, k: &Kit, run: &ReviewRun) -> Option<El> {
         .key("review-sandbox")
         .w_full()
         .gap(crate::ds::SPACE_2)
-        .child(section(k, "Sandbox (TREX)"));
+        .child(section(k, "Sandbox checks"));
     let read = s
         .code_review
         .sandbox
@@ -2816,7 +2807,7 @@ fn sandbox_panel(s: &AppState, k: &Kit, run: &ReviewRun) -> Option<El> {
                     Button::new(if approved {
                         "Approved"
                     } else {
-                        "Approve sandbox.toml"
+                        "Approve checks.toml"
                     })
                     .variant(ButtonVariant::Outline)
                     .control_size(ControlSize::Small)
@@ -2828,9 +2819,9 @@ fn sandbox_panel(s: &AppState, k: &Kit, run: &ReviewRun) -> Option<El> {
                 .child(note(
                     k,
                     if approved {
-                        "The next apex review runs it."
+                        "The next deep review runs it."
                     } else {
-                        "Its commands run in the sandbox on every apex review until the file changes."
+                        "Its commands run in the sandbox on every deep review until the file changes."
                     },
                 )),
         );
@@ -3147,7 +3138,7 @@ mod tests {
             },
             head_oid: "abcdef123".into(),
             base_oid: None,
-            tier: Tier::Base,
+            tier: Tier::Quick,
             preset: "standard".into(),
             provider: "claude".into(),
             status: if finished {
@@ -3168,7 +3159,7 @@ mod tests {
             tree_oid: None,
             diagrams: Vec::new(),
             auto_approvable: false,
-            swarm_size: 1,
+            reviewers: 1,
             schema_version: domain::SchemaVersion::V1,
             sandbox_run_id: None,
         }
@@ -4261,7 +4252,7 @@ mod tests {
                 workspace_id: workspace,
                 review_id: Some(run.id),
                 targets: Vec::new(),
-                error: Some("sandbox.toml is not approved for this project; nothing ran".into()),
+                error: Some("checks.toml is not approved for this project; nothing ran".into()),
                 unapproved_hash: Some("abc".into()),
                 started_at: domain::Timestamp::now(),
                 finished_at: None,

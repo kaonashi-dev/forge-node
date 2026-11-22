@@ -3460,7 +3460,7 @@ fn a_child_reports_to_its_parent_and_watch_follows_it_until_it_ends() {
 /// per-run session ids keep the files apart.
 /// The single v1 reviewer these review tests were written against.
 fn single_reviewer(config: &mut daemon::config::Config) {
-    config.review.swarm_default = 1;
+    config.review.reviewers = 1;
 }
 
 fn review_store() -> &'static Path {

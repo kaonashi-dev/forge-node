@@ -165,7 +165,7 @@ fn start(
         instructions: None,
         model: None,
         effort: None,
-        swarm: domain::SwarmOptions::default(),
+        reviewers: domain::ReviewerOptions::default(),
     }) {
         Ok(Response::ReviewStarted { review_id }) => Ok(review_id),
         Ok(other) => panic!("expected ReviewStarted, got {other:?}"),
@@ -196,9 +196,9 @@ fn wait_run(
     run
 }
 
-/// The single v1 reviewer every test before the swarm was written against.
+/// The single v1 reviewer the tests written before parallel reviewers assume.
 fn v1(config: &mut daemon::config::Config) {
-    config.review.swarm_default = 1;
+    config.review.reviewers = 1;
 }
 
 fn boot(harness: &common::Harness) -> common::TestDaemon {
@@ -399,7 +399,7 @@ fn start_against(
         instructions: None,
         model: None,
         effort: None,
-        swarm: domain::SwarmOptions::default(),
+        reviewers: domain::ReviewerOptions::default(),
     }) {
         Ok(Response::ReviewStarted { review_id }) => Ok(review_id),
         Ok(other) => panic!("expected ReviewStarted, got {other:?}"),
@@ -647,7 +647,7 @@ fn start_with(
         instructions,
         model: None,
         effort: None,
-        swarm: domain::SwarmOptions::default(),
+        reviewers: domain::ReviewerOptions::default(),
     }) {
         Ok(Response::ReviewStarted { review_id }) => Ok(review_id),
         Ok(other) => panic!("expected ReviewStarted, got {other:?}"),
@@ -886,7 +886,7 @@ fn start_launching(
         instructions: None,
         model: model.map(str::to_owned),
         effort: effort.map(str::to_owned),
-        swarm: domain::SwarmOptions::default(),
+        reviewers: domain::ReviewerOptions::default(),
     }) {
         Ok(Response::ReviewStarted { review_id }) => Ok(review_id),
         Ok(other) => panic!("expected ReviewStarted, got {other:?}"),
@@ -1007,7 +1007,7 @@ fn an_effort_the_provider_does_not_list_is_refused_before_any_run() {
         instructions: None,
         model: None,
         effort: Some("turbo".into()),
-        swarm: domain::SwarmOptions::default(),
+        reviewers: domain::ReviewerOptions::default(),
     }) {
         Err(client::ClientError::Protocol(error)) => {
             assert_eq!(error.code, ErrorCode::InvalidRequest);
@@ -1199,7 +1199,7 @@ fn review_to_completion(
         instructions: None,
         model: None,
         effort: None,
-        swarm: domain::SwarmOptions::default(),
+        reviewers: domain::ReviewerOptions::default(),
     }) {
         Ok(Response::ReviewStarted { review_id }) => review_id,
         other => panic!("expected ReviewStarted, got {other:?}"),
@@ -1642,7 +1642,7 @@ fn a_pull_request_with_an_invalid_base_is_refused() {
             instructions: None,
             model: None,
             effort: None,
-            swarm: domain::SwarmOptions::default(),
+            reviewers: domain::ReviewerOptions::default(),
         });
         assert!(
             matches!(&refused, Err(client::ClientError::Protocol(error)) if error.code == ErrorCode::InvalidRequest),
@@ -1963,7 +1963,7 @@ fn quick_starts_on_one_pull_request_run_at_most_two_fetches() {
             instructions: Some(format!("pass {n}")),
             model: None,
             effort: None,
-            swarm: domain::SwarmOptions::default(),
+            reviewers: domain::ReviewerOptions::default(),
         }) {
             Ok(Response::ReviewStarted { review_id }) => accepted.push(review_id),
             Err(client::ClientError::Protocol(error)) if error.code == ErrorCode::Conflict => {
@@ -2171,8 +2171,8 @@ fn a_review_indexes_the_project_graph_and_packs_the_real_caller() {
     assert_eq!(done.status, ReviewStatus::Completed, "{:?}", done.error);
     assert_eq!(
         done.tier,
-        domain::Tier::Base,
-        "a small diff with no tier runs base"
+        domain::Tier::Quick,
+        "a small diff with no tier runs quick"
     );
     assert_eq!(
         porcelain(repo.path()),
@@ -2407,10 +2407,10 @@ fn a_pull_requests_graph_maps_its_hunks_onto_the_heads_functions() {
     );
 }
 
-/// One fake `claude` for a whole swarm: each agent finds its hypothesis in the
+/// One fake `claude` for every reviewer of a run: each agent finds its hypothesis in the
 /// slice file its prompt names, writes that hypothesis' answer (or nothing for
 /// `None`), then blocks like an interactive session.
-fn install_swarm(harness: &common::Harness, answers: &[(&str, Option<String>)]) {
+fn install_reviewers(harness: &common::Harness, answers: &[(&str, Option<String>)]) {
     let mut cases = String::new();
     for (hypothesis, answer) in answers {
         let action = match answer {
@@ -2466,7 +2466,7 @@ fn v2_answer(hypothesis: &str, findings: &[serde_json::Value]) -> String {
     format!("```json\n{body}\n```\n")
 }
 
-fn swarm_sessions(client: &client::Client) -> Vec<domain::Session> {
+fn reviewer_sessions(client: &client::Client) -> Vec<domain::Session> {
     common::sessions(client)
         .into_iter()
         .filter(|session| {
@@ -2480,9 +2480,9 @@ fn swarm_sessions(client: &client::Client) -> Vec<domain::Session> {
 }
 
 #[test]
-fn a_swarm_runs_its_agents_side_by_side_and_merges_their_findings() {
+fn several_reviewers_run_side_by_side_and_merges_their_findings() {
     let harness = common::Harness::new();
-    install_swarm(
+    install_reviewers(
         &harness,
         &[
             (
@@ -2517,7 +2517,7 @@ fn a_swarm_runs_its_agents_side_by_side_and_merges_their_findings() {
     let mut agents = Vec::new();
     assert!(
         common::poll_until(common::DEADLINE, || {
-            agents = swarm_sessions(&client);
+            agents = reviewer_sessions(&client);
             agents.len() == 3
                 && ["AuthBypass", "BrokenContract", "ErrorSwallow"]
                     .iter()
@@ -2527,7 +2527,7 @@ fn a_swarm_runs_its_agents_side_by_side_and_merges_their_findings() {
     );
     let running = get(&client, review_id).0;
     assert_eq!(
-        (running.swarm_size, running.schema_version),
+        (running.reviewers, running.schema_version),
         (3, domain::SchemaVersion::V2)
     );
     for agent in &agents {
@@ -2553,15 +2553,15 @@ fn a_swarm_runs_its_agents_side_by_side_and_merges_their_findings() {
     );
     assert!(done.summary.contains("**AuthBypass**"), "{}", done.summary);
     assert!(
-        common::poll_until(common::DEADLINE, || swarm_sessions(&client).is_empty()),
+        common::poll_until(common::DEADLINE, || reviewer_sessions(&client).is_empty()),
         "every agent closed"
     );
 }
 
 #[test]
-fn a_silent_agent_is_uncovered_and_an_all_silent_swarm_fails() {
+fn a_silent_agent_is_uncovered_and_all_silent_reviewers_fail() {
     let harness = common::Harness::new();
-    install_swarm(
+    install_reviewers(
         &harness,
         &[
             ("AuthBypass", Some(v2_answer("AuthBypass", &[]))),
@@ -2589,8 +2589,8 @@ fn a_silent_agent_is_uncovered_and_an_all_silent_swarm_fails() {
         instructions: None,
         model: None,
         effort: None,
-        swarm: domain::SwarmOptions {
-            size: None,
+        reviewers: domain::ReviewerOptions {
+            count: None,
             hypotheses,
         },
     }) {
@@ -2605,7 +2605,7 @@ fn a_silent_agent_is_uncovered_and_an_all_silent_swarm_fails() {
         .root()
         .join("started-AuthBypass")
         .exists()));
-    if let Some(agent) = swarm_sessions(&client).into_iter().find(|s| {
+    if let Some(agent) = reviewer_sessions(&client).into_iter().find(|s| {
         s.title
             .user
             .as_deref()
@@ -2615,7 +2615,7 @@ fn a_silent_agent_is_uncovered_and_an_all_silent_swarm_fails() {
     }
     let done = wait_run(&events, review_id, |run| run.status.is_finished());
     assert_eq!(done.status, ReviewStatus::Completed, "{:?}", done.error);
-    assert_eq!(done.swarm_size, 2);
+    assert_eq!(done.reviewers, 2);
     assert!(
         done.coverage
             .notes
@@ -2624,7 +2624,7 @@ fn a_silent_agent_is_uncovered_and_an_all_silent_swarm_fails() {
         "{:?}",
         done.coverage.notes
     );
-    assert!(common::poll_until(common::DEADLINE, || swarm_sessions(
+    assert!(common::poll_until(common::DEADLINE, || reviewer_sessions(
         &client
     )
     .is_empty()));
@@ -2637,21 +2637,21 @@ fn a_silent_agent_is_uncovered_and_an_all_silent_swarm_fails() {
             .error
             .as_deref()
             .unwrap_or("")
-            .starts_with("every swarm agent failed"),
+            .starts_with("every reviewer failed"),
         "{:?}",
         failed.error
     );
 }
 
 #[test]
-fn max_swarms_bounds_the_daemon_wide_workers() {
+fn max_parallel_reviews_bounds_the_daemon_wide_workers() {
     let harness = common::Harness::new();
-    install_swarm(&harness, &[("AuthBypass", None)]);
+    install_reviewers(&harness, &[("AuthBypass", None)]);
     let first = seeded_repo();
     let second = seeded_repo();
     let daemon = harness.boot_with(|config| {
-        config.review.max_swarms = 1;
-        config.review.swarm_default = 1;
+        config.review.max_parallel_reviews = 1;
+        config.review.reviewers = 1;
     });
     let client = daemon.connect("scenario-review");
     common::wait_for_detection(&client, |providers| {
@@ -2711,7 +2711,7 @@ fn start_tier(client: &client::Client, workspace_id: WorkspaceId, tier: domain::
         instructions: None,
         model: None,
         effort: None,
-        swarm: domain::SwarmOptions::default(),
+        reviewers: domain::ReviewerOptions::default(),
     }) {
         Ok(Response::ReviewStarted { review_id }) => review_id,
         other => panic!("expected ReviewStarted, got {other:?}"),
@@ -2787,7 +2787,7 @@ fn a_run_below_four_teaches_nothing() {
 }
 
 #[test]
-fn a_plus_run_packs_the_knowledge_base_and_a_base_run_does_not() {
+fn a_standard_run_packs_the_knowledge_base_and_a_quick_run_does_not() {
     let harness = common::Harness::new();
     install_reviewer(&harness, &answer(&[]), Reviewer::AnswersAndExits);
     let repo = module_repo();
@@ -2796,14 +2796,14 @@ fn a_plus_run_packs_the_knowledge_base_and_a_base_run_does_not() {
     let events = client.events();
     let workspace = workspace_at(&client, repo.path());
 
-    let base = start_tier(&client, workspace, domain::Tier::Base);
-    let done = wait_run(&events, base, |run| run.status.is_finished());
+    let quick = start_tier(&client, workspace, domain::Tier::Quick);
+    let done = wait_run(&events, quick, |run| run.status.is_finished());
     assert_eq!(done.status, ReviewStatus::Completed, "{:?}", done.error);
     let pack = std::fs::read_to_string(harness.root().join("pack.md")).expect("pack");
-    assert!(!pack.contains("<kb-"), "base carries no knowledge base");
+    assert!(!pack.contains("<kb-"), "quick carries no knowledge base");
 
-    let plus = start_tier(&client, workspace, domain::Tier::Plus);
-    let done = wait_run(&events, plus, |run| run.status.is_finished());
+    let standard = start_tier(&client, workspace, domain::Tier::Standard);
+    let done = wait_run(&events, standard, |run| run.status.is_finished());
     assert_eq!(done.status, ReviewStatus::Completed, "{:?}", done.error);
     let pack = std::fs::read_to_string(harness.root().join("pack.md")).expect("pack");
     assert!(
@@ -2815,7 +2815,7 @@ fn a_plus_run_packs_the_knowledge_base_and_a_base_run_does_not() {
 }
 
 #[test]
-fn cross_repo_signatures_reach_a_plus_pack_from_another_registered_project() {
+fn cross_repo_signatures_reach_a_standard_pack_from_another_registered_project() {
     let harness = common::Harness::new();
     install_reviewer(&harness, &answer(&[]), Reviewer::AnswersAndExits);
     let billing = test_support::init_repo().expect("billing");
@@ -2859,8 +2859,8 @@ fn cross_repo_signatures_reach_a_plus_pack_from_another_registered_project() {
     )
     .expect("config");
 
-    let plus = start_tier(&client, workspace, domain::Tier::Plus);
-    let done = wait_run(&events, plus, |run| run.status.is_finished());
+    let standard = start_tier(&client, workspace, domain::Tier::Standard);
+    let done = wait_run(&events, standard, |run| run.status.is_finished());
     assert_eq!(done.status, ReviewStatus::Completed, "{:?}", done.error);
     let pack = std::fs::read_to_string(harness.root().join("pack.md")).expect("pack");
     assert!(
@@ -2878,8 +2878,8 @@ fn cross_repo_signatures_reach_a_plus_pack_from_another_registered_project() {
         done.coverage.notes
     );
 
-    let base = start_tier(&client, workspace, domain::Tier::Base);
-    let done = wait_run(&events, base, |run| run.status.is_finished());
+    let quick = start_tier(&client, workspace, domain::Tier::Quick);
+    let done = wait_run(&events, quick, |run| run.status.is_finished());
     assert_eq!(done.status, ReviewStatus::Completed, "{:?}", done.error);
     let pack = std::fs::read_to_string(harness.root().join("pack.md")).expect("pack");
     assert!(!pack.contains("<cross-repo-"));
@@ -2894,7 +2894,7 @@ fn start_target(client: &client::Client, target: ReviewTarget, tier: domain::Tie
         instructions: None,
         model: None,
         effort: None,
-        swarm: domain::SwarmOptions::default(),
+        reviewers: domain::ReviewerOptions::default(),
     }) {
         Ok(Response::ReviewStarted { review_id }) => review_id,
         other => panic!("expected ReviewStarted, got {other:?}"),
@@ -2902,10 +2902,10 @@ fn start_target(client: &client::Client, target: ReviewTarget, tier: domain::Tie
 }
 
 fn sandbox_run(client: &client::Client, id: &str) -> domain::SandboxRun {
-    match client.request(Request::GetSandboxRun {
+    match client.request(Request::GetSandboxChecks {
         sandbox_run_id: id.to_owned(),
     }) {
-        Ok(Response::SandboxRun(run)) => *run,
+        Ok(Response::SandboxChecks(run)) => *run,
         other => panic!("expected SandboxRun, got {other:?}"),
     }
 }
@@ -2918,12 +2918,12 @@ fn write_sandbox(repo: &Path, targets: &[(&str, &str)]) {
             "[[targets]]\nname = \"{name}\"\ncommand = '{command}'\n"
         ));
     }
-    std::fs::write(repo.join(".forge/review/sandbox.toml"), text).expect("sandbox.toml");
+    std::fs::write(repo.join(".forge/review/checks.toml"), text).expect("checks.toml");
 }
 
 fn sandbox_hash(repo: &Path) -> String {
     let text =
-        std::fs::read_to_string(repo.join(".forge/review/sandbox.toml")).expect("sandbox.toml");
+        std::fs::read_to_string(repo.join(".forge/review/checks.toml")).expect("checks.toml");
     daemon::actions::repo::hash(text.as_bytes())
 }
 
@@ -2932,13 +2932,13 @@ fn approve_sandbox(
     workspace_id: WorkspaceId,
     file_hash: String,
 ) -> Result<Response, client::ClientError> {
-    client.request(Request::ApproveSandboxConfig {
+    client.request(Request::ApproveSandboxChecks {
         workspace_id,
         file_hash,
     })
 }
 
-fn apex_run(
+fn deep_run(
     client: &client::Client,
     events: &flume::Receiver<DaemonEvent>,
     workspace_id: WorkspaceId,
@@ -2949,7 +2949,7 @@ fn apex_run(
             workspace_id,
             base: None,
         },
-        domain::Tier::Apex,
+        domain::Tier::Deep,
     );
     let done = wait_run(events, id, |run| run.status.is_finished());
     let sandbox = sandbox_run(client, &done.sandbox_run_id.clone().expect("linked"));
@@ -2958,7 +2958,7 @@ fn apex_run(
 
 #[cfg(target_os = "macos")]
 #[test]
-fn an_apex_run_packs_its_sandbox_failures_and_links_the_run() {
+fn a_deep_run_packs_its_sandbox_failures_and_links_the_run() {
     let harness = common::Harness::new();
     install_reviewer(&harness, &answer(&[]), Reviewer::AnswersAndExits);
     let repo = seeded_repo();
@@ -2969,21 +2969,21 @@ fn an_apex_run_packs_its_sandbox_failures_and_links_the_run() {
             ("test", "echo 1 failed; echo boom >&2; exit 2"),
         ],
     );
-    let daemon = boot_configured(&harness, |config| config.review.trex_enabled = true);
+    let daemon = boot_configured(&harness, |config| config.review.sandbox_checks = true);
     let client = daemon.connect("scenario-review");
     let events = client.events();
     let workspace = workspace_at(&client, repo.path());
     approve_sandbox(&client, workspace, sandbox_hash(repo.path())).expect("approved");
 
-    let apex = start_target(
+    let deep = start_target(
         &client,
         ReviewTarget::Workspace {
             workspace_id: workspace,
             base: None,
         },
-        domain::Tier::Apex,
+        domain::Tier::Deep,
     );
-    let done = wait_run(&events, apex, |run| run.status.is_finished());
+    let done = wait_run(&events, deep, |run| run.status.is_finished());
     assert_eq!(done.status, ReviewStatus::Completed, "{:?}", done.error);
     let pack = std::fs::read_to_string(harness.root().join("pack.md")).expect("pack");
     assert!(
@@ -2993,7 +2993,7 @@ fn an_apex_run_packs_its_sandbox_failures_and_links_the_run() {
     assert!(pack.contains("## lint (exit 0)\n"));
     let id = done.sandbox_run_id.clone().expect("linked");
     let sandbox = sandbox_run(&client, &id);
-    assert_eq!(sandbox.review_id, Some(apex));
+    assert_eq!(sandbox.review_id, Some(deep));
     assert!(sandbox.failed());
     assert!(
         porcelain(repo.path())
@@ -3003,17 +3003,17 @@ fn an_apex_run_packs_its_sandbox_failures_and_links_the_run() {
         porcelain(repo.path())
     );
 
-    let base = start_target(
+    let quick = start_target(
         &client,
         ReviewTarget::Workspace {
             workspace_id: workspace,
             base: None,
         },
-        domain::Tier::Base,
+        domain::Tier::Quick,
     );
-    let done = wait_run(&events, base, |run| run.status.is_finished());
+    let done = wait_run(&events, quick, |run| run.status.is_finished());
     assert_eq!(done.status, ReviewStatus::Completed, "{:?}", done.error);
-    assert_eq!(done.sandbox_run_id, None, "base runs no sandbox");
+    assert_eq!(done.sandbox_run_id, None, "quick runs no sandbox checks");
 }
 
 #[cfg(target_os = "macos")]
@@ -3023,7 +3023,7 @@ fn a_pull_requests_sandbox_runs_in_a_worktree_of_its_head_that_is_gone_after() {
     install_reviewer(&harness, &answer(&[]), Reviewer::AnswersAndExits);
     let (_origin, checkout, _head) = pull_request_checkout();
     write_sandbox(checkout.path(), &[("head", "test -f pr.rs")]);
-    let daemon = boot_configured(&harness, |config| config.review.trex_enabled = true);
+    let daemon = boot_configured(&harness, |config| config.review.sandbox_checks = true);
     let client = daemon.connect("scenario-review");
     let events = client.events();
     let workspace = workspace_at(&client, checkout.path());
@@ -3040,7 +3040,7 @@ fn a_pull_requests_sandbox_runs_in_a_worktree_of_its_head_that_is_gone_after() {
             number: 1,
             base: Some("main".into()),
         },
-        domain::Tier::Apex,
+        domain::Tier::Deep,
     );
     let done = wait_run(&events, run, |run| run.status.is_finished());
     assert_eq!(done.status, ReviewStatus::Completed, "{:?}", done.error);
@@ -3064,7 +3064,7 @@ fn a_pull_requests_sandbox_runs_in_a_worktree_of_its_head_that_is_gone_after() {
 
 #[cfg(target_os = "macos")]
 #[test]
-fn sandbox_toml_runs_only_while_it_is_the_copy_the_person_approved() {
+fn checks_toml_runs_only_while_it_is_the_copy_the_person_approved() {
     let harness = common::Harness::new();
     install_reviewer(&harness, &answer(&[]), Reviewer::AnswersAndExits);
     let repo = seeded_repo();
@@ -3073,12 +3073,12 @@ fn sandbox_toml_runs_only_while_it_is_the_copy_the_person_approved() {
         &[("mark", "echo ran > \"$FORGE_SANDBOX_CACHE/ran\"")],
     );
     let marker = repo.path().join(".forge/review/sandbox/cache/ran");
-    let daemon = boot_configured(&harness, |config| config.review.trex_enabled = true);
+    let daemon = boot_configured(&harness, |config| config.review.sandbox_checks = true);
     let client = daemon.connect("scenario-review");
     let events = client.events();
     let workspace = workspace_at(&client, repo.path());
 
-    let (done, sandbox) = apex_run(&client, &events, workspace);
+    let (done, sandbox) = deep_run(&client, &events, workspace);
     assert_eq!(done.status, ReviewStatus::Completed, "{:?}", done.error);
     assert!(sandbox.targets.is_empty());
     assert!(
@@ -3092,7 +3092,7 @@ fn sandbox_toml_runs_only_while_it_is_the_copy_the_person_approved() {
         done.coverage
             .notes
             .iter()
-            .any(|note| note.starts_with("TREX:") && note.contains("is not approved")),
+            .any(|note| note.starts_with("Sandbox checks:") && note.contains("is not approved")),
         "{:?}",
         done.coverage.notes
     );
@@ -3107,7 +3107,7 @@ fn sandbox_toml_runs_only_while_it_is_the_copy_the_person_approved() {
         other => panic!("expected PreconditionFailed, got {other:?}"),
     }
     approve_sandbox(&client, workspace, offered).expect("approved");
-    let (_, sandbox) = apex_run(&client, &events, workspace);
+    let (_, sandbox) = deep_run(&client, &events, workspace);
     assert_eq!(sandbox.error, None);
     assert!(sandbox.targets[0].passed(), "{sandbox:?}");
     assert!(marker.exists());
@@ -3117,7 +3117,7 @@ fn sandbox_toml_runs_only_while_it_is_the_copy_the_person_approved() {
         repo.path(),
         &[("mark", "echo again > \"$FORGE_SANDBOX_CACHE/ran\"")],
     );
-    let (_, sandbox) = apex_run(&client, &events, workspace);
+    let (_, sandbox) = deep_run(&client, &events, workspace);
     assert!(
         sandbox
             .error
@@ -3146,14 +3146,14 @@ fn a_repository_cannot_turn_the_sandbox_network_on_but_the_user_can() {
         )
         .expect("config");
         let daemon = boot_configured(&harness, |config| {
-            config.review.trex_enabled = true;
+            config.review.sandbox_checks = true;
             config.review.sandbox_network = network;
         });
         let client = daemon.connect("scenario-review");
         let events = client.events();
         let workspace = workspace_at(&client, repo.path());
         approve_sandbox(&client, workspace, sandbox_hash(repo.path())).expect("approved");
-        let (done, sandbox) = apex_run(&client, &events, workspace);
+        let (done, sandbox) = deep_run(&client, &events, workspace);
         assert_eq!(done.status, ReviewStatus::Completed, "{:?}", done.error);
         assert!(
             done.coverage
@@ -3186,13 +3186,13 @@ fn a_cache_directory_committed_as_a_symlink_is_refused() {
         repo.path().join(".forge/review/sandbox/cache"),
     )
     .expect("symlink");
-    let daemon = boot_configured(&harness, |config| config.review.trex_enabled = true);
+    let daemon = boot_configured(&harness, |config| config.review.sandbox_checks = true);
     let client = daemon.connect("scenario-review");
     let events = client.events();
     let workspace = workspace_at(&client, repo.path());
     approve_sandbox(&client, workspace, sandbox_hash(repo.path())).expect("approved");
 
-    let (_, sandbox) = apex_run(&client, &events, workspace);
+    let (_, sandbox) = deep_run(&client, &events, workspace);
     assert!(sandbox.targets.is_empty(), "{sandbox:?}");
     assert!(
         sandbox
@@ -3206,7 +3206,7 @@ fn a_cache_directory_committed_as_a_symlink_is_refused() {
 
 #[cfg(target_os = "macos")]
 #[test]
-fn an_apex_runs_targets_stop_at_the_reviews_budget() {
+fn a_deep_runs_targets_stop_at_the_reviews_budget() {
     let harness = common::Harness::new();
     install_reviewer(&harness, &answer(&[]), Reviewer::AnswersAndExits);
     let repo = seeded_repo();
@@ -3218,7 +3218,7 @@ fn an_apex_runs_targets_stop_at_the_reviews_budget() {
         ],
     );
     let daemon = boot_configured(&harness, |config| {
-        config.review.trex_enabled = true;
+        config.review.sandbox_checks = true;
         config.review.timeout_secs = 3;
     });
     let client = daemon.connect("scenario-review");
@@ -3226,7 +3226,7 @@ fn an_apex_runs_targets_stop_at_the_reviews_budget() {
     let workspace = workspace_at(&client, repo.path());
     approve_sandbox(&client, workspace, sandbox_hash(repo.path())).expect("approved");
 
-    let (done, sandbox) = apex_run(&client, &events, workspace);
+    let (done, sandbox) = deep_run(&client, &events, workspace);
     assert_eq!(done.status, ReviewStatus::Completed, "{:?}", done.error);
     assert_eq!(sandbox.targets.len(), 1, "{sandbox:?}");
     assert!(sandbox.targets[0].timed_out);
@@ -3246,7 +3246,7 @@ fn an_apex_runs_targets_stop_at_the_reviews_budget() {
 
 #[cfg(target_os = "macos")]
 #[test]
-fn a_cancelled_apex_run_starts_no_further_target() {
+fn a_cancelled_deep_run_starts_no_further_target() {
     let harness = common::Harness::new();
     install_reviewer(&harness, &answer(&[]), Reviewer::AnswersAndExits);
     let repo = seeded_repo();
@@ -3257,7 +3257,7 @@ fn a_cancelled_apex_run_starts_no_further_target() {
             ("next", "echo ran > \"$FORGE_SANDBOX_CACHE/next\""),
         ],
     );
-    let daemon = boot_configured(&harness, |config| config.review.trex_enabled = true);
+    let daemon = boot_configured(&harness, |config| config.review.sandbox_checks = true);
     let client = daemon.connect("scenario-review");
     let events = client.events();
     let workspace = workspace_at(&client, repo.path());
@@ -3269,7 +3269,7 @@ fn a_cancelled_apex_run_starts_no_further_target() {
             workspace_id: workspace,
             base: None,
         },
-        domain::Tier::Apex,
+        domain::Tier::Deep,
     );
     wait_run(&events, id, |run| run.stage == Some(ReviewStage::Pack));
     client
@@ -3427,7 +3427,7 @@ fn a_fix_loop_refuses_a_pull_request_review() {
             number: 1,
             base: Some("main".into()),
         },
-        domain::Tier::Base,
+        domain::Tier::Quick,
     );
     wait_run(&events, run, |run| run.status.is_finished());
     let refused = client.request(Request::StartFixLoop {
@@ -3443,9 +3443,9 @@ fn a_fix_loop_refuses_a_pull_request_review() {
 }
 
 #[test]
-fn every_swarm_agent_restarts_read_only_after_the_daemon_restarts() {
+fn every_reviewer_restarts_read_only_after_the_daemon_restarts() {
     let harness = common::Harness::new();
-    install_swarm(
+    install_reviewers(
         &harness,
         &[
             ("AuthBypass", None),
@@ -3465,12 +3465,12 @@ fn every_swarm_agent_restarts_read_only_after_the_daemon_restarts() {
     let workspace = workspace_at(&client, repo.path());
     start(&client, workspace, None).expect("StartReview");
     assert!(common::poll_until(common::DEADLINE, || {
-        swarm_sessions(&client).len() == 3
+        reviewer_sessions(&client).len() == 3
             && ["AuthBypass", "BrokenContract", "ErrorSwallow"]
                 .iter()
                 .all(|h| harness.root().join(format!("started-{h}")).exists())
     }));
-    let agents: Vec<domain::SessionId> = swarm_sessions(&client).iter().map(|s| s.id).collect();
+    let agents: Vec<domain::SessionId> = reviewer_sessions(&client).iter().map(|s| s.id).collect();
     drop(client);
     first.crash();
 

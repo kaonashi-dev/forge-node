@@ -1,4 +1,4 @@
-//! `sandbox_runs`: what TREX ran and how it ended.
+//! `sandbox_runs`: what sandbox checks ran and how they ended.
 
 use domain::{ProjectId, SandboxRun, SandboxTarget, Timestamp};
 use rusqlite::{params, Connection, OptionalExtension};

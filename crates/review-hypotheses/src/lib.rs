@@ -1,4 +1,4 @@
-//! A review swarm: which hypotheses its agents hunt, which files each one is
+//! Parallel reviewers: which hypotheses the agents hunt, which files each one is
 //! pointed at, and how their answers become one set of findings. Pure; the
 //! daemon launches the agents and reads their answers.
 
@@ -138,14 +138,14 @@ pub struct AgentSpec {
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
-pub struct SwarmPlan {
+pub struct ReviewerPlan {
     pub agents: Vec<AgentSpec>,
 }
 
 /// One agent per hypothesis, each pointed at the files whose path or patch
 /// names one of its keywords.
 #[must_use]
-pub fn plan(hypotheses: &[Hypothesis], files: &[DiffFile]) -> SwarmPlan {
+pub fn plan(hypotheses: &[Hypothesis], files: &[DiffFile]) -> ReviewerPlan {
     let agents = hypotheses
         .iter()
         .map(|&hypothesis| {
@@ -173,7 +173,7 @@ pub fn plan(hypotheses: &[Hypothesis], files: &[DiffFile]) -> SwarmPlan {
             }
         })
         .collect();
-    SwarmPlan { agents }
+    ReviewerPlan { agents }
 }
 
 /// `slice-<hypothesis>.md`: the agent's hypothesis and the files to start from.
@@ -191,7 +191,7 @@ pub fn slice_file(spec: &AgentSpec, nonce: &str) -> String {
     text
 }
 
-/// The swarm agent's prompt: the shared pack, its own slice and the v2 answer.
+/// One reviewer's prompt: the shared pack, its own slice and the v2 answer.
 #[must_use]
 pub fn prompt(
     resolved: &review::Resolved,

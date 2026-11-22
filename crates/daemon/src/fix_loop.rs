@@ -232,8 +232,8 @@ impl Daemon {
             Some(run.preset.clone()),
             None,
             domain::AgentLaunchOptions::default(),
-            domain::SwarmOptions {
-                size: Some(run.swarm_size),
+            domain::ReviewerOptions {
+                count: Some(run.reviewers),
                 hypotheses: Vec::new(),
             },
         );

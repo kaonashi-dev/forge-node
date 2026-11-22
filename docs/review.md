@@ -23,7 +23,7 @@ Three pieces own it, in that order:
    run reviews the uncommitted changes only and says so in its coverage notes.
 2. Build the pack (below) for the resolved tier.
 3. Launch the reviewer — an ordinary `SessionKind::Agent` with
-   `read_only: true`, titled **Forge Review** (a swarm launches one per
+   `read_only: true`, titled **Forge Review** (several reviewers launch one per
    hypothesis, below) — with the pack path, then wait
    for its hook to report `Idle` (or its session to exit). A reviewer that
    reports `Idle` or `Waiting` without a parseable answer fails the run after a
@@ -37,7 +37,7 @@ Three pieces own it, in that order:
 A workspace has one run in flight. A start with the same head, base, provider,
 model, effort, tier, preset and instructions answers with that run's id unless
 it was cancelled; any other start cancels it and begins anew. `[review]
-max_swarms` (2) review workers may be alive daemon-wide, a superseded one included until it notices its
+max_parallel_reviews` (2) review workers may be alive daemon-wide, a superseded one included until it notices its
 cancel: past that, a start that would not join a running run is `Conflict`, even
 one that would supersede. A cancel that lands while the answer is validated
 still wins, and no findings are saved for it. After every run the workspace is
@@ -173,16 +173,17 @@ and neutralised like the diff.
 
 | Tier | Files | Diff bytes | `<graph>` | `<kb>` | `<cross-repo>` | `<runtime>` |
 |------|-------|-----------|-----------|--------|----------------|-------------|
-| `base` | 40 | 512 KiB | 32 KiB | — | — | — |
-| `plus` | 60 | 1 MiB | 64 KiB | 32 KiB | 16 KiB | — |
-| `apex` | 100 | 2 MiB | 128 KiB | 32 KiB | 16 KiB | 32 KiB |
+| `quick` | 40 | 512 KiB | 32 KiB | — | — | — |
+| `standard` | 60 | 1 MiB | 64 KiB | 32 KiB | 16 KiB | — |
+| `deep` | 100 | 2 MiB | 128 KiB | 32 KiB | 16 KiB | 32 KiB |
 
 `auto`, the default tier, is chosen once the diff is known: over 1 MiB of patch
-or 50 files is `apex`; over 256 KiB, or a changed path naming `auth`,
+or 50 files is `deep`; over 256 KiB, or a changed path naming `auth`,
 `security`, `crypto`, `secret`, `token`, `password`, `permission`, `perf`,
-`bench` or `cache`, is `plus`; anything else is `base`. A run's tier, then its
+`bench` or `cache`, is `standard`; anything else is `quick`. A run's tier, then its
 preset's, then `default_tier` win over `auto`, and the run stores the concrete
-tier. Each block after the diff needs its own switch as well as its tier, is
+tier. `base`, `plus` and `apex`, the names the tiers had before, are still read
+everywhere a tier is: a stored run, `default_tier`, a preset and `--tier`. Each block after the diff needs its own switch as well as its tier, is
 escaped and redacted like the diff, and loses whole sections past its budget
 with a coverage note. With none of them, the pack and the prompt are v1's.
 
@@ -215,7 +216,7 @@ review still runs with the layers it could read.
 ```toml
 language = "en"
 default_preset = "standard"     # standard | deep | security | custom | a repository preset
-default_tier = "auto"           # auto | base | plus | apex
+default_tier = "auto"           # auto | quick | standard | deep
 strictness = "normal"           # relajado | normal | estricto
 max_findings = 40               # 1..=200
 min_confidence = 0.5            # 0.0..=1.0
@@ -236,7 +237,7 @@ enabled = true                  # the codebase graph and its <graph> block
 cross_repo = false              # needs [review] cross_repo_enabled too
 repos = ["billing", "../shared"] # registered Forge projects: a name, or a path to a project's root
 [kb]
-enabled = true                  # the knowledge base in plus and apex packs
+enabled = true                  # the knowledge base in standard and deep packs
 [review.auto_approve]
 enabled = false
 risk_ceiling = "low"            # low (no findings) | medium (P2) | high (P1) | critical (anything but P0)
@@ -265,14 +266,14 @@ in place, and an unknown rule id is ignored with a note:
 ```toml
 name = "Review the change"
 detail = "Correctness, missing tests, and anything that would block a merge."
-tier = "base"
+tier = "quick"
 rules = ["*"]                   # or the ids it applies
 instructions = "Read the caller before judging the change."
 [categories]
 style = false
 ```
 
-The built-ins are `standard`, `deep` (apex), `security` (security only) and
+The built-ins are `standard`, `deep` (the deep tier), `security` (security only) and
 `custom`, which needs instructions from the run or from a repository preset
 that redefines it.
 
@@ -326,12 +327,12 @@ stored graph changes. The same batched read serves validation and the diagrams.
 Jaccard index of at least 0.5), one `path:line kind name` line each. The prompt
 names it and `forgectl review graph query`.
 
-### Swarm and `forge.review/v2`
+### Parallel reviewers and `forge.review/v2`
 
-`[review] swarm_default` (3, clamped to 1..=8) agents review each run, each an
+`[review] reviewers` (3, clamped to 1..=8) agents review each run, each an
 ordinary read-only `SessionKind::Agent` titled `Forge Review · <Hypothesis>`
 with its own `--session-id`, all launched together and each given the full
-`timeout_secs`. A run's `swarm.size` or `swarm.hypotheses` override it; size 1
+`timeout_secs`. A run's `reviewers.count` or `reviewers.hypotheses` override it; a count of 1
 with no hypotheses is the single v1 reviewer, prompt and answer unchanged.
 Hypotheses are taken in this order: `AuthBypass`, `BrokenContract`,
 `ErrorSwallow`, `RaceCondition`, `NPlusOneQuery`, `MissingValidation`, then
@@ -347,15 +348,15 @@ and an agent with nothing a `hypothesis discarded` note. The union is
 deduplicated by fingerprint (the more severe wins, then the one with a rule),
 `max_findings` applies once, and each kept finding carries its `hypothesis`. A
 run fails only when every agent failed. Cancel stops every agent.
-`[review] max_swarms` (2) bounds the review workers alive daemon-wide, a
+`[review] max_parallel_reviews` (2) bounds the review workers alive daemon-wide, a
 superseded one included. The run's `session_id` names the first agent and
 `agent_sessions` every one, so after a restart each agent is still read-only.
 
 `parse_output` accepts `forge.review/v1` and `forge.review/v2`. v2 adds
 `findings[].hypothesis` (the agent's own is kept), `findings[].kb_ref`,
 `patterns` (at most 10, 200 bytes each) and `coverage_notes`; `pr_confidence`
-and `diagrams` are accepted and ignored — swarm prompts ask for neither. A run
-records `swarm_size` and `schema_version`.
+and `diagrams` are accepted and ignored — the reviewers' prompts ask for neither. A run
+records `reviewers` and `schema_version`.
 
 ### Diagrams
 
@@ -405,7 +406,7 @@ and 👎 rows. A person may write `architecture.md` and `patterns.json` (a JSON
 list of strings); the daemon never overwrites a person's `architecture.md`.
 Caps: 256 KiB per file, 1 MiB per project. Everything is redacted before it is
 stored. Daemon entries older than 90 days and expired patterns go with each
-review's prune. `<kb-N>` (plus and apex, `[kb] enabled` and `[review]
+review's prune. `<kb-N>` (standard and deep, `[kb] enabled` and `[review]
 kb_enabled`) carries the architecture sections of the diff's modules and the
 learned rules; a finding cites one as `kb_ref: "architecture.md#<section>"`.
 
@@ -416,13 +417,13 @@ names a registered Forge project, by name or by a path that canonicalizes to its
 root; anything else is a `cross-repo repo 'X' not found` note. Each listed
 project's graph is built like the reviewed one's and rebuilt when this daemon
 has not refreshed it in 24 hours (a failed rebuild uses the stored graph with a
-note). `<cross-repo-N>` (plus and apex) lists `<project> path name signature`
+note). `<cross-repo-N>` (standard and deep) lists `<project> path name signature`
 for calls from the changed functions that resolve only there: signatures,
 never bodies.
 
-### TREX
+### Sandbox checks
 
-`.forge/review/sandbox.toml`, read from the user's checkout (16 KiB), never from
+`.forge/review/checks.toml`, read from the user's checkout (16 KiB), never from
 a pull request:
 
 ```toml
@@ -436,8 +437,8 @@ command = "cargo test --workspace"
 
 A repository can **offer** targets but never run one, the trust model of
 [project actions](./actions.md). The file runs only while its SHA-256 is the one
-a person approved for the project (`ApproveSandboxConfig`: **Approve
-sandbox.toml** in the TREX panel, or `forgectl review sandbox approve`, which
+a person approved for the project (`ApproveSandboxChecks`: **Approve
+checks.toml** in the Sandbox checks section, or `forgectl review checks approve`, which
 shows the file and asks first). An unapproved or changed file runs nothing: the
 run's `error` says so and `unapproved_hash` carries the hash to approve, which
 is refused with `PreconditionFailed` once the file changes again.
@@ -458,16 +459,18 @@ from the daemon's resolved environment, `[env]` and `FORGE_SANDBOX_CACHE`; a
 `FORGE_*` name from either is dropped. The policy is the user's alone: a
 repository's `[security]` section in `config.toml` is ignored with a note. The
 last 8 KiB of stdout and stderr is kept, redacted. Elsewhere than macOS a run
-says "TREX unsupported on this platform".
+says "Sandbox checks are unsupported on this platform". A checkout that still
+has `.forge/review/sandbox.toml` and no `checks.toml` is told to rename it;
+the old name is never read.
 
-An `apex` run with `[review] trex_enabled` runs every target before its agents
+A `deep` run with `[review] sandbox_checks` runs every target before its agents
 launch: a workspace run in the checkout, a pull request in a detached worktree
 of its head under `<forge home>/review-sandbox/<run>`, removed with the run and
 swept at startup. Each target's timeout is cut to what is left of the run's
 `[review] timeout_secs`, counted from when the run started, and before each
 target a cancel or a spent budget stops the stage with a note. `<runtime-N>`
 gives each target's exit and a failing target's output; the `sandbox_runs` row
-is linked to the run (`sandbox_run_id`). `RunSandbox` runs the targets by hand,
+is linked to the run (`sandbox_run_id`). `RunSandboxChecks` runs the targets by hand,
 one per workspace at a time, under the same approval and without the budget.
 
 ### Fix loop
@@ -476,7 +479,7 @@ one per workspace at a time, under the same approval and without the budget.
 workspace review's standing findings to a new writable agent with the same
 8 KiB prompt "Fix with a new agent" builds, waits for it to idle or exit within
 `timeout_secs`, closes it, runs the same review (target, tier, preset,
-provider, swarm size) and repeats until a review finds nothing or
+provider, reviewer count) and repeats until a review finds nothing or
 `max_iterations` reviews ran. It never commits or pushes. Progress arrives as
 `FixLoopUpdated`; `CancelFixLoop` stops it. A pull-request review is refused,
 and a second loop on the workspace is `Conflict`. A person starts it: the GUI's
@@ -487,9 +490,9 @@ terminal or needs `--yes`, and no MCP tool or `review_start` flag starts one.
 
 `GetReviewStats` (`forgectl review stats`) gives P50/P95 wall-clock latency per
 tier over completed runs, the graph hit rate (queries answered from a stored
-graph against rebuilds, since the daemon started), swarm coverage (hypotheses
-with a kept finding over swarm agents), the knowledge-base hit rate (runs with
-a finding citing it), the TREX failure rate over sandbox-linked runs, and the
+graph against rebuilds, since the daemon started), hypothesis coverage (hypotheses
+with a kept finding over the reviewers of multi-reviewer runs), the knowledge-base hit rate (runs with
+a finding citing it), the sandbox checks failure rate over sandbox-linked runs, and the
 knowledge base's size.
 
 ## Daemon configuration
@@ -502,13 +505,13 @@ knowledge base's size.
 | `timeout_secs` | `900` | a run with no answer by then fails and its session is stopped; capped at 24 h |
 | `model`, `effort` | unset | the provider's own default; a run may override both |
 | `instructions` | empty | added before every repository's `prompt.md`; over 4 096 bytes is ignored with a note |
-| `swarm_default` | `3` | agents per review, clamped to 1..=8; `1` is the single v1 reviewer |
-| `max_swarms` | `2` | review workers alive daemon-wide |
+| `reviewers` | `3` | agents per review, clamped to 1..=8; `1` is the single v1 reviewer |
+| `max_parallel_reviews` | `2` | review workers alive daemon-wide |
 | `kb_enabled` | `true` | the knowledge base: refreshed, learned and packed |
 | `cross_repo_enabled` | `false` | other projects' signatures, when the repository lists them |
-| `trex_enabled` | `false` | run `sandbox.toml`'s targets before an `apex` review |
-| `sandbox_network` | `false` | TREX targets may use the network |
-| `sandbox_env_whitelist` | `["PATH", "HOME"]` | variables copied into a TREX target's environment; `FORGE_*` is dropped |
+| `sandbox_checks` | `false` | run `checks.toml`'s targets before a `deep` review |
+| `sandbox_network` | `false` | sandbox checks may use the network |
+| `sandbox_env_whitelist` | `["PATH", "HOME"]` | variables copied into a sandbox check's environment; `FORGE_*` is dropped |
 
 A reviewer is launched in the provider's **read-only** mode *and* with the
 structured-review flag: Claude gets `--session-id` with a UUID Forge minted (so
@@ -519,25 +522,25 @@ capability is refused, never downgraded to one that can write —
 
 ## Clients
 
-- `forgectl review start [--pr <n>] [--base <branch>] [--swarm-size N]
+- `forgectl review start [--pr <n>] [--base <branch>] [--reviewers N]
   [--hypothesis H]… --wait`, `show [--diagram <kind> [--format forge|mermaid]]`,
-  `status`, `cancel` (the MCP `review_start` tool takes `pr`, `swarm_size` and
+  `status`, `cancel` (the MCP `review_start` tool takes `pr`, `reviewers` and
   `hypotheses`); `rules check` prints the repository's presets and rules (exit 1
-  on an invalid file); `bench [--swarm-size N]` replays a corpus of
+  on an invalid file); `bench [--reviewers N]` replays a corpus of
   reintroduced bugs. `graph rebuild [--full]`, `graph query --callers|--callees|
   --similar <fn>` (`--path <a> <b>`, `--imports <file>`, `--external-calls
   <file>`; with no daemon, from `cache.bin` when its oid is `HEAD`'s) and `graph
   show [--format dot|mermaid]` (MCP `review_graph_query`); `kb show [--file f]`,
   `kb edit <file>`, `kb export [--output path]` (MCP `review_kb_get`);
-  `sandbox run [--target name]` (exit 1 when a target failed) and `sandbox
-  results <id>` (MCP `review_sandbox_run`); `sandbox approve [--yes]` (no MCP
+  `checks run [--target name]` (exit 1 when a target failed) and `checks
+  results <id>` (MCP `review_checks_run`); `checks approve [--yes]` (no MCP
   tool: an agent must not approve the commands it is about to run); `fix-loop [--review id]
   [--max-iters N] [--yes]`; `stats`.
 - The Review mode shows a score badge above the summary, a **Diagrams** tab
   (each diagram drawn as SVG from theme colours), a **Graph** tab (each
-  reviewed file's imports and external calls), a hypothesis chip on swarm
-  findings, a collapsible knowledge-base section with the cited entries, the
-  TREX targets of an `apex` run (with **Approve sandbox.toml** when the file
+  reviewed file's imports and external calls), a hypothesis chip on a
+  reviewer's findings, a collapsible knowledge-base section with the cited entries, the
+  sandbox checks of a `deep` run (with **Approve checks.toml** when the file
   did not run for want of approval), and **Fix Loop** beside Fix with a new agent.
 - The GUI's **Review** mode starts a run, shows stage and progress, groups
   findings by severity or file, marks lineage and lists what was resolved, takes

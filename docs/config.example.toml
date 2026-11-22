@@ -191,13 +191,13 @@ timeout_secs = 900              # a run with no answer by then fails
 # replace the fixed prompt; over 4096 bytes is ignored with a note.
 instructions = ""
 # Agents per review, each hunting one hypothesis (1..=8); 1 is the single
-# reviewer. A run's --swarm-size or --hypothesis overrides it.
-swarm_default = 3
-max_swarms = 2                  # review workers alive daemon-wide
-kb_enabled = true               # the project knowledge base, in plus and apex packs
+# reviewer. A run's --reviewers or --hypothesis overrides it.
+reviewers = 3
+max_parallel_reviews = 2        # review workers alive daemon-wide
+kb_enabled = true               # the project knowledge base, in standard and deep packs
 cross_repo_enabled = false      # other projects' signatures, when .forge/review lists them
-trex_enabled = false            # run .forge/review/sandbox.toml before an apex review (macOS)
-# What a TREX target may reach. Only this file decides it; a repository's
+sandbox_checks = false          # run .forge/review/checks.toml before a deep review (macOS)
+# What a sandbox check may reach. Only this file decides it; a repository's
 # .forge/review/config.toml cannot. A FORGE_* name is dropped.
 sandbox_network = false
 sandbox_env_whitelist = ["PATH", "HOME"]

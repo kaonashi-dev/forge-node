@@ -668,7 +668,7 @@ impl Client {
         preset: Option<String>,
         instructions: Option<String>,
         options: domain::AgentLaunchOptions,
-        swarm: domain::SwarmOptions,
+        reviewers: domain::ReviewerOptions,
     ) -> Result<domain::ReviewId, ClientError> {
         match self.request(Request::StartReview {
             target,
@@ -678,7 +678,7 @@ impl Client {
             instructions,
             model: options.model,
             effort: options.effort,
-            swarm,
+            reviewers,
         })? {
             Response::ReviewStarted { review_id } => Ok(review_id),
             _ => Err(ClientError::UnexpectedResponse {
@@ -802,29 +802,29 @@ impl Client {
 
     /// # Errors
     /// [`ClientError`] on a transport failure or a refusal from the daemon.
-    pub fn get_sandbox_run(
+    pub fn get_sandbox_checks(
         &self,
         sandbox_run_id: String,
     ) -> Result<domain::SandboxRun, ClientError> {
-        match self.request(Request::GetSandboxRun { sandbox_run_id })? {
-            Response::SandboxRun(run) => Ok(*run),
+        match self.request(Request::GetSandboxChecks { sandbox_run_id })? {
+            Response::SandboxChecks(run) => Ok(*run),
             _ => Err(ClientError::UnexpectedResponse {
                 expected: "SandboxRun",
             }),
         }
     }
 
-    /// Approve the workspace's `sandbox.toml` for its project, as long as it
+    /// Approve the workspace's `checks.toml` for its project, as long as it
     /// still hashes to `file_hash`.
     ///
     /// # Errors
     /// [`ClientError`] on a transport failure or a refusal from the daemon.
-    pub fn approve_sandbox_config(
+    pub fn approve_sandbox_checks(
         &self,
         workspace_id: domain::WorkspaceId,
         file_hash: String,
     ) -> Result<(), ClientError> {
-        match self.request(Request::ApproveSandboxConfig {
+        match self.request(Request::ApproveSandboxChecks {
             workspace_id,
             file_hash,
         })? {

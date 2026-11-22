@@ -13,7 +13,7 @@ members = [
     "crates/syntax-index",
     "crates/codebase-graph",
     "crates/diagram-gen",
-    "crates/review-swarm",
+    "crates/review-hypotheses",
     "crates/knowledge-base",
     "crates/runtime-sandbox",
     "crates/external-index",
@@ -50,7 +50,7 @@ languages = { path = "crates/languages" }
 syntax-index = { path = "crates/syntax-index" }
 codebase-graph = { path = "crates/codebase-graph" }
 diagram-gen = { path = "crates/diagram-gen" }
-review-swarm = { path = "crates/review-swarm" }
+review-hypotheses = { path = "crates/review-hypotheses" }
 knowledge-base = { path = "crates/knowledge-base" }
 runtime-sandbox = { path = "crates/runtime-sandbox" }
 external-index = { path = "crates/external-index" }

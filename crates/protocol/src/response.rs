@@ -274,12 +274,12 @@ pub enum Response {
     FixLoopStarted {
         workspace_id: domain::WorkspaceId,
     },
-    /// Answers `RunSandbox`.
-    SandboxStarted {
+    /// Answers `RunSandboxChecks`.
+    SandboxChecksStarted {
         sandbox_run_id: String,
     },
-    /// Answers `GetSandboxRun`.
-    SandboxRun(Box<domain::SandboxRun>),
+    /// Answers `GetSandboxChecks`.
+    SandboxChecks(Box<domain::SandboxRun>),
     /// Answers `GetKb`.
     Kb(Vec<domain::KbFile>),
     /// Answers `ExportKb`.

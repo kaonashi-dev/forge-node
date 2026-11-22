@@ -1,4 +1,4 @@
-//! TREX in the daemon: the repository's sandbox targets for an `apex`
+//! Sandbox checks in the daemon: the repository's targets for a `deep`
 //! review, or by hand. Runs on its caller's worker thread, never under the
 //! core lock; the file is always the user's checkout's, never a pull request's,
 //! and runs only while it hashes to the copy the person approved for the project.
@@ -100,7 +100,7 @@ fn cache_dir(checkout: &Path) -> Result<PathBuf, String> {
         match std::fs::symlink_metadata(&path) {
             Ok(meta) if meta.file_type().is_symlink() => {
                 return Err(format!(
-                    "{} is a symlink; TREX will not write through it",
+                    "{} is a symlink; sandbox checks will not write through it",
                     path.strip_prefix(&root).unwrap_or(&path).display()
                 ));
             }
@@ -130,7 +130,7 @@ fn cache_dir(checkout: &Path) -> Result<PathBuf, String> {
 }
 
 impl Daemon {
-    /// Every target of `checkout`'s `sandbox.toml` (or just `only`), run in
+    /// Every target of `checkout`'s `checks.toml` (or just `only`), run in
     /// `run_dir`, stored and returned. Never fails: what stopped it is `error`.
     pub(crate) fn run_sandbox_targets(
         &self,
@@ -178,7 +178,7 @@ impl Daemon {
             runtime_sandbox::CONFIG_PATH,
             runtime_sandbox::MAX_CONFIG_BYTES,
         )?
-        .ok_or_else(|| format!("no {}", runtime_sandbox::CONFIG_PATH))?;
+        .ok_or_else(|| runtime_sandbox::missing(checkout))?;
         self.require_approved(run, &text)?;
         let config = runtime_sandbox::parse(&text)?;
         let cache = cache_dir(checkout)?;
@@ -211,7 +211,7 @@ impl Daemon {
             .collect();
         if targets.is_empty() {
             return Err(format!(
-                "sandbox.toml has no target `{}`",
+                "checks.toml has no target `{}`",
                 only.unwrap_or_default()
             ));
         }
@@ -247,7 +247,7 @@ impl Daemon {
         Ok(())
     }
 
-    /// Refuses, recording the hash for `ApproveSandboxConfig`, unless `text`
+    /// Refuses, recording the hash for `ApproveSandboxChecks`, unless `text`
     /// is the copy the person approved for the workspace's project.
     fn require_approved(&self, run: &mut SandboxRun, text: &str) -> Result<(), String> {
         let project = self
@@ -273,7 +273,7 @@ impl Daemon {
         ))
     }
 
-    pub(crate) fn approve_sandbox_config(
+    pub(crate) fn approve_sandbox_checks(
         &self,
         workspace_id: WorkspaceId,
         file_hash: &str,
@@ -302,7 +302,7 @@ impl Daemon {
         Ok(Response::Ack)
     }
 
-    pub(crate) fn run_sandbox(
+    pub(crate) fn run_sandbox_checks(
         self: &Arc<Self>,
         workspace_id: WorkspaceId,
         target: Option<String>,
@@ -334,7 +334,7 @@ impl Daemon {
                 );
                 daemon
                     .registry
-                    .broadcast_domain(DaemonEvent::SandboxFinished(Box::new(run)));
+                    .broadcast_domain(DaemonEvent::SandboxChecksFinished(Box::new(run)));
             })
             .map_err(|error| {
                 ProtocolError::new(
@@ -342,14 +342,14 @@ impl Daemon {
                     format!("cannot start the sandbox: {error}"),
                 )
             })?;
-        Ok(Response::SandboxStarted { sandbox_run_id: id })
+        Ok(Response::SandboxChecksStarted { sandbox_run_id: id })
     }
 
-    pub(crate) fn get_sandbox_run(&self, id: &str) -> Result<Response, ProtocolError> {
+    pub(crate) fn get_sandbox_checks(&self, id: &str) -> Result<Response, ProtocolError> {
         self.review_store
             .sandbox_run(id)
             .map_err(db_err)?
-            .map(|run| Response::SandboxRun(Box::new(run)))
+            .map(|run| Response::SandboxChecks(Box::new(run)))
             .ok_or_else(|| ProtocolError::not_found("sandbox run"))
     }
 }

@@ -1867,8 +1867,8 @@ fn start_forge_review(daemon: &Arc<Daemon>, run: &SpecRunView) {
         None,
         None,
         domain::AgentLaunchOptions::default(),
-        domain::SwarmOptions {
-            size: Some(1),
+        domain::ReviewerOptions {
+            count: Some(1),
             hypotheses: Vec::new(),
         },
     );

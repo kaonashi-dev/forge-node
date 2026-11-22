@@ -359,26 +359,26 @@ pub struct ReviewConfig {
     pub instructions: String,
     /// Agents per review, each hunting one hypothesis; `1` is the single
     /// reviewer. Clamped to `1..=8`; a run may ask for another size.
-    pub swarm_default: u8,
+    pub reviewers: u8,
     /// Review workers alive daemon-wide, a superseded one included.
-    pub max_swarms: usize,
-    /// The project knowledge base in `plus` and `apex` packs.
+    pub max_parallel_reviews: usize,
+    /// The project knowledge base in `standard` and `deep` packs.
     pub kb_enabled: bool,
     /// Other registered projects' signatures, when the repository lists them.
     pub cross_repo_enabled: bool,
-    /// Run `.forge/review/sandbox.toml`'s targets before an `apex` review.
-    pub trex_enabled: bool,
-    /// TREX targets may use the network. Only ever the user's choice, never a repository's.
+    /// Run `.forge/review/checks.toml`'s targets before a `deep` review.
+    pub sandbox_checks: bool,
+    /// Sandbox checks may use the network. Only ever the user's choice, never a repository's.
     pub sandbox_network: bool,
-    /// Variables copied from the daemon's environment into a TREX target's; a
+    /// Variables copied from the daemon's environment into a sandbox check's; a
     /// `FORGE_*` name is dropped.
     pub sandbox_env_whitelist: Vec<String>,
 }
 
 impl ReviewConfig {
     #[must_use]
-    pub fn swarm_size(&self, asked: Option<u8>) -> u8 {
-        asked.unwrap_or(self.swarm_default).clamp(1, 8)
+    pub fn reviewer_count(&self, asked: Option<u8>) -> u8 {
+        asked.unwrap_or(self.reviewers).clamp(1, 8)
     }
 }
 
@@ -390,11 +390,11 @@ impl Default for ReviewConfig {
             model: None,
             effort: None,
             instructions: String::new(),
-            swarm_default: 3,
-            max_swarms: 2,
+            reviewers: 3,
+            max_parallel_reviews: 2,
             kb_enabled: true,
             cross_repo_enabled: false,
-            trex_enabled: false,
+            sandbox_checks: false,
             sandbox_network: false,
             sandbox_env_whitelist: vec!["PATH".to_owned(), "HOME".to_owned()],
         }
@@ -840,18 +840,19 @@ mod tests {
     }
 
     #[test]
-    fn review_swarm_keys_parse_and_clamp() {
+    fn reviewer_keys_parse_and_clamp() {
         let c = Config::default();
-        assert_eq!((c.review.swarm_default, c.review.max_swarms), (3, 2));
-        assert!(c.review.kb_enabled && !c.review.cross_repo_enabled && !c.review.trex_enabled);
-        let c: Config =
-            toml::from_str("[review]\nswarm_default = 12\nmax_swarms = 4\ntrex_enabled = true\n")
-                .unwrap();
-        assert_eq!(c.review.swarm_size(None), 8);
-        assert_eq!(c.review.swarm_size(Some(0)), 1);
-        assert_eq!(c.review.swarm_size(Some(5)), 5);
-        assert_eq!(c.review.max_swarms, 4);
-        assert!(c.review.trex_enabled);
+        assert_eq!((c.review.reviewers, c.review.max_parallel_reviews), (3, 2));
+        assert!(c.review.kb_enabled && !c.review.cross_repo_enabled && !c.review.sandbox_checks);
+        let c: Config = toml::from_str(
+            "[review]\nreviewers = 12\nmax_parallel_reviews = 4\nsandbox_checks = true\n",
+        )
+        .unwrap();
+        assert_eq!(c.review.reviewer_count(None), 8);
+        assert_eq!(c.review.reviewer_count(Some(0)), 1);
+        assert_eq!(c.review.reviewer_count(Some(5)), 5);
+        assert_eq!(c.review.max_parallel_reviews, 4);
+        assert!(c.review.sandbox_checks);
     }
 
     #[test]

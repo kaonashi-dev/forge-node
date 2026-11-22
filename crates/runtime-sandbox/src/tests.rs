@@ -51,7 +51,7 @@ fn go(run: &Run, command: &str) -> TargetResult {
 }
 
 #[test]
-fn sandbox_toml_parses_and_bad_files_are_explained() {
+fn checks_toml_parses_and_bad_files_are_explained() {
     let config = parse(
         "timeout_secs = 9000\n[env]\nRUST_BACKTRACE = \"1\"\n[[targets]]\nname = \"test\"\ncommand = \"cargo test\"\n",
     )
@@ -221,7 +221,7 @@ fn the_target_sees_no_forge_variable() {
 
 #[test]
 #[cfg(not(target_os = "macos"))]
-fn elsewhere_trex_is_unsupported() {
+fn elsewhere_sandbox_checks_are_unsupported() {
     let run = run();
     assert_eq!(
         run_target(&target("true"), Duration::from_secs(1), &run.policy, &env()).unwrap_err(),
@@ -370,5 +370,17 @@ fn with_the_network_on_the_forge_socket_stays_unreachable() {
     assert!(
         reached.passed(),
         "only Forge's socket is denied: {reached:?}"
+    );
+}
+
+#[test]
+fn a_checkout_with_only_the_earlier_file_is_told_to_rename_it() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    assert_eq!(missing(dir.path()), "no .forge/review/checks.toml");
+    std::fs::create_dir_all(dir.path().join(".forge/review")).expect("dir");
+    std::fs::write(dir.path().join(".forge/review/sandbox.toml"), "").expect("file");
+    assert_eq!(
+        missing(dir.path()),
+        "no .forge/review/checks.toml; rename .forge/review/sandbox.toml to it"
     );
 }

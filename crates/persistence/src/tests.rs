@@ -1654,7 +1654,7 @@ fn mk_run(workspace_id: WorkspaceId, status: domain::ReviewStatus) -> domain::Re
         },
         head_oid: "abc".into(),
         base_oid: Some("def".into()),
-        tier: domain::Tier::Base,
+        tier: domain::Tier::Quick,
         preset: "security".into(),
         provider: "claude".into(),
         status,
@@ -1676,7 +1676,7 @@ fn mk_run(workspace_id: WorkspaceId, status: domain::ReviewStatus) -> domain::Re
         tree_oid: None,
         diagrams: Vec::new(),
         auto_approvable: false,
-        swarm_size: 1,
+        reviewers: 1,
         schema_version: domain::SchemaVersion::V1,
         sandbox_run_id: None,
     }
@@ -1766,7 +1766,7 @@ fn reviewer_sessions_are_named_for_the_restart() {
 }
 
 #[test]
-fn every_swarm_agent_is_named_for_the_restart_and_keeps_its_run() {
+fn every_reviewer_is_named_for_the_restart_and_keeps_its_run() {
     let (db, _, ws) = db_with_workspace();
     let store = db.review_store().unwrap();
     let agents = [
@@ -2305,7 +2305,7 @@ fn v2_run_and_finding_fields_round_trip_and_old_rows_read_as_v1() {
         domain::SchemaVersion::V1
     );
 
-    run.tier = domain::Tier::Apex;
+    run.tier = domain::Tier::Deep;
     run.diagrams = vec![domain::Diagram {
         kind: domain::DiagramKind::Flow,
         title: "Branches in pick".into(),
@@ -2316,7 +2316,7 @@ fn v2_run_and_finding_fields_round_trip_and_old_rows_read_as_v1() {
         edges: Vec::new(),
     }];
     run.auto_approvable = true;
-    run.swarm_size = 3;
+    run.reviewers = 3;
     run.schema_version = domain::SchemaVersion::V2;
     run.sandbox_run_id = Some("sandbox-1".into());
     store.update_run(&run).unwrap();
@@ -2493,4 +2493,31 @@ fn a_sandbox_approval_is_one_hash_per_project_and_goes_with_it() {
         None,
         "cascades with its project"
     );
+}
+
+#[test]
+fn a_run_stored_under_a_tiers_shipped_name_still_loads() {
+    let (db, _, ws) = db_with_workspace();
+    let store = db.review_store().unwrap();
+    let mut run = mk_run(ws, domain::ReviewStatus::Completed);
+    run.tier = domain::Tier::Deep;
+    store.insert_run(&run).unwrap();
+    let id = run.id.to_string();
+    let stored: String = db
+        .conn()
+        .query_row("SELECT tier FROM review_runs WHERE id = ?1", [&id], |row| {
+            row.get(0)
+        })
+        .unwrap();
+    assert_eq!(stored, "deep");
+    for (old, tier) in [
+        ("base", domain::Tier::Quick),
+        ("plus", domain::Tier::Standard),
+        ("apex", domain::Tier::Deep),
+    ] {
+        db.conn()
+            .execute("UPDATE review_runs SET tier = ?1 WHERE id = ?2", [old, &id])
+            .unwrap();
+        assert_eq!(store.get(run.id).unwrap().unwrap().0.tier, tier);
+    }
 }

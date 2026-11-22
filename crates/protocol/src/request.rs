@@ -683,7 +683,7 @@ pub enum Request {
         effort: Option<String>,
         /// A single reviewer at size 1, with no hypotheses.
         #[serde(default)]
-        swarm: domain::SwarmOptions,
+        reviewers: domain::ReviewerOptions,
     },
     // ----- Spec runs -----
     /// Save the source under the run's directory and launch its drafter →
@@ -806,7 +806,7 @@ pub enum Request {
     ExportKb {
         workspace_id: WorkspaceId,
     },
-    /// Forge Review's latency, graph, swarm, knowledge-base and sandbox numbers,
+    /// Forge Review's latency, graph, hypothesis-coverage, knowledge-base and sandbox-checks numbers,
     /// for one workspace or every one → `Response::ReviewStats`. Local read.
     GetReviewStats {
         #[serde(default)]
@@ -831,22 +831,22 @@ pub enum Request {
     CancelFixLoop {
         workspace_id: WorkspaceId,
     },
-    /// Run `.forge/review/sandbox.toml`'s targets (or one) in the checkout →
-    /// `Response::SandboxStarted`, then `DaemonEvent::SandboxFinished`.
+    /// Run `.forge/review/checks.toml`'s sandbox checks (or one) in the checkout →
+    /// `Response::SandboxChecksStarted`, then `DaemonEvent::SandboxChecksFinished`.
     /// `Conflict` while one runs for the workspace.
-    RunSandbox {
+    RunSandboxChecks {
         workspace_id: WorkspaceId,
         #[serde(default)]
         target: Option<String>,
     },
-    /// One sandbox run → `Response::SandboxRun`. Local read.
-    GetSandboxRun {
+    /// One sandbox run → `Response::SandboxChecks`. Local read.
+    GetSandboxChecks {
         sandbox_run_id: String,
     },
-    /// Let TREX run the workspace's `sandbox.toml` for its project while the
+    /// Let sandbox checks run the workspace's `checks.toml` for its project while the
     /// file hashes to `file_hash` → `Ack`. `PreconditionFailed` when it no
     /// longer does, `NotFound` without a file, `InvalidRequest` for a bad one.
-    ApproveSandboxConfig {
+    ApproveSandboxChecks {
         workspace_id: WorkspaceId,
         file_hash: String,
     },

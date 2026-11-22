@@ -66,14 +66,14 @@ impl Daemon {
         preset: Option<String>,
         instructions: Option<String>,
         options: domain::AgentLaunchOptions,
-        swarm: domain::SwarmOptions,
+        reviewers: domain::ReviewerOptions,
     ) -> Result<Response, ProtocolError> {
         let workspace_id = target.workspace_id();
-        let size = self.config.review.swarm_size(swarm.size);
-        let hypotheses = if size == 1 && swarm.hypotheses.is_empty() {
+        let size = self.config.review.reviewer_count(reviewers.count);
+        let hypotheses = if size == 1 && reviewers.hypotheses.is_empty() {
             Vec::new()
         } else {
-            review_swarm::select(usize::from(size), &swarm.hypotheses)
+            review_hypotheses::select(usize::from(size), &reviewers.hypotheses)
         };
         let path = self.workspace_path(workspace_id)?;
         let provider = provider.unwrap_or_else(|| self.config.review.provider.clone());
@@ -150,7 +150,7 @@ impl Daemon {
             "{target_key}\0{provider}\0{:?}\0{:?}\0{}\0{:?}\0{}\0{hypotheses:?}",
             options.model, options.effort, resolved.preset, resolved.tier, resolved.instructions
         );
-        let max_workers = self.config.review.max_swarms.max(1);
+        let max_workers = self.config.review.max_parallel_reviews.max(1);
 
         let id = ReviewId::new();
         {
@@ -208,7 +208,7 @@ impl Daemon {
             tree_oid: None,
             diagrams: Vec::new(),
             auto_approvable: false,
-            swarm_size: u8::try_from(hypotheses.len().max(1)).unwrap_or(1),
+            reviewers: u8::try_from(hypotheses.len().max(1)).unwrap_or(1),
             schema_version: if hypotheses.is_empty() {
                 domain::SchemaVersion::V1
             } else {
@@ -228,7 +228,7 @@ impl Daemon {
         let launch = Launch {
             provider,
             options,
-            swarm: hypotheses,
+            hypotheses,
         };
         std::thread::Builder::new()
             .name("forge-review".into())
@@ -527,11 +527,11 @@ impl Daemon {
             .graphs
             .rebuilds
             .load(std::sync::atomic::Ordering::Relaxed);
-        let swarm: Vec<&persistence::repositories::reviews::StatsRow> =
-            rows.iter().filter(|row| row.swarm_size > 1).collect();
+        let parallel: Vec<&persistence::repositories::reviews::StatsRow> =
+            rows.iter().filter(|row| row.reviewers > 1).collect();
         Ok(Response::ReviewStats(domain::ReviewStats {
             runs: u32::try_from(rows.len()).unwrap_or(u32::MAX),
-            latency: [Tier::Base, Tier::Plus, Tier::Apex]
+            latency: [Tier::Quick, Tier::Standard, Tier::Deep]
                 .into_iter()
                 .filter_map(|tier| {
                     let mut seconds: Vec<i64> = rows
@@ -549,18 +549,18 @@ impl Daemon {
                 })
                 .collect(),
             graph_hit_rate: rate(answered, answered + rebuilds),
-            swarm_coverage: rate(
-                swarm
+            hypothesis_coverage: rate(
+                parallel
                     .iter()
                     .map(|row| u64::from(row.hypotheses_found))
                     .sum(),
-                swarm.iter().map(|row| u64::from(row.swarm_size)).sum(),
+                parallel.iter().map(|row| u64::from(row.reviewers)).sum(),
             ),
             kb_hit_rate: rate(
                 rows.iter().filter(|row| row.cites_kb).count() as u64,
                 rows.len() as u64,
             ),
-            trex_failure_rate: rate(
+            sandbox_checks_failure_rate: rate(
                 sandboxes.iter().filter(|(_, failed)| *failed).count() as u64,
                 sandboxes.len() as u64,
             ),
@@ -758,7 +758,7 @@ impl Daemon {
             resolved.tier = review::auto_tier(&files);
             run.coverage
                 .notes
-                .push(format!("tier auto: {}", tier_name(resolved.tier)));
+                .push(format!("tier auto: {}", resolved.tier.name()));
         }
         run.tier = resolved.tier;
         let resolved = &resolved;
@@ -841,7 +841,7 @@ impl Daemon {
             }
             _ => Vec::new(),
         };
-        let runtime = if resolved.tier == Tier::Apex && self.config.review.trex_enabled {
+        let runtime = if resolved.tier == Tier::Deep && self.config.review.sandbox_checks {
             self.review_sandbox(
                 run,
                 path,
@@ -884,7 +884,7 @@ impl Daemon {
         };
         let mut outputs: Vec<(Option<Hypothesis>, Result<review::ReviewOutput, String>)> =
             Vec::new();
-        if launch.swarm.is_empty() {
+        if launch.hypotheses.is_empty() {
             let transcript = SessionId::new().as_uuid().to_string();
             let prompt = review::prompt(resolved, &pack_file, nonce) + &prompt_blocks;
             let session_id = self.launch_reviewer(
@@ -914,16 +914,16 @@ impl Daemon {
                 .filter(|file| run.coverage.included.contains(&file.path))
                 .cloned()
                 .collect();
-            let plan = review_swarm::plan(&launch.swarm, &included);
+            let plan = review_hypotheses::plan(&launch.hypotheses, &included);
             let mut agents = Vec::new();
             for spec in &plan.agents {
                 let name = spec.hypothesis.name();
                 let slice = pack_dir.join(format!("slice-{name}.md"));
-                write_private(&slice, &review_swarm::slice_file(spec, nonce)).map_err(|error| {
-                    End::Failed(format!("could not write the slice for {name}: {error}"))
-                })?;
+                write_private(&slice, &review_hypotheses::slice_file(spec, nonce)).map_err(
+                    |error| End::Failed(format!("could not write the slice for {name}: {error}")),
+                )?;
                 let transcript = SessionId::new().as_uuid().to_string();
-                let prompt = review_swarm::prompt(resolved, &pack_file, &slice, spec, nonce)
+                let prompt = review_hypotheses::prompt(resolved, &pack_file, &slice, spec, nonce)
                     + &prompt_blocks;
                 match self.launch_reviewer(
                     run.workspace_id,
@@ -947,7 +947,7 @@ impl Daemon {
                 .review_store
                 .set_agent_sessions(run.id, &reviewers.sessions)
             {
-                tracing::warn!(%error, "could not record the swarm's sessions");
+                tracing::warn!(%error, "could not record the reviewers' sessions");
             }
             let config_dir = self.launch_config_dir(&launch.provider);
             let review_id = run.id;
@@ -1022,7 +1022,7 @@ impl Daemon {
             })
             .collect();
         let mut tally = Tally::default();
-        let (findings, summary) = if launch.swarm.is_empty() {
+        let (findings, summary) = if launch.hypotheses.is_empty() {
             let Some((_, Ok(output))) = outputs.pop() else {
                 return Err(End::Failed("the reviewer gave no answer".into()));
             };
@@ -1033,7 +1033,7 @@ impl Daemon {
             run.coverage.withheld = validated.withheld;
             (validated.findings, validated.summary)
         } else {
-            let answers: Vec<(Hypothesis, review_swarm::AgentAnswer)> = outputs
+            let answers: Vec<(Hypothesis, review_hypotheses::AgentAnswer)> = outputs
                 .into_iter()
                 .filter_map(|(hypothesis, output)| {
                     let answer = match output.map(|output| {
@@ -1041,12 +1041,12 @@ impl Daemon {
                     }) {
                         Ok(Ok(validated)) => {
                             tally.add(&validated);
-                            review_swarm::AgentAnswer::Validated(validated)
+                            review_hypotheses::AgentAnswer::Validated(validated)
                         }
-                        Ok(Err(rejected)) => {
-                            review_swarm::AgentAnswer::Uncovered(format!("rejected: {rejected}"))
-                        }
-                        Err(error) => review_swarm::AgentAnswer::Uncovered(error),
+                        Ok(Err(rejected)) => review_hypotheses::AgentAnswer::Uncovered(format!(
+                            "rejected: {rejected}"
+                        )),
+                        Err(error) => review_hypotheses::AgentAnswer::Uncovered(error),
                     };
                     Some((hypothesis?, answer))
                 })
@@ -1054,15 +1054,15 @@ impl Daemon {
             let reasons: Vec<String> = answers
                 .iter()
                 .filter_map(|(hypothesis, answer)| match answer {
-                    review_swarm::AgentAnswer::Uncovered(reason) => {
+                    review_hypotheses::AgentAnswer::Uncovered(reason) => {
                         Some(format!("{}: {reason}", hypothesis.name()))
                     }
-                    review_swarm::AgentAnswer::Validated(_) => None,
+                    review_hypotheses::AgentAnswer::Validated(_) => None,
                 })
                 .collect();
-            let consolidated = review_swarm::consolidate(answers, resolved.max_findings)
+            let consolidated = review_hypotheses::consolidate(answers, resolved.max_findings)
                 .ok_or_else(|| {
-                    End::Failed(format!("every swarm agent failed: {}", reasons.join("; ")))
+                    End::Failed(format!("every reviewer failed: {}", reasons.join("; ")))
                 })?;
             run.coverage.notes.extend(consolidated.notes);
             tally.unverified = consolidated.unverified;
@@ -1089,7 +1089,7 @@ impl Daemon {
         Ok((findings, patterns))
     }
 
-    /// The sandbox targets for an `apex` run: in the checkout, or for a pull
+    /// The sandbox targets for a `deep` run: in the checkout, or for a pull
     /// request in a detached worktree of its head that goes with the run.
     fn review_sandbox(
         &self,
@@ -1101,8 +1101,8 @@ impl Daemon {
     ) -> Vec<review::RuntimeResult> {
         if !path.join(runtime_sandbox::CONFIG_PATH).exists() {
             notes.push(format!(
-                "TREX: no {}; nothing ran",
-                runtime_sandbox::CONFIG_PATH
+                "Sandbox checks: {}; nothing ran",
+                runtime_sandbox::missing(path)
             ));
             return Vec::new();
         }
@@ -1115,7 +1115,9 @@ impl Daemon {
             ) {
                 Ok(worktree) => Some(worktree),
                 Err(error) => {
-                    notes.push(format!("TREX: could not check out the head: {error}"));
+                    notes.push(format!(
+                        "Sandbox checks: could not check out the head: {error}"
+                    ));
                     return Vec::new();
                 }
             }
@@ -1143,7 +1145,7 @@ impl Daemon {
         drop(worktree);
         run.sandbox_run_id = Some(id);
         if let Some(error) = &sandbox.error {
-            notes.push(format!("TREX: {error}"));
+            notes.push(format!("Sandbox checks: {error}"));
         }
         sandbox
             .targets
@@ -1456,14 +1458,6 @@ fn rate(part: u64, whole: u64) -> Option<f32> {
     percent.map(|percent| percent as f32)
 }
 
-fn tier_name(tier: Tier) -> &'static str {
-    match tier {
-        Tier::Base => "base",
-        Tier::Plus => "plus",
-        Tier::Apex => "apex",
-    }
-}
-
 fn unix_now() -> i64 {
     time::OffsetDateTime::now_utc().unix_timestamp()
 }
@@ -1559,7 +1553,7 @@ struct Launch {
     provider: String,
     options: domain::AgentLaunchOptions,
     /// One agent per hypothesis; empty is the single v1 reviewer.
-    swarm: Vec<Hypothesis>,
+    hypotheses: Vec<Hypothesis>,
 }
 
 /// Every reviewer the run launched, stopped however the stage ends.

@@ -15,7 +15,7 @@ fn file(path: &str, patch: &str) -> DiffFile {
 }
 
 #[test]
-fn the_default_order_starts_with_the_three_the_swarm_runs() {
+fn the_default_order_starts_with_the_three_default_reviewers() {
     use Hypothesis as H;
     assert_eq!(select(1, &[]), [H::AuthBypass]);
     assert_eq!(

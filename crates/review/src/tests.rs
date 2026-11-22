@@ -312,7 +312,7 @@ const SPEC_CONFIG: &str = r#"
 version = 1
 language = "es"
 default_preset = "standard"
-default_tier = "plus"
+default_tier = "standard"
 strictness = "normal"
 max_findings = 40
 
@@ -334,7 +334,7 @@ fn the_spec_example_config_parses_and_ignores_unknown_keys() {
     let (config, notes) = Config::parse(SPEC_CONFIG);
     assert!(notes.is_empty(), "{notes:?}");
     assert_eq!(config.language, "es");
-    assert_eq!(config.default_tier, Some(Tier::Plus));
+    assert_eq!(config.default_tier, Some(Tier::Standard));
     assert_eq!(config.ignore.len(), 4);
 }
 
@@ -414,9 +414,9 @@ fn the_pack_truncates_at_the_tier_cap_and_says_so() {
     assert_eq!(coverage.truncated.len(), 5);
     assert!(!coverage.notes.is_empty());
 
-    let mut plus = resolved();
-    plus.tier = Tier::Plus;
-    let (_, coverage) = build_pack(&meta(), &[], &files, &plus, &[], &[], NONCE);
+    let mut standard = resolved();
+    standard.tier = Tier::Standard;
+    let (_, coverage) = build_pack(&meta(), &[], &files, &standard, &[], &[], NONCE);
     assert_eq!(coverage.included.len(), 45);
 }
 
@@ -611,7 +611,7 @@ fn rules_disabled_parses() {
 const PHASE2_CONFIG: &str = r#"
 language = "es"
 default_preset = "security"
-default_tier = "base"
+default_tier = "quick"
 strictness = "estricto"
 max_findings = 25
 
@@ -728,7 +728,7 @@ fn presets_the_four_builtins() {
     let config = Config::default();
     let run = |id| resolve(&config, &[], &presets, Some(id), None, None).unwrap();
     let standard = run("standard");
-    assert_eq!(standard.tier, Tier::Base);
+    assert_eq!(standard.tier, Tier::Quick);
     assert_eq!(standard.categories, config.categories);
     assert!(standard.instructions.contains("missed"));
     let security = run("security");
@@ -739,9 +739,9 @@ fn presets_the_four_builtins() {
     assert!(security
         .instructions
         .starts_with("Review the change for security"));
-    assert_eq!(security.tier, Tier::Base);
+    assert_eq!(security.tier, Tier::Quick);
     let deep = run("deep");
-    assert_eq!(deep.tier, Tier::Apex);
+    assert_eq!(deep.tier, Tier::Deep);
     assert_eq!(deep.categories.enabled().count(), 5);
     assert!(deep.instructions.contains("callers"));
 }
@@ -773,7 +773,7 @@ fn presets_a_repository_preset_replaces_a_builtin_in_place() {
         &[
             (
                 "security.toml",
-                "name = \"Mi seguridad\"\ndetail = \"Solo lo nuestro.\"\ntier = \"apex\"",
+                "name = \"Mi seguridad\"\ndetail = \"Solo lo nuestro.\"\ntier = \"deep\"",
             ),
             ("propio.toml", ""),
         ],
@@ -784,7 +784,7 @@ fn presets_a_repository_preset_replaces_a_builtin_in_place() {
     assert_eq!(ids, ["standard", "deep", "security", "custom", "propio"]);
     assert_eq!(presets[2].name, "Mi seguridad");
     assert_eq!(presets[2].detail, "Solo lo nuestro.");
-    assert_eq!(presets[2].tier, Some(Tier::Apex));
+    assert_eq!(presets[2].tier, Some(Tier::Deep));
     assert_eq!(presets[4].name, "propio");
     assert!(presets[4].detail.is_empty());
 }
@@ -792,7 +792,7 @@ fn presets_a_repository_preset_replaces_a_builtin_in_place() {
 #[test]
 fn presets_tier_precedence() {
     let config = Config {
-        default_tier: Some(Tier::Plus),
+        default_tier: Some(Tier::Standard),
         ..Config::default()
     };
     let presets = builtins();
@@ -801,9 +801,9 @@ fn presets_tier_precedence() {
             .unwrap()
             .tier
     };
-    assert_eq!(tier("standard", None), Tier::Plus);
-    assert_eq!(tier("deep", None), Tier::Apex);
-    assert_eq!(tier("deep", Some(Tier::Base)), Tier::Base);
+    assert_eq!(tier("standard", None), Tier::Standard);
+    assert_eq!(tier("deep", None), Tier::Deep);
+    assert_eq!(tier("deep", Some(Tier::Quick)), Tier::Quick);
 }
 
 #[test]
@@ -1229,7 +1229,7 @@ fn lineage_run(
         target,
         head_oid: "h".into(),
         base_oid: None,
-        tier: Tier::Base,
+        tier: Tier::Quick,
         preset: preset.into(),
         provider: "claude".into(),
         status: domain::ReviewStatus::Completed,
@@ -1246,7 +1246,7 @@ fn lineage_run(
         tree_oid: None,
         diagrams: Vec::new(),
         auto_approvable: false,
-        swarm_size: 1,
+        reviewers: 1,
         schema_version: domain::SchemaVersion::V1,
         sandbox_run_id: None,
     }
@@ -1922,21 +1922,24 @@ fn the_pack_exclusions_are_public_for_the_graph() {
 
 #[test]
 fn auto_tier_follows_the_size_and_the_paths_of_the_diff() {
-    assert_eq!(auto_tier(&[diff_file("src/lib.rs", PATCH)]), Tier::Base);
+    assert_eq!(auto_tier(&[diff_file("src/lib.rs", PATCH)]), Tier::Quick);
     assert_eq!(
         auto_tier(&[diff_file("src/auth/login.rs", PATCH)]),
-        Tier::Plus
+        Tier::Standard
     );
-    assert_eq!(auto_tier(&[diff_file("src/Perf.rs", PATCH)]), Tier::Plus);
+    assert_eq!(
+        auto_tier(&[diff_file("src/Perf.rs", PATCH)]),
+        Tier::Standard
+    );
     let big = "x".repeat(300 * 1024);
-    assert_eq!(auto_tier(&[diff_file("src/lib.rs", &big)]), Tier::Plus);
+    assert_eq!(auto_tier(&[diff_file("src/lib.rs", &big)]), Tier::Standard);
     let huge = "x".repeat(1024 * 1024 + 1);
-    assert_eq!(auto_tier(&[diff_file("src/lib.rs", &huge)]), Tier::Apex);
+    assert_eq!(auto_tier(&[diff_file("src/lib.rs", &huge)]), Tier::Deep);
     let many: Vec<DiffFile> = (0..51)
         .map(|n| diff_file(&format!("src/f{n}.rs"), PATCH))
         .collect();
-    assert_eq!(auto_tier(&many), Tier::Apex);
-    assert_eq!(auto_tier(&many[..50]), Tier::Base);
+    assert_eq!(auto_tier(&many), Tier::Deep);
+    assert_eq!(auto_tier(&many[..50]), Tier::Quick);
 }
 
 #[test]
@@ -1945,21 +1948,21 @@ fn auto_is_the_default_and_a_run_or_preset_tier_wins() {
     let resolved = resolve(&config, &[], &builtins(), None, None, None).expect("standard");
     assert!(resolved.auto_tier);
     let resolved = resolve(&config, &[], &builtins(), Some("deep"), None, None).expect("deep");
-    assert!(!resolved.auto_tier, "deep names apex");
-    assert_eq!(resolved.tier, Tier::Apex);
+    assert!(!resolved.auto_tier, "the deep preset names the deep tier");
+    assert_eq!(resolved.tier, Tier::Deep);
     let resolved = resolve(
         &config,
         &[],
         &builtins(),
         Some("deep"),
-        Some(Tier::Base),
+        Some(Tier::Quick),
         None,
     )
     .expect("deep");
-    assert_eq!((resolved.tier, resolved.auto_tier), (Tier::Base, false));
-    let (config, _) = Config::parse("default_tier = \"plus\"\n");
+    assert_eq!((resolved.tier, resolved.auto_tier), (Tier::Quick, false));
+    let (config, _) = Config::parse("default_tier = \"standard\"\n");
     let resolved = resolve(&config, &[], &builtins(), None, None, None).expect("standard");
-    assert_eq!((resolved.tier, resolved.auto_tier), (Tier::Plus, false));
+    assert_eq!((resolved.tier, resolved.auto_tier), (Tier::Standard, false));
     let (config, notes) = Config::parse("default_tier = \"auto\"\n");
     assert!(notes.is_empty());
     assert_eq!(config.default_tier, None);
@@ -1997,7 +2000,7 @@ fn graph_function(name: &str, callers: usize) -> GraphFunction {
 #[test]
 fn no_extras_add_nothing_to_the_pack_or_the_prompt() {
     let mut coverage = Coverage::default();
-    let (pack, prompt) = blocks(&Extras::default(), Tier::Apex, NONCE, &mut coverage);
+    let (pack, prompt) = blocks(&Extras::default(), Tier::Deep, NONCE, &mut coverage);
     assert!(pack.is_empty() && prompt.is_empty());
     assert_eq!(coverage, Coverage::default());
 }
@@ -2009,7 +2012,7 @@ fn the_graph_block_lists_callers_and_callees_one_line_each() {
         ..Extras::default()
     };
     let mut coverage = Coverage::default();
-    let (pack, prompt) = blocks(&extras, Tier::Base, NONCE, &mut coverage);
+    let (pack, prompt) = blocks(&extras, Tier::Quick, NONCE, &mut coverage);
     assert!(pack.starts_with(
         "<graph-n0nce>\n## src/lib.rs:2 b\ncallers:\n- src/app.rs:10 function main\n"
     ));
@@ -2032,15 +2035,15 @@ fn the_graph_block_is_budgeted_by_tier_with_a_note() {
             .collect(),
         ..Extras::default()
     };
-    let mut base = Coverage::default();
-    let (pack, _) = blocks(&extras, Tier::Base, NONCE, &mut base);
+    let mut quick = Coverage::default();
+    let (pack, _) = blocks(&extras, Tier::Quick, NONCE, &mut quick);
     assert!(pack.len() <= 32 * 1024 + 64);
-    assert!(base
+    assert!(quick
         .notes
         .iter()
         .any(|note| note.starts_with("<graph>:") && note.contains("32 KiB")));
-    let mut apex = Coverage::default();
-    let (bigger, _) = blocks(&extras, Tier::Apex, NONCE, &mut apex);
+    let mut deep = Coverage::default();
+    let (bigger, _) = blocks(&extras, Tier::Deep, NONCE, &mut deep);
     assert!(bigger.len() > 64 * 1024 && bigger.len() <= 128 * 1024 + 64);
 }
 
@@ -2061,7 +2064,7 @@ fn block_data_is_escaped_and_redacted() {
         ..Extras::default()
     };
     let mut coverage = Coverage::default();
-    let (pack, _) = blocks(&extras, Tier::Plus, NONCE, &mut coverage);
+    let (pack, _) = blocks(&extras, Tier::Standard, NONCE, &mut coverage);
     assert_eq!(pack.matches("</graph-n0nce>").count(), 1, "{pack}");
     assert!(pack.contains("&lt;/graph-n0nce>"));
     assert!(pack.contains("«redacted»") && !pack.contains("ghp_0123"));
@@ -2082,7 +2085,7 @@ fn block_data_is_escaped_and_redacted() {
         ..Extras::default()
     };
     let mut coverage = Coverage::default();
-    let (pack, _) = blocks(&extras, Tier::Apex, NONCE, &mut coverage);
+    let (pack, _) = blocks(&extras, Tier::Deep, NONCE, &mut coverage);
     assert!(!pack.contains("ghp_"), "{pack}");
     assert_eq!(pack.matches("«redacted»").count(), 3);
     assert_eq!(pack.matches("</runtime-n0nce>").count(), 1);
@@ -2109,19 +2112,21 @@ fn the_kb_cross_repo_and_runtime_blocks_follow_the_tier() {
         ],
         ..Extras::default()
     };
-    let (base, _) = blocks(&extras, Tier::Base, NONCE, &mut Coverage::default());
-    assert!(base.is_empty(), "base carries none of them");
-    let (plus, prompt) = blocks(&extras, Tier::Plus, NONCE, &mut Coverage::default());
-    assert!(plus.contains("<kb-n0nce>\n## architecture.md#modules\ncrates: 3 files\n"));
-    assert!(plus.contains("<cross-repo-n0nce>\nlib/billing.rs charge pub fn charge(amount: u64)\n"));
-    assert!(!plus.contains("<runtime-"));
-    assert!(prompt.contains("kb_ref"));
-    let (apex, _) = blocks(&extras, Tier::Apex, NONCE, &mut Coverage::default());
+    let (quick, _) = blocks(&extras, Tier::Quick, NONCE, &mut Coverage::default());
+    assert!(quick.is_empty(), "quick carries none of them");
+    let (standard, prompt) = blocks(&extras, Tier::Standard, NONCE, &mut Coverage::default());
+    assert!(standard.contains("<kb-n0nce>\n## architecture.md#modules\ncrates: 3 files\n"));
     assert!(
-        apex.contains("<runtime-n0nce>\n## test (exit 1)\nstdout:\n1 failed\n## lint (exit 0)\n")
+        standard.contains("<cross-repo-n0nce>\nlib/billing.rs charge pub fn charge(amount: u64)\n")
+    );
+    assert!(!standard.contains("<runtime-"));
+    assert!(prompt.contains("kb_ref"));
+    let (deep, _) = blocks(&extras, Tier::Deep, NONCE, &mut Coverage::default());
+    assert!(
+        deep.contains("<runtime-n0nce>\n## test (exit 1)\nstdout:\n1 failed\n## lint (exit 0)\n")
     );
     assert!(
-        !apex.contains("noise"),
+        !deep.contains("noise"),
         "a passing target's output stays out"
     );
 }
@@ -2263,7 +2268,7 @@ fn v2_answers_carry_hypotheses_kb_refs_and_patterns_and_drop_diagrams() {
     );
     assert_eq!(
         validated.findings[0].hypothesis, None,
-        "the agent's, set by the swarm"
+        "the agent's, set by the hypothesis it was given"
     );
 
     let many: Vec<String> = (0..12).map(|n| format!("\"p{n}\"")).collect();
@@ -2304,4 +2309,21 @@ fn a_repository_security_section_is_ignored_with_a_note() {
     assert_eq!(config.max_findings, 7, "the rest of the file still applies");
     assert_eq!(notes.len(), 1, "{notes:?}");
     assert!(notes[0].contains("`[security]` is ignored"), "{notes:?}");
+}
+
+#[test]
+fn a_repository_still_names_a_tier_by_its_shipped_name() {
+    for (old, tier) in [
+        ("base", Tier::Quick),
+        ("plus", Tier::Standard),
+        ("apex", Tier::Deep),
+    ] {
+        let (config, notes) = Config::parse(&format!("default_tier = \"{old}\"\n"));
+        assert!(notes.is_empty(), "{notes:?}");
+        assert_eq!(config.default_tier, Some(tier));
+        let preset = format!("tier = \"{old}\"");
+        let (presets, errors) = presets_with(&[("mine.toml", preset.as_str())], &[]);
+        assert!(errors.is_empty(), "{errors:?}");
+        assert_eq!(presets.last().map(|preset| preset.tier), Some(Some(tier)));
+    }
 }

@@ -13,6 +13,7 @@ use rusqlite::{params, Connection, OptionalExtension, Row};
 use crate::db::DbError;
 use crate::repositories::{id_from_str, ts_from_opt, ts_from_str, ts_to_str};
 
+// `ReviewRun::reviewers` is stored in the `swarm_size` column.
 const RUN_COLUMNS: &str = "id, workspace_id, target, head_oid, base_oid, tier, provider, status, \
      stage, summary, score, verdict, error, session_id, coverage, created_at, finished_at, preset, branch, tree_oid, \
      diagrams, auto_approvable, swarm_size, schema_version, sandbox_run_id";
@@ -32,7 +33,7 @@ pub fn insert_run(conn: &Connection, run: &ReviewRun) -> Result<(), DbError> {
         json(&run.target)?,
         run.head_oid,
         run.base_oid,
-        tier_tag(run.tier),
+        run.tier.name(),
         run.provider,
         status_tag(run.status),
         run.stage.map(stage_tag),
@@ -49,7 +50,7 @@ pub fn insert_run(conn: &Connection, run: &ReviewRun) -> Result<(), DbError> {
         run.tree_oid,
         json(&run.diagrams)?,
         run.auto_approvable,
-        run.swarm_size,
+        run.reviewers,
         schema_tag(run.schema_version),
         run.sandbox_run_id,
     ])?;
@@ -79,10 +80,10 @@ pub fn update_run(conn: &Connection, run: &ReviewRun) -> Result<(), DbError> {
         run.finished_at.as_ref().map(ts_to_str),
         run.head_oid,
         run.tree_oid,
-        tier_tag(run.tier),
+        run.tier.name(),
         json(&run.diagrams)?,
         run.auto_approvable,
-        run.swarm_size,
+        run.reviewers,
         schema_tag(run.schema_version),
         run.sandbox_run_id,
     ])?;
@@ -193,7 +194,7 @@ pub fn set_agent_sessions(
     Ok(())
 }
 
-/// Session ids named by review runs, every swarm agent's included, for the
+/// Session ids named by review runs, every reviewer's included, for the
 /// restart's read-only set.
 pub fn reviewer_sessions(conn: &Connection) -> Result<HashSet<SessionId>, DbError> {
     let mut stmt = conn.prepare(
@@ -383,7 +384,7 @@ fn run_from_row(row: &Row<'_>) -> rusqlite::Result<Result<ReviewRun, DbError>> {
     let tree_oid: Option<String> = row.get(19)?;
     let diagrams: String = row.get(20)?;
     let auto_approvable: bool = row.get(21)?;
-    let swarm_size: u8 = row.get(22)?;
+    let reviewers: u8 = row.get(22)?;
     let schema_version: String = row.get(23)?;
     let sandbox_run_id: Option<String> = row.get(24)?;
     Ok((|| {
@@ -398,7 +399,7 @@ fn run_from_row(row: &Row<'_>) -> rusqlite::Result<Result<ReviewRun, DbError>> {
             target: from_json::<ReviewTarget>("ReviewTarget", &target)?,
             head_oid,
             base_oid,
-            tier: parse_tag("Tier", &tier, TIERS)?,
+            tier: parse_tier(&tier)?,
             preset,
             provider,
             status: parse_tag("ReviewStatus", &status, STATUSES)?,
@@ -421,7 +422,7 @@ fn run_from_row(row: &Row<'_>) -> rusqlite::Result<Result<ReviewRun, DbError>> {
             tree_oid,
             diagrams: from_json("diagrams", &diagrams)?,
             auto_approvable,
-            swarm_size,
+            reviewers,
             schema_version: parse_tag("SchemaVersion", &schema_version, SCHEMAS)?,
             sandbox_run_id,
         })
@@ -492,11 +493,6 @@ fn schema_tag(version: domain::SchemaVersion) -> &'static str {
     tag(version, SCHEMAS)
 }
 
-const TIERS: &[(Tier, &str)] = &[
-    (Tier::Base, "base"),
-    (Tier::Plus, "plus"),
-    (Tier::Apex, "apex"),
-];
 const STATUSES: &[(ReviewStatus, &str)] = &[
     (ReviewStatus::Queued, "Queued"),
     (ReviewStatus::Running, "Running"),
@@ -528,8 +524,8 @@ const REACTIONS: &[(FindingReaction, &str)] = &[
     (FindingReaction::Dismiss, "dismiss"),
 ];
 
-fn tier_tag(tier: Tier) -> &'static str {
-    tag(tier, TIERS)
+fn parse_tier(text: &str) -> Result<Tier, DbError> {
+    Tier::parse(text).ok_or_else(|| DbError::decode("Tier", text, "unknown tag"))
 }
 fn status_tag(status: ReviewStatus) -> &'static str {
     tag(status, STATUSES)
@@ -557,7 +553,7 @@ pub struct StatsRow {
     pub tier: Tier,
     /// Wall-clock seconds from start to finish.
     pub seconds: i64,
-    pub swarm_size: u8,
+    pub reviewers: u8,
     pub hypotheses_found: u32,
     pub cites_kb: bool,
 }
@@ -589,14 +585,14 @@ pub fn stats_rows(
         ))
     })?;
     rows.map(|row| {
-        let (id, tier, created, finished, swarm_size, hypotheses_found, cites_kb) = row?;
+        let (id, tier, created, finished, reviewers, hypotheses_found, cites_kb) = row?;
         let seconds = ts_from_str(&finished)?.as_offset().unix_timestamp()
             - ts_from_str(&created)?.as_offset().unix_timestamp();
         Ok(StatsRow {
             id,
-            tier: parse_tag("Tier", &tier, TIERS)?,
+            tier: parse_tier(&tier)?,
             seconds,
-            swarm_size,
+            reviewers,
             hypotheses_found,
             cites_kb,
         })

@@ -120,7 +120,7 @@ pub(crate) struct Inner {
     /// `MAX_RUNNING_REVIEWS` bounds. Not cleared by a factory reset: each
     /// worker still releases its own claim when it ends.
     pub(crate) review_workers: usize,
-    /// Workspaces with a `RunSandbox` in flight; its guard clears the entry.
+    /// Workspaces with a `RunSandboxChecks` in flight; its guard clears the entry.
     pub(crate) sandboxes: HashSet<WorkspaceId>,
     /// Workspaces with a fix loop, and whether it was asked to stop.
     pub(crate) fix_loops: HashMap<WorkspaceId, bool>,
@@ -1018,7 +1018,7 @@ impl Daemon {
                 instructions,
                 model,
                 effort,
-                swarm,
+                reviewers,
             } => self.start_review(
                 target,
                 tier,
@@ -1026,7 +1026,7 @@ impl Daemon {
                 preset,
                 instructions,
                 domain::AgentLaunchOptions { model, effort },
-                swarm,
+                reviewers,
             ),
             Request::GetReviewConfig { workspace_id } => self.get_review_config(workspace_id),
             Request::CancelReview { review_id } => self.cancel_review(review_id),
@@ -1056,15 +1056,17 @@ impl Daemon {
                 profile_id,
             } => self.start_fix_loop(review_id, max_iterations, provider, profile_id),
             Request::CancelFixLoop { workspace_id } => self.cancel_fix_loop(workspace_id),
-            Request::RunSandbox {
+            Request::RunSandboxChecks {
                 workspace_id,
                 target,
-            } => self.run_sandbox(workspace_id, target),
-            Request::GetSandboxRun { sandbox_run_id } => self.get_sandbox_run(&sandbox_run_id),
-            Request::ApproveSandboxConfig {
+            } => self.run_sandbox_checks(workspace_id, target),
+            Request::GetSandboxChecks { sandbox_run_id } => {
+                self.get_sandbox_checks(&sandbox_run_id)
+            }
+            Request::ApproveSandboxChecks {
                 workspace_id,
                 file_hash,
-            } => self.approve_sandbox_config(workspace_id, &file_hash),
+            } => self.approve_sandbox_checks(workspace_id, &file_hash),
             Request::GetKb { workspace_id } => self.get_kb(workspace_id),
             Request::UpdateKbEntry {
                 workspace_id,
@@ -13584,7 +13586,7 @@ mod tests {
             },
             head_oid: "abc".into(),
             base_oid: None,
-            tier: domain::Tier::Base,
+            tier: domain::Tier::Quick,
             preset: "standard".into(),
             provider: "claude".into(),
             status: domain::ReviewStatus::Running,
@@ -13601,7 +13603,7 @@ mod tests {
             tree_oid: None,
             diagrams: Vec::new(),
             auto_approvable: false,
-            swarm_size: 1,
+            reviewers: 1,
             schema_version: domain::SchemaVersion::V1,
             sandbox_run_id: None,
         };

@@ -252,12 +252,12 @@ pub enum Command {
         generation: u64,
         workspace_id: WorkspaceId,
     },
-    GetSandboxRun {
+    GetSandboxChecks {
         generation: u64,
         review_id: domain::ReviewId,
         sandbox_run_id: String,
     },
-    ApproveSandboxConfig {
+    ApproveSandboxChecks {
         workspace_id: WorkspaceId,
         file_hash: String,
     },
@@ -1022,25 +1022,25 @@ impl ConnectionHandle {
         })
     }
 
-    pub fn get_sandbox_run(
+    pub fn get_sandbox_checks(
         &self,
         generation: u64,
         review_id: domain::ReviewId,
         sandbox_run_id: String,
     ) -> Result<(), String> {
-        self.send(Command::GetSandboxRun {
+        self.send(Command::GetSandboxChecks {
             generation,
             review_id,
             sandbox_run_id,
         })
     }
 
-    pub fn approve_sandbox_config(
+    pub fn approve_sandbox_checks(
         &self,
         workspace_id: WorkspaceId,
         file_hash: String,
     ) -> Result<(), String> {
-        self.send(Command::ApproveSandboxConfig {
+        self.send(Command::ApproveSandboxChecks {
             workspace_id,
             file_hash,
         })
@@ -2282,7 +2282,7 @@ fn handle_fixture_command(
                 result: Err("the recorded snapshot has no review store".into()),
             }]);
         }
-        Command::GetSandboxRun {
+        Command::GetSandboxChecks {
             generation: command_generation,
             review_id,
             ..
@@ -2296,10 +2296,10 @@ fn handle_fixture_command(
                 result: Err("the recorded snapshot has no review store".into()),
             }]);
         }
-        Command::ApproveSandboxConfig { .. } => {
+        Command::ApproveSandboxChecks { .. } => {
             fixture_result(
                 generation,
-                "ApproveSandboxConfig",
+                "ApproveSandboxChecks",
                 Err("the recorded snapshot has no review store".into()),
                 sink,
                 metrics,
@@ -3602,7 +3602,7 @@ fn handle_live_command(
                     preset,
                     instructions,
                     domain::AgentLaunchOptions::default(),
-                    domain::SwarmOptions::default(),
+                    domain::ReviewerOptions::default(),
                 )
                 .map_err(|error| error.to_string());
             sink(vec![UiEvent::ReviewStarted {
@@ -3765,7 +3765,7 @@ fn handle_live_command(
                 result,
             }]);
         }
-        Command::GetSandboxRun {
+        Command::GetSandboxChecks {
             generation: command_generation,
             review_id,
             sandbox_run_id,
@@ -3775,7 +3775,7 @@ fn handle_live_command(
             }
             metrics.note_socket_op();
             let result = client
-                .get_sandbox_run(sandbox_run_id)
+                .get_sandbox_checks(sandbox_run_id)
                 .map(Box::new)
                 .map_err(|error| error.to_string());
             sink(vec![UiEvent::SandboxRun {
@@ -3784,18 +3784,18 @@ fn handle_live_command(
                 result,
             }]);
         }
-        Command::ApproveSandboxConfig {
+        Command::ApproveSandboxChecks {
             workspace_id,
             file_hash,
         } => {
             metrics.note_socket_op();
             let result = client
-                .approve_sandbox_config(workspace_id, file_hash)
-                .map(|()| "sandbox.toml approved: the next apex review runs it.".to_string())
+                .approve_sandbox_checks(workspace_id, file_hash)
+                .map(|()| "checks.toml approved: the next deep review runs it.".to_string())
                 .map_err(|error| error.to_string());
             live_result(
                 generation,
-                "ApproveSandboxConfig",
+                "ApproveSandboxChecks",
                 result,
                 sink,
                 metrics,
@@ -4843,8 +4843,8 @@ fn command_label(command: &Command) -> &'static str {
         Command::GetReviewDiff { .. } => "GetReviewDiff",
         Command::QueryGraph { .. } => "QueryGraph",
         Command::GetKb { .. } => "GetKb",
-        Command::GetSandboxRun { .. } => "GetSandboxRun",
-        Command::ApproveSandboxConfig { .. } => "ApproveSandboxConfig",
+        Command::GetSandboxChecks { .. } => "GetSandboxChecks",
+        Command::ApproveSandboxChecks { .. } => "ApproveSandboxChecks",
         Command::StartFixLoop { .. } => "StartFixLoop",
         Command::SendSessionPrompt { .. } => "SendSessionPrompt",
         Command::StopDaemon { .. } => "StopDaemon",

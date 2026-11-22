@@ -91,8 +91,8 @@ pub use review::{
     Coverage, Diagram, DiagramEdge, DiagramKind, DiagramNode, EdgeKind, Finding, FindingReaction,
     GraphFormat, GraphNode, GraphQuery, GraphStats, Hypothesis, KbFile, Lineage, NodeKind,
     ReviewPreset, ReviewRule, ReviewRun, ReviewSettings, ReviewStage, ReviewStats, ReviewStatus,
-    ReviewSuppression, ReviewTarget, SandboxRun, SandboxTarget, SchemaVersion, Severity,
-    SuppressionKind, SwarmOptions, Tier, TierLatency, Verdict, CUSTOM_PRESET,
+    ReviewSuppression, ReviewTarget, ReviewerOptions, SandboxRun, SandboxTarget, SchemaVersion,
+    Severity, SuppressionKind, Tier, TierLatency, Verdict, CUSTOM_PRESET,
 };
 pub use session::{
     ActivityEvidence, ActivityState, AgentActivity, EditorFind, EditorFindCommand, EditorState,

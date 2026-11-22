@@ -88,9 +88,34 @@ pub enum Verdict {
 #[serde(rename_all = "lowercase")]
 pub enum Tier {
     #[default]
-    Base,
-    Plus,
-    Apex,
+    #[serde(alias = "base")]
+    Quick,
+    #[serde(alias = "plus")]
+    Standard,
+    #[serde(alias = "apex")]
+    Deep,
+}
+
+impl Tier {
+    #[must_use]
+    pub const fn name(self) -> &'static str {
+        match self {
+            Self::Quick => "quick",
+            Self::Standard => "standard",
+            Self::Deep => "deep",
+        }
+    }
+
+    /// Also accepts `base`, `plus` and `apex`, the names the tiers shipped with.
+    #[must_use]
+    pub fn parse(name: &str) -> Option<Self> {
+        match name {
+            "quick" | "base" => Some(Self::Quick),
+            "standard" | "plus" => Some(Self::Standard),
+            "deep" | "apex" => Some(Self::Deep),
+            _ => None,
+        }
+    }
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -154,7 +179,7 @@ pub struct ReviewRun {
     pub auto_approvable: bool,
     /// Reviewer agents launched; `1` is the single v1 reviewer.
     #[serde(default = "one_agent")]
-    pub swarm_size: u8,
+    pub reviewers: u8,
     #[serde(default)]
     pub schema_version: SchemaVersion,
     #[serde(default)]
@@ -230,12 +255,12 @@ pub struct ReviewStats {
     pub latency: Vec<TierLatency>,
     /// Graph queries answered from a stored graph against rebuilds, since the daemon started.
     pub graph_hit_rate: Option<f32>,
-    /// Hypotheses with at least one kept finding, over every swarm run's agents.
-    pub swarm_coverage: Option<f32>,
+    /// Hypotheses with at least one kept finding, over the reviewers of every multi-reviewer run.
+    pub hypothesis_coverage: Option<f32>,
     /// Completed runs with a finding that cites the knowledge base.
     pub kb_hit_rate: Option<f32>,
     /// Sandbox-linked runs with a failed target.
-    pub trex_failure_rate: Option<f32>,
+    pub sandbox_checks_failure_rate: Option<f32>,
     pub kb_bytes: u64,
 }
 
@@ -263,7 +288,7 @@ impl SandboxTarget {
     }
 }
 
-/// `.forge/review/sandbox.toml`'s targets run once, for a review or by hand.
+/// `.forge/review/checks.toml`'s targets run once, for a review or by hand.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SandboxRun {
     pub id: String,
@@ -275,8 +300,8 @@ pub struct SandboxRun {
     /// unsupported platform; or why the run stopped early.
     #[serde(default)]
     pub error: Option<String>,
-    /// The SHA-256 of a `sandbox.toml` that did not run because the project
-    /// has not approved it; `ApproveSandboxConfig` with this hash approves it.
+    /// The SHA-256 of a `checks.toml` that did not run because the project
+    /// has not approved it; `ApproveSandboxChecks` with this hash approves it.
     #[serde(default)]
     pub unapproved_hash: Option<String>,
     pub started_at: Timestamp,
@@ -303,17 +328,17 @@ pub struct KbFile {
     pub updated_at: Option<Timestamp>,
 }
 
-/// A run's swarm: `size` agents (`None` takes `[review] swarm_default`), or
+/// A run's reviewers: `count` agents (`None` takes `[review] reviewers`), or
 /// one per listed hypothesis.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
-pub struct SwarmOptions {
+pub struct ReviewerOptions {
     #[serde(default)]
-    pub size: Option<u8>,
+    pub count: Option<u8>,
     #[serde(default)]
     pub hypotheses: Vec<Hypothesis>,
 }
 
-/// What one swarm agent hunts for; serialized as its name.
+/// What one reviewer hunts for; serialized as its name.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
 #[non_exhaustive]
 pub enum Hypothesis {
@@ -409,7 +434,7 @@ pub struct Finding {
     /// Read from the feedback table, never stored with the finding.
     #[serde(default)]
     pub reaction: Option<FindingReaction>,
-    /// The swarm agent that reported it; `None` for a single reviewer.
+    /// The hypothesis of the reviewer that reported it; `None` for a single reviewer.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub hypothesis: Option<Hypothesis>,
     /// The knowledge-base section it cites: `architecture.md#<section>`.
@@ -717,6 +742,20 @@ mod tests {
     use super::*;
 
     #[test]
+    fn the_tiers_shipped_names_still_read_and_the_new_ones_are_written() {
+        for (old, tier) in [
+            ("base", Tier::Quick),
+            ("plus", Tier::Standard),
+            ("apex", Tier::Deep),
+        ] {
+            assert_eq!(serde_json::from_value::<Tier>(old.into()).unwrap(), tier);
+            assert_eq!(Tier::parse(old), Some(tier));
+            assert_eq!(serde_json::to_value(tier).unwrap(), tier.name());
+            assert_eq!(Tier::parse(tier.name()), Some(tier));
+        }
+    }
+
+    #[test]
     fn a_run_and_its_findings_round_trip_through_json() {
         let workspace_id = WorkspaceId::new();
         let run = ReviewRun {
@@ -728,7 +767,7 @@ mod tests {
             },
             head_oid: "abc".into(),
             base_oid: None,
-            tier: Tier::Plus,
+            tier: Tier::Standard,
             preset: "security".into(),
             provider: "claude".into(),
             status: ReviewStatus::Running,
@@ -749,12 +788,12 @@ mod tests {
             tree_oid: None,
             diagrams: Vec::new(),
             auto_approvable: false,
-            swarm_size: 1,
+            reviewers: 1,
             schema_version: SchemaVersion::V1,
             sandbox_run_id: None,
         };
         let json = serde_json::to_value(&run).unwrap();
-        assert_eq!(json["tier"], "plus");
+        assert_eq!(json["tier"], "standard");
         assert_eq!(json["target"]["kind"], "workspace");
         assert_eq!(json["verdict"], "Review");
         assert_eq!(serde_json::from_value::<ReviewRun>(json).unwrap(), run);

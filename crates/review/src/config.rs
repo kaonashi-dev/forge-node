@@ -140,7 +140,7 @@ pub struct Config {
     /// Globs over repository-relative paths, `[ignore] paths`.
     pub ignore: Vec<String>,
     pub graph: GraphSettings,
-    /// `[kb] enabled`: the knowledge base in `plus` and `apex` packs.
+    /// `[kb] enabled`: the knowledge base in `standard` and `deep` packs.
     pub kb_enabled: bool,
     pub auto_approve: AutoApprove,
     /// Instructions under the preset's, lowest first. Filled by the caller,
@@ -204,12 +204,13 @@ impl Config {
         match table.get("default_tier").map(|v| v.as_str()) {
             None => {}
             Some(Some("auto")) => config.default_tier = None,
-            Some(Some("base")) => config.default_tier = Some(Tier::Base),
-            Some(Some("plus")) => config.default_tier = Some(Tier::Plus),
-            Some(Some("apex")) => config.default_tier = Some(Tier::Apex),
-            Some(_) => notes.push(
-                "review config: `default_tier` must be auto, base, plus or apex; auto used".into(),
-            ),
+            Some(name) => match name.and_then(Tier::parse) {
+                Some(tier) => config.default_tier = Some(tier),
+                None => notes.push(
+                    "review config: `default_tier` must be auto, quick, standard or deep; auto used"
+                        .into(),
+                ),
+            },
         }
         match table.get("strictness").map(|v| v.as_str()) {
             None => {}
@@ -316,7 +317,7 @@ impl Config {
         }
         if table.contains_key("security") {
             notes.push(
-                "review config: `[security]` is ignored; the TREX sandbox policy is the daemon's `[review]` sandbox_network and sandbox_env_whitelist".into(),
+                "review config: `[security]` is ignored; the sandbox checks policy is the daemon's `[review]` sandbox_network and sandbox_env_whitelist".into(),
             );
         }
         (config, notes)

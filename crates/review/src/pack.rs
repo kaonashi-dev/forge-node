@@ -62,7 +62,7 @@ impl TierCaps {
     #[must_use]
     pub fn of(tier: Tier) -> Self {
         match tier {
-            Tier::Base => Self {
+            Tier::Quick => Self {
                 files: 40,
                 bytes: 512 * 1024,
                 graph_bytes: 32 * 1024,
@@ -70,7 +70,7 @@ impl TierCaps {
                 cross_repo_bytes: 0,
                 runtime_bytes: 0,
             },
-            Tier::Plus => Self {
+            Tier::Standard => Self {
                 files: 60,
                 bytes: 1024 * 1024,
                 graph_bytes: 64 * 1024,
@@ -78,7 +78,7 @@ impl TierCaps {
                 cross_repo_bytes: 16 * 1024,
                 runtime_bytes: 0,
             },
-            Tier::Apex => Self {
+            Tier::Deep => Self {
                 files: 100,
                 bytes: 2 * 1024 * 1024,
                 graph_bytes: 128 * 1024,
@@ -213,11 +213,7 @@ pub fn build_pack(
     if capped > 0 {
         coverage.notes.push(format!(
             "the {} tier's cap ({} files, {} KiB) left {} file(s) out of the pack",
-            match tier {
-                Tier::Base => "base",
-                Tier::Plus => "plus",
-                Tier::Apex => "apex",
-            },
+            tier.name(),
             caps.files,
             caps.bytes / 1024,
             capped

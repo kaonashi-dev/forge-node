@@ -654,7 +654,7 @@ CREATE INDEX idx_graph_edges_dst ON codebase_graph_edges (project_id, dst);
 ";
 
 /// Forge Review v2 on the existing rows: what a run drew, how many agents it
-/// ran and in which answer format, and which swarm agent reported a finding.
+/// ran and in which answer format, and the hypothesis of the reviewer behind a finding.
 pub const REVIEW_V2: &str = "
 ALTER TABLE review_runs ADD COLUMN diagrams TEXT NOT NULL DEFAULT '[]';
 ALTER TABLE review_runs ADD COLUMN auto_approvable INTEGER NOT NULL DEFAULT 0;
@@ -682,7 +682,7 @@ CREATE TABLE kb_entries (
 CREATE INDEX idx_kb_entries_project_file ON kb_entries (project_id, file);
 ";
 
-/// One TREX run: its targets as JSON, the failing ones' names, and the
+/// One sandbox-checks run: its targets as JSON, the failing ones' names, and the
 /// first failure's output tails. Never a full log.
 pub const SANDBOX_RUNS: &str = "
 CREATE TABLE sandbox_runs (
@@ -703,12 +703,12 @@ CREATE TABLE sandbox_runs (
 CREATE INDEX idx_sandbox_runs_review ON sandbox_runs (review_run_id);
 ";
 
-/// Every agent session a swarm run launched, as a JSON list of ids: each one
+/// Every agent session a multi-reviewer run launched, as a JSON list of ids: each one
 /// must come back read-only after a restart, not only `session_id`'s.
 pub const REVIEW_AGENT_SESSIONS: &str =
     "ALTER TABLE review_runs ADD COLUMN agent_sessions TEXT NOT NULL DEFAULT '[]';";
 
-/// The `sandbox.toml` hash a person approved for each project; a run whose
+/// The `checks.toml` hash a person approved for each project; a run whose
 /// file hashes otherwise records that hash instead of running anything.
 pub const SANDBOX_APPROVALS: &str = "
 CREATE TABLE sandbox_approvals (
