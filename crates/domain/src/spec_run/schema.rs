@@ -854,6 +854,7 @@ mod tests {
             exit_code: exit,
             timed_out: false,
             not_verified: None,
+            not_sandboxed: None,
             duration_ms: 3,
             log: format!("checks/{criterion}-r1.log"),
         }

@@ -2082,6 +2082,7 @@ fn a_spec_run_round_trips_as_metadata() {
             session_per_stage: false,
             publish_spec: false,
             publish_report: false,
+            checks_offline: false,
         },
         sessions: Vec::new(),
         coder_workspace_id: None,

@@ -214,6 +214,9 @@ pub(crate) struct GateArgs {
     forge_review: Option<bool>,
     #[arg(long, action = clap::ArgAction::Set)]
     session_per_stage: Option<bool>,
+    /// Plan gate: run the plan's checks without network.
+    #[arg(long)]
+    checks_offline: bool,
     /// Plan gate: keep the approved gate as the project's gate action.
     #[arg(long)]
     save_gate_action: bool,
@@ -224,8 +227,11 @@ pub(crate) struct GateArgs {
     #[arg(long, value_enum)]
     next: Option<NextArg>,
     /// Result gate: the text for another round.
-    #[arg(long)]
+    #[arg(long, conflicts_with = "from_review")]
     text: Option<String>,
+    /// Result gate: another round with the standing findings of the run's Forge Review.
+    #[arg(long)]
+    from_review: bool,
 }
 
 #[derive(clap::Args)]
@@ -552,6 +558,7 @@ fn start(app: &App, client: &Client, args: RunArgs, draft: bool) -> Result<(), u
         session_per_stage: args.session_per_stage,
         publish_spec: args.publish_spec,
         publish_report: args.publish_report,
+        checks_offline: false,
     };
     let planner = AgentPick {
         provider: domain::AgentProviderId::new(&args.planner),
@@ -757,9 +764,28 @@ fn gate(app: &App, client: &Client, args: GateArgs) -> Result<(), u8> {
         options.session_per_stage = session_per_stage;
         changed = true;
     }
+    if args.checks_offline {
+        options.checks_offline = true;
+        changed = true;
+    }
+    let mut left_out = None;
+    let text = if args.from_review {
+        if args.next != Some(NextArg::AnotherRound) {
+            return Err(usage_code(
+                app,
+                "--from-review goes with --next another-round",
+                &help,
+            ));
+        }
+        let (text, omitted) = review_round(app, client, run)?;
+        left_out = Some(omitted);
+        Some(text)
+    } else {
+        args.text
+    };
     let decision = match (args.approve, args.changes, args.reject) {
         (true, None, None) => {
-            let next = match (args.next, args.text) {
+            let next = match (args.next, text) {
                 (Some(NextArg::AnotherRound), Some(text)) => {
                     Some(NextAction::AnotherRound { text })
                 }
@@ -798,8 +824,41 @@ fn gate(app: &App, client: &Client, args: GateArgs) -> Result<(), u8> {
         },
         true,
     )?;
-    app.print_ok(json!({ "spec_run": id, "gate": kind }));
+    app.print_ok(json!({ "spec_run": id, "gate": kind, "findings_left_out": left_out }));
     Ok(())
+}
+
+/// The run's completed Forge Review as another round's text, and how many findings it left out.
+fn review_round(app: &App, client: &Client, run: &SpecRunView) -> Result<(String, usize), u8> {
+    let Some(review_id) = run.review_id else {
+        return Err(app.fail(
+            5,
+            "precondition_failed",
+            &format!("spec run {} has no Forge Review", run.id),
+            json!({}),
+            next(&["forgectl", "spec", "status", &run.id.to_string()]),
+        ));
+    };
+    let Response::Review {
+        run: review,
+        findings,
+        ..
+    } = app.call(client, Request::GetReview { review_id }, false)?
+    else {
+        return Err(unexpected(app));
+    };
+    domain::spec_run::stages::review_round_text(review.status, &findings).ok_or_else(|| {
+        app.fail(
+            5,
+            "precondition_failed",
+            &format!(
+                "Forge Review {review_id} is {:?} with no standing finding to send",
+                review.status
+            ),
+            json!({ "review_id": review_id, "status": review.status }),
+            next(&["forgectl", "review", "show", &review_id.to_string()]),
+        )
+    })
 }
 
 fn run_json(run: &SpecRunView) -> Value {
@@ -888,5 +947,17 @@ mod tests {
         assert!(Cli::try_parse_from(["forgectl", "spec", "brief", "x", "--base", "main"]).is_err());
         assert_eq!(Preset::Claude.coder(), ("claude", Some("medium")));
         assert_eq!(Preset::Mix.coder(), ("cursor", None));
+    }
+
+    #[test]
+    fn the_gate_takes_offline_checks_and_a_round_from_the_review_instead_of_text() {
+        let gate = |extra: &[&str]| {
+            let mut argv = vec!["forgectl", "spec", "gate", "r1", "--approve"];
+            argv.extend_from_slice(extra);
+            Cli::try_parse_from(argv)
+        };
+        assert!(gate(&["--checks-offline"]).is_ok());
+        assert!(gate(&["--next", "another-round", "--from-review"]).is_ok());
+        assert!(gate(&["--next", "another-round", "--from-review", "--text", "x"]).is_err());
     }
 }

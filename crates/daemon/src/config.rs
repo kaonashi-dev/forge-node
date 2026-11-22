@@ -21,6 +21,7 @@ pub struct Config {
     pub lsp: LspConfig,
     pub daemon: DaemonConfig,
     pub orchestration: OrchestrationConfig,
+    pub spec_runs: SpecRunsConfig,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -434,6 +435,30 @@ impl PullRequestsConfig {
 #[serde(default)]
 pub struct DaemonConfig {
     pub log_level: String,
+}
+
+/// What a spec run's check may write besides its checkout, its run's `checks/` and the temp
+/// directory, under the macOS sandbox. `~` is the user's home; a missing path is dropped.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct SpecRunsConfig {
+    pub check_write_paths: Vec<String>,
+}
+
+impl Default for SpecRunsConfig {
+    fn default() -> Self {
+        Self {
+            check_write_paths: [
+                "~/.cargo",
+                "~/.rustup",
+                "~/.bun",
+                "~/.npm",
+                "~/Library/Caches",
+            ]
+            .map(str::to_owned)
+            .to_vec(),
+        }
+    }
 }
 
 /// Rails for `forgectl`. `enabled` defaults on. The one-writer rule is not a key.
@@ -866,6 +891,24 @@ mod tests {
         .unwrap();
         assert!(c.review.sandbox_network);
         assert_eq!(c.review.sandbox_env_whitelist, ["LANG"]);
+    }
+
+    #[test]
+    fn spec_run_checks_may_write_the_tool_caches_unless_configured_otherwise() {
+        let c = Config::default();
+        assert_eq!(
+            c.spec_runs.check_write_paths,
+            [
+                "~/.cargo",
+                "~/.rustup",
+                "~/.bun",
+                "~/.npm",
+                "~/Library/Caches"
+            ]
+        );
+        let c: Config =
+            toml::from_str("[spec_runs]\ncheck_write_paths = [\"/opt/cache\"]\n").unwrap();
+        assert_eq!(c.spec_runs.check_write_paths, ["/opt/cache"]);
     }
 
     #[test]

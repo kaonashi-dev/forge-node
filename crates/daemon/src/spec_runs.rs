@@ -13,7 +13,7 @@ use std::time::{Duration, Instant};
 use domain::spec_run::model::{
     AgentPick, CheckRecord, Delivery, GateDecision, GateKind, NextAction, Placement, Route,
     SourceRef, SpecArtifactKind, SpecOptions, SpecRole, SpecRunDetail, SpecRunSource, SpecRunView,
-    SpecSession, SpecStage, MAX_ROUNDS, MIN_ROUNDS,
+    SpecSession, SpecStage, MAX_REASON_BYTES, MAX_ROUNDS, MIN_ROUNDS,
 };
 use domain::spec_run::schema::{self, PlanDoc, PlannedCheck, SpecDoc, GATE};
 use domain::spec_run::stages::{self, CoderInput, ReviewInput, StageContext};
@@ -30,8 +30,6 @@ use crate::core::Daemon;
 
 const DIR: &str = "spec-runs";
 const MAX_NAME_CHARS: usize = 80;
-/// A gate's reason reaches the agent verbatim, inside one 8 KiB prompt.
-const MAX_REASON_BYTES: usize = 4096;
 const MAX_FINDINGS_BYTES: usize = 32 * 1024;
 const MAX_DIRTY_PATHS: usize = 500;
 /// The report as saved, with room for the deviations Forge appends to the validated text.
@@ -1411,7 +1409,9 @@ fn verify(
         {
             return;
         }
-        records.push(run_check(daemon, &run, workspace, &dir, index, check));
+        records.push(run_check(
+            daemon, &run, workspace, &path, &dir, index, check,
+        ));
     }
     let branch = match &run.options.placement {
         Placement::Worktree { branch, .. } => Some(branch.clone()),
@@ -1526,12 +1526,14 @@ fn quotable(path: &Path) -> Option<String> {
     (!text.contains(['"', '$', '\\', '`'])).then(|| text.to_owned())
 }
 
-/// One check as a `Task` session: `/bin/sh` runs it, keeps its exit code and at most the last
-/// 16 KiB of its output, and a check past its timeout is killed with its whole process group.
+/// One check as a `Task` session: `/bin/sh` runs it under the sandbox, keeps its exit code and at
+/// most the last 16 KiB of its output, and a check past its timeout is killed with its whole
+/// process group.
 fn run_check(
     daemon: &Arc<Daemon>,
     run: &SpecRunView,
     workspace: WorkspaceId,
+    checkout: &Path,
     dir: &Path,
     index: usize,
     check: &PlannedCheck,
@@ -1553,17 +1555,22 @@ fn run_check(
         exit_code: None,
         timed_out: false,
         not_verified: None,
+        not_sandboxed: None,
         duration_ms: 0,
         log: log.clone(),
     };
-    let (script, rc, tail) = (
+    let (script, rc, tail, profile) = (
         dir.join(format!("{stem}.sh")),
         dir.join(format!("{stem}.rc")),
         dir.join(format!("{stem}.out")),
+        dir.join(format!("{stem}.sb")),
     );
-    let (Some(script_q), Some(rc_q), Some(tail_q)) =
-        (quotable(&script), quotable(&rc), quotable(&tail))
-    else {
+    let (Some(script_q), Some(rc_q), Some(tail_q), Some(profile_q)) = (
+        quotable(&script),
+        quotable(&rc),
+        quotable(&tail),
+        quotable(&profile),
+    ) else {
         record.not_verified = Some("the run directory's path cannot be quoted for /bin/sh".into());
         write_log(dir, &record, "");
         return record;
@@ -1578,6 +1585,25 @@ fn run_check(
         write_log(dir, &record, "");
         return record;
     }
+    let launch =
+        match daemon.check_profile(checkout, &dir.join("checks"), run.options.checks_offline) {
+            Ok(text) => {
+                if let Err(error) = write_file(dir, &format!("{stem}.sb"), &text) {
+                    record.not_verified = Some(error.message);
+                    write_log(dir, &record, "");
+                    let _ = std::fs::remove_file(&script);
+                    return record;
+                }
+                format!(
+                    "{} -f \"{profile_q}\" /bin/sh \"{script_q}\"",
+                    runtime_sandbox::SANDBOX_EXEC
+                )
+            }
+            Err(why) => {
+                record.not_sandboxed = Some(why);
+                format!("/bin/sh \"{script_q}\"")
+            }
+        };
     let timeout = check
         .timeout_secs
         .map(|secs| Duration::from_secs(secs.clamp(1, MAX_CHECK_TIMEOUT_SECS)))
@@ -1586,12 +1612,15 @@ fn run_check(
     let session = match daemon.launch_check(
         workspace,
         format!("{} check {} r{round}", run.name, check.criterion),
-        format!("/bin/sh \"{script_q}\""),
+        launch,
     ) {
         Ok(session) => session,
         Err(error) => {
             record.not_verified = Some(format!("the check did not start: {}", error.message));
             write_log(dir, &record, "");
+            for path in [&script, &profile] {
+                let _ = std::fs::remove_file(path);
+            }
             return record;
         }
     };
@@ -1626,7 +1655,7 @@ fn run_check(
     if let Err(error) = daemon.close_session(session) {
         tracing::debug!(%session, error = %error.message, "check session left open");
     }
-    for path in [&script, &rc, &tail] {
+    for path in [&script, &rc, &tail, &profile] {
         let _ = std::fs::remove_file(path);
     }
     record
@@ -1679,6 +1708,9 @@ fn write_log(dir: &Path, record: &CheckRecord, output: &str) {
     );
     if let Some(reason) = &record.not_verified {
         text.push_str(&format!("not_verified: {reason}\n"));
+    }
+    if let Some(reason) = &record.not_sandboxed {
+        text.push_str(&format!("not sandboxed: {reason}\n"));
     }
     text.push_str("\n--- last 16 KiB of output ---\n");
     text.push_str(output);

@@ -3273,6 +3273,28 @@ fn spec_runs_start_with_a_drafter_and_pass_gates_from_the_cli() {
         5,
     );
     err(&ctl.run(&["spec", "gate", &id, "--changes", " "], &[]), 1);
+    let no_review = err(
+        &ctl.run(
+            &[
+                "spec",
+                "gate",
+                &id,
+                "--approve",
+                "--next",
+                "another-round",
+                "--from-review",
+            ],
+            &[],
+        ),
+        5,
+    );
+    assert!(
+        no_review["error"]["message"]
+            .as_str()
+            .unwrap()
+            .contains("has no Forge Review"),
+        "{no_review}"
+    );
     ok(&ctl.run(&["spec", "gate", &id, "--approve"], &[]));
     let shown = ok(&ctl.run(&["spec", "show", &id], &[]));
     assert_eq!(shown["run"]["stage"], "planning");

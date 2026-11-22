@@ -252,6 +252,7 @@ mod tests {
             session_per_stage: false,
             publish_spec: false,
             publish_report: false,
+            checks_offline: false,
         }
     }
 

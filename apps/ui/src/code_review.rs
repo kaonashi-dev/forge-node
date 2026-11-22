@@ -1166,6 +1166,16 @@ impl AppState {
     ) -> bool {
         match result {
             Ok(report) => {
+                let slot = (workspace, lane(&report.run.target));
+                let superseded = self
+                    .code_review
+                    .latest
+                    .get(&slot)
+                    .is_some_and(|latest| latest.id != report.run.id);
+                // A spec run's G3 may read an older review than the one the Review tab shows.
+                if self.spec_review_read(&report.run, &report.findings) && superseded {
+                    return true;
+                }
                 let client::ReviewReport {
                     run,
                     findings,
@@ -3381,6 +3391,49 @@ mod tests {
                 previous,
             })),
         ));
+    }
+
+    #[test]
+    fn a_spec_runs_older_review_offers_its_findings_without_replacing_the_review_tab() {
+        let (mut state, workspace) = fixture_state();
+        let older = completed(workspace, workspace_target(workspace));
+        let newer = completed(workspace, workspace_target(workspace));
+        with_report(&mut state, &newer, Vec::new(), Vec::new(), None);
+        let mut spec = crate::test_support::spec_run(
+            domain::spec_run::model::SpecStage::ResultGate,
+            Timestamp::now(),
+        );
+        spec.review_id = Some(older.id);
+        spec.coder_workspace_id = Some(workspace);
+        if let Some(store) = state.store.as_mut() {
+            store.spec_runs = vec![spec.clone()];
+        }
+        state.spec_panel = Some(crate::spec_run_view::SpecPanel::new(spec.id));
+
+        let mut cited = finding(7, "src/old.rs", Some(9), Severity::P2);
+        cited.suggestion = Some("check the bound".into());
+        assert!(state.apply_review_report(
+            workspace,
+            Ok(Box::new(client::ReviewReport {
+                run: older,
+                findings: vec![cited],
+                resolved: Vec::new(),
+                previous: None,
+            })),
+        ));
+        let (text, left_out) = state
+            .spec_panel
+            .as_ref()
+            .and_then(|panel| panel.review_round.clone())
+            .expect("G3 offers the findings");
+        assert!(text.contains("src/old.rs:9 — finding 7"), "{text}");
+        assert!(text.contains("check the bound"), "{text}");
+        assert_eq!(left_out, 0);
+        assert_eq!(
+            state.code_review.reports[&(workspace, lane(&newer.target))].run,
+            newer.id,
+            "the Review tab keeps the newer report"
+        );
     }
 
     fn keys(state: AppState) -> Vec<String> {

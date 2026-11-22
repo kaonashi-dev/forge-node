@@ -1861,6 +1861,7 @@ impl AppState {
                 }
                 if let client::DaemonEvent::ReviewUpdated { run } = event.as_ref() {
                     self.apply_review_run(run);
+                    self.read_spec_review(Some(run));
                     return true;
                 }
                 if let client::DaemonEvent::GraphIndexed { error, .. } = event.as_ref() {

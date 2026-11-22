@@ -65,6 +65,7 @@ fn options(placement: Placement) -> SpecOptions {
         session_per_stage: false,
         publish_spec: false,
         publish_report: false,
+        checks_offline: false,
     }
 }
 
@@ -516,11 +517,13 @@ fn without_a_worktree_the_review_leaves_out_what_was_already_modified() {
     let daemon = harness.boot();
     let client = connect(&daemon, "spec-run-checkout");
     let workspace = common::add_main_workspace(&client, repo.path());
+    let mut launch = options(Placement::Checkout);
+    launch.forge_review = true;
 
     let (id, run) = drive_to_review(
         &client,
         workspace,
-        options(Placement::Checkout),
+        launch,
         &plan(
             &check("test -f done.txt"),
             &check("/usr/bin/grep -q fast done.txt"),
@@ -542,10 +545,15 @@ fn without_a_worktree_the_review_leaves_out_what_was_already_modified() {
     );
     submit(&client, id, planner, &report("met", &["done.txt:1"]))
         .expect("report on the coder's own file");
-    assert_eq!(
-        wait_stage(&client, id, SpecStage::ResultGate).outcome,
-        Some(domain::spec_run::model::RunOutcome::Done)
-    );
+    let run = wait_stage(&client, id, SpecStage::ResultGate);
+    assert_eq!(run.outcome, Some(domain::spec_run::model::RunOutcome::Done));
+
+    // The configured default is three reviewers; a spec run's Forge Review asks for one.
+    let review_id = run.review_id.expect("the report started Forge Review");
+    match client.request(Request::GetReview { review_id }) {
+        Ok(Response::Review { run, .. }) => assert_eq!(run.reviewers, 1, "{run:?}"),
+        other => panic!("GetReview: {other:?}"),
+    }
 }
 
 #[test]
@@ -598,9 +606,8 @@ fn a_check_past_its_timeout_is_killed_with_its_children() {
     let daemon = harness.boot();
     let client = connect(&daemon, "spec-run-timeout");
     let workspace = common::add_main_workspace(&client, repo.path());
-    let pid_file = harness.root().join("child.pid");
     let hang = serde_json::json!({
-        "command": format!("/bin/sleep 300 & echo $! > {}; wait", pid_file.display()),
+        "command": "/bin/sleep 300 & echo $! > child.pid; wait",
         "timeout_secs": 1
     })
     .to_string();
@@ -620,6 +627,8 @@ fn a_check_past_its_timeout_is_killed_with_its_children() {
         .expect("fixture");
     assert!(record.timed_out, "{record:?}");
     assert!(!record.passed());
+    let pid_file =
+        workspace_path(&client, run.coder_workspace_id.expect("placed")).join("child.pid");
     let pid = fs::read_to_string(&pid_file)
         .expect("fixture")
         .trim()
@@ -632,6 +641,121 @@ fn a_check_past_its_timeout_is_killed_with_its_children() {
             .success()
     });
     assert!(gone, "the check's child {pid} outlived its process group");
+}
+
+#[cfg(target_os = "macos")]
+#[test]
+fn a_check_runs_sandboxed_away_from_forge_and_writes_only_where_it_may() {
+    let harness = common::Harness::new();
+    install_claude(&harness);
+    let repo = test_support::init_repo().expect("git repo");
+    let daemon = harness.boot();
+    let client = connect(&daemon, "spec-run-sandbox");
+    let workspace = common::add_main_workspace(&client, repo.path());
+    let elsewhere = tempfile::tempdir_in("/tmp").expect("tempdir");
+    let outside = elsewhere.path().join("outside.txt");
+    let planted = harness.forge_home().join("planted.txt");
+    let connect_socket = format!(
+        "/usr/bin/perl -MIO::Socket::UNIX -e 'IO::Socket::UNIX->new(Peer => shift) or exit 1' {}",
+        daemon.socket.display()
+    );
+    assert!(
+        Command::new("/bin/sh")
+            .args(["-c", &connect_socket])
+            .status()
+            .expect("perl")
+            .success(),
+        "outside the sandbox the probe reaches the daemon"
+    );
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("listen");
+    let reach_network = format!(
+        "/usr/bin/nc -z -w 2 127.0.0.1 {}",
+        listener.local_addr().expect("addr").port()
+    );
+    let plan_text = sandbox_plan(&[
+        ("AC-1", "test -f done.txt"),
+        ("AC-2", &connect_socket),
+        ("AC-2", &format!("echo x > {}", planted.display())),
+        ("AC-2", &format!("echo x > {}", outside.display())),
+        ("AC-2", &reach_network),
+    ]);
+
+    let (id, run) = drive_to_review(
+        &client,
+        workspace,
+        options(worktree("spec/sandbox")),
+        &plan_text,
+        approve(),
+        &[("done.txt", "fast\n")],
+    );
+    let checks: Vec<_> = run.checks.iter().filter(|c| c.round == 1).collect();
+    assert_eq!(checks.len(), 6, "{checks:#?}");
+    assert!(
+        checks.iter().all(|c| c.not_sandboxed.is_none()),
+        "{checks:#?}"
+    );
+    assert!(
+        checks[0].passed(),
+        "an ordinary check still passes: {:?}",
+        checks[0]
+    );
+    for denied in &checks[1..4] {
+        assert!(
+            !denied.passed() && denied.not_verified.is_none(),
+            "{denied:?}"
+        );
+    }
+    assert!(
+        checks[4].passed(),
+        "the network is on by default: {:?}",
+        checks[4]
+    );
+    assert!(checks[5].passed(), "the gate: {:?}", checks[5]);
+    assert!(!planted.exists(), "a check wrote into Forge's home");
+    assert!(!outside.exists(), "a check wrote outside its checkout");
+    let left: Vec<PathBuf> = fs::read_dir(run_dir(&harness, id).join("checks"))
+        .expect("fixture")
+        .map(|e| e.expect("fixture").path())
+        .filter(|p| p.extension().is_none_or(|x| x != "log"))
+        .collect();
+    assert!(left.is_empty(), "only the logs stay behind: {left:?}");
+
+    let mut offline = options(worktree("spec/offline"));
+    offline.checks_offline = true;
+    let (_, run) = drive_to_review(
+        &client,
+        workspace,
+        options(worktree("spec/offline")),
+        &sandbox_plan(&[("AC-1", "test -f done.txt"), ("AC-2", &reach_network)]),
+        GateDecision::Approve {
+            options: Some(offline),
+            save_gate_action: false,
+            manual_checked: Vec::new(),
+            next: None,
+        },
+        &[("done.txt", "fast\n")],
+    );
+    let network = run
+        .checks
+        .iter()
+        .find(|c| c.criterion == "AC-2")
+        .expect("fixture");
+    assert!(!network.passed(), "G2 turned the network off: {network:?}");
+    drop(listener);
+}
+
+fn sandbox_plan(steps: &[(&str, &str)]) -> String {
+    let steps: Vec<serde_json::Value> = steps
+        .iter()
+        .enumerate()
+        .map(|(n, (criterion, command))| {
+            serde_json::json!({ "id": format!("S{}", n + 1), "criteria": [criterion], "check": { "command": command } })
+        })
+        .collect();
+    format!(
+        "# Plan\n\n## What we are not doing\nNone\n\n```json\n{}\n```\n",
+        serde_json::json!({ "schema": "forge.spec_plan/v1", "gate": { "command": "true" }, "steps": steps })
+    )
 }
 
 fn write_gh(path: &Path, log: &Path) {

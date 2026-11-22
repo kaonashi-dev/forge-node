@@ -59,7 +59,7 @@ own rounds, and the gate runs after the last task.
   its own process group killed on timeout, and only the last 16 KiB of output
   kept in `checks/<AC>-t<task>-r<round>-<n>.log` (`n` numbers the round's
   checks, since two steps may serve one criterion). Exit 127 is
-  `not_verified`, not a failure.
+  `not_verified`, not a failure. Each check runs under the sandbox below.
 - A round is a new attempt of the same task in the same checkout, with the
   planner's findings; G2 caps rounds at the ledger's attempts per task. A G2
   approval that fails after creating the worktree keeps it on the run, and the
@@ -78,6 +78,50 @@ own rounds, and the gate runs after the last task.
 - With delivery `draft_pr`, nothing opens before G3; G3's draft PR goes through
   the background PR agent with the report as the base of the body, and Forge
   appends the report's criteria table when the agent left it out.
+- The Forge Review that follows the report runs one reviewer, whatever
+  `[review] reviewers` says.
+
+## The checks' sandbox
+
+On macOS the check's `Task` session runs `/usr/bin/sandbox-exec -f
+checks/<stem>.sb /bin/sh checks/<stem>.sh`; the profile is the one sandbox
+checks use (`runtime_sandbox::profile`), written next to the script and removed
+with it. A check:
+
+- cannot read or write Forge's home or the socket's directory, and cannot
+  connect to the socket even with the network on, so it cannot run
+  `forgectl spec gate` and pass its own run's gate;
+- writes only to the coder's checkout, the run's `checks/` directory, the temp
+  directory and `[spec_runs] check_write_paths` (default `~/.cargo`,
+  `~/.rustup`, `~/.bun`, `~/.npm`, `~/Library/Caches`; `~` is the user's home, a
+  missing path is dropped, and a listed path inside Forge's home stays denied);
+- keeps the network, because the person approved these commands at G2. G2's
+  "Run checks without network" (`checks_offline`, `forgectl spec gate
+  --checks-offline`) turns it off.
+
+Off macOS, or without `/usr/bin/sandbox-exec`, a check runs unsandboxed: its log
+says `not sandboxed: <reason>`, its record carries the reason in
+`not_sandboxed`, and the planner's review prompt shows it beside the result.
+
+## What the agents are told to use
+
+The planner's research step asks the codebase graph who calls each function a
+criterion touches and what it calls (MCP `review_graph_query`, CLI `forgectl
+--json review graph query --callers <function>`), and records every caller with
+file:line. Before it classifies findings, the review step reads the project's
+learned rules and false positives (`review_kb_get`, `forgectl --json review kb
+show`) and does not raise what they mark as a false positive.
+
+## Forge Review into another round
+
+When the run's Forge Review has completed with findings that are not
+dismissed, G3 offers "Send Forge Review's findings to another round": it fills
+the round's text with each finding's severity, file:line, title, body and
+suggestion (`domain::spec_run::stages::review_round_text`) and picks Another
+round. The text stays within the 4 KiB reason cap; findings that do not fit
+are left out whole and the text says how many. `forgectl spec gate <run>
+--approve --next another-round --from-review` composes the same text from
+`GetReview`. The daemon sees an ordinary `AnotherRound`.
 
 ## Storage and budgets
 

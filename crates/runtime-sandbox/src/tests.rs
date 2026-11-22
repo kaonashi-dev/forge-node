@@ -22,6 +22,7 @@ fn run() -> Run {
             run_dir,
             cache_dir,
             tmp_dir,
+            extra_writes: Vec::new(),
             denied_reads: vec![forge],
             network: false,
             socket: None,
@@ -245,6 +246,20 @@ fn a_run_inside_a_denied_directory_still_works_and_its_siblings_stay_denied() {
     assert!(!go(&run, &format!("cat {}", home.join("secret").display())).passed());
 }
 
+#[cfg(target_os = "macos")]
+#[test]
+fn an_extra_write_path_is_writable_but_never_inside_a_denied_directory() {
+    let mut run = run();
+    let root = run.policy.run_dir.parent().expect("root").to_path_buf();
+    let tools = root.join("tools-cache");
+    let forge = run.policy.denied_reads[0].clone();
+    std::fs::create_dir_all(&tools).expect("dir");
+    run.policy.extra_writes = vec![tools.clone(), forge.clone()];
+    assert!(go(&run, &format!("echo x > {}", tools.join("c").display())).passed());
+    assert!(!go(&run, &format!("echo x > {}", forge.join("c").display())).passed());
+    assert!(!forge.join("c").exists());
+}
+
 #[test]
 fn a_denied_directory_exempts_the_run_and_the_cache_it_contains() {
     let home = PathBuf::from("/forge");
@@ -252,6 +267,7 @@ fn a_denied_directory_exempts_the_run_and_the_cache_it_contains() {
         run_dir: home.join("worktrees/w1"),
         cache_dir: home.join("worktrees/w1/.forge/review/sandbox/cache"),
         tmp_dir: PathBuf::from("/tmp"),
+        extra_writes: Vec::new(),
         denied_reads: vec![home],
         network: false,
         socket: None,

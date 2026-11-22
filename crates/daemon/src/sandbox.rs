@@ -84,8 +84,20 @@ impl Drop for SandboxGuard {
     }
 }
 
-fn canonical(path: &Path) -> PathBuf {
+pub(crate) fn canonical(path: &Path) -> PathBuf {
     std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf())
+}
+
+impl Daemon {
+    /// Forge's home and socket directory, then the socket itself: what no sandbox may reach.
+    pub(crate) fn forge_denied(&self) -> (Vec<PathBuf>, Option<PathBuf>) {
+        let socket = self.bound_socket_path();
+        let mut denied = vec![canonical(&self.forge_paths().home)];
+        if let Some(dir) = socket.as_deref().and_then(Path::parent) {
+            denied.push(canonical(dir));
+        }
+        (denied, socket.map(|socket| canonical(&socket)))
+    }
 }
 
 /// `<checkout>/.forge/review/sandbox/cache`, created and canonical. The
@@ -182,20 +194,15 @@ impl Daemon {
         self.require_approved(run, &text)?;
         let config = runtime_sandbox::parse(&text)?;
         let cache = cache_dir(checkout)?;
-        let mut denied = vec![canonical(&self.forge_paths().home)];
-        if let Some(socket) = self
-            .bound_socket_path()
-            .and_then(|socket| socket.parent().map(Path::to_path_buf))
-        {
-            denied.push(canonical(&socket));
-        }
+        let (denied_reads, socket) = self.forge_denied();
         let policy = runtime_sandbox::Policy {
             run_dir: canonical(run_dir),
             cache_dir: cache,
             tmp_dir: canonical(&std::env::temp_dir()),
-            denied_reads: denied,
+            extra_writes: Vec::new(),
+            denied_reads,
             network: self.config.review.sandbox_network,
-            socket: self.bound_socket_path().map(|socket| canonical(&socket)),
+            socket,
         };
         let resolved = |name: &str| self.launch_var(name).or_else(|| std::env::var(name).ok());
         let env = runtime_sandbox::environment(

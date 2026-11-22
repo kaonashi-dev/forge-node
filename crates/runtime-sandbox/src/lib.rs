@@ -22,7 +22,7 @@ const MAX_TIMEOUT_SECS: u64 = 3600;
 const MAX_TARGETS: usize = 32;
 /// Bytes kept from the end of each of stdout and stderr.
 pub const TAIL_BYTES: usize = 8 * 1024;
-const SANDBOX_EXEC: &str = "/usr/bin/sandbox-exec";
+pub const SANDBOX_EXEC: &str = "/usr/bin/sandbox-exec";
 /// How long a killed target's pipes and exit are waited for before giving up on it.
 const REAP_GRACE: Duration = Duration::from_secs(5);
 
@@ -116,6 +116,8 @@ pub struct Policy {
     pub run_dir: PathBuf,
     pub cache_dir: PathBuf,
     pub tmp_dir: PathBuf,
+    /// Writable too, but unlike the run and cache directories never exempt from `denied_reads`.
+    pub extra_writes: Vec<PathBuf>,
     /// Forge's socket directory and home.
     pub denied_reads: Vec<PathBuf>,
     pub network: bool,
@@ -141,11 +143,15 @@ pub fn profile(policy: &Policy) -> String {
             quoted(socket)
         ));
     }
+    let mut writable = String::new();
+    for path in [&policy.run_dir, &policy.cache_dir, &policy.tmp_dir]
+        .into_iter()
+        .chain(&policy.extra_writes)
+    {
+        writable.push_str(&format!("(subpath {}) ", quoted(path)));
+    }
     out.push_str(&format!(
-        "(deny file-write* (require-not (require-any (subpath {}) (subpath {}) (subpath {}) (subpath \"/dev\"))))\n",
-        quoted(&policy.run_dir),
-        quoted(&policy.cache_dir),
-        quoted(&policy.tmp_dir),
+        "(deny file-write* (require-not (require-any {writable}(subpath \"/dev\"))))\n"
     ));
     // Data, not metadata: a shell resolves its directory through every
     // ancestor. The run and cache directories stay reachable even inside a

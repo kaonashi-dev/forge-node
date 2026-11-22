@@ -202,6 +202,14 @@ sandbox_checks = false          # run .forge/review/checks.toml before a deep re
 sandbox_network = false
 sandbox_env_whitelist = ["PATH", "HOME"]
 
+[spec_runs]
+# A spec run's checks run under the macOS sandbox: no view of Forge's home or
+# socket, writes only to the coder's checkout, the run's checks/ directory,
+# the temp directory and these paths. `~` is your home; a path that does not
+# exist is dropped. The network stays on unless G2 picks "Run checks without
+# network" (forgectl spec gate --checks-offline).
+check_write_paths = ["~/.cargo", "~/.rustup", "~/.bun", "~/.npm", "~/Library/Caches"]
+
 [pull_requests]
 # "Open PR" runs your default agent in the background: it drafts the title,
 # body, branch and commit message, then Forge commits, pushes and runs
