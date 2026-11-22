@@ -407,19 +407,31 @@ fn shell_words(command: &str) -> impl Iterator<Item = &str> {
             return None;
         }
         let mut quote: Option<char> = None;
+        let mut escaped = false;
         let end = rest
             .char_indices()
-            .find(|&(_, c)| match quote {
-                Some(open) if c == open => {
-                    quote = None;
-                    false
+            .find(|&(_, c)| {
+                if escaped {
+                    escaped = false;
+                    return false;
                 }
-                Some(_) => false,
-                None if c == '\'' || c == '"' => {
-                    quote = Some(c);
-                    false
+                match quote {
+                    // Inside single quotes a backslash is literal, as in `sh`.
+                    Some('"') | None if c == '\\' => {
+                        escaped = true;
+                        false
+                    }
+                    Some(open) if c == open => {
+                        quote = None;
+                        false
+                    }
+                    Some(_) => false,
+                    None if c == '\'' || c == '"' => {
+                        quote = Some(c);
+                        false
+                    }
+                    None => c.is_whitespace(),
                 }
-                None => c.is_whitespace(),
             })
             .map_or(rest.len(), |(at, _)| at);
         let word = &rest[..end];
@@ -631,6 +643,15 @@ mod tests {
     }
 
     #[test]
+    fn shell_words_keep_quoted_and_escaped_spaces_and_quotes_in_one_word() {
+        let words: Vec<&str> = shell_words(r#"LABEL="cache\"test" X='a\' b\ c bun test"#).collect();
+        assert_eq!(
+            words,
+            [r#"LABEL="cache\"test""#, r"X='a\'", r"b\ c", "bun", "test"]
+        );
+    }
+
+    #[test]
     fn the_criteria_diff_names_added_removed_and_reworded_ids() {
         let old = parse_spec(&format!(
             "{AC}\n- AC-2: WHEN x THE SYSTEM SHALL y\n  - Manual validation: look\n\
@@ -666,6 +687,22 @@ mod tests {
             )
             .changed,
             ["AC-1", "AC-2"]
+        );
+
+        let rated = |data: &str| {
+            let block = format!(
+                "\"kind\": \"change\", {}",
+                READY.replace("\"data\": \"clear\"", data)
+            );
+            parse_spec(&spec(AC, &block)).unwrap()
+        };
+        assert!(
+            criteria_diff(
+                &rated("\"data\": \"clear\""),
+                &rated("\"data\": \"partial\"")
+            )
+            .is_empty(),
+            "the block after the last criterion is not part of it"
         );
     }
 }

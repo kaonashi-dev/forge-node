@@ -115,7 +115,11 @@ pub fn parse_spec(text: &str) -> Result<SpecDoc, Vec<String>> {
             open = true;
             continue;
         }
-        if line.starts_with("# ") || line.starts_with("## ") {
+        // Forge's own blocks are JSON fences, and one may follow the last criterion directly.
+        if line.starts_with("# ")
+            || line.starts_with("## ")
+            || line.trim_start().starts_with("```json")
+        {
             open = false;
         }
         let Some(current) = criteria.last_mut().filter(|_| open) else {

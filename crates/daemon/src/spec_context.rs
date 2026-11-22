@@ -92,18 +92,23 @@ fn has_line(path: &Path, needed: u64, cap: u64) -> std::io::Result<Lines> {
     let mut read = 0u64;
     loop {
         let chunk = reader.fill_buf()?;
-        let Some(&last) = chunk.last() else { break };
-        newlines += chunk.iter().filter(|b| **b == b'\n').count() as u64;
+        if chunk.is_empty() {
+            break;
+        }
+        let room = usize::try_from(cap - read).unwrap_or(usize::MAX);
+        let counted = &chunk[..chunk.len().min(room)];
+        let Some(&last) = counted.last() else {
+            // The one byte past `cap` only says that the file goes on.
+            return Ok(Lines::Unread);
+        };
+        newlines += counted.iter().filter(|b| **b == b'\n').count() as u64;
         partial = last != b'\n';
-        read += chunk.len() as u64;
-        let len = chunk.len();
+        read += counted.len() as u64;
+        let len = counted.len();
         reader.consume(len);
         if newlines + u64::from(partial) >= needed {
             return Ok(Lines::Reached);
         }
-    }
-    if read > cap {
-        return Ok(Lines::Unread);
     }
     Ok(Lines::Short(newlines + u64::from(partial)))
 }
@@ -209,6 +214,7 @@ mod tests {
         std::fs::write(&path, "a\nb\nc\nd\n").unwrap();
         assert!(matches!(has_line(&path, 2, 4).unwrap(), Lines::Reached));
         assert!(matches!(has_line(&path, 4, 4).unwrap(), Lines::Unread));
+        assert!(matches!(has_line(&path, 3, 4).unwrap(), Lines::Unread));
         assert!(matches!(has_line(&path, 4, 100).unwrap(), Lines::Reached));
         assert!(matches!(has_line(&path, 5, 100).unwrap(), Lines::Short(4)));
     }
