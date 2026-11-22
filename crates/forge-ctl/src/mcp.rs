@@ -595,7 +595,7 @@ fn catalog() -> Vec<Tool> {
             json!({ "workspace": string, "pr": { "type": "integer", "minimum": 1 }, "base": string, "tier": { "type": "string", "enum": ["quick", "standard", "deep"] },
                 "provider": string, "preset": string, "instructions": string, "model": string,
                 "effort": string, "wait": boolean, "reviewers": { "type": "integer", "minimum": 1, "maximum": 8 },
-                "hypotheses": { "type": "array", "items": { "type": "string", "enum": HYPOTHESES } } })).roles(NOT_A_WORKER),
+                "hypotheses": { "type": "array", "items": { "type": "string", "enum": domain::Hypothesis::ALL.map(domain::Hypothesis::name) } } })).roles(NOT_A_WORKER),
         Tool::new("review_show", "A review run, its findings and its report: the verdict line, each hypothesis explored and the acknowledged scope.", &["review", "show"], json!({ "review": string }))
             .required(&["review"]).positional(&["review"]).roles(NOT_A_WORKER),
         Tool::new("review_status", "A workspace's review runs, newest first.",
@@ -612,24 +612,6 @@ fn catalog() -> Vec<Tool> {
             .required(&["query", "function"]).flags(&["query"]).positional(&["function"]).roles(NOT_A_WORKER),
     ]
 }
-
-const HYPOTHESES: [&str; 15] = [
-    "RaceCondition",
-    "AuthBypass",
-    "RetryNesting",
-    "BrokenContract",
-    "DefaultMismatch",
-    "ResourceLeak",
-    "ErrorSwallow",
-    "NPlusOneQuery",
-    "MissingValidation",
-    "DeadCode",
-    "InconsistentPattern",
-    "CrossLayerMismatch",
-    "MissingTest",
-    "MigrationGap",
-    "ConfigDrift",
-];
 
 const LAUNCH_FLAGS: &[&str] = &[
     "checkout",
@@ -1053,6 +1035,12 @@ mod tests {
             Command::Review(crate::review::ReviewCmd::Start { reviewers: Some(5), hypotheses, .. })
                 if hypotheses == [domain::Hypothesis::RaceCondition, domain::Hypothesis::MigrationGap]
         ));
+        for hypothesis in domain::Hypothesis::ALL {
+            assert!(matches!(
+                parse("review_start", json!({ "hypotheses": [hypothesis.name()] })),
+                Command::Review(crate::review::ReviewCmd::Start { hypotheses, .. }) if hypotheses == [hypothesis]
+            ));
+        }
         assert!(tool_argv("review_start", &json!({ "hypotheses": ["Nope"] })).is_err());
         assert!(tool_argv("review_start", &json!({ "reviewers": 9 })).is_err());
         assert!(

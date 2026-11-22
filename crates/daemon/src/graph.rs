@@ -9,7 +9,7 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
-use codebase_graph::{FileInput, Graph, Update};
+use codebase_graph::{FileInput, Graph, Indexed, Update};
 use domain::{GraphFormat, GraphQuery, GraphStats, ProjectId, WorkspaceId};
 use protocol::{ProtocolError, Response};
 
@@ -23,7 +23,7 @@ pub(crate) const GRAPH_DIR: &str = ".forge/review/graph";
 
 #[derive(Default)]
 pub(crate) struct Graphs {
-    loaded: Mutex<HashMap<ProjectId, Arc<Graph>>>,
+    loaded: Mutex<HashMap<ProjectId, Arc<Indexed>>>,
     building: Mutex<HashMap<ProjectId, Arc<Mutex<()>>>>,
     /// Projects whose first build a query started, until it finishes.
     indexing: Mutex<HashSet<ProjectId>>,
@@ -42,19 +42,25 @@ impl Graphs {
         Arc::clone(building.entry(project).or_default())
     }
 
-    fn cached(&self, project: ProjectId) -> Option<Arc<Graph>> {
-        self.loaded
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .get(&project)
-            .cloned()
+    fn cached(&self, project: ProjectId) -> Option<Arc<Indexed>> {
+        unpoisoned(&self.loaded).get(&project).cloned()
     }
 
-    fn keep(&self, project: ProjectId, graph: Arc<Graph>) {
-        self.loaded
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .insert(project, graph);
+    /// Keeps the index already built when `graph` is the one held.
+    fn keep(&self, project: ProjectId, graph: Arc<Graph>) -> Arc<Indexed> {
+        let mut loaded = unpoisoned(&self.loaded);
+        match loaded.get(&project) {
+            Some(held) if Arc::ptr_eq(held.graph(), &graph) => Arc::clone(held),
+            _ => {
+                let indexed = Arc::new(Indexed::new(graph));
+                loaded.insert(project, Arc::clone(&indexed));
+                indexed
+            }
+        }
+    }
+
+    fn mark_built(&self, project: ProjectId) {
+        unpoisoned(&self.built).insert(project, std::time::Instant::now());
     }
 }
 
@@ -90,14 +96,10 @@ impl Daemon {
         let _building = unpoisoned(&build);
         let head = git_service::head_commit(checkout)
             .ok_or_else(|| "the checkout has no commit to index".to_owned())?;
-        let stored = match self.graphs.cached(project) {
-            Some(graph) => Some(graph),
-            None => self
-                .review_store
-                .load_graph(project)
-                .map_err(|error| format!("could not read the stored graph: {error}"))?
-                .map(Arc::new),
-        };
+        let stored = self
+            .loaded_graph(project)
+            .map_err(|error| format!("could not read the stored graph: {error}"))?
+            .map(|held| Arc::clone(held.graph()));
         let mut stats = GraphStats {
             git_oid: head.clone(),
             ..GraphStats::default()
@@ -131,6 +133,7 @@ impl Daemon {
         if incremental && listed.is_empty() && base.git_oid == head {
             stats.nodes = count(base.nodes.len());
             stats.edges = count(base.edges.len());
+            self.graphs.mark_built(project);
             return Ok((base, stats));
         }
         let (update, read, removed) = parse_files(checkout, &listed, ignore, &mut stats);
@@ -158,7 +161,7 @@ impl Daemon {
         stats.edges = count(graph.edges.len());
         let graph = Arc::new(graph);
         self.graphs.keep(project, Arc::clone(&graph));
-        unpoisoned(&self.graphs.built).insert(project, std::time::Instant::now());
+        self.graphs.mark_built(project);
         Ok((graph, stats))
     }
 
@@ -228,13 +231,11 @@ impl Daemon {
         let fresh = unpoisoned(&self.graphs.built)
             .get(&project.id)
             .is_some_and(|at| at.elapsed() < STALE);
-        let stored = self.graphs.cached(project.id).or_else(|| {
-            self.review_store
-                .load_graph(project.id)
-                .ok()
-                .flatten()
-                .map(Arc::new)
-        });
+        let stored = self
+            .loaded_graph(project.id)
+            .ok()
+            .flatten()
+            .map(|held| Arc::clone(held.graph()));
         if fresh && stored.is_some() {
             return stored;
         }
@@ -280,20 +281,29 @@ impl Daemon {
         Ok(Response::GraphRebuilt(stats))
     }
 
+    /// The graph this daemon last kept for the project, else SQLite's, kept from then on.
+    pub(crate) fn loaded_graph(
+        &self,
+        project: ProjectId,
+    ) -> Result<Option<Arc<Indexed>>, persistence::DbError> {
+        if let Some(held) = self.graphs.cached(project) {
+            return Ok(Some(held));
+        }
+        Ok(self
+            .review_store
+            .load_graph(project)?
+            .map(|graph| self.graphs.keep(project, Arc::new(graph))))
+    }
+
     /// The stored graph; `None` when the project has none, after starting its
     /// first build off the request path.
     fn stored_graph(
         self: &Arc<Self>,
         workspace_id: WorkspaceId,
-    ) -> Result<Option<Arc<Graph>>, ProtocolError> {
+    ) -> Result<Option<Arc<Indexed>>, ProtocolError> {
         let (project, path, ignore) = self.graph_target(workspace_id)?;
-        if let Some(graph) = self.graphs.cached(project) {
-            return Ok(Some(graph));
-        }
-        if let Some(graph) = self.review_store.load_graph(project).map_err(db_err)? {
-            let graph = Arc::new(graph);
-            self.graphs.keep(project, Arc::clone(&graph));
-            return Ok(Some(graph));
+        if let Some(held) = self.loaded_graph(project).map_err(db_err)? {
+            return Ok(Some(held));
         }
         self.index_in_background(project, path, ignore);
         Ok(None)
@@ -358,8 +368,8 @@ impl Daemon {
             return Ok(Response::GraphIndexing);
         };
         Ok(Response::GraphExport(match format {
-            GraphFormat::Mermaid => graph.to_mermaid(MAX_EXPORT_NODES),
-            _ => graph.to_dot(MAX_EXPORT_NODES),
+            GraphFormat::Mermaid => graph.graph().to_mermaid(MAX_EXPORT_NODES),
+            _ => graph.graph().to_dot(MAX_EXPORT_NODES),
         }))
     }
 }
@@ -667,6 +677,94 @@ pub(crate) fn changed_functions(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::core::tests::{add_project_row, add_workspace_row, test_daemon};
+
+    fn git(repo: &Path, args: &[&str]) {
+        let ok = std::process::Command::new("git")
+            .args([
+                "-c",
+                "commit.gpgsign=false",
+                "-c",
+                "user.name=t",
+                "-c",
+                "user.email=t@t",
+            ])
+            .args(args)
+            .current_dir(repo)
+            .output()
+            .expect("git")
+            .status
+            .success();
+        assert!(ok, "git {args:?}");
+    }
+
+    fn commit(repo: &Path, source: &str) {
+        std::fs::create_dir_all(repo.join("src")).expect("src");
+        std::fs::write(repo.join("src/lib.rs"), source).expect("write");
+        git(repo, &["add", "-A"]);
+        git(repo, &["commit", "-qm", "c"]);
+    }
+
+    fn indexed_checkout() -> (Arc<Daemon>, tempfile::TempDir, tempfile::TempDir, ProjectId) {
+        let (daemon, tmp) = test_daemon();
+        let repo = tempfile::tempdir().expect("repo");
+        git(repo.path(), &["init", "-q"]);
+        commit(repo.path(), "pub fn a() { b(); }\nfn b() {}\n");
+        let project = add_project_row(&daemon, "p", Some(repo.path().to_path_buf()));
+        daemon
+            .refresh_graph(project, repo.path(), &[], false)
+            .expect("first build");
+        (daemon, tmp, repo, project)
+    }
+
+    #[test]
+    fn an_unchanged_checkout_keeps_the_stored_graph_and_counts_as_built() {
+        let (daemon, _tmp, repo, project) = indexed_checkout();
+        unpoisoned(&daemon.graphs.loaded).clear();
+        unpoisoned(&daemon.graphs.built).clear();
+        let (graph, _) = daemon
+            .refresh_graph(project, repo.path(), &[], false)
+            .expect("nothing changed");
+        let held = daemon
+            .graphs
+            .cached(project)
+            .expect("SQLite's graph is kept");
+        assert!(Arc::ptr_eq(held.graph(), &graph));
+        assert!(unpoisoned(&daemon.graphs.built).contains_key(&project));
+    }
+
+    #[test]
+    fn queries_share_one_index_until_the_graph_changes() {
+        let (daemon, _tmp, repo, project) = indexed_checkout();
+        let workspace = add_workspace_row(&daemon, project, false);
+        if let Some(ws) = daemon.lock().workspaces.get_mut(&workspace) {
+            ws.path = repo.path().to_path_buf();
+        }
+        let callers = GraphQuery::Callers("b".into());
+        let held = daemon.graphs.cached(project).expect("kept");
+        assert!(!held.is_indexed());
+        for _ in 0..2 {
+            let Ok(Response::GraphNodes(nodes)) = daemon.query_graph(workspace, &callers) else {
+                panic!("no answer");
+            };
+            assert_eq!(nodes.len(), 1, "{nodes:?}");
+            let now = daemon.graphs.cached(project).expect("kept");
+            assert!(Arc::ptr_eq(&now, &held) && now.is_indexed());
+        }
+        commit(
+            repo.path(),
+            "pub fn a() { b(); }\nfn b() {}\nfn c() { b(); }\n",
+        );
+        daemon
+            .refresh_graph(project, repo.path(), &[], false)
+            .expect("rebuilt");
+        let fresh = daemon.graphs.cached(project).expect("kept");
+        assert!(!Arc::ptr_eq(&fresh, &held) && !fresh.is_indexed());
+        let Ok(Response::GraphNodes(nodes)) = daemon.query_graph(workspace, &callers) else {
+            panic!("no answer");
+        };
+        assert_eq!(nodes.len(), 2, "{nodes:?}");
+    }
 
     #[test]
     fn indexed_names_paths_and_signatures_are_redacted() {

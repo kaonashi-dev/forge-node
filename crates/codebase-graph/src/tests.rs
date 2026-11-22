@@ -469,3 +469,18 @@ fn a_call_into_a_moved_function_is_redirected_like_a_full_build() {
         EdgeKind::Calls
     ));
 }
+
+#[test]
+fn an_indexed_graph_builds_its_index_once_and_answers_like_a_fresh_one() {
+    let indexed = Indexed::new(Arc::new(build(project())));
+    assert!(!indexed.is_indexed());
+    let query = domain::GraphQuery::Path("main".into(), "check".into());
+    let fresh = names(&indexed.graph().index().query(&query));
+    assert!(!indexed.is_indexed(), "a fresh index is not the kept one");
+    assert_eq!(names(&indexed.index().query(&query)), fresh);
+    assert!(indexed.is_indexed());
+    assert_eq!(
+        names(&indexed.index().callers("check")),
+        names(&indexed.graph().index().callers("check"))
+    );
+}

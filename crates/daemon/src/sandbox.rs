@@ -195,20 +195,25 @@ impl Daemon {
         let config = runtime_sandbox::parse(&text)?;
         let cache = cache_dir(checkout)?;
         let (denied_reads, socket) = self.forge_denied();
+        let resolved = |name: &str| self.launch_var(name).or_else(|| std::env::var(name).ok());
+        let home = resolved("HOME").map(PathBuf::from);
         let policy = runtime_sandbox::Policy {
             run_dir: canonical(run_dir),
             cache_dir: cache,
             tmp_dir: canonical(&std::env::temp_dir()),
-            extra_writes: Vec::new(),
+            extra_writes: crate::spec_sandbox::write_paths(
+                &self.config.review.sandbox_write_paths,
+                home.as_deref(),
+            ),
             denied_reads,
             network: self.config.review.sandbox_network,
             socket,
         };
-        let resolved = |name: &str| self.launch_var(name).or_else(|| std::env::var(name).ok());
         let env = runtime_sandbox::environment(
             &self.config.review.sandbox_env_whitelist,
             &resolved,
             &config.env,
+            &policy.tmp_dir,
             &policy.cache_dir,
         );
         let targets: Vec<&runtime_sandbox::Target> = config

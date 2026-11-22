@@ -124,8 +124,10 @@ it (`non-goal`, `out of scope`, `deliberate non-goals`, `no hacemos`, `fuera de
 alcance`, any case), at most 2 KiB cut on a line. Without one, or for a
 workspace review, the review's instructions are read the same way. It enters
 the pack as a redacted `<scope-N>` block on every tier, the prompt tells the
-reviewers not to report anything it names, and the run keeps it in
-`Coverage::acknowledged_scope` with a note naming its source.
+reviewers not to report the absence of a feature it lists, and the run keeps it in
+`Coverage::acknowledged_scope` with a note naming its source. The pull request's
+author writes it, so it never excuses a defect: a bug, a security issue or anything
+P0 or P1 is reported whatever it says.
 
 ## Lineage
 
@@ -484,7 +486,7 @@ A repository can **offer** targets but never run one, the trust model of
 [project actions](./actions.md). The file runs only while its SHA-256 is the one
 a person approved for the project (`ApproveSandboxChecks`: **Approve
 checks.toml** in the Sandbox checks section, or `forgectl review checks approve`, which
-shows the file and asks first). An unapproved or changed file runs nothing: the
+shows the file and asks first; never an agent session, see [Fix loop](#fix-loop)). An unapproved or changed file runs nothing: the
 run's `error` says so and `unapproved_hash` carries the hash to approve, which
 is refused with `PreconditionFailed` once the file changes again.
 
@@ -495,13 +497,14 @@ been recycled; a descendant that left the group is waited out within a bound.
 The profile allows everything else and denies the network (unless the daemon's
 `[review] sandbox_network`), writes outside the run directory, the cache
 (`<checkout>/.forge/review/sandbox/cache/`, beside a `.gitignore` of `*`; a
-symlink on its way, or a path resolving outside the checkout, is refused) and
-`$TMPDIR`, reading data under Forge's home and socket directory, except the
+symlink on its way, or a path resolving outside the checkout, is refused),
+`$TMPDIR` and `[review] sandbox_write_paths`, reading data under Forge's home and socket directory, except the
 run and cache directories themselves (a managed worktree lives under Forge's
 home), and connecting to Forge's socket even with the network on. The
 environment is cleared, then holds the `[review] sandbox_env_whitelist` names
-from the daemon's resolved environment, `[env]` and `FORGE_SANDBOX_CACHE`; a
-`FORGE_*` name from either is dropped. The policy is the user's alone: a
+from the daemon's resolved environment, `[env]`, `TMPDIR` (the allowed temp
+directory, whatever either says) and `FORGE_SANDBOX_CACHE`; a `FORGE_*` name from
+either is dropped. The policy is the user's alone: a
 repository's `[security]` section in `config.toml` is ignored with a note. The
 last 8 KiB of stdout and stderr is kept, redacted. Elsewhere than macOS a run
 says "Sandbox checks are unsupported on this platform". A checkout that still
@@ -534,6 +537,11 @@ re-review cancels that review too. A pull-request review is refused,
 and a second loop on the workspace is `Conflict`. A person starts it: the GUI's
 **Fix Loop** opens a confirmation first, `forgectl review fix-loop` asks on a
 terminal or needs `--yes`, and no MCP tool or `review_start` flag starts one.
+The daemon refuses `StartFixLoop` and `ApproveSandboxChecks` with
+`PreconditionFailed` when the connection's declared caller (`forgectl` declares
+`FORGE_SESSION_ID`) is a live agent session. That is the ledger's identity model
+([spec-runs.md](./spec-runs.md)): it keeps an agent from doing either by
+accident, not by force.
 
 ### Stats
 
@@ -563,6 +571,7 @@ knowledge base's size.
 | `sandbox_checks` | `false` | run `checks.toml`'s targets before a `deep` review |
 | `sandbox_network` | `false` | sandbox checks may use the network |
 | `sandbox_env_whitelist` | `["PATH", "HOME"]` | variables copied into a sandbox check's environment; `FORGE_*` is dropped |
+| `sandbox_write_paths` | the tool caches (`~/.cargo`, `~/.rustup`, `~/.bun`, `~/.npm`, `~/Library/Caches`) | writable to a sandbox check besides the run, its cache and `$TMPDIR`; `~` is the home, a missing path is dropped |
 
 A reviewer is launched in the provider's **read-only** mode *and* with the
 structured-review flag: Claude gets `--session-id` with a UUID Forge minted (so

@@ -52,6 +52,16 @@ const MAX_GRAPH_FILES: usize = 20;
 const MAX_SANDBOX_TAIL: usize = 2048;
 const SANDBOX_READING: &str = "Reading the sandbox run…";
 const FIX_LOOP_ITERATIONS: u32 = 3;
+pub const SANDBOX_CHECKS_PATH: &str = ".forge/review/checks.toml";
+
+/// `hash` is the one the run refused; the daemon refuses its approval once the file stops hashing to it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SandboxConfirm {
+    pub workspace_id: WorkspaceId,
+    pub hash: String,
+    /// `None` while the daemon reads it.
+    pub file: Option<Result<String, String>>,
+}
 
 /// One reviewed file's neighbours in the codebase graph.
 #[derive(Clone, Debug, Default)]
@@ -237,8 +247,12 @@ pub struct CodeReview {
     pub kb: Option<(WorkspaceId, Result<Vec<domain::KbFile>, String>)>,
     pub kb_open: bool,
     pub sandbox: Option<(ReviewId, Result<domain::SandboxRun, String>)>,
-    /// The `checks.toml` hash last sent for approval, until the daemon refuses it.
+    /// The `checks.toml` hash the daemon acknowledged approving.
     pub sandbox_approved: Option<String>,
+    /// Sent for approval, until the daemon answers.
+    pub sandbox_approving: Option<String>,
+    /// The refused file a person pressed Approve on, read through the daemon to be shown first.
+    pub sandbox_confirm: Option<SandboxConfirm>,
     /// The run a person pressed Fix Loop on, until they confirm or cancel.
     pub fix_loop_confirm: Option<ReviewId>,
     pub fix_loops: HashMap<WorkspaceId, FixLoopProgress>,
@@ -283,6 +297,8 @@ impl Default for CodeReview {
             kb_open: false,
             sandbox: None,
             sandbox_approved: None,
+            sandbox_approving: None,
+            sandbox_confirm: None,
             fix_loop_confirm: None,
             fix_loops: HashMap::new(),
         }
@@ -1238,10 +1254,10 @@ impl AppState {
             self.toasts.success(message.to_string(), None);
         }
         if label == "ApproveSandboxChecks" {
+            let sent = self.code_review.sandbox_approving.take();
             if ok {
+                self.code_review.sandbox_approved = sent;
                 self.toasts.success(message.to_string(), None);
-            } else {
-                self.code_review.sandbox_approved = None;
             }
         }
         if ok || !matches!(label, "StartReview" | "CancelReview" | "GetReview") {
@@ -1405,14 +1421,48 @@ impl AppState {
         }
     }
 
-    /// Approves exactly the `checks.toml` the run refused; the daemon refuses
-    /// in turn if the file changed since.
-    pub fn approve_sandbox(&mut self, workspace_id: WorkspaceId, file_hash: String) {
+    /// Opens the confirmation and reads the file it shows through the daemon (ADR-012).
+    pub fn confirm_sandbox(&mut self, workspace_id: WorkspaceId, hash: String) {
+        let sent = match &self.connection {
+            Some(connection) => connection.read_sandbox_checks(self.generation, workspace_id),
+            None => Err("not connected to the daemon".to_owned()),
+        };
+        self.code_review.sandbox_confirm = Some(SandboxConfirm {
+            workspace_id,
+            hash,
+            file: sent.err().map(Err),
+        });
+    }
+
+    pub fn apply_sandbox_file(
+        &mut self,
+        workspace_id: WorkspaceId,
+        result: Result<String, String>,
+    ) -> bool {
+        match &mut self.code_review.sandbox_confirm {
+            Some(confirm) if confirm.workspace_id == workspace_id && confirm.file.is_none() => {
+                confirm.file = Some(result);
+                true
+            }
+            _ => false,
+        }
+    }
+
+    /// Approves exactly the `checks.toml` the run refused, once the person saw it;
+    /// the daemon refuses in turn if the file changed since.
+    pub fn approve_sandbox(&mut self) {
+        let Some(confirm) = self.code_review.sandbox_confirm.take() else {
+            return;
+        };
+        if !matches!(confirm.file, Some(Ok(_))) {
+            self.code_review.sandbox_confirm = Some(confirm);
+            return;
+        }
         let Some(connection) = &self.connection else {
             return;
         };
-        match connection.approve_sandbox_checks(workspace_id, file_hash.clone()) {
-            Ok(()) => self.code_review.sandbox_approved = Some(file_hash),
+        match connection.approve_sandbox_checks(confirm.workspace_id, confirm.hash.clone()) {
+            Ok(()) => self.code_review.sandbox_approving = Some(confirm.hash),
             Err(error) => self.toasts.danger("checks.toml was not approved", error),
         }
     }
@@ -2895,6 +2945,7 @@ fn sandbox_panel(s: &AppState, k: &Kit, run: &ReviewRun) -> Option<El> {
     }
     if let Some(hash) = &sandbox.unapproved_hash {
         let approved = s.code_review.sandbox_approved.as_ref() == Some(hash);
+        let approving = s.code_review.sandbox_approving.as_ref() == Some(hash);
         let (workspace_id, hash) = (sandbox.workspace_id, hash.clone());
         body = body.child(
             row()
@@ -2903,13 +2954,15 @@ fn sandbox_panel(s: &AppState, k: &Kit, run: &ReviewRun) -> Option<El> {
                 .child(
                     Button::new(if approved {
                         "Approved"
+                    } else if approving {
+                        "Approving…"
                     } else {
                         "Approve checks.toml"
                     })
                     .variant(ButtonVariant::Outline)
                     .control_size(ControlSize::Small)
-                    .disabled(approved)
-                    .on_press(move |s: &mut AppState| s.approve_sandbox(workspace_id, hash.clone()))
+                    .disabled(approved || approving)
+                    .on_press(move |s: &mut AppState| s.confirm_sandbox(workspace_id, hash.clone()))
                     .build(k)
                     .key("review-sandbox-approve"),
                 )
@@ -2969,6 +3022,47 @@ fn sandbox_panel(s: &AppState, k: &Kit, run: &ReviewRun) -> Option<El> {
         body = body.child(item);
     }
     Some(body)
+}
+
+pub fn sandbox_approve_dialog(s: &AppState, k: &Kit, layer: &mut Vec<El>) {
+    let Some(confirm) = &s.code_review.sandbox_confirm else {
+        return;
+    };
+    let mut modal = crate::modal::Modal::new("review-sandbox-confirm", "Approve checks.toml?")
+        .width(crate::modal::WIDTH_WIDE)
+        .on_close(|s: &mut AppState| s.code_review.sandbox_confirm = None)
+        .child(note(
+            k,
+            "Every deep review of this project runs these targets' commands in the sandbox \
+             until the file changes.",
+        ));
+    modal = match &confirm.file {
+        None => modal.child(note(k, format!("Reading {SANDBOX_CHECKS_PATH}…"))),
+        Some(Err(error)) => modal.child(note(k, error.clone())),
+        Some(Ok(file)) => modal.child(
+            text(file.clone())
+                .font(k.ty.mono)
+                .color(k.c.text_base)
+                .wrap()
+                .key("review-sandbox-confirm-file"),
+        ),
+    };
+    modal
+        .child(note(k, format!("SHA-256 {}", confirm.hash)))
+        .footer([
+            Button::new("Cancel")
+                .variant(ButtonVariant::GhostMuted)
+                .on_press(|s: &mut AppState| s.code_review.sandbox_confirm = None)
+                .build(k)
+                .key("review-sandbox-confirm-cancel"),
+            Button::new("Approve")
+                .variant(ButtonVariant::Contrast)
+                .disabled(!matches!(confirm.file, Some(Ok(_))))
+                .on_press(|s: &mut AppState| s.approve_sandbox())
+                .build(k)
+                .key("review-sandbox-confirm-approve"),
+        ])
+        .build(s, k, layer);
 }
 
 /// The confirmation a fix loop needs before any writable agent starts.
@@ -4474,6 +4568,58 @@ mod tests {
         ));
         let shown = keys(state);
         assert!(has(&shown, "review-sandbox-approve"), "{shown:?}");
+    }
+
+    #[test]
+    fn approving_checks_toml_shows_the_file_first_and_says_approved_only_on_the_ack() {
+        let (mut state, workspace) = fixture_state();
+        let rx = connected(&mut state);
+        state.confirm_sandbox(workspace, "abc".into());
+        assert!(matches!(
+            rx.try_recv(),
+            Ok(crate::connection::Command::ReadSandboxChecks { workspace_id, .. }) if workspace_id == workspace
+        ));
+        state.approve_sandbox();
+        assert!(
+            rx.try_recv().is_err(),
+            "nothing is approved before it is shown"
+        );
+        let file = "[[targets]]\nname = \"test\"\ncommand = \"cargo test\"\n";
+        assert!(state.apply_sandbox_file(workspace, Ok(file.into())));
+
+        state.approve_sandbox();
+        assert!(matches!(
+            rx.try_recv(),
+            Ok(crate::connection::Command::ApproveSandboxChecks { file_hash, .. }) if file_hash == "abc"
+        ));
+        assert!(state.code_review.sandbox_confirm.is_none());
+        assert_eq!(
+            state.code_review.sandbox_approved, None,
+            "not before the ack"
+        );
+        state.review_command_result("ApproveSandboxChecks", false, "checks.toml changed");
+        assert_eq!(state.code_review.sandbox_approved, None);
+        assert_eq!(state.code_review.sandbox_approving, None);
+
+        state.code_review.sandbox_approving = Some("abc".into());
+        state.review_command_result("ApproveSandboxChecks", true, "approved");
+        assert_eq!(state.code_review.sandbox_approved.as_deref(), Some("abc"));
+    }
+
+    #[test]
+    fn the_checks_toml_confirmation_shows_its_commands_and_its_hash() {
+        let (mut state, workspace) = fixture_state();
+        state.code_review.sandbox_confirm = Some(SandboxConfirm {
+            workspace_id: workspace,
+            hash: "abc".into(),
+            file: Some(Ok(
+                "[[targets]]\nname = \"test\"\ncommand = \"cargo test\"\n".into(),
+            )),
+        });
+        let shown = keys(state);
+        assert!(has(&shown, "review-sandbox-confirm-file"), "{shown:?}");
+        assert!(has(&shown, "review-sandbox-confirm-approve"));
+        assert!(has(&shown, "review-sandbox-confirm-cancel"));
     }
 
     #[test]

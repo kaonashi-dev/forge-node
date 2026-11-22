@@ -430,10 +430,9 @@ impl Daemon {
         let path = self.workspace_path(run.workspace_id)?;
         let project = self.workspace_project(run.workspace_id)?;
         let graph = self
-            .review_store
-            .load_graph(project)
+            .loaded_graph(project)
             .map_err(db_err)?
-            .unwrap_or_default();
+            .map_or_else(Arc::default, |held| Arc::clone(held.graph()));
         let files: Vec<domain::DiffFile> = diff
             .files
             .into_iter()
@@ -443,7 +442,7 @@ impl Daemon {
         let mut texts = reviewed_texts(&path, &run, &read);
         let graph = if matches!(run.target, ReviewTarget::PullRequest { .. }) {
             let ignore = repo_config(&path).ignore;
-            head_overlay(&graph, &files, &texts, &ignore, &run.head_oid)
+            Arc::new(head_overlay(&graph, &files, &texts, &ignore, &run.head_oid))
         } else {
             graph
         };
@@ -883,7 +882,7 @@ impl Daemon {
             });
         if let Some((scope, source)) = &scope {
             coverage.notes.push(format!(
-                "acknowledged scope: {} bytes from {source}, not to be reported",
+                "acknowledged scope: {} bytes from {source}; the features it lists are not reported missing",
                 scope.len()
             ));
         }

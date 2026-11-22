@@ -201,6 +201,9 @@ sandbox_checks = false          # run .forge/review/checks.toml before a deep re
 # .forge/review/config.toml cannot. A FORGE_* name is dropped.
 sandbox_network = false
 sandbox_env_whitelist = ["PATH", "HOME"]
+# Writable besides the checkout, its sandbox cache and the temp directory,
+# expanded like [spec_runs] check_write_paths.
+sandbox_write_paths = ["~/.cargo", "~/.rustup", "~/.bun", "~/.npm", "~/Library/Caches"]
 
 [spec_runs]
 # A spec run's checks run under the macOS sandbox: no view of Forge's home or

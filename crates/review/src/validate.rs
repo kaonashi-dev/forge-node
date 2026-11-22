@@ -50,8 +50,8 @@ pub struct Validated {
     pub trimmed: u32,
     /// Dropped by the project's feedback suppressions, before `max_findings`.
     pub suppressed: u32,
-    /// Fingerprints of valid findings that were hidden: suppressed, below
-    /// `min_confidence` or past `max_findings`.
+    /// Fingerprints of findings the reviewer reported that were hidden: suppressed,
+    /// below `min_confidence`, past `max_findings` or without reachability.
     pub withheld: Vec<String>,
 }
 
@@ -131,6 +131,7 @@ pub fn validate(
     let without_reachability = u32::try_from(unreachable.len()).unwrap_or(u32::MAX);
     let mut withheld: BTreeSet<String> = low
         .iter()
+        .chain(&unreachable)
         .map(|raw| {
             fingerprint(
                 &raw.path,

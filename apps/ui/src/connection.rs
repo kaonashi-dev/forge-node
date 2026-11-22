@@ -257,6 +257,10 @@ pub enum Command {
         review_id: domain::ReviewId,
         sandbox_run_id: String,
     },
+    ReadSandboxChecks {
+        generation: u64,
+        workspace_id: WorkspaceId,
+    },
     ApproveSandboxChecks {
         workspace_id: WorkspaceId,
         file_hash: String,
@@ -620,6 +624,11 @@ pub enum UiEvent {
         generation: u64,
         review_id: domain::ReviewId,
         result: Result<Box<domain::SandboxRun>, String>,
+    },
+    SandboxChecksFile {
+        generation: u64,
+        workspace_id: WorkspaceId,
+        result: Result<String, String>,
     },
     SpecRun {
         generation: u64,
@@ -1032,6 +1041,17 @@ impl ConnectionHandle {
             generation,
             review_id,
             sandbox_run_id,
+        })
+    }
+
+    pub fn read_sandbox_checks(
+        &self,
+        generation: u64,
+        workspace_id: WorkspaceId,
+    ) -> Result<(), String> {
+        self.send(Command::ReadSandboxChecks {
+            generation,
+            workspace_id,
         })
     }
 
@@ -2294,6 +2314,19 @@ fn handle_fixture_command(
                 generation,
                 review_id,
                 result: Err("the recorded snapshot has no review store".into()),
+            }]);
+        }
+        Command::ReadSandboxChecks {
+            generation: command_generation,
+            workspace_id,
+        } => {
+            if command_generation != generation {
+                return;
+            }
+            sink(vec![UiEvent::SandboxChecksFile {
+                generation,
+                workspace_id,
+                result: Err("the recorded snapshot has no checkout".into()),
             }]);
         }
         Command::ApproveSandboxChecks { .. } => {
@@ -3784,6 +3817,33 @@ fn handle_live_command(
                 result,
             }]);
         }
+        Command::ReadSandboxChecks {
+            generation: command_generation,
+            workspace_id,
+        } => {
+            if command_generation != generation {
+                return;
+            }
+            metrics.note_socket_op();
+            let result = client
+                .read_file(workspace_id, crate::code_review::SANDBOX_CHECKS_PATH)
+                .map_err(|error| error.to_string())
+                .and_then(|file| {
+                    if file.binary || file.too_large {
+                        Err(format!(
+                            "{} is too large or not text to show",
+                            crate::code_review::SANDBOX_CHECKS_PATH
+                        ))
+                    } else {
+                        Ok(file.text)
+                    }
+                });
+            sink(vec![UiEvent::SandboxChecksFile {
+                generation,
+                workspace_id,
+                result,
+            }]);
+        }
         Command::ApproveSandboxChecks {
             workspace_id,
             file_hash,
@@ -4844,6 +4904,7 @@ fn command_label(command: &Command) -> &'static str {
         Command::QueryGraph { .. } => "QueryGraph",
         Command::GetKb { .. } => "GetKb",
         Command::GetSandboxChecks { .. } => "GetSandboxChecks",
+        Command::ReadSandboxChecks { .. } => "ReadFile",
         Command::ApproveSandboxChecks { .. } => "ApproveSandboxChecks",
         Command::StartFixLoop { .. } => "StartFixLoop",
         Command::SendSessionPrompt { .. } => "SendSessionPrompt",

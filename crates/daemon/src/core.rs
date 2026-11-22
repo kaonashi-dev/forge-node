@@ -8966,7 +8966,7 @@ fn file_entry_response(e: fs_service::FileEntry) -> domain::FileEntry {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use domain::ClientId;
     use protocol::DaemonMessage;
@@ -9011,7 +9011,7 @@ mod tests {
     /// A daemon core over an in-memory DB, without startup scans or
     /// the agent-detection thread. The `TempDir` backs `worktrees_root` and is
     /// returned so it outlives the daemon.
-    fn test_daemon() -> (Arc<Daemon>, tempfile::TempDir) {
+    pub(crate) fn test_daemon() -> (Arc<Daemon>, tempfile::TempDir) {
         let (daemon, tmp, _backend) = test_daemon_with_pty(FakePtyBackend::empty());
         (daemon, tmp)
     }
@@ -9076,7 +9076,7 @@ mod tests {
 
     /// Seed a project in the model and the DB (foreign keys are ON, so the rows
     /// have to exist before workspaces and sessions can reference them).
-    fn add_project_row(daemon: &Daemon, name: &str, root: Option<PathBuf>) -> ProjectId {
+    pub(crate) fn add_project_row(daemon: &Daemon, name: &str, root: Option<PathBuf>) -> ProjectId {
         let id = ProjectId::new();
         let now = Timestamp::now();
         let project = Project {
@@ -9101,7 +9101,11 @@ mod tests {
         id
     }
 
-    fn add_workspace_row(daemon: &Daemon, project_id: ProjectId, managed: bool) -> WorkspaceId {
+    pub(crate) fn add_workspace_row(
+        daemon: &Daemon,
+        project_id: ProjectId,
+        managed: bool,
+    ) -> WorkspaceId {
         let id = WorkspaceId::new();
         let ws = Workspace {
             id,
@@ -9283,6 +9287,62 @@ mod tests {
                 "{mode} snapshot"
             );
             assert!(sessions.iter().any(|s| s.id == shell));
+        }
+    }
+
+    #[test]
+    fn a_live_agent_session_may_not_approve_sandbox_checks_or_start_a_fix_loop() {
+        let (daemon, _tmp) = test_daemon();
+        let project = add_project_row(&daemon, "api", None);
+        let workspace = add_workspace_row(&daemon, project, false);
+        let agent = |state| {
+            let id = add_session_row(&daemon, workspace, None, state);
+            daemon.lock().sessions.get_mut(&id).expect("session").kind = SessionKind::Agent;
+            id
+        };
+        let live = agent(SessionState::Running);
+        let exited = agent(SessionState::Exited {
+            code: Some(0),
+            signal: None,
+        });
+        let shell = add_session_row(&daemon, workspace, None, SessionState::Running);
+        let person_only = || {
+            [
+                Request::ApproveSandboxChecks {
+                    workspace_id: workspace,
+                    file_hash: "h".into(),
+                },
+                Request::StartFixLoop {
+                    review_id: domain::ReviewId::new(),
+                    max_iterations: None,
+                    provider: None,
+                    profile_id: None,
+                },
+            ]
+        };
+        let answer = |caller, request| {
+            crate::cross_profile::handle(&daemon, ClientKind::Cli, caller, request)
+        };
+        for request in person_only() {
+            let refused = answer(Some(live), request);
+            assert!(
+                refused
+                    .as_ref()
+                    .is_err_and(|error| error.code == ErrorCode::PreconditionFailed
+                        && error.message.ends_with("is a person's action")),
+                "{refused:?}"
+            );
+        }
+        for caller in [None, Some(shell), Some(exited)] {
+            for request in person_only() {
+                let reached = answer(caller, request);
+                assert!(
+                    !reached
+                        .as_ref()
+                        .is_err_and(|error| error.message.contains("person's action")),
+                    "{caller:?}: {reached:?}"
+                );
+            }
         }
     }
 

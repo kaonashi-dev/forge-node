@@ -169,13 +169,14 @@ pub fn profile(policy: &Policy) -> String {
 }
 
 /// The target's environment: only `whitelist`'s names from `resolved`, then
-/// the file's fixed values, then the cache directory. Nothing named `FORGE_*`
+/// the file's fixed values, then `TMPDIR` and the cache directory. Nothing named `FORGE_*`
 /// from either, so `FORGE_SANDBOX_CACHE` is the only one.
 #[must_use]
 pub fn environment(
     whitelist: &[String],
     resolved: &dyn Fn(&str) -> Option<String>,
     fixed: &[(String, String)],
+    tmp_dir: &Path,
     cache_dir: &Path,
 ) -> Vec<(String, String)> {
     let mut env: Vec<(String, String)> = whitelist
@@ -187,6 +188,9 @@ pub fn environment(
         env.retain(|(other, _)| other != name);
         env.push((name.clone(), value.clone()));
     }
+    // Without it tools fall back to `/tmp`, which the profile denies.
+    env.retain(|(name, _)| name != "TMPDIR");
+    env.push(("TMPDIR".into(), tmp_dir.to_string_lossy().into_owned()));
     env.push((
         "FORGE_SANDBOX_CACHE".into(),
         cache_dir.to_string_lossy().into_owned(),

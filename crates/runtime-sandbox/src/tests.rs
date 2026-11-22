@@ -95,12 +95,14 @@ fn the_environment_is_the_whitelist_the_file_and_the_cache_only() {
         &["PATH".into(), "FORGE_SOCKET".into(), "MISSING".into()],
         &resolved,
         &[("PATH".into(), "/opt/bin".into())],
+        Path::new("/t"),
         Path::new("/c"),
     );
     assert_eq!(
         env,
         [
             ("PATH".to_owned(), "/opt/bin".to_owned()),
+            ("TMPDIR".to_owned(), "/t".to_owned()),
             ("FORGE_SANDBOX_CACHE".to_owned(), "/c".to_owned())
         ]
     );
@@ -207,6 +209,7 @@ fn the_target_sees_no_forge_variable() {
         &["PATH".into(), "HOME".into()],
         &resolved,
         &[],
+        &run.policy.tmp_dir,
         &run.policy.cache_dir,
     );
     let result =
@@ -334,6 +337,7 @@ fn a_forge_variable_in_env_never_reaches_the_target() {
         &["PATH".into()],
         &|_| Some("/usr/bin".into()),
         &config.env,
+        Path::new("/t"),
         Path::new("/c"),
     );
     assert_eq!(
@@ -341,6 +345,7 @@ fn a_forge_variable_in_env_never_reaches_the_target() {
         [
             ("PATH".to_owned(), "/usr/bin".to_owned()),
             ("LANG".to_owned(), "C".to_owned()),
+            ("TMPDIR".to_owned(), "/t".to_owned()),
             ("FORGE_SANDBOX_CACHE".to_owned(), "/c".to_owned()),
         ]
     );
@@ -398,5 +403,36 @@ fn a_checkout_with_only_the_earlier_file_is_told_to_rename_it() {
     assert_eq!(
         missing(dir.path()),
         "no .forge/review/checks.toml; rename .forge/review/sandbox.toml to it"
+    );
+}
+
+#[cfg(target_os = "macos")]
+#[test]
+fn a_target_writes_temporary_files_to_the_allowed_temp_directory() {
+    let run = run();
+    let resolved = |name: &str| match name {
+        "PATH" => Some("/usr/bin:/bin".to_owned()),
+        "TMPDIR" => Some("/tmp".to_owned()),
+        _ => None,
+    };
+    let env = environment(
+        &["PATH".into(), "TMPDIR".into()],
+        &resolved,
+        &[],
+        &run.policy.tmp_dir,
+        &run.policy.cache_dir,
+    );
+    let result = run_target(
+        &target(r#"f="${TMPDIR:-/tmp}/probe"; echo x > "$f" && echo "$f""#),
+        Duration::from_secs(30),
+        &run.policy,
+        &env,
+    )
+    .expect("ran");
+    assert!(result.passed(), "{}", result.stderr);
+    assert!(
+        Path::new(result.stdout.trim()).starts_with(&run.policy.tmp_dir),
+        "{}",
+        result.stdout
     );
 }

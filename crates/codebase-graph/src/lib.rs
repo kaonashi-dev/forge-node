@@ -2,7 +2,9 @@
 //! variables they declare, and who calls, imports, uses and inherits what.
 //! Pure: the daemon parses the files and hands each one's symbols in.
 
+use std::borrow::Cow;
 use std::collections::{HashMap, HashSet, VecDeque};
+use std::sync::{Arc, OnceLock};
 
 pub use domain::{EdgeKind, GraphNode, NodeKind};
 use serde::{Deserialize, Serialize};
@@ -672,26 +674,25 @@ impl<'g> Lookup<'g> {
     }
 }
 
-/// Adjacency over a graph, built once for a batch of queries.
-pub struct Index<'g> {
-    graph: &'g Graph,
+#[derive(Clone)]
+struct Adjacency {
     at: HashMap<NodeId, usize>,
-    by_name: HashMap<&'g str, Vec<usize>>,
+    by_name: HashMap<String, Vec<usize>>,
     out: Vec<Vec<(usize, EdgeKind)>>,
     incoming: Vec<Vec<(usize, EdgeKind)>>,
 }
 
-impl<'g> Index<'g> {
-    fn new(graph: &'g Graph) -> Self {
+impl Adjacency {
+    fn new(graph: &Graph) -> Self {
         let at: HashMap<NodeId, usize> = graph
             .nodes
             .iter()
             .enumerate()
             .map(|(i, n)| (n.id, i))
             .collect();
-        let mut by_name: HashMap<&str, Vec<usize>> = HashMap::new();
+        let mut by_name: HashMap<String, Vec<usize>> = HashMap::new();
         for (i, node) in graph.nodes.iter().enumerate() {
-            by_name.entry(node.name.as_str()).or_default().push(i);
+            by_name.entry(node.name.clone()).or_default().push(i);
         }
         let mut out = vec![Vec::new(); graph.nodes.len()];
         let mut incoming = vec![Vec::new(); graph.nodes.len()];
@@ -702,11 +703,59 @@ impl<'g> Index<'g> {
             }
         }
         Self {
-            graph,
             at,
             by_name,
             out,
             incoming,
+        }
+    }
+}
+
+/// A shared graph that builds its [`Index`] on the first query and keeps it.
+pub struct Indexed {
+    graph: Arc<Graph>,
+    adjacency: OnceLock<Adjacency>,
+}
+
+impl Indexed {
+    #[must_use]
+    pub fn new(graph: Arc<Graph>) -> Self {
+        Self {
+            graph,
+            adjacency: OnceLock::new(),
+        }
+    }
+
+    #[must_use]
+    pub fn graph(&self) -> &Arc<Graph> {
+        &self.graph
+    }
+
+    #[must_use]
+    pub fn index(&self) -> Index<'_> {
+        Index {
+            graph: &self.graph,
+            adjacency: Cow::Borrowed(self.adjacency.get_or_init(|| Adjacency::new(&self.graph))),
+        }
+    }
+
+    #[must_use]
+    pub fn is_indexed(&self) -> bool {
+        self.adjacency.get().is_some()
+    }
+}
+
+/// Adjacency over a graph, built once for a batch of queries.
+pub struct Index<'g> {
+    graph: &'g Graph,
+    adjacency: Cow<'g, Adjacency>,
+}
+
+impl<'g> Index<'g> {
+    fn new(graph: &'g Graph) -> Self {
+        Self {
+            graph,
+            adjacency: Cow::Owned(Adjacency::new(graph)),
         }
     }
 
@@ -715,7 +764,8 @@ impl<'g> Index<'g> {
     }
 
     fn functions(&self, name: &str) -> Vec<usize> {
-        self.by_name
+        self.adjacency
+            .by_name
             .get(name)
             .map(|found| {
                 found
@@ -738,14 +788,14 @@ impl<'g> Index<'g> {
 
     #[must_use]
     pub fn get(&self, id: &NodeId) -> Option<&'g Node> {
-        self.at.get(id).map(|&i| self.node(i))
+        self.adjacency.at.get(id).map(|&i| self.node(i))
     }
 
     /// The functions (or files, for a top-level call) that call a function named `name`.
     #[must_use]
     pub fn callers(&self, name: &str) -> Vec<&'g Node> {
         self.collect(self.functions(name).into_iter().flat_map(|f| {
-            self.incoming[f]
+            self.adjacency.incoming[f]
                 .iter()
                 .filter(|(_, k)| *k == EdgeKind::Calls)
                 .map(|(src, _)| *src)
@@ -757,7 +807,7 @@ impl<'g> Index<'g> {
     #[must_use]
     pub fn callees(&self, name: &str) -> Vec<&'g Node> {
         let mut found = self.collect(self.functions(name).into_iter().flat_map(|f| {
-            self.out[f]
+            self.adjacency.out[f]
                 .iter()
                 .filter(|(_, k)| *k == EdgeKind::Calls)
                 .map(|(dst, _)| *dst)
@@ -768,7 +818,7 @@ impl<'g> Index<'g> {
     }
 
     fn callee_set(&self, at: usize) -> HashSet<usize> {
-        self.out[at]
+        self.adjacency.out[at]
             .iter()
             .filter(|(_, k)| *k == EdgeKind::Calls)
             .map(|(dst, _)| *dst)
@@ -837,7 +887,7 @@ impl<'g> Index<'g> {
             if depth >= MAX_PATH_DEPTH {
                 continue;
             }
-            for (next, kind) in &self.out[at] {
+            for (next, kind) in &self.adjacency.out[at] {
                 if *kind == EdgeKind::Calls && !previous.contains_key(next) {
                     previous.insert(*next, Some(at));
                     queue.push_back((*next, depth + 1));
@@ -848,7 +898,8 @@ impl<'g> Index<'g> {
     }
 
     fn file(&self, path: &str) -> Option<usize> {
-        self.by_name
+        self.adjacency
+            .by_name
             .get(path)?
             .iter()
             .copied()
@@ -862,7 +913,7 @@ impl<'g> Index<'g> {
             return Vec::new();
         };
         self.collect(
-            self.out[file]
+            self.adjacency.out[file]
                 .iter()
                 .filter(|(_, k)| *k == EdgeKind::Imports)
                 .map(|(dst, _)| *dst),
@@ -880,7 +931,7 @@ impl<'g> Index<'g> {
             .filter(|(_, n)| n.path == path)
             .map(|(i, _)| i);
         let mut found = self.collect(callers.flat_map(|caller| {
-            self.out[caller]
+            self.adjacency.out[caller]
                 .iter()
                 .filter(|(dst, k)| {
                     *k == EdgeKind::Calls && self.node(*dst).kind == NodeKind::ExternalCall
@@ -894,13 +945,16 @@ impl<'g> Index<'g> {
     /// What `node` reaches by `kind` edges, and what reaches it.
     #[must_use]
     pub fn edges_of(&self, node: &NodeId, kind: EdgeKind) -> (Vec<&'g Node>, Vec<&'g Node>) {
-        let Some(&at) = self.at.get(node) else {
+        let Some(&at) = self.adjacency.at.get(node) else {
             return (Vec::new(), Vec::new());
         };
         let pick = |list: &[(usize, EdgeKind)]| {
             self.collect(list.iter().filter(|(_, k)| *k == kind).map(|(i, _)| *i))
         };
-        (pick(&self.out[at]), pick(&self.incoming[at]))
+        (
+            pick(&self.adjacency.out[at]),
+            pick(&self.adjacency.incoming[at]),
+        )
     }
 
     /// Answers a wire query.

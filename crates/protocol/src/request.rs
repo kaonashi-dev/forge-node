@@ -816,7 +816,8 @@ pub enum Request {
     /// review again, and repeat until a review finds nothing or
     /// `max_iterations` (default 3, at most 10) reviews ran → `FixLoopStarted`,
     /// then `FixLoopUpdated` events. Never commits. A person's request only:
-    /// `InvalidRequest` for a pull-request review, `Conflict` while one runs.
+    /// `PreconditionFailed` from a live agent session, `InvalidRequest` for a
+    /// pull-request review, `Conflict` while one runs.
     StartFixLoop {
         review_id: ReviewId,
         #[serde(default)]
@@ -845,7 +846,8 @@ pub enum Request {
     },
     /// Let sandbox checks run the workspace's `checks.toml` for its project while the
     /// file hashes to `file_hash` → `Ack`. `PreconditionFailed` when it no
-    /// longer does, `NotFound` without a file, `InvalidRequest` for a bad one.
+    /// longer does or a live agent session asks, `NotFound` without a file,
+    /// `InvalidRequest` for a bad one.
     ApproveSandboxChecks {
         workspace_id: WorkspaceId,
         file_hash: String,

@@ -374,6 +374,9 @@ pub struct ReviewConfig {
     /// Variables copied from the daemon's environment into a sandbox check's; a
     /// `FORGE_*` name is dropped.
     pub sandbox_env_whitelist: Vec<String>,
+    /// What a sandbox check may write besides its checkout, its cache and the temp
+    /// directory; the same expansion as `[spec_runs] check_write_paths`.
+    pub sandbox_write_paths: Vec<String>,
 }
 
 impl ReviewConfig {
@@ -398,6 +401,7 @@ impl Default for ReviewConfig {
             sandbox_checks: false,
             sandbox_network: false,
             sandbox_env_whitelist: vec!["PATH".to_owned(), "HOME".to_owned()],
+            sandbox_write_paths: tool_cache_paths(),
         }
     }
 }
@@ -437,6 +441,18 @@ pub struct DaemonConfig {
     pub log_level: String,
 }
 
+fn tool_cache_paths() -> Vec<String> {
+    [
+        "~/.cargo",
+        "~/.rustup",
+        "~/.bun",
+        "~/.npm",
+        "~/Library/Caches",
+    ]
+    .map(str::to_owned)
+    .to_vec()
+}
+
 /// What a spec run's check may write besides its checkout, its run's `checks/` and the temp
 /// directory, under the macOS sandbox. `~` is the user's home; a missing path is dropped.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -448,15 +464,7 @@ pub struct SpecRunsConfig {
 impl Default for SpecRunsConfig {
     fn default() -> Self {
         Self {
-            check_write_paths: [
-                "~/.cargo",
-                "~/.rustup",
-                "~/.bun",
-                "~/.npm",
-                "~/Library/Caches",
-            ]
-            .map(str::to_owned)
-            .to_vec(),
+            check_write_paths: tool_cache_paths(),
         }
     }
 }
@@ -894,7 +902,7 @@ mod tests {
     }
 
     #[test]
-    fn spec_run_checks_may_write_the_tool_caches_unless_configured_otherwise() {
+    fn sandbox_and_spec_run_checks_may_write_the_tool_caches_unless_configured_otherwise() {
         let c = Config::default();
         assert_eq!(
             c.spec_runs.check_write_paths,
@@ -906,9 +914,13 @@ mod tests {
                 "~/Library/Caches"
             ]
         );
+        assert_eq!(c.review.sandbox_write_paths, c.spec_runs.check_write_paths);
         let c: Config =
             toml::from_str("[spec_runs]\ncheck_write_paths = [\"/opt/cache\"]\n").unwrap();
         assert_eq!(c.spec_runs.check_write_paths, ["/opt/cache"]);
+        let c: Config =
+            toml::from_str("[review]\nsandbox_write_paths = [\"/opt/cache\"]\n").unwrap();
+        assert_eq!(c.review.sandbox_write_paths, ["/opt/cache"]);
     }
 
     #[test]

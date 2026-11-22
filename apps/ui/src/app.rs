@@ -2568,6 +2568,16 @@ impl AppState {
                 }
                 self.apply_sandbox_run(review_id, result)
             }
+            UiEvent::SandboxChecksFile {
+                generation,
+                workspace_id,
+                result,
+            } => {
+                if !self.accept_generation(generation) {
+                    return false;
+                }
+                self.apply_sandbox_file(workspace_id, result)
+            }
             UiEvent::SpecRun {
                 generation,
                 spec_run_id,
