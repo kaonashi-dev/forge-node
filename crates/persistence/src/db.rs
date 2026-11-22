@@ -169,8 +169,167 @@ impl ReviewStore {
             .unwrap_or_else(std::sync::PoisonError::into_inner)
     }
 
+    pub fn replace_graph(
+        &self,
+        project: domain::ProjectId,
+        graph: &codebase_graph::Graph,
+        dirty: &[String],
+    ) -> Result<(), DbError> {
+        crate::repositories::graph::replace(&mut self.conn(), project, graph, dirty)
+    }
+
+    pub fn replace_graph_paths(
+        &self,
+        project: domain::ProjectId,
+        git_oid: &str,
+        paths: &[String],
+        delta: &codebase_graph::Delta,
+        dirty: &[String],
+    ) -> Result<(), DbError> {
+        crate::repositories::graph::replace_paths(
+            &mut self.conn(),
+            project,
+            git_oid,
+            paths,
+            delta,
+            dirty,
+        )
+    }
+
+    pub fn graph_dirty_paths(&self, project: domain::ProjectId) -> Result<Vec<String>, DbError> {
+        crate::repositories::graph::dirty(&self.conn(), project)
+    }
+
+    pub fn load_graph(
+        &self,
+        project: domain::ProjectId,
+    ) -> Result<Option<codebase_graph::Graph>, DbError> {
+        crate::repositories::graph::load(&self.conn(), project)
+    }
+
+    pub fn graph_nodes_named(
+        &self,
+        project: domain::ProjectId,
+        name: &str,
+    ) -> Result<Vec<codebase_graph::Node>, DbError> {
+        crate::repositories::graph::named(&self.conn(), project, name)
+    }
+
+    pub fn set_agent_sessions(
+        &self,
+        run: domain::ReviewId,
+        sessions: &[domain::SessionId],
+    ) -> Result<(), DbError> {
+        reviews::set_agent_sessions(&self.conn(), run, sessions)
+    }
+
+    pub fn kb_entries(
+        &self,
+        project: domain::ProjectId,
+        now: i64,
+    ) -> Result<Vec<crate::repositories::kb::KbEntry>, DbError> {
+        crate::repositories::kb::entries(&self.conn(), project, now)
+    }
+
+    pub fn set_kb_entry(
+        &self,
+        project: domain::ProjectId,
+        file: &str,
+        content: &str,
+        source: &str,
+        now: i64,
+    ) -> Result<(), DbError> {
+        crate::repositories::kb::set(&mut self.conn(), project, file, content, source, now)
+    }
+
+    pub fn replace_kb_items(
+        &self,
+        project: domain::ProjectId,
+        file: &str,
+        items: &[String],
+        source: &str,
+        now: i64,
+    ) -> Result<(), DbError> {
+        crate::repositories::kb::replace_items(&mut self.conn(), project, file, items, source, now)
+    }
+
+    pub fn add_kb_patterns(
+        &self,
+        project: domain::ProjectId,
+        items: &[String],
+        now: i64,
+        expires_at: i64,
+    ) -> Result<usize, DbError> {
+        crate::repositories::kb::add_patterns(&mut self.conn(), project, items, now, expires_at)
+    }
+
+    pub fn clear_kb_entry(&self, project: domain::ProjectId, file: &str) -> Result<usize, DbError> {
+        crate::repositories::kb::clear(&self.conn(), project, file)
+    }
+
+    pub fn prune_kb(&self, now: i64, cutoff: i64) -> Result<usize, DbError> {
+        crate::repositories::kb::prune(&self.conn(), now, cutoff)
+    }
+
+    pub fn false_positives(
+        &self,
+        project: domain::ProjectId,
+    ) -> Result<Vec<knowledge_base::FalsePositive>, DbError> {
+        crate::repositories::kb::false_positives(&self.conn(), project)
+    }
+
+    pub fn save_sandbox_run(&self, run: &domain::SandboxRun) -> Result<(), DbError> {
+        crate::repositories::sandbox::upsert(&self.conn(), run)
+    }
+
+    pub fn sandbox_run(&self, id: &str) -> Result<Option<domain::SandboxRun>, DbError> {
+        crate::repositories::sandbox::get(&self.conn(), id)
+    }
+
+    pub fn linked_sandbox_runs(&self) -> Result<Vec<(String, bool)>, DbError> {
+        crate::repositories::sandbox::linked(&self.conn())
+    }
+
+    pub fn approve_sandbox(
+        &self,
+        project: domain::ProjectId,
+        file_hash: &str,
+    ) -> Result<(), DbError> {
+        crate::repositories::sandbox::approve(&self.conn(), project, file_hash)
+    }
+
+    pub fn approved_sandbox(&self, project: domain::ProjectId) -> Result<Option<String>, DbError> {
+        crate::repositories::sandbox::approved(&self.conn(), project)
+    }
+
+    pub fn stats_rows(
+        &self,
+        workspace: Option<domain::WorkspaceId>,
+    ) -> Result<Vec<reviews::StatsRow>, DbError> {
+        reviews::stats_rows(&self.conn(), workspace)
+    }
+
+    pub fn kb_bytes(&self, project: Option<domain::ProjectId>) -> Result<u64, DbError> {
+        reviews::kb_bytes(&self.conn(), project)
+    }
+
     pub fn insert_run(&self, run: &domain::ReviewRun) -> Result<(), DbError> {
         reviews::insert_run(&self.conn(), run)
+    }
+
+    pub fn insert_requested_run(
+        &self,
+        run: &domain::ReviewRun,
+        request: &domain::ReviewRequest,
+    ) -> Result<(), DbError> {
+        reviews::insert_requested_run(&mut self.conn(), run, request)
+    }
+
+    pub fn run_request(
+        &self,
+        id: domain::ReviewId,
+    ) -> Result<Option<domain::ReviewRequest>, DbError> {
+        reviews::run_request(&self.conn(), id)
     }
 
     pub fn update_run(&self, run: &domain::ReviewRun) -> Result<(), DbError> {
@@ -435,7 +594,12 @@ impl Db {
     pub fn reset(&mut self) -> Result<(), DbError> {
         let tx = self.conn.transaction()?;
         tx.execute_batch(
-            "DELETE FROM spec_runs;
+            "DELETE FROM sandbox_runs;
+             DELETE FROM kb_entries;
+             DELETE FROM codebase_graph_dirty;
+             DELETE FROM codebase_graph_edges;
+             DELETE FROM codebase_graph_nodes;
+             DELETE FROM spec_runs;
              DELETE FROM review_feedback;
              DELETE FROM review_findings;
              DELETE FROM review_runs;

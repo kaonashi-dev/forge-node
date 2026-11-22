@@ -1,10 +1,11 @@
 //! The prompts Forge hands each spec-run agent once the gate before it has passed.
 
 use super::brief::{coder_rules, Tools, REPORT_FORMAT};
-use super::model::{CheckRecord, Route};
+use super::model::{CheckRecord, Route, MAX_REASON_BYTES};
 use super::principles::{ARTIFACT_RULES, POWER_OF_THE_SIMPLE, PRINCIPLES, QUESTIONS};
 use super::schema::{PLAN_SCHEMA, REPORT_SCHEMA};
 use crate::orchestration::ToolSurface;
+use crate::review::{findings_prompt, Finding, FindingReaction, ReviewStatus};
 
 /// What every stage prompt of one run shares.
 #[derive(Clone, Debug)]
@@ -63,6 +64,24 @@ the current task",
         }
     }
 
+    fn graph(&self) -> String {
+        match self.tools.surface {
+            ToolSurface::Mcp => {
+                "`review_graph_query` (query callers, callees, similar or imports; \
+function: its name)"
+                    .to_owned()
+            }
+            ToolSurface::Cli => format!(
+                "`{} --json review graph query --callers|--callees|--similar|--imports <function>`",
+                self.tools.ctl
+            ),
+        }
+    }
+
+    fn kb(&self) -> String {
+        self.tools.tool("review_kb_get", "review kb show")
+    }
+
     fn inbox(&self) -> String {
         self.tools.tool("inbox", "inbox")
     }
@@ -117,6 +136,8 @@ edit files and do not launch agents, Forge refuses it.
 
 The approved spec is {spec}. Read all of it.
 - Research first: facts with file:line, no proposals. Save it with {research}.
+- For each function a criterion touches, ask the project's codebase graph who calls it and what it \
+calls with {graph}, and note every caller with file:line: those are the places the change can break.
 - Then the plan, in vertical slices: each step names the criteria (AC-n) it serves, the files it \
 changes, its automatic check (exact command and expected result) and a manual check only when \
 nothing can be automated.
@@ -138,6 +159,7 @@ for changes or rejects it in Forge; their text reaches you as a prompt.
         name = ctx.name,
         spec = ctx.path("spec.md"),
         research = ctx.save("research"),
+        graph = ctx.graph(),
         plan = ctx.save("plan"),
     )
 }
@@ -191,8 +213,13 @@ fn check_line(check: &CheckRecord) -> String {
         (None, false, Some(code)) => format!("exit {code}"),
         (None, false, None) => "no exit code".to_owned(),
     };
+    let sandbox = check
+        .not_sandboxed
+        .as_ref()
+        .map(|why| format!(" (not sandboxed: {why})"))
+        .unwrap_or_default();
     format!(
-        "- {}: `{}` → {result}; log {}",
+        "- {}: `{}` → {result}{sandbox}; log {}",
         check.criterion, check.command, check.log
     )
 }
@@ -273,6 +300,8 @@ Read the spec {spec} and the plan {plan}, and the diff with `git -C {workspace} 
 its untracked files.{dirty}
 - First look for missing criteria and scope drift, then for quality.
 - Every finding cites file:line and an excerpt. A finding you cannot cite is not a finding.
+- Before you classify, read the project's learned rules and false positives with {kb}; do not \
+raise what it marks as a false positive.
 - Classify each one: patch (a clear fix, it goes to the coder), defer (only when the problem \
 existed before this change; a problem the change caused is never deferred) or decision (it goes to \
 the person with options).
@@ -306,6 +335,7 @@ checks: a met needs a check of this round that passed.
         spec = ctx.path("spec.md"),
         plan = ctx.path("plan.md"),
         base = input.base_commit,
+        kb = ctx.kb(),
         round_tool = ctx.round(),
         report_tool = ctx.report(),
     )
@@ -372,6 +402,32 @@ pub fn reason_prompt(id: &str, what: &str, reason: &str, then: &str) -> String {
     format!("Forge, spec run {id}: {what}.\n\n{reason}\n\n{then}")
 }
 
+/// Kept free in the reason for the note on what was left out.
+const LEFT_OUT_NOTE_BYTES: usize = 160;
+
+/// A completed Forge Review's standing findings as the text of another round, within a gate
+/// reason's cap, and how many were left out; `None` while there is nothing to send.
+#[must_use]
+pub fn review_round_text(status: ReviewStatus, findings: &[Finding]) -> Option<(String, usize)> {
+    if status != ReviewStatus::Completed {
+        return None;
+    }
+    let standing: Vec<&Finding> = findings
+        .iter()
+        .filter(|finding| finding.reaction != Some(FindingReaction::Dismiss))
+        .collect();
+    if standing.is_empty() {
+        return None;
+    }
+    let (mut text, left_out) = findings_prompt(&standing, MAX_REASON_BYTES - LEFT_OUT_NOTE_BYTES);
+    if left_out > 0 {
+        text.push_str(&format!(
+            "{left_out} more of Forge Review's findings did not fit here and were left out.\n"
+        ));
+    }
+    Some((text.trim_end().to_owned(), left_out))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -403,6 +459,18 @@ mod tests {
         for surface in [ToolSurface::Mcp, ToolSurface::Cli] {
             let tools = Tools::new(surface, std::path::Path::new("/bin/forgectl"));
             let ctx = ctx(&tools);
+            let unsandboxed = CheckRecord {
+                criterion: "AC-1".into(),
+                task: 0,
+                round: 1,
+                command: "test -f done.txt".into(),
+                exit_code: Some(0),
+                timed_out: false,
+                not_verified: None,
+                not_sandboxed: Some("Forge sandboxes checks only on macOS".into()),
+                duration_ms: 1,
+                log: "checks/AC-1-t1-r1-1.log".into(),
+            };
             let plan = plan_stage_prompt(&ctx, None, Route::Full);
             let review = review_stage_prompt(&ReviewInput {
                 ctx: &ctx,
@@ -414,7 +482,7 @@ mod tests {
                 dirty: &["notes.md".into()],
                 report_summary: "done",
                 report_file: None,
-                checks: &[],
+                checks: std::slice::from_ref(&unsandboxed),
                 repeated: &["AC-1".into()],
                 deviations: &[],
                 publish_report: false,
@@ -444,13 +512,23 @@ mod tests {
                     assert!(review.contains("`spec_report` (run r1"));
                     assert!(coder.contains("call `report` exactly once"));
                     assert!(!coder.contains("forgectl"));
+                    assert!(plan.contains("`review_graph_query` (query callers, callees"));
+                    assert!(review.contains("`review_kb_get`"));
+                    assert!(!plan.contains("forgectl") && !review.contains("forgectl"));
                 }
                 ToolSurface::Cli => {
+                    assert!(plan.contains(
+                        "`/bin/forgectl --json review graph query --callers|--callees|--similar|--imports <function>`"
+                    ));
+                    assert!(review.contains("`/bin/forgectl --json review kb show`"));
                     assert!(plan.contains("/bin/forgectl --json spec save r1 --kind plan"));
                     assert!(review.contains("spec round r1 --accept"));
                     assert!(coder.contains("/bin/forgectl report --done|--failed|--blocked"));
                 }
             }
+            assert!(plan.contains("note every caller with file:line"));
+            assert!(review.contains("do not raise what it marks as a false positive"));
+            assert!(review.contains("exit 0 (not sandboxed: Forge sandboxes checks only on macOS)"));
             assert!(plan.contains("split the plan into `tasks`"));
             assert!(review.contains("notes.md"));
             assert!(review.contains("failed this round and the one before"));
@@ -458,5 +536,62 @@ mod tests {
             assert!(coder.contains("off by one"));
             assert!(!coder.contains("send parent"));
         }
+    }
+
+    fn finding(id: u32, title: &str, body: &str) -> Finding {
+        Finding {
+            id,
+            fingerprint: format!("f{id}"),
+            path: "src/loader.rs".into(),
+            line: Some(12),
+            end_line: None,
+            severity: crate::review::Severity::P1,
+            category: "bug".into(),
+            rule_id: None,
+            confidence: 0.9,
+            title: title.into(),
+            body: body.into(),
+            evidence: "let x = 1;".into(),
+            suggestion: Some("let x = 2;".into()),
+            lineage: crate::review::Lineage::New,
+            reaction: None,
+            hypothesis: None,
+            kb_ref: None,
+            reachability: None,
+        }
+    }
+
+    #[test]
+    fn a_completed_reviews_standing_findings_become_another_round_within_the_reason_cap() {
+        let mut dismissed = finding(2, "Not a problem", "b");
+        dismissed.reaction = Some(FindingReaction::Dismiss);
+        let findings = [
+            finding(1, "Off by one", "The loop skips the last entry."),
+            dismissed,
+        ];
+        assert_eq!(review_round_text(ReviewStatus::Running, &findings), None);
+        assert_eq!(
+            review_round_text(ReviewStatus::Completed, &findings[1..]),
+            None
+        );
+        let (text, left_out) =
+            review_round_text(ReviewStatus::Completed, &findings).expect("one standing");
+        assert_eq!(left_out, 0);
+        assert!(text.contains("src/loader.rs:12 — Off by one"), "{text}");
+        assert!(text.contains("let x = 2;"), "{text}");
+        assert!(!text.contains("Not a problem"), "{text}");
+
+        let many: Vec<Finding> = (0..40)
+            .map(|id| finding(id, "Unchecked index", &"x".repeat(200)))
+            .collect();
+        let (text, left_out) = review_round_text(ReviewStatus::Completed, &many).expect("many");
+        assert!(left_out > 0);
+        assert!(text.len() <= MAX_REASON_BYTES, "{}", text.len());
+        assert!(
+            text.ends_with(&format!(
+                "{left_out} more of Forge Review's findings did not fit here and were left out."
+            )),
+            "{text}"
+        );
     }
 }

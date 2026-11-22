@@ -39,6 +39,8 @@ pub struct Validated {
     pub invalid_anchors: u32,
     /// Dropped: a path outside the diff or escaping it, or evidence not in the file.
     pub unverified: u32,
+    /// Dropped from a v2 answer: no `reachability`, or one with no trigger.
+    pub without_reachability: u32,
     /// Findings considered, after the caps, the category and the confidence
     /// filters, before dedupe.
     pub total: u32,
@@ -48,8 +50,8 @@ pub struct Validated {
     pub trimmed: u32,
     /// Dropped by the project's feedback suppressions, before `max_findings`.
     pub suppressed: u32,
-    /// Fingerprints of valid findings that were hidden: suppressed, below
-    /// `min_confidence` or past `max_findings`.
+    /// Fingerprints of findings the reviewer reported that were hidden: suppressed,
+    /// below `min_confidence`, past `max_findings` or without reachability.
     pub withheld: Vec<String>,
 }
 
@@ -116,8 +118,20 @@ pub fn validate(
         .into_iter()
         .partition(|raw| raw.confidence >= resolved.min_confidence);
     let low_confidence = u32::try_from(low.len()).unwrap_or(u32::MAX);
+    let (findings, unreachable): (Vec<RawFinding>, Vec<RawFinding>) =
+        if output.schema == domain::SchemaVersion::V2 {
+            findings.into_iter().partition(|raw| {
+                raw.reachability
+                    .as_ref()
+                    .is_some_and(|reach| !reach.trigger.trim().is_empty())
+            })
+        } else {
+            (findings, Vec::new())
+        };
+    let without_reachability = u32::try_from(unreachable.len()).unwrap_or(u32::MAX);
     let mut withheld: BTreeSet<String> = low
         .iter()
+        .chain(&unreachable)
         .map(|raw| {
             fingerprint(
                 &raw.path,
@@ -225,6 +239,9 @@ pub fn validate(
             suggestion: raw.suggestion,
             lineage: domain::Lineage::New,
             reaction: None,
+            hypothesis: None,
+            kb_ref: raw.kb_ref,
+            reachability: raw.reachability,
         };
         match kept.iter_mut().find(|other| overlaps(other, &finding)) {
             Some(other) if finding.severity < other.severity => *other = finding,
@@ -269,6 +286,7 @@ pub fn validate(
         findings: kept,
         invalid_anchors,
         unverified,
+        without_reachability,
         total,
         low_confidence,
         trimmed,
@@ -281,8 +299,15 @@ fn redacted(mut raw: RawFinding) -> RawFinding {
     for text in [&mut raw.title, &mut raw.body, &mut raw.evidence] {
         *text = redact(text).0;
     }
-    if let Some(suggestion) = raw.suggestion.as_mut() {
-        *suggestion = redact(suggestion).0;
+    for text in [
+        raw.suggestion.as_mut(),
+        raw.kb_ref.as_mut(),
+        raw.reachability.as_mut().map(|reach| &mut reach.trigger),
+    ]
+    .into_iter()
+    .flatten()
+    {
+        *text = redact(text).0;
     }
     raw
 }
@@ -403,4 +428,30 @@ pub fn verdict(findings: &[Finding], score: f32) -> Verdict {
     } else {
         Verdict::Ok
     }
+}
+
+/// Whether `[review.auto_approve]` would let a run with these standing
+/// findings through. P0 always blocks, and so does a P1 the run could not
+/// fully check.
+#[must_use]
+pub fn auto_approvable(
+    settings: &crate::config::AutoApprove,
+    findings: &[Finding],
+    score: f32,
+    coverage: &domain::Coverage,
+) -> bool {
+    use crate::config::RiskCeiling;
+    let worst = findings.iter().map(|finding| finding.severity).min();
+    let within = match (settings.risk_ceiling, worst) {
+        (_, None) => true,
+        (_, Some(Severity::P0)) | (RiskCeiling::Low, Some(_)) => false,
+        (RiskCeiling::Medium, Some(severity)) => severity >= Severity::P2,
+        (RiskCeiling::High | RiskCeiling::Critical, Some(_)) => true,
+    };
+    let unchecked_p1 = coverage.unverified > 0 && worst == Some(Severity::P1);
+    settings.enabled
+        && score >= settings.min_score
+        && within
+        && !unchecked_p1
+        && (!settings.require_clean_diff || coverage.truncated.is_empty())
 }

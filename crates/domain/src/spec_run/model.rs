@@ -131,10 +131,14 @@ pub struct SpecOptions {
     pub publish_spec: bool,
     #[serde(default)]
     pub publish_report: bool,
+    #[serde(default)]
+    pub checks_offline: bool,
 }
 
 pub const MIN_ROUNDS: u32 = 1;
 pub const MAX_ROUNDS: u32 = 5;
+/// A gate's reason reaches the agent verbatim, inside one 8 KiB prompt.
+pub const MAX_REASON_BYTES: usize = 4096;
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SourceRef {
@@ -191,6 +195,9 @@ pub struct CheckRecord {
     pub timed_out: bool,
     #[serde(default)]
     pub not_verified: Option<String>,
+    /// Why the check ran outside the sandbox; `None` when it ran inside.
+    #[serde(default)]
+    pub not_sandboxed: Option<String>,
     pub duration_ms: u64,
     /// Relative to the run's directory: `checks/<AC>-t<task>-r<round>-<n>.log`.
     pub log: String,

@@ -1729,6 +1729,7 @@ fn a_real_issue_drafts_a_spec_or_ends_early() {
                 session_per_stage: false,
                 publish_spec: false,
                 publish_report: false,
+                checks_offline: false,
             },
         )
         .expect("draft started");

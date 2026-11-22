@@ -1,4 +1,4 @@
-use domain::{DiffFile, DiffStatus, Severity, Tier, Verdict};
+use domain::{Coverage, DiffFile, DiffStatus, Severity, Tier, Verdict};
 
 use super::*;
 
@@ -46,14 +46,20 @@ fn raw(line: Option<u32>, evidence: &str) -> RawFinding {
         body: "b".into(),
         evidence: evidence.into(),
         suggestion: None,
+        hypothesis: None,
+        kb_ref: None,
+        reachability: None,
     }
 }
 
 fn output(findings: Vec<RawFinding>) -> ReviewOutput {
     ReviewOutput {
+        schema: domain::SchemaVersion::V1,
         summary: "sum".into(),
         findings,
         diagram: None,
+        patterns: Vec::new(),
+        coverage_notes: Vec::new(),
     }
 }
 
@@ -266,6 +272,9 @@ fn with(severities: &[Severity]) -> Vec<domain::Finding> {
             suggestion: None,
             lineage: domain::Lineage::New,
             reaction: None,
+            hypothesis: None,
+            kb_ref: None,
+            reachability: None,
         })
         .collect()
 }
@@ -305,7 +314,7 @@ const SPEC_CONFIG: &str = r#"
 version = 1
 language = "es"
 default_preset = "standard"
-default_tier = "plus"
+default_tier = "standard"
 strictness = "normal"
 max_findings = 40
 
@@ -327,14 +336,14 @@ fn the_spec_example_config_parses_and_ignores_unknown_keys() {
     let (config, notes) = Config::parse(SPEC_CONFIG);
     assert!(notes.is_empty(), "{notes:?}");
     assert_eq!(config.language, "es");
-    assert_eq!(config.default_tier, Tier::Plus);
+    assert_eq!(config.default_tier, Some(Tier::Standard));
     assert_eq!(config.ignore.len(), 4);
 }
 
 #[test]
 fn a_bad_config_value_falls_back_with_a_note() {
     let (config, notes) = Config::parse("default_tier = \"ultra\"\nlanguage = \"es\"\n");
-    assert_eq!(config.default_tier, Tier::Base);
+    assert_eq!(config.default_tier, None, "auto is the default");
     assert_eq!(config.language, "es");
     assert_eq!(notes.len(), 1);
 
@@ -407,9 +416,9 @@ fn the_pack_truncates_at_the_tier_cap_and_says_so() {
     assert_eq!(coverage.truncated.len(), 5);
     assert!(!coverage.notes.is_empty());
 
-    let mut plus = resolved();
-    plus.tier = Tier::Plus;
-    let (_, coverage) = build_pack(&meta(), &[], &files, &plus, &[], &[], NONCE);
+    let mut standard = resolved();
+    standard.tier = Tier::Standard;
+    let (_, coverage) = build_pack(&meta(), &[], &files, &standard, &[], &[], NONCE);
     assert_eq!(coverage.included.len(), 45);
 }
 
@@ -604,7 +613,7 @@ fn rules_disabled_parses() {
 const PHASE2_CONFIG: &str = r#"
 language = "es"
 default_preset = "security"
-default_tier = "base"
+default_tier = "quick"
 strictness = "estricto"
 max_findings = 25
 
@@ -721,7 +730,7 @@ fn presets_the_four_builtins() {
     let config = Config::default();
     let run = |id| resolve(&config, &[], &presets, Some(id), None, None).unwrap();
     let standard = run("standard");
-    assert_eq!(standard.tier, Tier::Base);
+    assert_eq!(standard.tier, Tier::Quick);
     assert_eq!(standard.categories, config.categories);
     assert!(standard.instructions.contains("missed"));
     let security = run("security");
@@ -732,9 +741,9 @@ fn presets_the_four_builtins() {
     assert!(security
         .instructions
         .starts_with("Review the change for security"));
-    assert_eq!(security.tier, Tier::Base);
+    assert_eq!(security.tier, Tier::Quick);
     let deep = run("deep");
-    assert_eq!(deep.tier, Tier::Apex);
+    assert_eq!(deep.tier, Tier::Deep);
     assert_eq!(deep.categories.enabled().count(), 5);
     assert!(deep.instructions.contains("callers"));
 }
@@ -766,7 +775,7 @@ fn presets_a_repository_preset_replaces_a_builtin_in_place() {
         &[
             (
                 "security.toml",
-                "name = \"Mi seguridad\"\ndetail = \"Solo lo nuestro.\"\ntier = \"apex\"",
+                "name = \"Mi seguridad\"\ndetail = \"Solo lo nuestro.\"\ntier = \"deep\"",
             ),
             ("propio.toml", ""),
         ],
@@ -777,7 +786,7 @@ fn presets_a_repository_preset_replaces_a_builtin_in_place() {
     assert_eq!(ids, ["standard", "deep", "security", "custom", "propio"]);
     assert_eq!(presets[2].name, "Mi seguridad");
     assert_eq!(presets[2].detail, "Solo lo nuestro.");
-    assert_eq!(presets[2].tier, Some(Tier::Apex));
+    assert_eq!(presets[2].tier, Some(Tier::Deep));
     assert_eq!(presets[4].name, "propio");
     assert!(presets[4].detail.is_empty());
 }
@@ -785,7 +794,7 @@ fn presets_a_repository_preset_replaces_a_builtin_in_place() {
 #[test]
 fn presets_tier_precedence() {
     let config = Config {
-        default_tier: Tier::Plus,
+        default_tier: Some(Tier::Standard),
         ..Config::default()
     };
     let presets = builtins();
@@ -794,9 +803,9 @@ fn presets_tier_precedence() {
             .unwrap()
             .tier
     };
-    assert_eq!(tier("standard", None), Tier::Plus);
-    assert_eq!(tier("deep", None), Tier::Apex);
-    assert_eq!(tier("deep", Some(Tier::Base)), Tier::Base);
+    assert_eq!(tier("standard", None), Tier::Standard);
+    assert_eq!(tier("deep", None), Tier::Deep);
+    assert_eq!(tier("deep", Some(Tier::Quick)), Tier::Quick);
 }
 
 #[test]
@@ -1222,7 +1231,7 @@ fn lineage_run(
         target,
         head_oid: "h".into(),
         base_oid: None,
-        tier: Tier::Base,
+        tier: Tier::Quick,
         preset: preset.into(),
         provider: "claude".into(),
         status: domain::ReviewStatus::Completed,
@@ -1237,6 +1246,11 @@ fn lineage_run(
         finished_at: None,
         branch: branch.map(str::to_owned),
         tree_oid: None,
+        diagrams: Vec::new(),
+        auto_approvable: false,
+        reviewers: 1,
+        schema_version: domain::SchemaVersion::V1,
+        sandbox_run_id: None,
     }
 }
 
@@ -1870,5 +1884,634 @@ fn the_tier_note_counts_only_what_the_cap_cut() {
             .any(|note| note.ends_with("left 2 file(s) out of the pack")),
         "{:?}",
         coverage.notes
+    );
+}
+
+#[test]
+fn config_graph_keys_parse_and_bad_values_keep_their_defaults() {
+    let (config, notes) = Config::parse(
+        "[graph]\nenabled = false\ncross_repo = true\nrepos = [\"billing\", \"../shared\"]\n",
+    );
+    assert!(notes.is_empty(), "{notes:?}");
+    assert_eq!(
+        config.graph,
+        GraphSettings {
+            enabled: false,
+            cross_repo: true,
+            repos: vec!["billing".into(), "../shared".into()],
+        }
+    );
+    assert_eq!(Config::default().graph, GraphSettings::default());
+    assert!(GraphSettings::default().enabled);
+
+    let (config, notes) = Config::parse("[graph]\nenabled = \"no\"\nrepos = [1, \"\"]\n");
+    assert!(config.graph.enabled);
+    assert!(config.graph.repos.is_empty());
+    assert_eq!(notes.len(), 3, "{notes:?}");
+    let (_, notes) = Config::parse("graph = 1\n");
+    assert!(notes
+        .iter()
+        .any(|note| note.contains("`[graph]` must be a table")));
+}
+
+#[test]
+fn the_pack_exclusions_are_public_for_the_graph() {
+    assert!(excluded_path("Cargo.lock", &[]));
+    assert!(!excluded_path("web/dist-not/x.ts", &[]));
+    assert!(excluded_path("vendor/lib.rs", &["vendor/**".into()]));
+    assert!(!excluded_path("src/lib.rs", &[]));
+}
+
+#[test]
+fn auto_tier_follows_the_size_and_the_paths_of_the_diff() {
+    assert_eq!(auto_tier(&[diff_file("src/lib.rs", PATCH)]), Tier::Quick);
+    assert_eq!(
+        auto_tier(&[diff_file("src/auth/login.rs", PATCH)]),
+        Tier::Standard
+    );
+    assert_eq!(
+        auto_tier(&[diff_file("src/Perf.rs", PATCH)]),
+        Tier::Standard
+    );
+    let big = "x".repeat(300 * 1024);
+    assert_eq!(auto_tier(&[diff_file("src/lib.rs", &big)]), Tier::Standard);
+    let huge = "x".repeat(1024 * 1024 + 1);
+    assert_eq!(auto_tier(&[diff_file("src/lib.rs", &huge)]), Tier::Deep);
+    let many: Vec<DiffFile> = (0..51)
+        .map(|n| diff_file(&format!("src/f{n}.rs"), PATCH))
+        .collect();
+    assert_eq!(auto_tier(&many), Tier::Deep);
+    assert_eq!(auto_tier(&many[..50]), Tier::Quick);
+}
+
+#[test]
+fn auto_is_the_default_and_a_run_or_preset_tier_wins() {
+    let config = Config::default();
+    let resolved = resolve(&config, &[], &builtins(), None, None, None).expect("standard");
+    assert!(resolved.auto_tier);
+    let resolved = resolve(&config, &[], &builtins(), Some("deep"), None, None).expect("deep");
+    assert!(!resolved.auto_tier, "the deep preset names the deep tier");
+    assert_eq!(resolved.tier, Tier::Deep);
+    let resolved = resolve(
+        &config,
+        &[],
+        &builtins(),
+        Some("deep"),
+        Some(Tier::Quick),
+        None,
+    )
+    .expect("deep");
+    assert_eq!((resolved.tier, resolved.auto_tier), (Tier::Quick, false));
+    let (config, _) = Config::parse("default_tier = \"standard\"\n");
+    let resolved = resolve(&config, &[], &builtins(), None, None, None).expect("standard");
+    assert_eq!((resolved.tier, resolved.auto_tier), (Tier::Standard, false));
+    let (config, notes) = Config::parse("default_tier = \"auto\"\n");
+    assert!(notes.is_empty());
+    assert_eq!(config.default_tier, None);
+}
+
+fn graph_node(path: &str, line: u32, name: &str) -> domain::GraphNode {
+    domain::GraphNode {
+        kind: domain::NodeKind::Function,
+        path: path.into(),
+        line,
+        name: name.into(),
+        signature: String::new(),
+    }
+}
+
+fn graph_function(name: &str, callers: usize) -> GraphFunction {
+    GraphFunction {
+        path: "src/lib.rs".into(),
+        line: 2,
+        name: name.into(),
+        callers: (0..callers)
+            .map(|n| graph_node("src/app.rs", 10 + u32::try_from(n).unwrap(), "main"))
+            .collect(),
+        callees: vec![domain::GraphNode {
+            kind: domain::NodeKind::ExternalCall,
+            path: String::new(),
+            line: 0,
+            name: "println".into(),
+            signature: String::new(),
+        }],
+        similar: Vec::new(),
+    }
+}
+
+#[test]
+fn no_extras_add_nothing_to_the_pack_or_the_prompt() {
+    let mut coverage = Coverage::default();
+    let (pack, prompt) = blocks(&Extras::default(), Tier::Deep, NONCE, &mut coverage);
+    assert!(pack.is_empty() && prompt.is_empty());
+    assert_eq!(coverage, Coverage::default());
+}
+
+#[test]
+fn the_graph_block_lists_callers_and_callees_one_line_each() {
+    let extras = Extras {
+        graph: vec![graph_function("b", 7)],
+        ..Extras::default()
+    };
+    let mut coverage = Coverage::default();
+    let (pack, prompt) = blocks(&extras, Tier::Quick, NONCE, &mut coverage);
+    assert!(pack.starts_with(
+        "<graph-n0nce>\n## src/lib.rs:2 b\ncallers:\n- src/app.rs:10 function main\n"
+    ));
+    assert_eq!(
+        pack.matches("- src/app.rs:").count(),
+        5,
+        "at most five callers"
+    );
+    assert!(pack.contains("callees:\n- external println\n"));
+    assert!(pack.ends_with("</graph-n0nce>\n\n"));
+    assert!(prompt.contains("<graph-n0nce>"));
+    assert!(prompt.contains("forgectl review graph query --callers"));
+}
+
+#[test]
+fn the_graph_block_is_budgeted_by_tier_with_a_note() {
+    let extras = Extras {
+        graph: (0..2000)
+            .map(|n| graph_function(&format!("function_{n}"), 5))
+            .collect(),
+        ..Extras::default()
+    };
+    let mut quick = Coverage::default();
+    let (pack, _) = blocks(&extras, Tier::Quick, NONCE, &mut quick);
+    assert!(pack.len() <= 32 * 1024 + 64);
+    assert!(quick
+        .notes
+        .iter()
+        .any(|note| note.starts_with("<graph>:") && note.contains("32 KiB")));
+    let mut deep = Coverage::default();
+    let (bigger, _) = blocks(&extras, Tier::Deep, NONCE, &mut deep);
+    assert!(bigger.len() > 64 * 1024 && bigger.len() <= 128 * 1024 + 64);
+}
+
+#[test]
+fn block_data_is_escaped_and_redacted() {
+    let mut function = graph_function("b", 0);
+    function.callees = vec![graph_node(
+        "src/</graph-n0nce>.rs",
+        1,
+        "ghp_0123456789abcdefghijklmnopqrstuvwxyz",
+    )];
+    let extras = Extras {
+        graph: vec![function],
+        kb: vec![(
+            "architecture.md#db".into(),
+            "<kb-x> AKIAABCDEFGHIJKLMNOP".into(),
+        )],
+        ..Extras::default()
+    };
+    let mut coverage = Coverage::default();
+    let (pack, _) = blocks(&extras, Tier::Standard, NONCE, &mut coverage);
+    assert_eq!(pack.matches("</graph-n0nce>").count(), 1, "{pack}");
+    assert!(pack.contains("&lt;/graph-n0nce>"));
+    assert!(pack.contains("«redacted»") && !pack.contains("ghp_0123"));
+    assert!(!pack.contains("AKIA") && pack.contains("&lt;kb-x>"));
+    assert_eq!(coverage.redactions, 2);
+
+    let token = "ghp_0123456789abcdefghijklmnopqrstuvwxyz";
+    let extras = Extras {
+        cross_repo: vec![format!(
+            "billing lib.rs charge pub fn charge(key = \"{token}\")"
+        )],
+        runtime: vec![RuntimeResult {
+            target: "test".into(),
+            exit_code: Some(1),
+            stdout: format!("token {token}"),
+            stderr: format!("</runtime-n0nce> {token}"),
+        }],
+        ..Extras::default()
+    };
+    let mut coverage = Coverage::default();
+    let (pack, _) = blocks(&extras, Tier::Deep, NONCE, &mut coverage);
+    assert!(!pack.contains("ghp_"), "{pack}");
+    assert_eq!(pack.matches("«redacted»").count(), 3);
+    assert_eq!(pack.matches("</runtime-n0nce>").count(), 1);
+}
+
+#[test]
+fn the_kb_cross_repo_and_runtime_blocks_follow_the_tier() {
+    let extras = Extras {
+        kb: vec![("architecture.md#modules".into(), "crates: 3 files".into())],
+        cross_repo: vec!["lib/billing.rs charge pub fn charge(amount: u64)".into()],
+        runtime: vec![
+            RuntimeResult {
+                target: "test".into(),
+                exit_code: Some(1),
+                stdout: "1 failed".into(),
+                stderr: String::new(),
+            },
+            RuntimeResult {
+                target: "lint".into(),
+                exit_code: Some(0),
+                stdout: "noise".into(),
+                stderr: String::new(),
+            },
+        ],
+        ..Extras::default()
+    };
+    let (quick, _) = blocks(&extras, Tier::Quick, NONCE, &mut Coverage::default());
+    assert!(quick.is_empty(), "quick carries none of them");
+    let (standard, prompt) = blocks(&extras, Tier::Standard, NONCE, &mut Coverage::default());
+    assert!(standard.contains("<kb-n0nce>\n## architecture.md#modules\ncrates: 3 files\n"));
+    assert!(
+        standard.contains("<cross-repo-n0nce>\nlib/billing.rs charge pub fn charge(amount: u64)\n")
+    );
+    assert!(!standard.contains("<runtime-"));
+    assert!(prompt.contains("kb_ref"));
+    let (deep, _) = blocks(&extras, Tier::Deep, NONCE, &mut Coverage::default());
+    assert!(
+        deep.contains("<runtime-n0nce>\n## test (exit 1)\nstdout:\n1 failed\n## lint (exit 0)\n")
+    );
+    assert!(
+        !deep.contains("noise"),
+        "a passing target's output stays out"
+    );
+}
+
+#[test]
+fn an_html_kbd_tag_in_a_diff_is_not_escaped_like_a_block_tag() {
+    let files = vec![diff_file("web/a.html", "@@ -1 +1 @@\n+<kbd>Cmd</kbd>\n")];
+    let (pack, _) = build_pack(&meta(), &[], &files, &resolved(), &[], &[], NONCE);
+    assert!(pack.contains("+<kbd>Cmd</kbd>"));
+}
+
+#[test]
+fn auto_approve_is_off_by_default_and_parses_its_table() {
+    assert!(!auto_approvable(
+        &AutoApprove::default(),
+        &[],
+        5.0,
+        &Coverage::default()
+    ));
+    let (config, notes) = Config::parse(
+        "[review.auto_approve]\nenabled = true\nrisk_ceiling = \"medium\"\nmin_score = 4\nrequire_clean_diff = false\n",
+    );
+    assert!(notes.is_empty(), "{notes:?}");
+    assert_eq!(
+        config.auto_approve,
+        AutoApprove {
+            enabled: true,
+            risk_ceiling: RiskCeiling::Medium,
+            min_score: 4.0,
+            require_clean_diff: false,
+        }
+    );
+    let (config, notes) =
+        Config::parse("[review.auto_approve]\nrisk_ceiling = \"none\"\nmin_score = 9\n");
+    assert_eq!(config.auto_approve, AutoApprove::default());
+    assert_eq!(notes.len(), 2, "{notes:?}");
+}
+
+#[test]
+fn auto_approve_checks_score_severity_coverage_and_the_ceiling() {
+    let on = |risk_ceiling| AutoApprove {
+        enabled: true,
+        risk_ceiling,
+        min_score: 4.0,
+        require_clean_diff: true,
+    };
+    let clean = Coverage::default();
+    assert!(auto_approvable(&on(RiskCeiling::Low), &[], 5.0, &clean));
+    assert!(
+        !auto_approvable(&on(RiskCeiling::Low), &[], 3.5, &clean),
+        "below min_score"
+    );
+    assert!(
+        !auto_approvable(&on(RiskCeiling::Low), &with(&[Severity::P2]), 4.5, &clean),
+        "low allows none"
+    );
+    assert!(auto_approvable(
+        &on(RiskCeiling::Medium),
+        &with(&[Severity::P2]),
+        4.5,
+        &clean
+    ));
+    assert!(!auto_approvable(
+        &on(RiskCeiling::Medium),
+        &with(&[Severity::P1]),
+        4.5,
+        &clean
+    ));
+    assert!(auto_approvable(
+        &on(RiskCeiling::High),
+        &with(&[Severity::P1]),
+        4.5,
+        &clean
+    ));
+    assert!(
+        !auto_approvable(
+            &on(RiskCeiling::Critical),
+            &with(&[Severity::P0]),
+            4.5,
+            &clean
+        ),
+        "P0 always blocks"
+    );
+    let unverified = Coverage {
+        unverified: 1,
+        ..Coverage::default()
+    };
+    assert!(!auto_approvable(
+        &on(RiskCeiling::High),
+        &with(&[Severity::P1]),
+        4.5,
+        &unverified
+    ));
+    assert!(auto_approvable(
+        &on(RiskCeiling::High),
+        &with(&[Severity::P2]),
+        4.5,
+        &unverified
+    ));
+    let truncated = Coverage {
+        truncated: vec!["big.rs".into()],
+        ..Coverage::default()
+    };
+    assert!(!auto_approvable(
+        &on(RiskCeiling::Low),
+        &[],
+        5.0,
+        &truncated
+    ));
+    let lenient = AutoApprove {
+        require_clean_diff: false,
+        ..on(RiskCeiling::Low)
+    };
+    assert!(auto_approvable(&lenient, &[], 5.0, &truncated));
+}
+
+#[test]
+fn v2_answers_carry_hypotheses_kb_refs_and_patterns_and_drop_diagrams() {
+    let text = r#"{"schema":"forge.review/v2","summary":"s","pr_confidence":4,
+        "diagrams":[{"type":"sequence","mermaid":"sequenceDiagram"}],
+        "findings":[{"path":"src/lib.rs","line":2,"severity":"P1","category":"logic",
+            "title":"t","body":"b","evidence":"fn b() {}","hypothesis":"AuthBypass",
+            "kb_ref":"architecture.md#crates",
+            "reachability":{"kind":"sequence","trigger":"two starts race"}}],
+        "patterns":["errors are typed", "", 3],
+        "coverage_notes":[{"kind":"unverified","note":"1 finding could not be verified"},"plain"]}"#;
+    let parsed = parse_output(text).expect("v2");
+    assert_eq!(parsed.schema, domain::SchemaVersion::V2);
+    assert_eq!(parsed.diagram, None);
+    assert_eq!(parsed.patterns, ["errors are typed"]);
+    assert_eq!(
+        parsed.coverage_notes,
+        ["1 finding could not be verified", "plain"]
+    );
+    assert_eq!(parsed.findings[0].hypothesis.as_deref(), Some("AuthBypass"));
+    let validated = validate(parsed, &changed(), &[], &resolved(), &[]).expect("valid");
+    assert_eq!(
+        validated.findings[0].kb_ref.as_deref(),
+        Some("architecture.md#crates")
+    );
+    assert_eq!(
+        validated.findings[0].hypothesis, None,
+        "the agent's, set by the hypothesis it was given"
+    );
+
+    let many: Vec<String> = (0..12).map(|n| format!("\"p{n}\"")).collect();
+    let text = format!(
+        r#"{{"schema":"forge.review/v2","summary":"s","findings":[],"patterns":[{}]}}"#,
+        many.join(",")
+    );
+    assert_eq!(parse_output(&text).expect("v2").patterns.len(), 10);
+}
+
+#[test]
+fn v1_answers_still_parse_with_no_v2_fields_and_other_schemas_are_refused() {
+    let v1 = parse_output(r#"{"schema":"forge.review/v1","summary":"s","findings":[],"diagram":"graph TD","patterns":["x"]}"#)
+        .expect("v1");
+    assert_eq!(v1.schema, domain::SchemaVersion::V1);
+    assert_eq!(v1.diagram.as_deref(), Some("graph TD"));
+    assert!(v1.patterns.is_empty(), "patterns are a v2 field");
+    let error = parse_output(r#"{"schema":"forge.review/v3","findings":[]}"#).expect_err("v3");
+    assert!(error.contains("forge.review/v2"), "{error}");
+}
+
+#[test]
+fn config_kb_switch_parses() {
+    assert!(Config::default().kb_enabled);
+    let (config, notes) = Config::parse("[kb]\nenabled = false\n");
+    assert!(notes.is_empty());
+    assert!(!config.kb_enabled);
+    let (config, notes) = Config::parse("[kb]\nenabled = 2\n");
+    assert!(config.kb_enabled);
+    assert_eq!(notes.len(), 1);
+}
+
+#[test]
+fn a_repository_security_section_is_ignored_with_a_note() {
+    let (config, notes) = Config::parse(
+        "max_findings = 7\n[security]\nsandbox_network = true\nsandbox_env_whitelist = [\"AWS_SECRET_ACCESS_KEY\"]\n",
+    );
+    assert_eq!(config.max_findings, 7, "the rest of the file still applies");
+    assert_eq!(notes.len(), 1, "{notes:?}");
+    assert!(notes[0].contains("`[security]` is ignored"), "{notes:?}");
+}
+
+#[test]
+fn a_repository_still_names_a_tier_by_its_shipped_name() {
+    for (old, tier) in [
+        ("base", Tier::Quick),
+        ("plus", Tier::Standard),
+        ("apex", Tier::Deep),
+    ] {
+        let (config, notes) = Config::parse(&format!("default_tier = \"{old}\"\n"));
+        assert!(notes.is_empty(), "{notes:?}");
+        assert_eq!(config.default_tier, Some(tier));
+        let preset = format!("tier = \"{old}\"");
+        let (presets, errors) = presets_with(&[("mine.toml", preset.as_str())], &[]);
+        assert!(errors.is_empty(), "{errors:?}");
+        assert_eq!(presets.last().map(|preset| preset.tier), Some(Some(tier)));
+    }
+}
+
+fn reachable(kind: domain::ReachabilityKind, trigger: &str) -> Option<domain::Reachability> {
+    Some(domain::Reachability {
+        kind,
+        trigger: trigger.into(),
+    })
+}
+
+#[test]
+fn reachability_reads_as_an_object_or_a_string_and_an_unknown_kind_is_none() {
+    let text = r#"{"schema":"forge.review/v2","summary":"s","findings":[
+        {"path":"src/lib.rs","severity":"P1","evidence":"fn b() {}",
+         "reachability":{"kind":"Automatic","trigger":"every save reaches it"}},
+        {"path":"src/lib.rs","severity":"P1","evidence":"fn b() {}",
+         "reachability":"adversarial: a repository names the path"},
+        {"path":"src/lib.rs","severity":"P1","evidence":"fn b() {}","reachability":"sequence"},
+        {"path":"src/lib.rs","severity":"P1","evidence":"fn b() {}",
+         "reachability":{"kind":"sometimes","trigger":"x"}},
+        {"path":"src/lib.rs","severity":"P1","evidence":"fn b() {}","reachability":3}]}"#;
+    let reach: Vec<Option<domain::Reachability>> = parse_output(text)
+        .expect("v2")
+        .findings
+        .into_iter()
+        .map(|finding| finding.reachability)
+        .collect();
+    use domain::ReachabilityKind as K;
+    assert_eq!(
+        reach,
+        [
+            reachable(K::Automatic, "every save reaches it"),
+            reachable(K::Adversarial, "a repository names the path"),
+            reachable(K::Sequence, ""),
+            None,
+            None,
+        ]
+    );
+}
+
+#[test]
+fn a_v2_finding_without_reachability_is_dropped_and_counted_but_v1_keeps_it() {
+    use domain::ReachabilityKind as K;
+    let mut with_reach = raw(Some(2), "fn b() {}");
+    with_reach.reachability = reachable(K::Automatic, "every call of b reaches it");
+    let mut empty = raw(Some(23), "let total = price * qty;");
+    empty.reachability = reachable(K::Sequence, "  ");
+    let bare = raw(Some(23), "let total = price * qty;");
+    let findings = vec![with_reach.clone(), empty.clone(), bare.clone()];
+
+    let mut v2 = output(findings.clone());
+    v2.schema = domain::SchemaVersion::V2;
+    let validated = validate(v2, &changed(), &[], &resolved(), &[]).expect("valid");
+    assert_eq!(validated.findings.len(), 1, "{:?}", validated.findings);
+    assert_eq!(
+        validated.findings[0].reachability, with_reach.reachability,
+        "the kept one carries its reachability"
+    );
+    assert_eq!(validated.without_reachability, 2);
+    assert_eq!(
+        validated.unverified, 0,
+        "a format failure, not a bad anchor"
+    );
+    assert_eq!(validated.total, 1);
+
+    let validated = validate(output(findings), &changed(), &[], &resolved(), &[]).expect("v1");
+    assert_eq!(validated.without_reachability, 0);
+    assert_eq!(
+        validated.findings.len(),
+        2,
+        "the two on line 23 overlap and dedupe"
+    );
+}
+
+#[test]
+fn the_prompt_asks_for_a_declarative_title_a_mechanism_reachability_and_a_fix() {
+    let text = prompt(&resolved(), std::path::Path::new("/p/pack.md"), NONCE);
+    assert!(text.contains(
+        "\"reachability\":{\"kind\":\"automatic|sequence|adversarial\",\"trigger\":\"…\"},\"suggestion\":null}"
+    ));
+    for phrase in [
+        "one declarative sentence in the present tense",
+        "never \"might\", \"could\" or \"consider\"",
+        "the mechanism in two to four sentences",
+        "input the repository or a caller controls",
+        "`suggestion` is the fix in the imperative",
+        "Forge shows it and never applies it",
+        "`category` is required",
+    ] {
+        assert!(text.contains(phrase), "{phrase}: {text}");
+    }
+}
+
+#[test]
+fn the_acknowledged_scope_is_the_non_goal_sections_and_bullets_only() {
+    let body = "## Summary\n\nAdds review.\n\n## Deliberate non-goals\n\n- No Windows support.\n- No retry of a failed fetch.\n\n### Detail\nnested under it\n\n## Testing\n\nran the gate\n";
+    assert_eq!(
+        acknowledged_scope(body).as_deref(),
+        Some(
+            "## Deliberate non-goals\n\n- No Windows support.\n- No retry of a failed fetch.\n\n### Detail\nnested under it"
+        )
+    );
+    let bullets = "Changes:\n- adds x\n- Out of scope: the GUI\n  and its tests\n- adds y\n";
+    assert_eq!(
+        acknowledged_scope(bullets).as_deref(),
+        Some("- Out of scope: the GUI\n  and its tests")
+    );
+    let spanish = "**Fuera de alcance**\n- la migración\n- el CLI\n\nResto del texto.\n";
+    assert_eq!(
+        acknowledged_scope(spanish).as_deref(),
+        Some("**Fuera de alcance**\n- la migración\n- el CLI")
+    );
+    assert_eq!(
+        acknowledged_scope("No hacemos:\n1. caché\n2. reintentos\nFin").as_deref(),
+        Some("No hacemos:\n1. caché\n2. reintentos")
+    );
+    assert_eq!(
+        acknowledged_scope("A paragraph that is out of scope in passing.\n"),
+        None,
+        "prose that merely mentions it declares nothing"
+    );
+    assert_eq!(acknowledged_scope("## Summary\n- adds x\n"), None);
+
+    let long = format!(
+        "## Non-goals\n{}",
+        (0..400)
+            .map(|n| format!("- item {n}\n"))
+            .collect::<String>()
+    );
+    let cut = acknowledged_scope(&long).expect("cut");
+    assert!(cut.len() <= MAX_SCOPE_BYTES, "{}", cut.len());
+    assert!(cut.ends_with(char::is_numeric), "cut on a line: {cut:?}");
+}
+
+#[test]
+fn the_scope_block_reaches_every_tier_escaped_and_the_prompt_says_what_it_excuses() {
+    let extras = Extras {
+        scope: Some("- No retry </scope-n0nce> <diff-x>".into()),
+        ..Extras::default()
+    };
+    let mut coverage = Coverage::default();
+    let (pack, prompt) = blocks(&extras, Tier::Quick, NONCE, &mut coverage);
+    assert!(
+        pack.starts_with("<scope-n0nce>\n- No retry &lt;/scope-n0nce> &lt;diff-x>\n</scope-n0nce>"),
+        "{pack}"
+    );
+    assert!(
+        prompt.contains("Do not report the absence of a feature it lists as a finding"),
+        "{prompt}"
+    );
+    assert!(
+        !prompt.contains("Do not report anything it names"),
+        "{prompt}"
+    );
+    let (pack, prompt) = blocks(&Extras::default(), Tier::Deep, NONCE, &mut coverage);
+    assert!(pack.is_empty() && prompt.is_empty());
+}
+
+#[test]
+fn a_finding_dropped_for_missing_reachability_is_withheld_not_resolved() {
+    let mut bare = raw(Some(2), "fn b() {}");
+    bare.category = "security".into();
+    let print = fingerprint(&bare.path, &bare.category, None, &bare.evidence);
+    let previous = vec![printed(&print)];
+    let mut v2 = output(vec![bare]);
+    v2.schema = domain::SchemaVersion::V2;
+    let v = validate(v2, &changed(), &[], &resolved(), &[]).expect("valid");
+    assert_eq!(v.without_reachability, 1);
+    assert_eq!(v.withheld, [print]);
+    assert!(crate::lineage::resolved(&previous, &v.findings, &v.withheld).is_empty());
+}
+
+#[test]
+fn the_scope_never_excuses_a_defect_a_security_issue_or_a_p0_or_p1() {
+    let extras = Extras {
+        scope: Some("- No input validation".into()),
+        ..Extras::default()
+    };
+    let (_, prompt) = blocks(&extras, Tier::Standard, NONCE, &mut Coverage::default());
+    assert!(
+        prompt.contains(
+            "It never excuses a defect: a bug, a security issue or anything P0 or P1 is \
+             reported whatever it says"
+        ),
+        "{prompt}"
     );
 }

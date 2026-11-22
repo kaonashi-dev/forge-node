@@ -8,6 +8,7 @@ mod chrome;
 mod code_review;
 mod commit;
 mod connection;
+mod diagram_svg;
 mod ds;
 mod editor;
 mod file_icons;

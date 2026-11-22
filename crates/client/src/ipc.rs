@@ -656,6 +656,10 @@ impl Client {
     ///
     /// # Errors
     /// [`ClientError`] on a transport failure or a refusal from the daemon.
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "one per StartReview field, so a caller cannot misplace them"
+    )]
     pub fn start_review(
         &self,
         target: domain::ReviewTarget,
@@ -664,6 +668,7 @@ impl Client {
         preset: Option<String>,
         instructions: Option<String>,
         options: domain::AgentLaunchOptions,
+        reviewers: domain::ReviewerOptions,
     ) -> Result<domain::ReviewId, ClientError> {
         match self.request(Request::StartReview {
             target,
@@ -673,6 +678,7 @@ impl Client {
             instructions,
             model: options.model,
             effort: options.effort,
+            reviewers,
         })? {
             Response::ReviewStarted { review_id } => Ok(review_id),
             _ => Err(ClientError::UnexpectedResponse {
@@ -754,6 +760,99 @@ impl Client {
             Response::WorkspaceDiff(diff) => Ok(diff),
             _ => Err(ClientError::UnexpectedResponse {
                 expected: "WorkspaceDiff",
+            }),
+        }
+    }
+
+    /// One question to the workspace's project graph; `None` while the
+    /// project's first graph builds, until `DaemonEvent::GraphIndexed`.
+    ///
+    /// # Errors
+    /// [`ClientError`] on a transport failure or a refusal from the daemon.
+    pub fn query_graph(
+        &self,
+        workspace_id: domain::WorkspaceId,
+        query: domain::GraphQuery,
+    ) -> Result<Option<Vec<domain::GraphNode>>, ClientError> {
+        match self.request(Request::QueryGraph {
+            workspace_id,
+            query,
+        })? {
+            Response::GraphNodes(nodes) => Ok(Some(nodes)),
+            Response::GraphIndexing => Ok(None),
+            _ => Err(ClientError::UnexpectedResponse {
+                expected: "GraphNodes",
+            }),
+        }
+    }
+
+    /// The workspace's project's knowledge base, derived files included.
+    ///
+    /// # Errors
+    /// [`ClientError`] on a transport failure or a refusal from the daemon.
+    pub fn get_kb(
+        &self,
+        workspace_id: domain::WorkspaceId,
+    ) -> Result<Vec<domain::KbFile>, ClientError> {
+        match self.request(Request::GetKb { workspace_id })? {
+            Response::Kb(files) => Ok(files),
+            _ => Err(ClientError::UnexpectedResponse { expected: "Kb" }),
+        }
+    }
+
+    /// # Errors
+    /// [`ClientError`] on a transport failure or a refusal from the daemon.
+    pub fn get_sandbox_checks(
+        &self,
+        sandbox_run_id: String,
+    ) -> Result<domain::SandboxRun, ClientError> {
+        match self.request(Request::GetSandboxChecks { sandbox_run_id })? {
+            Response::SandboxChecks(run) => Ok(*run),
+            _ => Err(ClientError::UnexpectedResponse {
+                expected: "SandboxRun",
+            }),
+        }
+    }
+
+    /// Approve the workspace's `checks.toml` for its project, as long as it
+    /// still hashes to `file_hash`.
+    ///
+    /// # Errors
+    /// [`ClientError`] on a transport failure or a refusal from the daemon.
+    pub fn approve_sandbox_checks(
+        &self,
+        workspace_id: domain::WorkspaceId,
+        file_hash: String,
+    ) -> Result<(), ClientError> {
+        match self.request(Request::ApproveSandboxChecks {
+            workspace_id,
+            file_hash,
+        })? {
+            Response::Ack => Ok(()),
+            _ => Err(ClientError::UnexpectedResponse { expected: "Ack" }),
+        }
+    }
+
+    /// Start a fix loop on a workspace review; the person confirmed it first.
+    ///
+    /// # Errors
+    /// [`ClientError`] on a transport failure or a refusal from the daemon.
+    pub fn start_fix_loop(
+        &self,
+        review_id: domain::ReviewId,
+        max_iterations: Option<u32>,
+        provider: Option<String>,
+        profile_id: Option<domain::AgentProfileId>,
+    ) -> Result<(), ClientError> {
+        match self.request(Request::StartFixLoop {
+            review_id,
+            max_iterations,
+            provider,
+            profile_id,
+        })? {
+            Response::FixLoopStarted { .. } => Ok(()),
+            _ => Err(ClientError::UnexpectedResponse {
+                expected: "FixLoopStarted",
             }),
         }
     }

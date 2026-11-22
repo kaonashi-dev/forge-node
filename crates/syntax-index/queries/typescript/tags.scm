@@ -39,3 +39,12 @@
       (variable_declarator
         value: [(as_expression (object (pair value: (object (pair key: (property_identifier) @name) @definition.field))))
                 (satisfies_expression (object (pair value: (object (pair key: (property_identifier) @name) @definition.field))))]))))
+(class_declaration
+  name: (type_identifier) @name
+  (class_heritage (extends_clause value: (identifier) @parent))) @reference.implementation
+(class_declaration
+  name: (type_identifier) @name
+  (class_heritage (implements_clause (type_identifier) @parent))) @reference.implementation
+(interface_declaration
+  name: (type_identifier) @name
+  (extends_type_clause type: (type_identifier) @parent)) @reference.implementation

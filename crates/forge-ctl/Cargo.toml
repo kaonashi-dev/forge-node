@@ -12,6 +12,7 @@ name = "forgectl"
 path = "src/main.rs"
 
 [dependencies]
+codebase-graph.workspace = true
 domain.workspace = true
 protocol.workspace = true
 client.workspace = true
@@ -21,6 +22,8 @@ serde_json.workspace = true
 flume.workspace = true
 git-service.workspace = true
 toml.workspace = true
+sha2.workspace = true
+runtime-sandbox.workspace = true
 
 [dev-dependencies]
 daemon = { path = "../daemon" }

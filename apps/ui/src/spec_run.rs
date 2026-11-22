@@ -251,6 +251,7 @@ pub fn spec_launch(
             session_per_stage: false,
             publish_spec: request.publish_spec,
             publish_report: false,
+            checks_offline: false,
         },
     })
 }
@@ -740,6 +741,7 @@ mod tests {
                 session_per_stage: false,
                 publish_spec: false,
                 publish_report: false,
+                checks_offline: false,
             }
         );
     }

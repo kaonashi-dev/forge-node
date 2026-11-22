@@ -51,23 +51,40 @@ const SOURCE_EXTENSIONS: [&str; 22] = [
 pub struct TierCaps {
     pub files: usize,
     pub bytes: usize,
+    pub graph_bytes: usize,
+    /// `0` where the tier carries no such block.
+    pub kb_bytes: usize,
+    pub cross_repo_bytes: usize,
+    pub runtime_bytes: usize,
 }
 
 impl TierCaps {
     #[must_use]
     pub fn of(tier: Tier) -> Self {
         match tier {
-            Tier::Base => Self {
+            Tier::Quick => Self {
                 files: 40,
                 bytes: 512 * 1024,
+                graph_bytes: 32 * 1024,
+                kb_bytes: 0,
+                cross_repo_bytes: 0,
+                runtime_bytes: 0,
             },
-            Tier::Plus => Self {
+            Tier::Standard => Self {
                 files: 60,
                 bytes: 1024 * 1024,
+                graph_bytes: 64 * 1024,
+                kb_bytes: 32 * 1024,
+                cross_repo_bytes: 16 * 1024,
+                runtime_bytes: 0,
             },
-            Tier::Apex => Self {
+            Tier::Deep => Self {
                 files: 100,
                 bytes: 2 * 1024 * 1024,
+                graph_bytes: 128 * 1024,
+                kb_bytes: 32 * 1024,
+                cross_repo_bytes: 16 * 1024,
+                runtime_bytes: 32 * 1024,
             },
         }
     }
@@ -196,11 +213,7 @@ pub fn build_pack(
     if capped > 0 {
         coverage.notes.push(format!(
             "the {} tier's cap ({} files, {} KiB) left {} file(s) out of the pack",
-            match tier {
-                Tier::Base => "base",
-                Tier::Plus => "plus",
-                Tier::Apex => "apex",
-            },
+            tier.name(),
             caps.files,
             caps.bytes / 1024,
             capped
@@ -211,10 +224,10 @@ pub fn build_pack(
 
 /// No tag of a block, opening or closing, in any case or spacing, survives
 /// inside data, whichever block carries it.
-fn neutralise(text: &str) -> String {
+pub(crate) fn neutralise(text: &str) -> String {
     static TAG: OnceLock<Option<Regex>> = OnceLock::new();
     let tag =
-        TAG.get_or_init(|| Regex::new(r"(?i)<\s*/?\s*(?:diff|project_context|rules|commits)").ok());
+        TAG.get_or_init(|| Regex::new(r"(?i)<\s*/?\s*(?:diff|project_context|rules|commits|(?:graph|kb|cross-repo|runtime|slice|scope)\b)").ok());
     match tag {
         Some(tag) => tag
             .replace_all(text, |found: &regex::Captures<'_>| {
@@ -225,7 +238,7 @@ fn neutralise(text: &str) -> String {
     }
 }
 
-fn attr(value: &str) -> String {
+pub(crate) fn attr(value: &str) -> String {
     let mut out = String::with_capacity(value.len());
     for ch in value.chars() {
         match ch {
@@ -240,6 +253,17 @@ fn attr(value: &str) -> String {
         }
     }
     out
+}
+
+/// Whether the pack leaves `path` out: a lockfile, a secret, generated or
+/// `dist/` output, or a match of one of the `[ignore] paths` globs.
+#[must_use]
+pub fn excluded_path(path: &str, ignore: &[String]) -> bool {
+    let ignores: Vec<glob::Pattern> = ignore
+        .iter()
+        .filter_map(|glob| glob::Pattern::new(glob).ok())
+        .collect();
+    excluded(path, &ignores)
 }
 
 fn excluded(path: &str, ignores: &[glob::Pattern]) -> bool {
@@ -345,8 +369,19 @@ pub fn prompt(resolved: &Resolved, pack: &Path, nonce: &str) -> String {
          {{\"schema\":\"{SCHEMA}\",\"summary\":\"Markdown: what the change does and its main risks\",\
          \"findings\":[{{\"path\":\"repo/relative/path\",\"line\":42,\"end_line\":44,\"side\":\"new\",\
          \"severity\":\"P0|P1|P2\",\"category\":\"{category}\",\
-         \"rule_id\":null,\"confidence\":0.8,\"title\":\"…\",\"body\":\"what breaks, with which \
-         input, and why\",\"evidence\":\"…\",\"suggestion\":null}}],\"diagram\":null}}\n\
+         \"rule_id\":null,\"confidence\":0.8,\"title\":\"…\",\"body\":\"…\",\"evidence\":\"…\",\
+         \"reachability\":{{\"kind\":\"automatic|sequence|adversarial\",\"trigger\":\"…\"}},\
+         \"suggestion\":null}}],\"diagram\":null}}\n\
+         \n\
+         Write each finding so the author can act on it without asking. `title` is one \
+         declarative sentence in the present tense saying what is wrong, never \"might\", \
+         \"could\" or \"consider\". `body` is the mechanism in two to four sentences: what the \
+         code does, the consequence, and when it happens. `reachability.kind` is `automatic` \
+         when a normal operation reaches the defect, `sequence` when a plausible sequence of \
+         events does, `adversarial` when it takes input the repository or a caller controls; \
+         `reachability.trigger` names that operation, sequence or input in one sentence. \
+         `suggestion` is the fix in the imperative, as prose or a short diff; Forge shows it \
+         and never applies it. `category` is required.\n\
          \n\
          `line` is a line of the new file. `evidence` must be copied literally from the new \
          code at that line. P0 blocks a merge, P1 needs a fix, P2 is minor. `confidence` is \

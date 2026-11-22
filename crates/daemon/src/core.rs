@@ -120,6 +120,10 @@ pub(crate) struct Inner {
     /// `MAX_RUNNING_REVIEWS` bounds. Not cleared by a factory reset: each
     /// worker still releases its own claim when it ends.
     pub(crate) review_workers: usize,
+    /// Workspaces with a `RunSandboxChecks` in flight; its guard clears the entry.
+    pub(crate) sandboxes: HashSet<WorkspaceId>,
+    /// Workspaces with a fix loop, and whether it was asked to stop.
+    pub(crate) fix_loops: HashMap<WorkspaceId, bool>,
     /// Coalesces `RefreshPullRequests` globally — one refresh covers every host.
     pr_refreshing: bool,
     /// A `RefreshAgentDetection` worker is running.
@@ -173,6 +177,8 @@ pub struct DaemonPaths {
 pub struct Daemon {
     pub(crate) context_writer: persistence::db::ContextWriter,
     pub(crate) review_store: persistence::ReviewStore,
+    /// Own locks: indexing reads every file of a checkout.
+    pub(crate) graphs: crate::graph::Graphs,
     pub(crate) spec_runs: crate::spec_runs::SpecRuns,
     inner: Mutex<Inner>,
     pub(crate) registry: crate::registry::ClientRegistry,
@@ -328,6 +334,7 @@ impl Daemon {
             tracing::info!(interrupted, "interrupted reviews left in flight");
         }
         crate::review::sweep_packs(&paths.forge.home);
+        crate::sandbox::sweep(&paths.forge.home);
         let reviewer_sessions = review_store
             .reviewer_sessions()
             .map_err(|e| e.to_string())?;
@@ -436,6 +443,8 @@ impl Daemon {
             reviews_running: HashMap::new(),
             review_cancel: HashSet::new(),
             review_workers: 0,
+            sandboxes: HashSet::new(),
+            fix_loops: HashMap::new(),
             pr_refreshing: false,
             detecting: false,
             detect_again: false,
@@ -460,6 +469,7 @@ impl Daemon {
         Ok(Arc::new(Daemon {
             context_writer,
             review_store,
+            graphs: crate::graph::Graphs::default(),
             spec_runs,
             inner: Mutex::new(inner),
             registry: crate::registry::ClientRegistry::new(),
@@ -496,6 +506,10 @@ impl Daemon {
             .bound_socket
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(path);
+    }
+
+    pub(crate) fn bound_socket_path(&self) -> Option<PathBuf> {
+        self.bound_socket()
     }
 
     fn bound_socket(&self) -> Option<PathBuf> {
@@ -1004,6 +1018,7 @@ impl Daemon {
                 instructions,
                 model,
                 effort,
+                reviewers,
             } => self.start_review(
                 target,
                 tier,
@@ -1011,6 +1026,7 @@ impl Daemon {
                 preset,
                 instructions,
                 domain::AgentLaunchOptions { model, effort },
+                reviewers,
             ),
             Request::GetReviewConfig { workspace_id } => self.get_review_config(workspace_id),
             Request::CancelReview { review_id } => self.cancel_review(review_id),
@@ -1029,6 +1045,47 @@ impl Daemon {
                 workspace_id,
                 suppression,
             } => self.clear_review_suppression(workspace_id, &suppression),
+            Request::GetReviewDiagram { review_id, kind } => {
+                self.get_review_diagram(review_id, kind)
+            }
+            Request::GetReviewStats { workspace_id } => self.review_stats(workspace_id),
+            Request::StartFixLoop {
+                review_id,
+                max_iterations,
+                provider,
+                profile_id,
+            } => self.start_fix_loop(review_id, max_iterations, provider, profile_id),
+            Request::CancelFixLoop { workspace_id } => self.cancel_fix_loop(workspace_id),
+            Request::RunSandboxChecks {
+                workspace_id,
+                target,
+            } => self.run_sandbox_checks(workspace_id, target),
+            Request::GetSandboxChecks { sandbox_run_id } => {
+                self.get_sandbox_checks(&sandbox_run_id)
+            }
+            Request::ApproveSandboxChecks {
+                workspace_id,
+                file_hash,
+            } => self.approve_sandbox_checks(workspace_id, &file_hash),
+            Request::GetKb { workspace_id } => self.get_kb(workspace_id),
+            Request::UpdateKbEntry {
+                workspace_id,
+                file,
+                content,
+            } => self.update_kb_entry(workspace_id, &file, &content),
+            Request::ClearKbEntry { workspace_id, file } => {
+                self.clear_kb_entry(workspace_id, &file)
+            }
+            Request::ExportKb { workspace_id } => self.export_kb(workspace_id),
+            Request::RebuildGraph { workspace_id, full } => self.rebuild_graph(workspace_id, full),
+            Request::QueryGraph {
+                workspace_id,
+                query,
+            } => self.query_graph(workspace_id, &query),
+            Request::ExportGraph {
+                workspace_id,
+                format,
+            } => self.export_graph(workspace_id, format),
             Request::GetBranchCompare {
                 workspace_id,
                 base,
@@ -8909,7 +8966,7 @@ fn file_entry_response(e: fs_service::FileEntry) -> domain::FileEntry {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use domain::ClientId;
     use protocol::DaemonMessage;
@@ -8954,7 +9011,7 @@ mod tests {
     /// A daemon core over an in-memory DB, without startup scans or
     /// the agent-detection thread. The `TempDir` backs `worktrees_root` and is
     /// returned so it outlives the daemon.
-    fn test_daemon() -> (Arc<Daemon>, tempfile::TempDir) {
+    pub(crate) fn test_daemon() -> (Arc<Daemon>, tempfile::TempDir) {
         let (daemon, tmp, _backend) = test_daemon_with_pty(FakePtyBackend::empty());
         (daemon, tmp)
     }
@@ -9019,7 +9076,7 @@ mod tests {
 
     /// Seed a project in the model and the DB (foreign keys are ON, so the rows
     /// have to exist before workspaces and sessions can reference them).
-    fn add_project_row(daemon: &Daemon, name: &str, root: Option<PathBuf>) -> ProjectId {
+    pub(crate) fn add_project_row(daemon: &Daemon, name: &str, root: Option<PathBuf>) -> ProjectId {
         let id = ProjectId::new();
         let now = Timestamp::now();
         let project = Project {
@@ -9044,7 +9101,11 @@ mod tests {
         id
     }
 
-    fn add_workspace_row(daemon: &Daemon, project_id: ProjectId, managed: bool) -> WorkspaceId {
+    pub(crate) fn add_workspace_row(
+        daemon: &Daemon,
+        project_id: ProjectId,
+        managed: bool,
+    ) -> WorkspaceId {
         let id = WorkspaceId::new();
         let ws = Workspace {
             id,
@@ -9226,6 +9287,62 @@ mod tests {
                 "{mode} snapshot"
             );
             assert!(sessions.iter().any(|s| s.id == shell));
+        }
+    }
+
+    #[test]
+    fn a_live_agent_session_may_not_approve_sandbox_checks_or_start_a_fix_loop() {
+        let (daemon, _tmp) = test_daemon();
+        let project = add_project_row(&daemon, "api", None);
+        let workspace = add_workspace_row(&daemon, project, false);
+        let agent = |state| {
+            let id = add_session_row(&daemon, workspace, None, state);
+            daemon.lock().sessions.get_mut(&id).expect("session").kind = SessionKind::Agent;
+            id
+        };
+        let live = agent(SessionState::Running);
+        let exited = agent(SessionState::Exited {
+            code: Some(0),
+            signal: None,
+        });
+        let shell = add_session_row(&daemon, workspace, None, SessionState::Running);
+        let person_only = || {
+            [
+                Request::ApproveSandboxChecks {
+                    workspace_id: workspace,
+                    file_hash: "h".into(),
+                },
+                Request::StartFixLoop {
+                    review_id: domain::ReviewId::new(),
+                    max_iterations: None,
+                    provider: None,
+                    profile_id: None,
+                },
+            ]
+        };
+        let answer = |caller, request| {
+            crate::cross_profile::handle(&daemon, ClientKind::Cli, caller, request)
+        };
+        for request in person_only() {
+            let refused = answer(Some(live), request);
+            assert!(
+                refused
+                    .as_ref()
+                    .is_err_and(|error| error.code == ErrorCode::PreconditionFailed
+                        && error.message.ends_with("is a person's action")),
+                "{refused:?}"
+            );
+        }
+        for caller in [None, Some(shell), Some(exited)] {
+            for request in person_only() {
+                let reached = answer(caller, request);
+                assert!(
+                    !reached
+                        .as_ref()
+                        .is_err_and(|error| error.message.contains("person's action")),
+                    "{caller:?}: {reached:?}"
+                );
+            }
         }
     }
 
@@ -13515,12 +13632,8 @@ mod tests {
             .expect("attempt is writable");
     }
 
-    #[test]
-    fn a_cancel_that_lands_during_validation_wins() {
-        let (daemon, _tmp) = test_daemon();
-        let project = add_project_row(&daemon, "p", None);
-        let workspace_id = add_workspace_row(&daemon, project, false);
-        let mut run = domain::ReviewRun {
+    fn review_run(workspace_id: WorkspaceId, status: domain::ReviewStatus) -> domain::ReviewRun {
+        domain::ReviewRun {
             id: domain::ReviewId::new(),
             workspace_id,
             target: domain::ReviewTarget::Workspace {
@@ -13529,10 +13642,10 @@ mod tests {
             },
             head_oid: "abc".into(),
             base_oid: None,
-            tier: domain::Tier::Base,
+            tier: domain::Tier::Quick,
             preset: "standard".into(),
             provider: "claude".into(),
-            status: domain::ReviewStatus::Running,
+            status,
             stage: Some(domain::ReviewStage::Validate),
             summary: String::new(),
             score: Some(5.0),
@@ -13544,7 +13657,37 @@ mod tests {
             finished_at: None,
             branch: None,
             tree_oid: None,
-        };
+            diagrams: Vec::new(),
+            auto_approvable: false,
+            reviewers: 1,
+            schema_version: domain::SchemaVersion::V1,
+            sandbox_run_id: None,
+        }
+    }
+
+    #[test]
+    fn a_second_fix_loop_leaves_the_running_loops_cancel_alone() {
+        let (daemon, _tmp) = test_daemon();
+        let project = add_project_row(&daemon, "p", None);
+        let workspace_id = add_workspace_row(&daemon, project, false);
+        let run = review_run(workspace_id, domain::ReviewStatus::Completed);
+        daemon.review_store.insert_run(&run).expect("insert run");
+        // A running loop that a `CancelFixLoop` has just marked.
+        daemon.lock().fix_loops.insert(workspace_id, true);
+
+        let refused = daemon
+            .start_fix_loop(run.id, None, None, None)
+            .expect_err("a loop is running");
+        assert_eq!(refused.code, ErrorCode::Conflict);
+        assert_eq!(daemon.lock().fix_loops.get(&workspace_id), Some(&true));
+    }
+
+    #[test]
+    fn a_cancel_that_lands_during_validation_wins() {
+        let (daemon, _tmp) = test_daemon();
+        let project = add_project_row(&daemon, "p", None);
+        let workspace_id = add_workspace_row(&daemon, project, false);
+        let mut run = review_run(workspace_id, domain::ReviewStatus::Running);
         daemon.review_store.insert_run(&run).expect("insert run");
         daemon.lock().review_cancel.insert(run.id);
         let finding = domain::Finding {
@@ -13563,6 +13706,9 @@ mod tests {
             suggestion: None,
             lineage: domain::Lineage::New,
             reaction: None,
+            hypothesis: None,
+            kb_ref: None,
+            reachability: None,
         };
 
         daemon.settle_review(&mut run, Ok(vec![finding]));

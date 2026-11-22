@@ -12,3 +12,15 @@
 (field_declaration name: (field_identifier) @name) @definition.field
 (mod_item name: (identifier) @name) @definition.module
 (macro_definition name: (identifier) @name) @definition.macro
+
+(call_expression function: (identifier) @name) @reference.call
+(call_expression function: (field_expression field: (field_identifier) @name)) @reference.call
+(call_expression function: (scoped_identifier name: (identifier) @name)) @reference.call
+(use_declaration argument: (_) @name) @reference.import
+(mod_item name: (identifier) @name !body) @reference.import
+(impl_item
+  trait: [(type_identifier) @parent
+          (scoped_type_identifier name: (type_identifier) @parent)
+          (generic_type type: (type_identifier) @parent)]
+  type: [(type_identifier) @name
+         (generic_type type: (type_identifier) @name)]) @reference.implementation

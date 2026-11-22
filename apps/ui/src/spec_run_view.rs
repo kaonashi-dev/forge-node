@@ -6,7 +6,7 @@
 use domain::spec_run::model::{
     Delivery, GateDecision, Placement, Route, SpecOptions, SpecRunDetail, SpecRunView, SpecStage,
 };
-use domain::{SpecRunId, Timestamp};
+use domain::{ReviewId, SpecRunId, Timestamp};
 use rune::{El, ScrollSpec, TextEdit, col, row, text};
 use rune_kit::{
     Button, ButtonVariant, Checkbox, ControlSize, Kit, SegmentedControl, Switch, TextArea,
@@ -44,6 +44,9 @@ pub struct SpecPanel {
     pub reason: TextEdit,
     pub sending: bool,
     pub error: Option<String>,
+    pub review_asked: Option<ReviewId>,
+    /// The run's Forge Review as another round's text, and how many findings it left out.
+    pub review_round: Option<(String, usize)>,
 }
 
 impl SpecPanel {
@@ -65,6 +68,8 @@ impl SpecPanel {
             reason: TextEdit::new(""),
             sending: false,
             error: None,
+            review_asked: None,
+            review_round: None,
         }
     }
 
@@ -78,6 +83,13 @@ impl SpecPanel {
         self.next = Next::Finish;
         self.reason = TextEdit::new("");
         self.error = None;
+    }
+
+    fn use_review_round(&mut self) {
+        if let Some((text, _)) = &self.review_round {
+            self.reason = TextEdit::new(text.clone());
+            self.next = Next::AnotherRound;
+        }
     }
 
     /// What the person typed, with the placement taken from the branch field.
@@ -164,6 +176,7 @@ impl AppState {
             }
             Err(error) => panel.load_error = Some(error),
         }
+        self.read_spec_review(None);
         true
     }
 
@@ -217,6 +230,57 @@ impl AppState {
             panel.sending = false;
             panel.error = Some(message.to_owned());
         }
+    }
+
+    /// G3 reads the run's Forge Review once per open panel, and again when that review completes.
+    pub fn read_spec_review(&mut self, updated: Option<&domain::ReviewRun>) {
+        let Some(panel) = self.spec_panel.as_ref() else {
+            return;
+        };
+        let Some(run) = live_run(self, panel.run) else {
+            return;
+        };
+        let (Some(review), SpecStage::ResultGate) = (run.review_id, run.stage) else {
+            return;
+        };
+        let ask = match updated {
+            Some(updated) => {
+                updated.id == review && updated.status == domain::ReviewStatus::Completed
+            }
+            None => panel.review_asked != Some(review),
+        };
+        if !ask {
+            return;
+        }
+        let workspace = run.coder_workspace_id.unwrap_or(run.workspace_id);
+        let sent = self.connection.as_ref().is_some_and(|connection| {
+            connection
+                .get_review(self.generation, workspace, review)
+                .is_ok()
+        });
+        if let Some(panel) = self.spec_panel.as_mut().filter(|_| sent) {
+            panel.review_asked = Some(review);
+        }
+    }
+
+    /// Whether `run` is the open G3's Forge Review; its standing findings become the offer.
+    pub fn spec_review_read(
+        &mut self,
+        run: &domain::ReviewRun,
+        findings: &[domain::Finding],
+    ) -> bool {
+        let wanted = self
+            .spec_panel
+            .as_ref()
+            .and_then(|panel| live_run(self, panel.run))
+            .and_then(|spec| spec.review_id);
+        if wanted != Some(run.id) {
+            return false;
+        }
+        if let Some(panel) = self.spec_panel.as_mut() {
+            panel.review_round = domain::spec_run::stages::review_round_text(run.status, findings);
+        }
+        true
     }
 }
 
@@ -432,9 +496,10 @@ fn options_editor(k: &Kit, panel: &SpecPanel, stage: SpecStage) -> Option<El> {
     }
     let delivery_labels: Vec<&str> = DELIVERIES.iter().map(|(_, label)| *label).collect();
     let rounds_labels = crate::spec_run::ROUNDS.map(|count| count.to_string());
-    let (forge_review, per_stage, save) = (
+    let (forge_review, per_stage, offline, save) = (
         options.forge_review,
         options.session_per_stage,
+        options.checks_offline,
         panel.save_gate_action,
     );
     editor = editor
@@ -503,6 +568,19 @@ fn options_editor(k: &Kit, panel: &SpecPanel, stage: SpecStage) -> Option<El> {
                 })
                 .build(k)
                 .key("spec-options-per-stage"),
+        )
+        .child(
+            Switch::new(offline)
+                .label("Run checks without network")
+                .on_toggle(move |s: &mut AppState| {
+                    with_panel(s, |panel| {
+                        if let Some(options) = panel.options.as_mut() {
+                            options.checks_offline = !offline;
+                        }
+                    });
+                })
+                .build(k)
+                .key("spec-options-offline"),
         );
     if stage == SpecStage::PlanGate || stage == SpecStage::SpecGate {
         editor = editor.child(
@@ -562,6 +640,22 @@ fn result_gate(k: &Kit, panel: &SpecPanel, run: &SpecRunView, detail: &SpecRunDe
             );
         }
         body = body.child(checks);
+    }
+    if let Some((_, left_out)) = &panel.review_round {
+        body = body.child(
+            Button::new("Send Forge Review's findings to another round")
+                .variant(ButtonVariant::Neutral)
+                .control_size(ControlSize::Small)
+                .on_press(|s: &mut AppState| with_panel(s, SpecPanel::use_review_round))
+                .build(k)
+                .key("spec-review-round"),
+        );
+        if *left_out > 0 {
+            body = body.child(faint(
+                k,
+                format!("{left_out} findings do not fit in a round's text and are left out."),
+            ));
+        }
     }
     let choices = spec_gate::next_choices(&run.options);
     let labels: Vec<&str> = choices.iter().map(|next| next.label()).collect();
@@ -852,5 +946,27 @@ mod tests {
             "an emptied branch falls back to the run's own"
         );
         assert!(!s.apply_spec_run(domain::SpecRunId::new(), Err("other".into())));
+    }
+
+    #[test]
+    fn the_review_findings_fill_another_round_and_approve_sends_them() {
+        let run = crate::test_support::spec_run(SpecStage::ResultGate, Timestamp::now());
+        let mut panel = SpecPanel::new(run.id);
+        panel.use_review_round();
+        assert_eq!(panel.next, Next::Finish, "nothing to send without a review");
+        panel.review_round = Some(("- [P1] src/x.rs:3 — Off by one".into(), 0));
+        panel.use_review_round();
+        assert_eq!(panel.next, Next::AnotherRound);
+        assert_eq!(
+            approval(&panel, &run),
+            Some(GateDecision::Approve {
+                options: None,
+                save_gate_action: false,
+                manual_checked: Vec::new(),
+                next: Some(domain::spec_run::model::NextAction::AnotherRound {
+                    text: "- [P1] src/x.rs:3 — Off by one".into()
+                }),
+            })
+        );
     }
 }

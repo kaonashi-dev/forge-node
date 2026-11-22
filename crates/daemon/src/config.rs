@@ -21,6 +21,7 @@ pub struct Config {
     pub lsp: LspConfig,
     pub daemon: DaemonConfig,
     pub orchestration: OrchestrationConfig,
+    pub spec_runs: SpecRunsConfig,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -357,6 +358,32 @@ pub struct ReviewConfig {
     pub effort: Option<String>,
     /// Added to every repository's review, before `.forge/review/prompt.md`.
     pub instructions: String,
+    /// Agents per review, each hunting one hypothesis; `1` is the single
+    /// reviewer. Clamped to `1..=8`; a run may ask for another size.
+    pub reviewers: u8,
+    /// Review workers alive daemon-wide, a superseded one included.
+    pub max_parallel_reviews: usize,
+    /// The project knowledge base in `standard` and `deep` packs.
+    pub kb_enabled: bool,
+    /// Other registered projects' signatures, when the repository lists them.
+    pub cross_repo_enabled: bool,
+    /// Run `.forge/review/checks.toml`'s targets before a `deep` review.
+    pub sandbox_checks: bool,
+    /// Sandbox checks may use the network. Only ever the user's choice, never a repository's.
+    pub sandbox_network: bool,
+    /// Variables copied from the daemon's environment into a sandbox check's; a
+    /// `FORGE_*` name is dropped.
+    pub sandbox_env_whitelist: Vec<String>,
+    /// What a sandbox check may write besides its checkout, its cache and the temp
+    /// directory; the same expansion as `[spec_runs] check_write_paths`.
+    pub sandbox_write_paths: Vec<String>,
+}
+
+impl ReviewConfig {
+    #[must_use]
+    pub fn reviewer_count(&self, asked: Option<u8>) -> u8 {
+        asked.unwrap_or(self.reviewers).clamp(1, 8)
+    }
 }
 
 impl Default for ReviewConfig {
@@ -367,6 +394,14 @@ impl Default for ReviewConfig {
             model: None,
             effort: None,
             instructions: String::new(),
+            reviewers: 3,
+            max_parallel_reviews: 2,
+            kb_enabled: true,
+            cross_repo_enabled: false,
+            sandbox_checks: false,
+            sandbox_network: false,
+            sandbox_env_whitelist: vec!["PATH".to_owned(), "HOME".to_owned()],
+            sandbox_write_paths: tool_cache_paths(),
         }
     }
 }
@@ -404,6 +439,34 @@ impl PullRequestsConfig {
 #[serde(default)]
 pub struct DaemonConfig {
     pub log_level: String,
+}
+
+fn tool_cache_paths() -> Vec<String> {
+    [
+        "~/.cargo",
+        "~/.rustup",
+        "~/.bun",
+        "~/.npm",
+        "~/Library/Caches",
+    ]
+    .map(str::to_owned)
+    .to_vec()
+}
+
+/// What a spec run's check may write besides its checkout, its run's `checks/` and the temp
+/// directory, under the macOS sandbox. `~` is the user's home; a missing path is dropped.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct SpecRunsConfig {
+    pub check_write_paths: Vec<String>,
+}
+
+impl Default for SpecRunsConfig {
+    fn default() -> Self {
+        Self {
+            check_write_paths: tool_cache_paths(),
+        }
+    }
 }
 
 /// Rails for `forgectl`. `enabled` defaults on. The one-writer rule is not a key.
@@ -807,6 +870,57 @@ mod tests {
         // Every value in the example is meant to be a default, so parsing it
         // has to be indistinguishable from parsing nothing at all.
         assert_eq!(parsed, Config::default());
+    }
+
+    #[test]
+    fn reviewer_keys_parse_and_clamp() {
+        let c = Config::default();
+        assert_eq!((c.review.reviewers, c.review.max_parallel_reviews), (3, 2));
+        assert!(c.review.kb_enabled && !c.review.cross_repo_enabled && !c.review.sandbox_checks);
+        let c: Config = toml::from_str(
+            "[review]\nreviewers = 12\nmax_parallel_reviews = 4\nsandbox_checks = true\n",
+        )
+        .unwrap();
+        assert_eq!(c.review.reviewer_count(None), 8);
+        assert_eq!(c.review.reviewer_count(Some(0)), 1);
+        assert_eq!(c.review.reviewer_count(Some(5)), 5);
+        assert_eq!(c.review.max_parallel_reviews, 4);
+        assert!(c.review.sandbox_checks);
+    }
+
+    #[test]
+    fn the_sandbox_policy_defaults_to_no_network_and_path_and_home() {
+        let c = Config::default();
+        assert!(!c.review.sandbox_network);
+        assert_eq!(c.review.sandbox_env_whitelist, ["PATH", "HOME"]);
+        let c: Config = toml::from_str(
+            "[review]\nsandbox_network = true\nsandbox_env_whitelist = [\"LANG\"]\n",
+        )
+        .unwrap();
+        assert!(c.review.sandbox_network);
+        assert_eq!(c.review.sandbox_env_whitelist, ["LANG"]);
+    }
+
+    #[test]
+    fn sandbox_and_spec_run_checks_may_write_the_tool_caches_unless_configured_otherwise() {
+        let c = Config::default();
+        assert_eq!(
+            c.spec_runs.check_write_paths,
+            [
+                "~/.cargo",
+                "~/.rustup",
+                "~/.bun",
+                "~/.npm",
+                "~/Library/Caches"
+            ]
+        );
+        assert_eq!(c.review.sandbox_write_paths, c.spec_runs.check_write_paths);
+        let c: Config =
+            toml::from_str("[spec_runs]\ncheck_write_paths = [\"/opt/cache\"]\n").unwrap();
+        assert_eq!(c.spec_runs.check_write_paths, ["/opt/cache"]);
+        let c: Config =
+            toml::from_str("[review]\nsandbox_write_paths = [\"/opt/cache\"]\n").unwrap();
+        assert_eq!(c.review.sandbox_write_paths, ["/opt/cache"]);
     }
 
     #[test]

@@ -51,7 +51,7 @@ fn install_reviewer(harness: &common::Harness, answer: &str, mode: Reviewer) {
          if [ \"$1\" = --version ]; then echo '2.1.0 (Claude Code)'; exit 0; fi\n\
          id=''\n\
          prev=''\n\
-         for a in \"$@\"; do [ \"$prev\" = --session-id ] && id=$a; prev=$a; done\n\
+         for a in \"$@\"; do [ \"$prev\" = --session-id ] && id=$a; [ \"$prev\" = --add-dir ] && /bin/cp \"$a/pack.md\" {pack}; prev=$a; done\n\
          printf '%s\\n' \"$*\" > {args}\n\
          slug=$(printf '%s' \"$FORGE_WORKSPACE\" | /usr/bin/tr -c 'A-Za-z0-9' '-')\n\
          dir=\"$CLAUDE_CONFIG_DIR/projects/$slug\"\n\
@@ -60,6 +60,7 @@ fn install_reviewer(harness: &common::Harness, answer: &str, mode: Reviewer) {
          /usr/bin/touch {written}\n\
          {tail}",
         args = common::sh_quote(&harness.root().join("args").to_string_lossy()),
+        pack = common::sh_quote(&harness.root().join("pack.md").to_string_lossy()),
         written = common::sh_quote(&harness.root().join("written").to_string_lossy()),
     );
     common::write_executable(harness.bin(), "claude", &script);
@@ -164,6 +165,7 @@ fn start(
         instructions: None,
         model: None,
         effort: None,
+        reviewers: domain::ReviewerOptions::default(),
     }) {
         Ok(Response::ReviewStarted { review_id }) => Ok(review_id),
         Ok(other) => panic!("expected ReviewStarted, got {other:?}"),
@@ -191,11 +193,16 @@ fn wait_run(
     let DaemonEvent::ReviewUpdated { run } = event else {
         unreachable!()
     };
-    run
+    *run
+}
+
+/// The single v1 reviewer the tests written before parallel reviewers assume.
+fn v1(config: &mut daemon::config::Config) {
+    config.review.reviewers = 1;
 }
 
 fn boot(harness: &common::Harness) -> common::TestDaemon {
-    let daemon = harness.boot();
+    let daemon = harness.boot_with(v1);
     let client = daemon.connect("scenario-review");
     common::wait_for_detection(&client, |providers| {
         providers
@@ -392,6 +399,7 @@ fn start_against(
         instructions: None,
         model: None,
         effort: None,
+        reviewers: domain::ReviewerOptions::default(),
     }) {
         Ok(Response::ReviewStarted { review_id }) => Ok(review_id),
         Ok(other) => panic!("expected ReviewStarted, got {other:?}"),
@@ -581,7 +589,10 @@ fn a_reviewer_that_never_answers_times_out() {
     let harness = common::Harness::new();
     install_reviewer(&harness, "", Reviewer::Silent);
     let repo = seeded_repo();
-    let daemon = harness.boot_with(|config| config.review.timeout_secs = 1);
+    let daemon = harness.boot_with(|config| {
+        v1(config);
+        config.review.timeout_secs = 1;
+    });
     let client = daemon.connect("scenario-review");
     common::wait_for_detection(&client, |providers| {
         providers
@@ -611,7 +622,7 @@ fn a_run_in_flight_is_interrupted_by_a_restart() {
     drop(client);
     first.crash();
 
-    let second = harness.boot();
+    let second = harness.boot_with(v1);
     let client = second.connect("scenario-review");
     let (run, _) = get(&client, review_id);
     assert_eq!(run.status, ReviewStatus::Interrupted);
@@ -636,6 +647,7 @@ fn start_with(
         instructions,
         model: None,
         effort: None,
+        reviewers: domain::ReviewerOptions::default(),
     }) {
         Ok(Response::ReviewStarted { review_id }) => Ok(review_id),
         Ok(other) => panic!("expected ReviewStarted, got {other:?}"),
@@ -874,6 +886,7 @@ fn start_launching(
         instructions: None,
         model: model.map(str::to_owned),
         effort: effort.map(str::to_owned),
+        reviewers: domain::ReviewerOptions::default(),
     }) {
         Ok(Response::ReviewStarted { review_id }) => Ok(review_id),
         Ok(other) => panic!("expected ReviewStarted, got {other:?}"),
@@ -886,7 +899,10 @@ fn boot_configured(
     harness: &common::Harness,
     configure: impl FnOnce(&mut daemon::config::Config),
 ) -> common::TestDaemon {
-    let daemon = harness.boot_with(configure);
+    let daemon = harness.boot_with(|config| {
+        v1(config);
+        configure(config);
+    });
     let client = daemon.connect("scenario-review");
     common::wait_for_detection(&client, |providers| {
         providers
@@ -991,6 +1007,7 @@ fn an_effort_the_provider_does_not_list_is_refused_before_any_run() {
         instructions: None,
         model: None,
         effort: Some("turbo".into()),
+        reviewers: domain::ReviewerOptions::default(),
     }) {
         Err(client::ClientError::Protocol(error)) => {
             assert_eq!(error.code, ErrorCode::InvalidRequest);
@@ -1182,6 +1199,7 @@ fn review_to_completion(
         instructions: None,
         model: None,
         effort: None,
+        reviewers: domain::ReviewerOptions::default(),
     }) {
         Ok(Response::ReviewStarted { review_id }) => review_id,
         other => panic!("expected ReviewStarted, got {other:?}"),
@@ -1478,10 +1496,19 @@ const PR_FILE: &str = "fn pr_only() -> u32 {\n    40 + 2\n}\n";
 fn pull_request_checkout() -> (tempfile::TempDir, tempfile::TempDir, String) {
     let source = seeded_repo();
     git(source.path(), &["checkout", "-q", "--", "main.rs"]);
+    pull_request_from(&source, "pr.rs", PR_FILE)
+}
+
+/// As [`pull_request_checkout`], from a clean `source` whose pull request writes `file`.
+fn pull_request_from(
+    source: &test_support::TempRepo,
+    file: &str,
+    text: &str,
+) -> (tempfile::TempDir, tempfile::TempDir, String) {
     git(source.path(), &["checkout", "-qb", "topic"]);
-    std::fs::write(source.path().join("pr.rs"), PR_FILE).expect("pr.rs");
-    git(source.path(), &["add", "pr.rs"]);
-    git(source.path(), &["commit", "-qm", "add pr_only"]);
+    std::fs::write(source.path().join(file), text).expect("pull request file");
+    git(source.path(), &["add", file]);
+    git(source.path(), &["commit", "-qm", "pull request"]);
     let head = rev_parse(source.path(), "HEAD");
     let origin = tempfile::tempdir_in("/tmp").expect("origin");
     let bare = origin.path().join("origin.git");
@@ -1615,6 +1642,7 @@ fn a_pull_request_with_an_invalid_base_is_refused() {
             instructions: None,
             model: None,
             effort: None,
+            reviewers: domain::ReviewerOptions::default(),
         });
         assert!(
             matches!(&refused, Err(client::ClientError::Protocol(error)) if error.code == ErrorCode::InvalidRequest),
@@ -1935,6 +1963,7 @@ fn quick_starts_on_one_pull_request_run_at_most_two_fetches() {
             instructions: Some(format!("pass {n}")),
             model: None,
             effort: None,
+            reviewers: domain::ReviewerOptions::default(),
         }) {
             Ok(Response::ReviewStarted { review_id }) => accepted.push(review_id),
             Err(client::ClientError::Protocol(error)) if error.code == ErrorCode::Conflict => {
@@ -1983,7 +2012,10 @@ fn packs_are_private_to_the_forge_home_and_swept_at_startup() {
     let elsewhere = tempfile::tempdir_in("/tmp").expect("elsewhere");
     let root = elsewhere.path().join("nested/worktrees");
     let root_config = root.to_string_lossy().into_owned();
-    let first = harness.boot_with(|config| config.worktrees.root = root_config.clone());
+    let first = harness.boot_with(|config| {
+        v1(config);
+        config.worktrees.root = root_config.clone();
+    });
     let client = first.connect("scenario-review");
     let events = client.events();
     let workspace = workspace_at(&client, repo.path());
@@ -2015,7 +2047,7 @@ fn packs_are_private_to_the_forge_home_and_swept_at_startup() {
     let stale = harness.forge_home().join("review-packs/old");
     std::fs::create_dir_all(&stale).expect("stale");
     std::fs::write(stale.join("pack.md"), "left by a crash").expect("stale pack");
-    let _second = harness.boot();
+    let _second = harness.boot_with(v1);
     assert_eq!(pack_dirs(&harness), 0);
 }
 
@@ -2049,7 +2081,10 @@ fn old_runs_are_pruned_even_when_session_history_persists() {
     let harness = common::Harness::new();
     install_reviewer(&harness, &answer(&[]), Reviewer::Answers);
     let repo = seeded_repo();
-    let daemon = harness.boot_with(|config| config.sessions.persist_history = true);
+    let daemon = harness.boot_with(|config| {
+        v1(config);
+        config.sessions.persist_history = true;
+    });
     let client = daemon.connect("scenario-review");
     common::wait_for_detection(&client, |providers| {
         providers
@@ -2089,4 +2124,1750 @@ fn old_runs_are_pruned_even_when_session_history_persists() {
         panic!("expected Reviews");
     };
     assert_eq!(listed.len(), 20);
+}
+
+/// `lib.rs` defines `total`, which `main.rs` calls; the working tree changes `total`.
+fn cross_file_repo() -> test_support::TempRepo {
+    let repo = test_support::init_repo().expect("repo");
+    let lib = |op: &str| {
+        format!("pub fn total(price: u32, qty: u32) -> u32 {{\n    price {op} qty\n}}\n")
+    };
+    std::fs::write(repo.path().join("lib.rs"), lib("*")).expect("lib");
+    std::fs::write(
+        repo.path().join("main.rs"),
+        "mod lib;\n\nfn main() {\n    let sum = lib::total(2, 3);\n    println!(\"{sum}\");\n}\n",
+    )
+    .expect("main");
+    git(repo.path(), &["add", "lib.rs", "main.rs"]);
+    git(repo.path(), &["commit", "-qm", "add total"]);
+    std::fs::write(repo.path().join("lib.rs"), lib("+")).expect("lib");
+    repo
+}
+
+fn rebuild_graph(
+    client: &client::Client,
+    workspace_id: WorkspaceId,
+    full: bool,
+) -> domain::GraphStats {
+    match client.request(Request::RebuildGraph { workspace_id, full }) {
+        Ok(Response::GraphRebuilt(stats)) => stats,
+        other => panic!("expected GraphRebuilt, got {other:?}"),
+    }
+}
+
+#[test]
+fn a_review_indexes_the_project_graph_and_packs_the_real_caller() {
+    let harness = common::Harness::new();
+    install_reviewer(&harness, &answer(&[]), Reviewer::AnswersAndExits);
+    let repo = cross_file_repo();
+    let before = porcelain(repo.path());
+    let daemon = boot(&harness);
+    let client = daemon.connect("scenario-review");
+    let events = client.events();
+    let workspace = workspace_at(&client, repo.path());
+
+    let review_id = start(&client, workspace, None).expect("StartReview");
+    let done = wait_run(&events, review_id, |run| run.status.is_finished());
+    assert_eq!(done.status, ReviewStatus::Completed, "{:?}", done.error);
+    assert_eq!(
+        done.tier,
+        domain::Tier::Quick,
+        "a small diff with no tier runs quick"
+    );
+    assert_eq!(
+        porcelain(repo.path()),
+        before,
+        "the graph leaves the checkout clean"
+    );
+
+    let pack =
+        std::fs::read_to_string(harness.root().join("pack.md")).expect("the fake kept the pack");
+    assert!(
+        pack.contains("## lib.rs:1 total\ncallers:\n- main.rs:3 function main\n"),
+        "{pack}"
+    );
+    let args = std::fs::read_to_string(harness.root().join("args")).expect("args");
+    assert!(
+        args.contains("forgectl review graph query --callers"),
+        "{args}"
+    );
+
+    let cache =
+        std::fs::read(repo.path().join(".forge/review/graph/cache.bin")).expect("cache.bin");
+    let graph = codebase_graph::Graph::decode(&cache).expect("cache.bin decodes");
+    assert_eq!(graph.git_oid, rev_parse(repo.path(), "HEAD"));
+    let callers: Vec<String> = graph
+        .index()
+        .callers("total")
+        .into_iter()
+        .map(|node| format!("{}:{}", node.path, node.name))
+        .collect();
+    assert_eq!(callers, ["main.rs:main"]);
+    use std::os::unix::fs::PermissionsExt;
+    let mode = std::fs::metadata(repo.path().join(".forge/review/graph/cache.bin"))
+        .expect("cache.bin")
+        .permissions()
+        .mode();
+    assert_eq!(mode & 0o777, 0o600);
+
+    git(repo.path(), &["commit", "-qam", "add instead"]);
+    std::fs::write(repo.path().join("notes.rs"), "pub fn note() {}\n").expect("notes");
+    git(repo.path(), &["add", "notes.rs"]);
+    git(repo.path(), &["commit", "-qm", "notes"]);
+    let stats = rebuild_graph(&client, workspace, false);
+    assert_eq!(
+        stats.parsed, 2,
+        "lib.rs (dirty at the last build) and notes.rs: {stats:?}"
+    );
+    std::fs::write(
+        repo.path().join("notes.rs"),
+        "pub fn note() { lib::total(1, 1); }\n",
+    )
+    .expect("notes");
+    git(repo.path(), &["commit", "-qam", "notes call total"]);
+    let stats = rebuild_graph(&client, workspace, false);
+    assert_eq!(stats.parsed, 1, "only the changed file: {stats:?}");
+    assert_eq!(stats.git_oid, rev_parse(repo.path(), "HEAD"));
+    let full = rebuild_graph(&client, workspace, true);
+    assert!(full.parsed >= 3, "every file: {full:?}");
+    assert_eq!(
+        (full.nodes, full.edges),
+        (stats.nodes, stats.edges),
+        "incremental equals full"
+    );
+}
+
+#[test]
+fn a_repository_can_turn_the_graph_off() {
+    let harness = common::Harness::new();
+    install_reviewer(&harness, &answer(&[]), Reviewer::AnswersAndExits);
+    let repo = cross_file_repo();
+    std::fs::create_dir_all(repo.path().join(".forge/review")).expect("dir");
+    std::fs::write(
+        repo.path().join(".forge/review/config.toml"),
+        "[graph]\nenabled = false\n",
+    )
+    .expect("config");
+    let daemon = boot(&harness);
+    let client = daemon.connect("scenario-review");
+    let events = client.events();
+    let workspace = workspace_at(&client, repo.path());
+    let review_id = start(&client, workspace, None).expect("StartReview");
+    let done = wait_run(&events, review_id, |run| run.status.is_finished());
+    assert_eq!(done.status, ReviewStatus::Completed, "{:?}", done.error);
+    let pack = std::fs::read_to_string(harness.root().join("pack.md")).expect("pack");
+    assert!(!pack.contains("<graph-"));
+    assert!(
+        !repo.path().join(".forge/review/graph").exists(),
+        "not built"
+    );
+}
+
+fn callees(client: &client::Client, workspace_id: WorkspaceId, name: &str) -> Vec<String> {
+    match client.request(Request::QueryGraph {
+        workspace_id,
+        query: domain::GraphQuery::Callees(name.into()),
+    }) {
+        Ok(Response::GraphNodes(nodes)) => nodes.into_iter().map(|node| node.name).collect(),
+        other => panic!("expected GraphNodes, got {other:?}"),
+    }
+}
+
+const MAIN_CALLING_EXTRA: &str =
+    "mod lib;\n\nfn main() {\n    let sum = lib::total(2, 3);\n    extra(sum);\n}\n";
+
+#[test]
+fn a_graph_query_on_an_unindexed_project_answers_at_once_and_builds_behind_it() {
+    let harness = common::Harness::new();
+    let repo = cross_file_repo();
+    let daemon = harness.boot_with(v1);
+    let client = daemon.connect("scenario-review");
+    let events = client.events();
+    let workspace = workspace_at(&client, repo.path());
+
+    let first = client.request(Request::QueryGraph {
+        workspace_id: workspace,
+        query: domain::GraphQuery::Callers("total".into()),
+    });
+    assert_eq!(first.expect("QueryGraph"), Response::GraphIndexing);
+    common::wait_for(&events, common::DEADLINE, |event| {
+        matches!(event, DaemonEvent::GraphIndexed { error: None, .. })
+    })
+    .expect("the first build reports");
+    assert_eq!(callees(&client, workspace, "main"), ["total"]);
+}
+
+#[test]
+fn a_graph_rereads_a_dirty_edit_after_a_failed_cache_write_or_a_restart() {
+    let harness = common::Harness::new();
+    let repo = cross_file_repo();
+    let daemon = harness.boot_with(v1);
+    let client = daemon.connect("scenario-review");
+    let workspace = workspace_at(&client, repo.path());
+    std::fs::create_dir_all(repo.path().join(".forge/review/graph/cache.bin/in-the-way"))
+        .expect("a directory where cache.bin goes");
+
+    std::fs::write(repo.path().join("main.rs"), MAIN_CALLING_EXTRA).expect("edit");
+    let stats = rebuild_graph(&client, workspace, false);
+    assert!(
+        stats.notes.iter().any(|note| note.contains("cache.bin")),
+        "{stats:?}"
+    );
+    assert!(callees(&client, workspace, "main").contains(&"extra".to_owned()));
+    git(repo.path(), &["checkout", "-q", "--", "main.rs"]);
+    rebuild_graph(&client, workspace, false);
+    assert!(!callees(&client, workspace, "main").contains(&"extra".to_owned()));
+
+    std::fs::remove_dir_all(repo.path().join(".forge/review/graph/cache.bin")).expect("rm");
+    std::fs::write(repo.path().join("main.rs"), MAIN_CALLING_EXTRA).expect("edit");
+    let stats = rebuild_graph(&client, workspace, false);
+    assert!(stats.notes.is_empty(), "{stats:?}");
+    drop(client);
+    drop(daemon);
+    git(repo.path(), &["checkout", "-q", "--", "main.rs"]);
+    let daemon = harness.boot_with(v1);
+    let client = daemon.connect("scenario-review");
+    rebuild_graph(&client, workspace, false);
+    assert!(
+        !callees(&client, workspace, "main").contains(&"extra".to_owned()),
+        "the reverted file was re-read after the restart"
+    );
+}
+
+#[test]
+fn the_graph_cache_never_writes_through_a_symlink_in_the_checkout() {
+    let harness = common::Harness::new();
+    let daemon = harness.boot_with(v1);
+    let client = daemon.connect("scenario-review");
+    let elsewhere = tempfile::tempdir().expect("elsewhere");
+    let victim = elsewhere.path().join("victim");
+    std::fs::write(&victim, "keep").expect("victim");
+
+    let repo = cross_file_repo();
+    std::fs::create_dir_all(repo.path().join(".forge/review/graph")).expect("dir");
+    std::os::unix::fs::symlink(
+        &victim,
+        repo.path().join(".forge/review/graph/cache.bin.tmp"),
+    )
+    .expect("symlink");
+    let workspace = workspace_at(&client, repo.path());
+    let stats = rebuild_graph(&client, workspace, false);
+    assert!(stats.notes.is_empty(), "{stats:?}");
+    assert_eq!(std::fs::read_to_string(&victim).expect("victim"), "keep");
+    let cache =
+        std::fs::read(repo.path().join(".forge/review/graph/cache.bin")).expect("cache.bin");
+    codebase_graph::Graph::decode(&cache).expect("cache.bin decodes");
+
+    let linked = cross_file_repo();
+    std::os::unix::fs::symlink(elsewhere.path(), linked.path().join(".forge")).expect("symlink");
+    let workspace = workspace_at(&client, linked.path());
+    let stats = rebuild_graph(&client, workspace, false);
+    assert!(stats.nodes > 0, "SQLite still holds the graph: {stats:?}");
+    assert!(
+        stats.notes.iter().any(|note| note.contains("cache.bin")),
+        "{stats:?}"
+    );
+    assert!(!elsewhere.path().join("review").exists());
+}
+
+#[test]
+fn a_pull_requests_graph_maps_its_hunks_onto_the_heads_functions() {
+    let harness = common::Harness::new();
+    install_reviewer(&harness, &answer(&[]), Reviewer::Answers);
+    let source = cross_file_repo();
+    git(source.path(), &["checkout", "-q", "--", "lib.rs"]);
+    let head_lib = "pub fn discount(price: u32) -> u32 {\n    price / 10\n}\n\n\
+                    pub fn total(price: u32, qty: u32) -> u32 {\n    price * qty - discount(price)\n}\n";
+    let (_origin, checkout, _head) = pull_request_from(&source, "lib.rs", head_lib);
+    let daemon = boot(&harness);
+    let client = daemon.connect("scenario-review");
+    let events = client.events();
+    let workspace = workspace_at(&client, checkout.path());
+
+    review_to_completion(
+        &harness,
+        &client,
+        &events,
+        ReviewTarget::PullRequest {
+            workspace_id: workspace,
+            number: 1,
+            base: Some("main".into()),
+        },
+    );
+    let pack = std::fs::read_to_string(harness.root().join("pack.md")).expect("pack");
+    assert!(pack.contains("## lib.rs:1 discount\n"), "{pack}");
+    assert!(
+        pack.contains("## lib.rs:5 total\ncallers:\n- main.rs:3 function main\n"),
+        "{pack}"
+    );
+    assert!(!pack.contains("## lib.rs:1 total"), "{pack}");
+    assert!(
+        callees(&client, workspace, "total").is_empty(),
+        "the stored graph is the checkout's, not the pull request's"
+    );
+}
+
+/// One fake `claude` for every reviewer of a run: each agent finds its hypothesis in the
+/// slice file its prompt names, writes that hypothesis' answer (or nothing for
+/// `None`), then blocks like an interactive session.
+fn install_reviewers(harness: &common::Harness, answers: &[(&str, Option<String>)]) {
+    let mut cases = String::new();
+    for (hypothesis, answer) in answers {
+        let action = match answer {
+            Some(answer) => {
+                let record = serde_json::json!({
+                    "type": "assistant",
+                    "message": {"role": "assistant", "content": [{"type": "text", "text": answer}]},
+                })
+                .to_string();
+                let file = harness.root().join(format!("answer-{hypothesis}.jsonl"));
+                std::fs::write(&file, format!("{record}\n")).expect("answer");
+                format!(
+                    "/bin/cat {} > \"$dir/$id.jsonl\"",
+                    common::sh_quote(&file.to_string_lossy())
+                )
+            }
+            None => ":".to_owned(),
+        };
+        cases.push_str(&format!(
+            "  *slice-{hypothesis}.md*) {action}; /usr/bin/touch {} ;;\n",
+            common::sh_quote(
+                &harness
+                    .root()
+                    .join(format!("started-{hypothesis}"))
+                    .to_string_lossy()
+            )
+        ));
+    }
+    let script = format!(
+        "#!/bin/sh\n\
+         if [ \"$1\" = --version ]; then echo '2.1.0 (Claude Code)'; exit 0; fi\n\
+         id=''\n\
+         prev=''\n\
+         for a in \"$@\"; do [ \"$prev\" = --session-id ] && id=$a; prev=$a; done\n\
+         slug=$(printf '%s' \"$FORGE_WORKSPACE\" | /usr/bin/tr -c 'A-Za-z0-9' '-')\n\
+         dir=\"$CLAUDE_CONFIG_DIR/projects/$slug\"\n\
+         /bin/mkdir -p \"$dir\"\n\
+         printf '%s\\n' \"$*\" >> {log}\n\
+         case \"$*\" in\n{cases}esac\n\
+         exec /bin/cat\n",
+        log = common::sh_quote(&harness.root().join("invocations").to_string_lossy()),
+    );
+    common::write_executable(harness.bin(), "claude", &script);
+}
+
+/// Each finding says how it is reached, as v2 requires, unless it names its own `reachability`.
+fn v2_answer(hypothesis: &str, findings: &[serde_json::Value]) -> String {
+    let findings: Vec<serde_json::Value> = findings
+        .iter()
+        .cloned()
+        .map(|mut finding| {
+            if finding.get("reachability").is_none() {
+                finding["reachability"] = serde_json::json!({
+                    "kind": "automatic",
+                    "trigger": "every call of total adds instead of multiplying",
+                });
+            }
+            finding
+        })
+        .collect();
+    let body = serde_json::json!({
+        "schema": "forge.review/v2",
+        "summary": format!("{hypothesis} looked."),
+        "findings": findings,
+        "patterns": [],
+    });
+    format!("```json\n{body}\n```\n")
+}
+
+fn reviewer_sessions(client: &client::Client) -> Vec<domain::Session> {
+    common::sessions(client)
+        .into_iter()
+        .filter(|session| {
+            session
+                .title
+                .user
+                .as_deref()
+                .is_some_and(|title| title.starts_with("Forge Review · "))
+        })
+        .collect()
+}
+
+#[test]
+fn several_reviewers_run_side_by_side_and_merges_their_findings() {
+    let harness = common::Harness::new();
+    install_reviewers(
+        &harness,
+        &[
+            (
+                "AuthBypass",
+                Some(v2_answer(
+                    "AuthBypass",
+                    &[finding(2, "P1", "logic", "price + qty")],
+                )),
+            ),
+            (
+                "BrokenContract",
+                Some(v2_answer(
+                    "BrokenContract",
+                    &[finding(2, "P2", "logic", "price + qty")],
+                )),
+            ),
+            (
+                "ErrorSwallow",
+                Some(v2_answer(
+                    "ErrorSwallow",
+                    &[{
+                        let mut unreached = finding(2, "P2", "logic", "price + qty");
+                        unreached["reachability"] = serde_json::Value::Null;
+                        unreached
+                    }],
+                )),
+            ),
+        ],
+    );
+    let repo = seeded_repo();
+    let daemon = harness.boot();
+    let client = daemon.connect("scenario-review");
+    common::wait_for_detection(&client, |providers| {
+        providers
+            .iter()
+            .any(|p| p.descriptor.id.as_str() == "claude" && p.detection.status.is_installed())
+    });
+    let events = client.events();
+    let workspace = workspace_at(&client, repo.path());
+    let review_id = start(&client, workspace, None).expect("StartReview");
+
+    let mut agents = Vec::new();
+    assert!(
+        common::poll_until(common::DEADLINE, || {
+            agents = reviewer_sessions(&client);
+            agents.len() == 3
+                && ["AuthBypass", "BrokenContract", "ErrorSwallow"]
+                    .iter()
+                    .all(|h| harness.root().join(format!("started-{h}")).exists())
+        }),
+        "three agents at once: {agents:?}"
+    );
+    let running = get(&client, review_id).0;
+    assert_eq!(
+        (running.reviewers, running.schema_version),
+        (3, domain::SchemaVersion::V2)
+    );
+    for agent in &agents {
+        report_idle(&client, agent.id);
+    }
+    let done = wait_run(&events, review_id, |run| run.status.is_finished());
+    assert_eq!(done.status, ReviewStatus::Completed, "{:?}", done.error);
+    let (_, findings) = get(&client, review_id);
+    assert_eq!(
+        findings.len(),
+        1,
+        "one fingerprint, the more severe kept: {findings:?}"
+    );
+    assert_eq!(findings[0].severity, Severity::P1);
+    assert_eq!(findings[0].hypothesis, Some(domain::Hypothesis::AuthBypass));
+    assert!(
+        done.coverage
+            .notes
+            .iter()
+            .any(|n| n == "hypothesis discarded: ErrorSwallow"),
+        "{:?}",
+        done.coverage.notes
+    );
+    assert!(done.summary.contains("**AuthBypass**"), "{}", done.summary);
+    assert_eq!(
+        done.coverage
+            .hypotheses
+            .iter()
+            .map(|choice| (choice.hypothesis, choice.reason.as_str()))
+            .collect::<Vec<_>>(),
+        [
+            (domain::Hypothesis::AuthBypass, "default order"),
+            (domain::Hypothesis::BrokenContract, "default order"),
+            (domain::Hypothesis::ErrorSwallow, "default order"),
+        ],
+        "`price + qty` names no signal"
+    );
+    assert_eq!(
+        (done.coverage.proposed, done.coverage.without_reachability),
+        (3, 1)
+    );
+    assert!(
+        done.coverage
+            .notes
+            .iter()
+            .any(|n| n == "1 finding(s) without reachability were dropped"),
+        "{:?}",
+        done.coverage.notes
+    );
+    assert!(findings[0].reachability.is_some());
+    assert!(
+        common::poll_until(common::DEADLINE, || reviewer_sessions(&client).is_empty()),
+        "every agent closed"
+    );
+}
+
+#[test]
+fn a_silent_agent_is_uncovered_and_all_silent_reviewers_fail() {
+    let harness = common::Harness::new();
+    install_reviewers(
+        &harness,
+        &[
+            ("AuthBypass", Some(v2_answer("AuthBypass", &[]))),
+            ("BrokenContract", None),
+        ],
+    );
+    let repo = seeded_repo();
+    let daemon = harness.boot_with(|config| config.review.timeout_secs = 2);
+    let client = daemon.connect("scenario-review");
+    common::wait_for_detection(&client, |providers| {
+        providers
+            .iter()
+            .any(|p| p.descriptor.id.as_str() == "claude" && p.detection.status.is_installed())
+    });
+    let events = client.events();
+    let workspace = workspace_at(&client, repo.path());
+    let ask = |hypotheses: Vec<domain::Hypothesis>| match client.request(Request::StartReview {
+        target: ReviewTarget::Workspace {
+            workspace_id: workspace,
+            base: None,
+        },
+        tier: None,
+        provider: None,
+        preset: None,
+        instructions: None,
+        model: None,
+        effort: None,
+        reviewers: domain::ReviewerOptions {
+            count: None,
+            hypotheses,
+        },
+    }) {
+        Ok(Response::ReviewStarted { review_id }) => review_id,
+        other => panic!("{other:?}"),
+    };
+    let review_id = ask(vec![
+        domain::Hypothesis::AuthBypass,
+        domain::Hypothesis::BrokenContract,
+    ]);
+    assert!(common::poll_until(common::DEADLINE, || harness
+        .root()
+        .join("started-AuthBypass")
+        .exists()));
+    if let Some(agent) = reviewer_sessions(&client).into_iter().find(|s| {
+        s.title
+            .user
+            .as_deref()
+            .is_some_and(|t| t.ends_with("AuthBypass"))
+    }) {
+        report_idle(&client, agent.id);
+    }
+    let done = wait_run(&events, review_id, |run| run.status.is_finished());
+    assert_eq!(done.status, ReviewStatus::Completed, "{:?}", done.error);
+    assert_eq!(done.reviewers, 2);
+    assert!(
+        done.coverage
+            .notes
+            .iter()
+            .any(|n| n.starts_with("hypothesis_uncovered: BrokenContract: timed out")),
+        "{:?}",
+        done.coverage.notes
+    );
+    assert!(common::poll_until(common::DEADLINE, || reviewer_sessions(
+        &client
+    )
+    .is_empty()));
+
+    let review_id = ask(vec![domain::Hypothesis::BrokenContract]);
+    let failed = wait_run(&events, review_id, |run| run.status.is_finished());
+    assert_eq!(failed.status, ReviewStatus::Failed);
+    assert!(
+        failed
+            .error
+            .as_deref()
+            .unwrap_or("")
+            .starts_with("every reviewer failed"),
+        "{:?}",
+        failed.error
+    );
+}
+
+#[test]
+fn max_parallel_reviews_bounds_the_daemon_wide_workers() {
+    let harness = common::Harness::new();
+    install_reviewers(&harness, &[("AuthBypass", None)]);
+    let first = seeded_repo();
+    let second = seeded_repo();
+    let daemon = harness.boot_with(|config| {
+        config.review.max_parallel_reviews = 1;
+        config.review.reviewers = 1;
+    });
+    let client = daemon.connect("scenario-review");
+    common::wait_for_detection(&client, |providers| {
+        providers
+            .iter()
+            .any(|p| p.descriptor.id.as_str() == "claude" && p.detection.status.is_installed())
+    });
+    let one = workspace_at(&client, first.path());
+    let two = workspace_at(&client, second.path());
+    let running = start(&client, one, None).expect("the first runs");
+    assert_eq!(start(&client, two, None), Err(ErrorCode::Conflict));
+    client
+        .request(Request::CancelReview { review_id: running })
+        .expect("cancel");
+}
+
+/// `core/lib.rs` defines `total`, `app/main.rs` calls it; the working tree changes `total`.
+fn module_repo() -> test_support::TempRepo {
+    let repo = test_support::init_repo().expect("repo");
+    let lib = |op: &str| {
+        format!("pub fn total(price: u32, qty: u32) -> u32 {{\n    price {op} qty\n}}\n")
+    };
+    std::fs::create_dir_all(repo.path().join("core")).expect("core");
+    std::fs::create_dir_all(repo.path().join("app")).expect("app");
+    std::fs::write(repo.path().join("core/lib.rs"), lib("*")).expect("lib");
+    std::fs::write(
+        repo.path().join("app/main.rs"),
+        "use crate::core;\n\nfn main() {\n    let sum = core::total(2, 3);\n    println!(\"{sum}\");\n}\n",
+    )
+    .expect("main");
+    git(repo.path(), &["add", "core/lib.rs", "app/main.rs"]);
+    git(repo.path(), &["commit", "-qm", "add total"]);
+    std::fs::write(repo.path().join("core/lib.rs"), lib("+")).expect("lib");
+    repo
+}
+
+fn kb(client: &client::Client, workspace_id: WorkspaceId) -> Vec<domain::KbFile> {
+    match client.request(Request::GetKb { workspace_id }) {
+        Ok(Response::Kb(files)) => files,
+        other => panic!("expected Kb, got {other:?}"),
+    }
+}
+
+fn kb_file<'a>(files: &'a [domain::KbFile], name: &str) -> &'a domain::KbFile {
+    files.iter().find(|file| file.file == name).expect(name)
+}
+
+fn start_tier(client: &client::Client, workspace_id: WorkspaceId, tier: domain::Tier) -> ReviewId {
+    match client.request(Request::StartReview {
+        target: ReviewTarget::Workspace {
+            workspace_id,
+            base: None,
+        },
+        tier: Some(tier),
+        provider: None,
+        preset: None,
+        instructions: None,
+        model: None,
+        effort: None,
+        reviewers: domain::ReviewerOptions::default(),
+    }) {
+        Ok(Response::ReviewStarted { review_id }) => review_id,
+        other => panic!("expected ReviewStarted, got {other:?}"),
+    }
+}
+
+#[test]
+fn a_review_refreshes_the_architecture_and_a_good_run_teaches_its_patterns() {
+    let harness = common::Harness::new();
+    let answer = serde_json::json!({
+        "schema": "forge.review/v2", "summary": "fine", "findings": [],
+        "patterns": ["totals multiply price by quantity", "ghp_0123456789abcdefghijklmnopqrstuvwxyz is never logged"],
+    })
+    .to_string();
+    install_reviewer(&harness, &answer, Reviewer::AnswersAndExits);
+    let repo = module_repo();
+    let daemon = boot(&harness);
+    let client = daemon.connect("scenario-review");
+    let events = client.events();
+    let workspace = workspace_at(&client, repo.path());
+    let review_id = start(&client, workspace, None).expect("StartReview");
+    let done = wait_run(&events, review_id, |run| run.status.is_finished());
+    assert_eq!(done.status, ReviewStatus::Completed, "{:?}", done.error);
+
+    let files = kb(&client, workspace);
+    let architecture = kb_file(&files, "architecture.md");
+    assert_eq!(architecture.source, "daemon");
+    assert!(
+        architecture.content.contains("\n## app\n") && architecture.content.contains("\n## core\n"),
+        "{}",
+        architecture.content
+    );
+    assert!(
+        architecture.content.contains("- imports core (1)"),
+        "{}",
+        architecture.content
+    );
+    let patterns: Vec<String> =
+        serde_json::from_str(&kb_file(&files, "patterns.json").content).expect("json");
+    assert_eq!(
+        patterns,
+        [
+            "totals multiply price by quantity",
+            "«redacted» is never logged"
+        ]
+    );
+    assert_eq!(kb_file(&files, "learned-rules.md").source, "derived");
+    assert_eq!(kb_file(&files, "false-positives.json").content.trim(), "[]");
+}
+
+#[test]
+fn a_run_below_four_teaches_nothing() {
+    let harness = common::Harness::new();
+    let answer = serde_json::json!({
+        "schema": "forge.review/v2", "summary": "broken",
+        "findings": [{"path": "core/lib.rs", "line": 2, "severity": "P0", "category": "logic",
+            "confidence": 0.9, "title": "t", "body": "b", "evidence": "price + qty",
+            "reachability": {"kind": "automatic", "trigger": "every total"}}],
+        "patterns": ["should not be kept"],
+    })
+    .to_string();
+    install_reviewer(&harness, &answer, Reviewer::AnswersAndExits);
+    let repo = module_repo();
+    let daemon = boot(&harness);
+    let client = daemon.connect("scenario-review");
+    let events = client.events();
+    let workspace = workspace_at(&client, repo.path());
+    let review_id = start(&client, workspace, None).expect("StartReview");
+    let done = wait_run(&events, review_id, |run| run.status.is_finished());
+    assert_eq!(done.status, ReviewStatus::Completed, "{:?}", done.error);
+    assert!(done.score.is_some_and(|score| score < 4.0));
+    let files = kb(&client, workspace);
+    assert_eq!(kb_file(&files, "patterns.json").content.trim(), "[]");
+}
+
+#[test]
+fn a_standard_run_packs_the_knowledge_base_and_a_quick_run_does_not() {
+    let harness = common::Harness::new();
+    install_reviewer(&harness, &answer(&[]), Reviewer::AnswersAndExits);
+    let repo = module_repo();
+    let daemon = boot(&harness);
+    let client = daemon.connect("scenario-review");
+    let events = client.events();
+    let workspace = workspace_at(&client, repo.path());
+
+    let quick = start_tier(&client, workspace, domain::Tier::Quick);
+    let done = wait_run(&events, quick, |run| run.status.is_finished());
+    assert_eq!(done.status, ReviewStatus::Completed, "{:?}", done.error);
+    let pack = std::fs::read_to_string(harness.root().join("pack.md")).expect("pack");
+    assert!(!pack.contains("<kb-"), "quick carries no knowledge base");
+
+    let standard = start_tier(&client, workspace, domain::Tier::Standard);
+    let done = wait_run(&events, standard, |run| run.status.is_finished());
+    assert_eq!(done.status, ReviewStatus::Completed, "{:?}", done.error);
+    let pack = std::fs::read_to_string(harness.root().join("pack.md")).expect("pack");
+    assert!(
+        pack.contains("## architecture.md#core\n- 1 file(s) in rust"),
+        "{pack}"
+    );
+    let args = std::fs::read_to_string(harness.root().join("args")).expect("args");
+    assert!(args.contains("kb_ref"), "the prompt explains kb_ref");
+}
+
+#[test]
+fn cross_repo_signatures_reach_a_standard_pack_from_another_registered_project() {
+    let harness = common::Harness::new();
+    install_reviewer(&harness, &answer(&[]), Reviewer::AnswersAndExits);
+    let billing = test_support::init_repo().expect("billing");
+    std::fs::write(
+        billing.path().join("lib.rs"),
+        "pub fn charge(amount: u64) -> u64 {\n    amount\n}\n",
+    )
+    .expect("lib");
+    git(billing.path(), &["add", "lib.rs"]);
+    git(billing.path(), &["commit", "-qm", "charge"]);
+    let repo = test_support::init_repo().expect("repo");
+    std::fs::write(
+        repo.path().join("main.rs"),
+        "fn main() {\n    let x = 1;\n}\n",
+    )
+    .expect("main");
+    git(repo.path(), &["add", "main.rs"]);
+    git(repo.path(), &["commit", "-qm", "main"]);
+    std::fs::write(
+        repo.path().join("main.rs"),
+        "fn main() {\n    let x = charge(5);\n}\n",
+    )
+    .expect("main");
+    let daemon = boot_configured(&harness, |config| config.review.cross_repo_enabled = true);
+    let client = daemon.connect("scenario-review");
+    let events = client.events();
+    workspace_at(&client, billing.path());
+    let workspace = workspace_at(&client, repo.path());
+    let billing_name = billing
+        .path()
+        .canonicalize()
+        .expect("canonical")
+        .file_name()
+        .expect("name")
+        .to_string_lossy()
+        .into_owned();
+    std::fs::create_dir_all(repo.path().join(".forge/review")).expect("dir");
+    std::fs::write(
+        repo.path().join(".forge/review/config.toml"),
+        format!("[graph]\ncross_repo = true\nrepos = [\"{billing_name}\", \"nope\"]\n"),
+    )
+    .expect("config");
+
+    let standard = start_tier(&client, workspace, domain::Tier::Standard);
+    let done = wait_run(&events, standard, |run| run.status.is_finished());
+    assert_eq!(done.status, ReviewStatus::Completed, "{:?}", done.error);
+    let pack = std::fs::read_to_string(harness.root().join("pack.md")).expect("pack");
+    assert!(
+        pack.contains(&format!(
+            "{billing_name} lib.rs charge pub fn charge(amount: u64) -> u64 {{"
+        )),
+        "{pack}"
+    );
+    assert!(
+        done.coverage
+            .notes
+            .iter()
+            .any(|n| n == "cross-repo repo 'nope' not found"),
+        "{:?}",
+        done.coverage.notes
+    );
+
+    let quick = start_tier(&client, workspace, domain::Tier::Quick);
+    let done = wait_run(&events, quick, |run| run.status.is_finished());
+    assert_eq!(done.status, ReviewStatus::Completed, "{:?}", done.error);
+    let pack = std::fs::read_to_string(harness.root().join("pack.md")).expect("pack");
+    assert!(!pack.contains("<cross-repo-"));
+}
+
+fn start_target(client: &client::Client, target: ReviewTarget, tier: domain::Tier) -> ReviewId {
+    match client.request(Request::StartReview {
+        target,
+        tier: Some(tier),
+        provider: None,
+        preset: None,
+        instructions: None,
+        model: None,
+        effort: None,
+        reviewers: domain::ReviewerOptions::default(),
+    }) {
+        Ok(Response::ReviewStarted { review_id }) => review_id,
+        other => panic!("expected ReviewStarted, got {other:?}"),
+    }
+}
+
+fn sandbox_run(client: &client::Client, id: &str) -> domain::SandboxRun {
+    match client.request(Request::GetSandboxChecks {
+        sandbox_run_id: id.to_owned(),
+    }) {
+        Ok(Response::SandboxChecks(run)) => *run,
+        other => panic!("expected SandboxRun, got {other:?}"),
+    }
+}
+
+fn write_sandbox(repo: &Path, targets: &[(&str, &str)]) {
+    std::fs::create_dir_all(repo.join(".forge/review")).expect("dir");
+    let mut text = String::from("timeout_secs = 30\n");
+    for (name, command) in targets {
+        text.push_str(&format!(
+            "[[targets]]\nname = \"{name}\"\ncommand = '{command}'\n"
+        ));
+    }
+    std::fs::write(repo.join(".forge/review/checks.toml"), text).expect("checks.toml");
+}
+
+fn sandbox_hash(repo: &Path) -> String {
+    let text =
+        std::fs::read_to_string(repo.join(".forge/review/checks.toml")).expect("checks.toml");
+    daemon::actions::repo::hash(text.as_bytes())
+}
+
+fn approve_sandbox(
+    client: &client::Client,
+    workspace_id: WorkspaceId,
+    file_hash: String,
+) -> Result<Response, client::ClientError> {
+    client.request(Request::ApproveSandboxChecks {
+        workspace_id,
+        file_hash,
+    })
+}
+
+fn deep_run(
+    client: &client::Client,
+    events: &flume::Receiver<DaemonEvent>,
+    workspace_id: WorkspaceId,
+) -> (ReviewRun, domain::SandboxRun) {
+    let id = start_target(
+        client,
+        ReviewTarget::Workspace {
+            workspace_id,
+            base: None,
+        },
+        domain::Tier::Deep,
+    );
+    let done = wait_run(events, id, |run| run.status.is_finished());
+    let sandbox = sandbox_run(client, &done.sandbox_run_id.clone().expect("linked"));
+    (done, sandbox)
+}
+
+#[cfg(target_os = "macos")]
+#[test]
+fn a_deep_run_packs_its_sandbox_failures_and_links_the_run() {
+    let harness = common::Harness::new();
+    install_reviewer(&harness, &answer(&[]), Reviewer::AnswersAndExits);
+    let repo = seeded_repo();
+    write_sandbox(
+        repo.path(),
+        &[
+            ("lint", "echo fine"),
+            ("test", "echo 1 failed; echo boom >&2; exit 2"),
+        ],
+    );
+    let daemon = boot_configured(&harness, |config| config.review.sandbox_checks = true);
+    let client = daemon.connect("scenario-review");
+    let events = client.events();
+    let workspace = workspace_at(&client, repo.path());
+    approve_sandbox(&client, workspace, sandbox_hash(repo.path())).expect("approved");
+
+    let deep = start_target(
+        &client,
+        ReviewTarget::Workspace {
+            workspace_id: workspace,
+            base: None,
+        },
+        domain::Tier::Deep,
+    );
+    let done = wait_run(&events, deep, |run| run.status.is_finished());
+    assert_eq!(done.status, ReviewStatus::Completed, "{:?}", done.error);
+    let pack = std::fs::read_to_string(harness.root().join("pack.md")).expect("pack");
+    assert!(
+        pack.contains("## test (exit 2)\nstdout:\n1 failed\nstderr:\nboom\n"),
+        "{pack}"
+    );
+    assert!(pack.contains("## lint (exit 0)\n"));
+    let id = done.sandbox_run_id.clone().expect("linked");
+    let sandbox = sandbox_run(&client, &id);
+    assert_eq!(sandbox.review_id, Some(deep));
+    assert!(sandbox.failed());
+    assert!(
+        porcelain(repo.path())
+            .lines()
+            .all(|line| !line.contains("sandbox/")),
+        "{}",
+        porcelain(repo.path())
+    );
+
+    let quick = start_target(
+        &client,
+        ReviewTarget::Workspace {
+            workspace_id: workspace,
+            base: None,
+        },
+        domain::Tier::Quick,
+    );
+    let done = wait_run(&events, quick, |run| run.status.is_finished());
+    assert_eq!(done.status, ReviewStatus::Completed, "{:?}", done.error);
+    assert_eq!(done.sandbox_run_id, None, "quick runs no sandbox checks");
+}
+
+#[cfg(target_os = "macos")]
+#[test]
+fn a_pull_requests_sandbox_runs_in_a_worktree_of_its_head_that_is_gone_after() {
+    let harness = common::Harness::new();
+    install_reviewer(&harness, &answer(&[]), Reviewer::AnswersAndExits);
+    let (_origin, checkout, _head) = pull_request_checkout();
+    write_sandbox(checkout.path(), &[("head", "test -f pr.rs")]);
+    let daemon = boot_configured(&harness, |config| config.review.sandbox_checks = true);
+    let client = daemon.connect("scenario-review");
+    let events = client.events();
+    let workspace = workspace_at(&client, checkout.path());
+    approve_sandbox(&client, workspace, sandbox_hash(checkout.path())).expect("approved");
+    assert!(
+        !checkout.path().join("pr.rs").exists(),
+        "only the head has it"
+    );
+
+    let run = start_target(
+        &client,
+        ReviewTarget::PullRequest {
+            workspace_id: workspace,
+            number: 1,
+            base: Some("main".into()),
+        },
+        domain::Tier::Deep,
+    );
+    let done = wait_run(&events, run, |run| run.status.is_finished());
+    assert_eq!(done.status, ReviewStatus::Completed, "{:?}", done.error);
+    let sandbox = sandbox_run(&client, &done.sandbox_run_id.clone().expect("linked"));
+    assert_eq!(sandbox.targets.len(), 1);
+    assert!(sandbox.targets[0].passed(), "{sandbox:?}");
+    let worktrees = Command::new("git")
+        .arg("-C")
+        .arg(checkout.path())
+        .args(["worktree", "list", "--porcelain"])
+        .output()
+        .expect("git worktree list");
+    let listed = String::from_utf8_lossy(&worktrees.stdout);
+    assert_eq!(listed.matches("worktree ").count(), 1, "{listed}");
+    assert!(!harness
+        .forge_home()
+        .join("review-sandbox")
+        .join(run.to_string())
+        .exists());
+}
+
+#[cfg(target_os = "macos")]
+#[test]
+fn checks_toml_runs_only_while_it_is_the_copy_the_person_approved() {
+    let harness = common::Harness::new();
+    install_reviewer(&harness, &answer(&[]), Reviewer::AnswersAndExits);
+    let repo = seeded_repo();
+    write_sandbox(
+        repo.path(),
+        &[("mark", "echo ran > \"$FORGE_SANDBOX_CACHE/ran\"")],
+    );
+    let marker = repo.path().join(".forge/review/sandbox/cache/ran");
+    let daemon = boot_configured(&harness, |config| config.review.sandbox_checks = true);
+    let client = daemon.connect("scenario-review");
+    let events = client.events();
+    let workspace = workspace_at(&client, repo.path());
+
+    let (done, sandbox) = deep_run(&client, &events, workspace);
+    assert_eq!(done.status, ReviewStatus::Completed, "{:?}", done.error);
+    assert!(sandbox.targets.is_empty());
+    assert!(
+        sandbox
+            .error
+            .as_deref()
+            .is_some_and(|error| error.contains("is not approved")),
+        "{sandbox:?}"
+    );
+    assert!(
+        done.coverage
+            .notes
+            .iter()
+            .any(|note| note.starts_with("Sandbox checks:") && note.contains("is not approved")),
+        "{:?}",
+        done.coverage.notes
+    );
+    assert!(!marker.exists(), "nothing ran");
+    let offered = sandbox.unapproved_hash.expect("the hash to approve");
+    assert_eq!(offered, sandbox_hash(repo.path()));
+
+    match approve_sandbox(&client, workspace, "0".repeat(64)) {
+        Err(client::ClientError::Protocol(error)) => {
+            assert_eq!(error.code, ErrorCode::PreconditionFailed);
+        }
+        other => panic!("expected PreconditionFailed, got {other:?}"),
+    }
+    approve_sandbox(&client, workspace, offered).expect("approved");
+    let (_, sandbox) = deep_run(&client, &events, workspace);
+    assert_eq!(sandbox.error, None);
+    assert!(sandbox.targets[0].passed(), "{sandbox:?}");
+    assert!(marker.exists());
+
+    std::fs::remove_file(&marker).expect("marker");
+    write_sandbox(
+        repo.path(),
+        &[("mark", "echo again > \"$FORGE_SANDBOX_CACHE/ran\"")],
+    );
+    let (_, sandbox) = deep_run(&client, &events, workspace);
+    assert!(
+        sandbox
+            .error
+            .as_deref()
+            .is_some_and(|error| error.contains("changed since it was approved")),
+        "{sandbox:?}"
+    );
+    assert_eq!(sandbox.unapproved_hash, Some(sandbox_hash(repo.path())));
+    assert!(!marker.exists(), "a changed file does not run");
+}
+
+#[cfg(target_os = "macos")]
+#[test]
+fn a_repository_cannot_turn_the_sandbox_network_on_but_the_user_can() {
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("listen");
+    let port = listener.local_addr().expect("addr").port();
+    let probe = format!("/usr/bin/nc -z -w 2 127.0.0.1 {port}");
+    let reach = |network: bool| {
+        let harness = common::Harness::new();
+        install_reviewer(&harness, &answer(&[]), Reviewer::AnswersAndExits);
+        let repo = seeded_repo();
+        write_sandbox(repo.path(), &[("net", probe.as_str())]);
+        std::fs::write(
+            repo.path().join(".forge/review/config.toml"),
+            "[security]\nsandbox_network = true\nsandbox_env_whitelist = [\"PATH\", \"HOME\"]\n",
+        )
+        .expect("config");
+        let daemon = boot_configured(&harness, |config| {
+            config.review.sandbox_checks = true;
+            config.review.sandbox_network = network;
+        });
+        let client = daemon.connect("scenario-review");
+        let events = client.events();
+        let workspace = workspace_at(&client, repo.path());
+        approve_sandbox(&client, workspace, sandbox_hash(repo.path())).expect("approved");
+        let (done, sandbox) = deep_run(&client, &events, workspace);
+        assert_eq!(done.status, ReviewStatus::Completed, "{:?}", done.error);
+        assert!(
+            done.coverage
+                .notes
+                .iter()
+                .any(|note| note.contains("`[security]` is ignored")),
+            "{:?}",
+            done.coverage.notes
+        );
+        sandbox.targets[0].passed()
+    };
+    assert!(!reach(false), "the repository asked for the network");
+    assert!(reach(true), "the user's config grants it");
+}
+
+#[cfg(target_os = "macos")]
+#[test]
+fn a_cache_directory_committed_as_a_symlink_is_refused() {
+    let harness = common::Harness::new();
+    install_reviewer(&harness, &answer(&[]), Reviewer::AnswersAndExits);
+    let repo = seeded_repo();
+    let elsewhere = tempfile::tempdir().expect("elsewhere");
+    write_sandbox(
+        repo.path(),
+        &[("mark", "echo x > \"$FORGE_SANDBOX_CACHE/x\"")],
+    );
+    std::fs::create_dir_all(repo.path().join(".forge/review/sandbox")).expect("dir");
+    std::os::unix::fs::symlink(
+        elsewhere.path(),
+        repo.path().join(".forge/review/sandbox/cache"),
+    )
+    .expect("symlink");
+    let daemon = boot_configured(&harness, |config| config.review.sandbox_checks = true);
+    let client = daemon.connect("scenario-review");
+    let events = client.events();
+    let workspace = workspace_at(&client, repo.path());
+    approve_sandbox(&client, workspace, sandbox_hash(repo.path())).expect("approved");
+
+    let (_, sandbox) = deep_run(&client, &events, workspace);
+    assert!(sandbox.targets.is_empty(), "{sandbox:?}");
+    assert!(
+        sandbox
+            .error
+            .as_deref()
+            .is_some_and(|error| error.contains("is a symlink")),
+        "{sandbox:?}"
+    );
+    assert!(!elsewhere.path().join("x").exists());
+}
+
+#[cfg(target_os = "macos")]
+#[test]
+fn a_deep_runs_targets_stop_at_the_reviews_budget() {
+    let harness = common::Harness::new();
+    install_reviewer(&harness, &answer(&[]), Reviewer::AnswersAndExits);
+    let repo = seeded_repo();
+    write_sandbox(
+        repo.path(),
+        &[
+            ("slow", "/bin/sleep 60"),
+            ("next", "echo ran > \"$FORGE_SANDBOX_CACHE/next\""),
+        ],
+    );
+    let daemon = boot_configured(&harness, |config| {
+        config.review.sandbox_checks = true;
+        config.review.timeout_secs = 3;
+    });
+    let client = daemon.connect("scenario-review");
+    let events = client.events();
+    let workspace = workspace_at(&client, repo.path());
+    approve_sandbox(&client, workspace, sandbox_hash(repo.path())).expect("approved");
+
+    let (done, sandbox) = deep_run(&client, &events, workspace);
+    assert_eq!(done.status, ReviewStatus::Completed, "{:?}", done.error);
+    assert_eq!(sandbox.targets.len(), 1, "{sandbox:?}");
+    assert!(sandbox.targets[0].timed_out);
+    assert!(sandbox.targets[0].duration_ms < 10_000, "{sandbox:?}");
+    assert!(
+        sandbox
+            .error
+            .as_deref()
+            .is_some_and(|error| error.contains("stopped before `next`")),
+        "{sandbox:?}"
+    );
+    assert!(!repo
+        .path()
+        .join(".forge/review/sandbox/cache/next")
+        .exists());
+}
+
+#[cfg(target_os = "macos")]
+#[test]
+fn a_cancelled_deep_run_starts_no_further_target() {
+    let harness = common::Harness::new();
+    install_reviewer(&harness, &answer(&[]), Reviewer::AnswersAndExits);
+    let repo = seeded_repo();
+    write_sandbox(
+        repo.path(),
+        &[
+            ("slow", "/bin/sleep 3"),
+            ("next", "echo ran > \"$FORGE_SANDBOX_CACHE/next\""),
+        ],
+    );
+    let daemon = boot_configured(&harness, |config| config.review.sandbox_checks = true);
+    let client = daemon.connect("scenario-review");
+    let events = client.events();
+    let workspace = workspace_at(&client, repo.path());
+    approve_sandbox(&client, workspace, sandbox_hash(repo.path())).expect("approved");
+
+    let id = start_target(
+        &client,
+        ReviewTarget::Workspace {
+            workspace_id: workspace,
+            base: None,
+        },
+        domain::Tier::Deep,
+    );
+    wait_run(&events, id, |run| run.stage == Some(ReviewStage::Pack));
+    client
+        .request(Request::CancelReview { review_id: id })
+        .expect("cancel");
+    let done = wait_run(&events, id, |run| run.status.is_finished());
+    assert_eq!(done.status, ReviewStatus::Cancelled);
+    let sandbox = sandbox_run(&client, &done.sandbox_run_id.clone().expect("linked"));
+    assert!(
+        sandbox
+            .error
+            .as_deref()
+            .is_some_and(|error| error.contains("the review was cancelled")),
+        "{sandbox:?}"
+    );
+    assert!(!repo
+        .path()
+        .join(".forge/review/sandbox/cache/next")
+        .exists());
+}
+
+#[derive(Clone, Copy)]
+enum Fixer {
+    Exits,
+    /// Stays open, as a fixer stopped on a permission prompt does.
+    Waits,
+}
+
+/// One fake `claude`: as a reviewer (`--add-dir`) it reports one finding until
+/// the fixer's marker exists and none after; as the fixer it writes the marker.
+fn install_fix_loop(harness: &common::Harness) {
+    install_fix_loop_with(
+        harness,
+        &answer(&[finding(2, "P1", "logic", "price + qty")]),
+        Some(&answer(&[])),
+        Fixer::Exits,
+    );
+}
+
+/// [`install_fix_loop`] answering `broken`, then `fixed` once the marker exists,
+/// or never when that is `None`. Each reviewer's argv is appended to `invocations`.
+fn install_fix_loop_with(
+    harness: &common::Harness,
+    broken: &str,
+    fixed: Option<&str>,
+    fixer: Fixer,
+) {
+    let record = |text: &str| {
+        serde_json::json!({
+            "type": "assistant",
+            "message": {"role": "assistant", "content": [{"type": "text", "text": text}]},
+        })
+        .to_string()
+    };
+    let broken_file = harness.root().join("broken.jsonl");
+    std::fs::write(&broken_file, format!("{}\n", record(broken))).expect("broken");
+    let after = match fixed {
+        Some(fixed) => {
+            let fixed_file = harness.root().join("fixed.jsonl");
+            std::fs::write(&fixed_file, format!("{}\n", record(fixed))).expect("fixed");
+            format!(
+                "/bin/cat {} > \"$dir/$id.jsonl\"",
+                common::sh_quote(&fixed_file.to_string_lossy())
+            )
+        }
+        None => "exec /bin/cat".to_owned(),
+    };
+    let fixer_tail = match fixer {
+        Fixer::Exits => "exit 0",
+        Fixer::Waits => "exec /bin/cat",
+    };
+    let marker = harness.root().join("fixed-by-agent");
+    let script = format!(
+        "#!/bin/sh\n\
+         if [ \"$1\" = --version ]; then echo '2.1.0 (Claude Code)'; exit 0; fi\n\
+         id=''\nprev=''\nreviewer=''\n\
+         for a in \"$@\"; do [ \"$prev\" = --session-id ] && id=$a; [ \"$a\" = --add-dir ] && reviewer=1; prev=$a; done\n\
+         if [ -z \"$reviewer\" ]; then /usr/bin/touch {marker}; {fixer_tail}; fi\n\
+         printf '%s\\n' \"$*\" >> {log}\n\
+         slug=$(printf '%s' \"$FORGE_WORKSPACE\" | /usr/bin/tr -c 'A-Za-z0-9' '-')\n\
+         dir=\"$CLAUDE_CONFIG_DIR/projects/$slug\"\n\
+         /bin/mkdir -p \"$dir\"\n\
+         if [ -e {marker} ]; then {after}; else /bin/cat {broken} > \"$dir/$id.jsonl\"; fi\n\
+         exit 0\n",
+        marker = common::sh_quote(&marker.to_string_lossy()),
+        broken = common::sh_quote(&broken_file.to_string_lossy()),
+        log = common::sh_quote(&harness.root().join("invocations").to_string_lossy()),
+    );
+    common::write_executable(harness.bin(), "claude", &script);
+}
+
+fn git_log(repo: &Path) -> String {
+    let out = Command::new("git")
+        .arg("-C")
+        .arg(repo)
+        .args(["log", "--format=%H"])
+        .output()
+        .expect("git log");
+    String::from_utf8_lossy(&out.stdout).into_owned()
+}
+
+#[test]
+fn a_fix_loop_fixes_reviews_again_and_stops_at_zero_without_committing() {
+    let harness = common::Harness::new();
+    install_fix_loop(&harness);
+    let repo = seeded_repo();
+    let log = git_log(repo.path());
+    let daemon = boot(&harness);
+    let client = daemon.connect("scenario-review");
+    let events = client.events();
+    let workspace = workspace_at(&client, repo.path());
+    let first = start(&client, workspace, None).expect("StartReview");
+    let done = wait_run(&events, first, |run| run.status.is_finished());
+    assert_eq!(done.status, ReviewStatus::Completed, "{:?}", done.error);
+    assert_eq!(get(&client, first).1.len(), 1);
+
+    let started = client
+        .request(Request::StartFixLoop {
+            review_id: first,
+            max_iterations: Some(3),
+            provider: None,
+            profile_id: None,
+        })
+        .expect("StartFixLoop");
+    assert_eq!(
+        started,
+        Response::FixLoopStarted {
+            workspace_id: workspace
+        }
+    );
+    let again = client.request(Request::StartFixLoop {
+        review_id: first,
+        max_iterations: None,
+        provider: None,
+        profile_id: None,
+    });
+    assert!(
+        matches!(again, Err(client::ClientError::Protocol(ref error)) if error.code == ErrorCode::Conflict),
+        "{again:?}"
+    );
+    let finished = common::wait_for(&events, common::DEADLINE, |event| {
+        matches!(event, DaemonEvent::FixLoopUpdated { workspace_id, done: true, .. } if *workspace_id == workspace)
+    })
+    .expect("the loop ends");
+    let DaemonEvent::FixLoopUpdated {
+        iteration,
+        findings,
+        error,
+        ..
+    } = finished
+    else {
+        unreachable!()
+    };
+    assert_eq!(
+        (iteration, findings, error),
+        (1, 0, None),
+        "two reviews in all, the second clean"
+    );
+    assert!(
+        harness.root().join("fixed-by-agent").exists(),
+        "the fixer ran"
+    );
+    assert_eq!(git_log(repo.path()), log, "the loop never commits");
+    assert!(
+        common::sessions(&client)
+            .iter()
+            .all(|session| session.title.user.as_deref() != Some("Forge Review · fix loop")),
+        "the fixer was closed"
+    );
+}
+
+#[test]
+fn a_fix_loop_refuses_a_pull_request_review() {
+    let harness = common::Harness::new();
+    install_reviewer(&harness, &answer(&[]), Reviewer::AnswersAndExits);
+    let (_origin, checkout, _head) = pull_request_checkout();
+    let daemon = boot(&harness);
+    let client = daemon.connect("scenario-review");
+    let events = client.events();
+    let workspace = workspace_at(&client, checkout.path());
+    let run = start_target(
+        &client,
+        ReviewTarget::PullRequest {
+            workspace_id: workspace,
+            number: 1,
+            base: Some("main".into()),
+        },
+        domain::Tier::Quick,
+    );
+    wait_run(&events, run, |run| run.status.is_finished());
+    let refused = client.request(Request::StartFixLoop {
+        review_id: run,
+        max_iterations: None,
+        provider: None,
+        profile_id: None,
+    });
+    assert!(
+        matches!(refused, Err(client::ClientError::Protocol(ref error)) if error.code == ErrorCode::InvalidRequest),
+        "{refused:?}"
+    );
+}
+
+fn start_fix_loop(client: &client::Client, review_id: ReviewId) {
+    let started = client
+        .request(Request::StartFixLoop {
+            review_id,
+            max_iterations: Some(3),
+            provider: None,
+            profile_id: None,
+        })
+        .expect("StartFixLoop");
+    assert!(
+        matches!(started, Response::FixLoopStarted { .. }),
+        "{started:?}"
+    );
+}
+
+/// `(iteration, findings, error)` of the loop's last update.
+fn fix_loop_end(
+    events: &flume::Receiver<DaemonEvent>,
+    workspace: WorkspaceId,
+) -> (u32, u32, Option<String>) {
+    let finished = common::wait_for(events, common::DEADLINE, |event| {
+        matches!(event, DaemonEvent::FixLoopUpdated { workspace_id, done: true, .. } if *workspace_id == workspace)
+    })
+    .expect("the loop ends");
+    let DaemonEvent::FixLoopUpdated {
+        iteration,
+        findings,
+        error,
+        ..
+    } = finished
+    else {
+        unreachable!()
+    };
+    (iteration, findings, error)
+}
+
+fn fixer(client: &client::Client) -> Option<domain::Session> {
+    common::sessions(client)
+        .into_iter()
+        .find(|session| session.title.user.as_deref() == Some("Forge Review · fix loop"))
+}
+
+/// The `slice-<Hypothesis>.md` files the reviewers were pointed at.
+fn slices(log: &str) -> std::collections::BTreeSet<&str> {
+    log.split("slice-")
+        .skip(1)
+        .filter_map(|rest| rest.split_once(".md").map(|(name, _)| name))
+        .filter(|name| !name.is_empty() && name.chars().all(|c| c.is_ascii_alphanumeric()))
+        .collect()
+}
+
+#[test]
+fn a_fix_loop_reviews_again_with_the_first_runs_preset_instructions_and_reviewers() {
+    let harness = common::Harness::new();
+    install_fix_loop_with(
+        &harness,
+        &v2_answer("any", &[finding(2, "P1", "logic", "price + qty")]),
+        Some(&v2_answer("any", &[])),
+        Fixer::Exits,
+    );
+    let repo = seeded_repo();
+    let daemon = boot(&harness);
+    let client = daemon.connect("scenario-review");
+    let events = client.events();
+    let workspace = workspace_at(&client, repo.path());
+    let first = match client.request(Request::StartReview {
+        target: ReviewTarget::Workspace {
+            workspace_id: workspace,
+            base: None,
+        },
+        tier: None,
+        provider: None,
+        preset: Some(domain::CUSTOM_PRESET.into()),
+        instructions: Some("Check the arithmetic in total.".into()),
+        model: Some("sonnet".into()),
+        effort: Some("low".into()),
+        reviewers: domain::ReviewerOptions {
+            count: None,
+            hypotheses: vec![
+                domain::Hypothesis::AuthBypass,
+                domain::Hypothesis::MigrationGap,
+            ],
+        },
+    }) {
+        Ok(Response::ReviewStarted { review_id }) => review_id,
+        other => panic!("expected ReviewStarted, got {other:?}"),
+    };
+    let done = wait_run(&events, first, |run| run.status.is_finished());
+    assert_eq!(done.status, ReviewStatus::Completed, "{:?}", done.error);
+    let invocations = harness.root().join("invocations");
+    let before = std::fs::read_to_string(&invocations)
+        .expect("invocations")
+        .len();
+
+    start_fix_loop(&client, first);
+    assert_eq!(fix_loop_end(&events, workspace), (1, 0, None));
+    let log = std::fs::read_to_string(&invocations).expect("invocations");
+    let again = &log[before..];
+    assert_eq!(
+        slices(again),
+        ["AuthBypass", "MigrationGap"].into_iter().collect(),
+        "{again}"
+    );
+    assert_eq!(again.matches("--model sonnet").count(), 2, "{again}");
+    assert_eq!(again.matches("--effort low").count(), 2, "{again}");
+    assert!(again.contains("Check the arithmetic in total."), "{again}");
+}
+
+#[test]
+fn cancelling_a_fix_loop_cancels_the_review_it_is_waiting_on() {
+    let harness = common::Harness::new();
+    install_fix_loop_with(
+        &harness,
+        &answer(&[finding(2, "P1", "logic", "price + qty")]),
+        None,
+        Fixer::Exits,
+    );
+    let repo = seeded_repo();
+    let daemon = boot(&harness);
+    let client = daemon.connect("scenario-review");
+    let events = client.events();
+    let workspace = workspace_at(&client, repo.path());
+    let first = start(&client, workspace, None).expect("StartReview");
+    wait_run(&events, first, |run| run.status.is_finished());
+
+    start_fix_loop(&client, first);
+    let again = common::wait_for(&events, common::DEADLINE, |event| {
+        matches!(event, DaemonEvent::ReviewUpdated { run } if run.id != first && run.session_id.is_some())
+    })
+    .expect("the loop reviews again");
+    let DaemonEvent::ReviewUpdated { run: again } = again else {
+        unreachable!()
+    };
+    client
+        .request(Request::CancelFixLoop {
+            workspace_id: workspace,
+        })
+        .expect("CancelFixLoop");
+    assert_eq!(
+        fix_loop_end(&events, workspace).2.as_deref(),
+        Some("cancelled")
+    );
+    assert!(common::poll_until(common::DEADLINE, || get(
+        &client, again.id
+    )
+    .0
+    .status
+    .is_finished()));
+    assert_eq!(get(&client, again.id).0.status, ReviewStatus::Cancelled);
+    assert!(
+        common::poll_until(common::DEADLINE, || common::sessions(&client)
+            .iter()
+            .all(|session| session.title.user.as_deref() != Some("Forge Review"))),
+        "the reviewer was closed"
+    );
+}
+
+#[test]
+fn a_fixer_waiting_for_an_answer_stops_the_loop_and_stays_open() {
+    let harness = common::Harness::new();
+    install_fix_loop_with(
+        &harness,
+        &answer(&[finding(2, "P1", "logic", "price + qty")]),
+        Some(&answer(&[])),
+        Fixer::Waits,
+    );
+    let repo = seeded_repo();
+    let daemon = boot(&harness);
+    let client = daemon.connect("scenario-review");
+    let events = client.events();
+    let workspace = workspace_at(&client, repo.path());
+    let first = start(&client, workspace, None).expect("StartReview");
+    wait_run(&events, first, |run| run.status.is_finished());
+
+    start_fix_loop(&client, first);
+    let mut found = None;
+    assert!(common::poll_until(common::DEADLINE, || {
+        found = fixer(&client);
+        found.is_some()
+    }));
+    let session = found.expect("the fixer");
+    report_waiting(&client, session.id);
+    assert_eq!(
+        fix_loop_end(&events, workspace),
+        (
+            0,
+            1,
+            Some("the fixer is waiting for an answer in its terminal".into())
+        )
+    );
+    let left = fixer(&client).expect("the fixer is left for the person");
+    assert_eq!(left.id, session.id);
+    assert!(!left.state.is_terminal(), "{:?}", left.state);
+}
+
+#[test]
+fn every_reviewer_restarts_read_only_after_the_daemon_restarts() {
+    let harness = common::Harness::new();
+    install_reviewers(
+        &harness,
+        &[
+            ("AuthBypass", None),
+            ("BrokenContract", None),
+            ("ErrorSwallow", None),
+        ],
+    );
+    let repo = seeded_repo();
+    let keep = |config: &mut daemon::config::Config| config.sessions.persist_history = true;
+    let first = harness.boot_with(keep);
+    let client = first.connect("scenario-review");
+    common::wait_for_detection(&client, |providers| {
+        providers
+            .iter()
+            .any(|p| p.descriptor.id.as_str() == "claude" && p.detection.status.is_installed())
+    });
+    let workspace = workspace_at(&client, repo.path());
+    start(&client, workspace, None).expect("StartReview");
+    assert!(common::poll_until(common::DEADLINE, || {
+        reviewer_sessions(&client).len() == 3
+            && ["AuthBypass", "BrokenContract", "ErrorSwallow"]
+                .iter()
+                .all(|h| harness.root().join(format!("started-{h}")).exists())
+    }));
+    let agents: Vec<domain::SessionId> = reviewer_sessions(&client).iter().map(|s| s.id).collect();
+    drop(client);
+    first.crash();
+
+    let second = harness.boot_with(keep);
+    let client = second.connect("scenario-review");
+    common::wait_for_detection(&client, |providers| {
+        providers
+            .iter()
+            .any(|p| p.descriptor.id.as_str() == "claude" && p.detection.status.is_installed())
+    });
+    let log = harness.root().join("invocations");
+    let launched = std::fs::read_to_string(&log)
+        .expect("invocations")
+        .lines()
+        .count();
+    for agent in &agents {
+        client
+            .request(Request::RestartSession { session_id: *agent })
+            .expect("RestartSession");
+    }
+    let mut restarts = Vec::new();
+    assert!(
+        common::poll_until(common::DEADLINE, || {
+            restarts = std::fs::read_to_string(&log)
+                .unwrap_or_default()
+                .lines()
+                .skip(launched)
+                .map(str::to_owned)
+                .collect();
+            restarts.len() == agents.len()
+        }),
+        "{restarts:?}"
+    );
+    for args in &restarts {
+        assert!(
+            args.contains("--permission-mode plan"),
+            "a restarted agent must stay read-only: {args}"
+        );
+    }
+    first.kill_leftover_sessions();
+    second.kill_leftover_sessions();
+}
+
+#[test]
+fn the_diffs_signals_choose_the_reviewers_and_the_instructions_scope_reaches_them() {
+    let harness = common::Harness::new();
+    let chosen = ["LifecycleCancelRetry", "AuthBypass", "BrokenContract"];
+    let answers: Vec<(&str, Option<String>)> = chosen
+        .iter()
+        .map(|h| (*h, Some(v2_answer(h, &[]))))
+        .collect();
+    install_reviewers(&harness, &answers);
+    let repo = test_support::init_repo().expect("repo");
+    std::fs::write(repo.path().join("main.rs"), source("*")).expect("write");
+    git(repo.path(), &["add", "main.rs"]);
+    git(repo.path(), &["commit", "-qm", "add total"]);
+    let stop = "fn stop(cancelled: &AtomicBool) {\n    if cancelled.load(Ordering::SeqCst) {\n        abort();\n    }\n}\n";
+    std::fs::write(repo.path().join("main.rs"), source("*") + stop).expect("write");
+    let daemon = harness.boot();
+    let client = daemon.connect("scenario-review");
+    common::wait_for_detection(&client, |providers| {
+        providers
+            .iter()
+            .any(|p| p.descriptor.id.as_str() == "claude" && p.detection.status.is_installed())
+    });
+    let events = client.events();
+    let workspace = workspace_at(&client, repo.path());
+    let review_id = match client.request(Request::StartReview {
+        target: ReviewTarget::Workspace {
+            workspace_id: workspace,
+            base: None,
+        },
+        tier: None,
+        provider: None,
+        preset: None,
+        instructions: Some("Check stop.\n\n## Non-goals\n- Windows support\n".into()),
+        model: None,
+        effort: None,
+        reviewers: domain::ReviewerOptions::default(),
+    }) {
+        Ok(Response::ReviewStarted { review_id }) => review_id,
+        other => panic!("{other:?}"),
+    };
+    assert!(
+        common::poll_until(common::DEADLINE, || {
+            reviewer_sessions(&client).len() == 3
+                && chosen
+                    .iter()
+                    .all(|h| harness.root().join(format!("started-{h}")).exists())
+        }),
+        "the cancel lines put LifecycleCancelRetry first"
+    );
+    for agent in reviewer_sessions(&client) {
+        report_idle(&client, agent.id);
+    }
+    let done = wait_run(&events, review_id, |run| run.status.is_finished());
+    assert_eq!(done.status, ReviewStatus::Completed, "{:?}", done.error);
+    let reasons: Vec<(domain::Hypothesis, &str)> = done
+        .coverage
+        .hypotheses
+        .iter()
+        .map(|choice| (choice.hypothesis, choice.reason.as_str()))
+        .collect();
+    assert_eq!(
+        reasons,
+        [
+            (
+                domain::Hypothesis::LifecycleCancelRetry,
+                "diff: cancelled ×2, abort ×1, atomic ×1"
+            ),
+            (domain::Hypothesis::AuthBypass, "default order"),
+            (domain::Hypothesis::BrokenContract, "default order"),
+        ]
+    );
+    assert_eq!(
+        done.coverage.acknowledged_scope.as_deref(),
+        Some("## Non-goals\n- Windows support")
+    );
+    let log = std::fs::read_to_string(harness.root().join("invocations")).expect("invocations");
+    assert!(
+        log.contains("is what the author declared out of scope for this change"),
+        "{log}"
+    );
 }

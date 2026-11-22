@@ -618,6 +618,131 @@ CREATE TABLE spec_runs (
 CREATE INDEX idx_spec_runs_project ON spec_runs (project_id);
 ";
 
+/// A project's codebase graph, shared by its worktrees: rebuilt from the
+/// checkout whenever `HEAD` moves, so losing it costs one rebuild.
+pub const CODEBASE_GRAPH: &str = "
+CREATE TABLE codebase_graph_nodes (
+    project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+    id         BLOB NOT NULL,
+    kind       TEXT NOT NULL,
+    path       TEXT NOT NULL,
+    name       TEXT NOT NULL,
+    span_start INTEGER NOT NULL,
+    span_end   INTEGER NOT NULL,
+    line       INTEGER NOT NULL,
+    end_line   INTEGER NOT NULL,
+    lang       TEXT NOT NULL,
+    signature  TEXT,
+    git_oid    TEXT NOT NULL,
+    PRIMARY KEY (project_id, id)
+);
+
+CREATE INDEX idx_graph_nodes_path ON codebase_graph_nodes (project_id, path);
+CREATE INDEX idx_graph_nodes_git_oid ON codebase_graph_nodes (project_id, git_oid);
+CREATE INDEX idx_graph_nodes_name ON codebase_graph_nodes (project_id, name);
+
+CREATE TABLE codebase_graph_edges (
+    project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+    src        BLOB NOT NULL,
+    dst        BLOB NOT NULL,
+    kind       TEXT NOT NULL,
+    weight     INTEGER NOT NULL,
+    PRIMARY KEY (project_id, src, dst, kind)
+);
+
+CREATE INDEX idx_graph_edges_dst ON codebase_graph_edges (project_id, dst);
+";
+
+/// Forge Review v2 on the existing rows: what a run drew, how many agents it
+/// ran and in which answer format, and the hypothesis of the reviewer behind a finding.
+pub const REVIEW_V2: &str = "
+ALTER TABLE review_runs ADD COLUMN diagrams TEXT NOT NULL DEFAULT '[]';
+ALTER TABLE review_runs ADD COLUMN auto_approvable INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE review_runs ADD COLUMN swarm_size INTEGER NOT NULL DEFAULT 1;
+ALTER TABLE review_runs ADD COLUMN schema_version TEXT NOT NULL DEFAULT 'v1';
+ALTER TABLE review_runs ADD COLUMN sandbox_run_id TEXT;
+ALTER TABLE review_findings ADD COLUMN hypothesis TEXT;
+ALTER TABLE review_findings ADD COLUMN kb_ref TEXT;
+";
+
+/// A project's review knowledge base: the stored files, as written by the
+/// daemon or a person. `patterns.json` is one row per pattern.
+pub const KB_ENTRIES: &str = "
+CREATE TABLE kb_entries (
+    id         INTEGER PRIMARY KEY AUTOINCREMENT,
+    project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+    file       TEXT NOT NULL,
+    section    TEXT,
+    content    TEXT NOT NULL,
+    source     TEXT NOT NULL,
+    created_at INTEGER NOT NULL,
+    expires_at INTEGER
+);
+
+CREATE INDEX idx_kb_entries_project_file ON kb_entries (project_id, file);
+";
+
+/// One sandbox-checks run: its targets as JSON, the failing ones' names, and the
+/// first failure's output tails. Never a full log.
+pub const SANDBOX_RUNS: &str = "
+CREATE TABLE sandbox_runs (
+    id             TEXT PRIMARY KEY,
+    review_run_id  TEXT REFERENCES review_runs(id) ON DELETE CASCADE,
+    workspace_id   TEXT NOT NULL,
+    targets_run    TEXT NOT NULL,
+    targets_failed TEXT NOT NULL,
+    stdout_excerpt TEXT,
+    stderr_excerpt TEXT,
+    exit_code      INTEGER NOT NULL,
+    duration_ms    INTEGER NOT NULL,
+    started_at     TEXT NOT NULL,
+    finished_at    TEXT,
+    error          TEXT
+);
+
+CREATE INDEX idx_sandbox_runs_review ON sandbox_runs (review_run_id);
+";
+
+/// Every agent session a multi-reviewer run launched, as a JSON list of ids: each one
+/// must come back read-only after a restart, not only `session_id`'s.
+pub const REVIEW_AGENT_SESSIONS: &str =
+    "ALTER TABLE review_runs ADD COLUMN agent_sessions TEXT NOT NULL DEFAULT '[]';";
+
+/// The `checks.toml` hash a person approved for each project; a run whose
+/// file hashes otherwise records that hash instead of running anything.
+pub const SANDBOX_APPROVALS: &str = "
+CREATE TABLE sandbox_approvals (
+    project_id  TEXT PRIMARY KEY REFERENCES projects(id) ON DELETE CASCADE,
+    file_hash   TEXT NOT NULL,
+    approved_at TEXT NOT NULL
+);
+
+ALTER TABLE sandbox_runs ADD COLUMN unapproved_hash TEXT;
+";
+
+/// The paths a project's last graph build read from a dirty working tree: the
+/// next build re-reads them, even after a restart and a revert left them clean.
+pub const CODEBASE_GRAPH_DIRTY: &str = "
+CREATE TABLE codebase_graph_dirty (
+    project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+    path       TEXT NOT NULL,
+    PRIMARY KEY (project_id, path)
+);
+";
+
+/// The `StartReview` a run came from, as JSON, so a fix loop can start the same
+/// review again; `NULL` for a run stored before it.
+pub const REVIEW_REQUEST: &str = "ALTER TABLE review_runs ADD COLUMN request TEXT;";
+
+/// A finding's reachability (its kind and trigger, `NULL` for a finding without one),
+/// and the findings a run's reviewers proposed, which `GetReviewStats` divides by. The
+/// count is also in `coverage`; this column is what a query may read.
+pub const REVIEW_REACHABILITY: &str = "\
+ALTER TABLE review_findings ADD COLUMN reachability TEXT;
+ALTER TABLE review_findings ADD COLUMN reachability_trigger TEXT;
+ALTER TABLE review_runs ADD COLUMN proposed INTEGER NOT NULL DEFAULT 0;
+";
+
 /// The full, ordered migration set. Appended to over time; never reordered.
 #[must_use]
 pub fn migrations() -> Migrations<'static> {
@@ -646,5 +771,14 @@ pub fn migrations() -> Migrations<'static> {
         M::up(REVIEW_FEEDBACK_COUNTED),
         M::up(REVIEW_TREE),
         M::up(SPEC_RUNS),
+        M::up(CODEBASE_GRAPH),
+        M::up(REVIEW_V2),
+        M::up(KB_ENTRIES),
+        M::up(SANDBOX_RUNS),
+        M::up(REVIEW_AGENT_SESSIONS),
+        M::up(SANDBOX_APPROVALS),
+        M::up(CODEBASE_GRAPH_DIRTY),
+        M::up(REVIEW_REQUEST),
+        M::up(REVIEW_REACHABILITY),
     ])
 }

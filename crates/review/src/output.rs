@@ -5,15 +5,26 @@ use crate::clip;
 use crate::validate::{MAX_FINDINGS, MAX_SUGGESTION_BYTES, MAX_TEXT_BYTES};
 
 pub const SCHEMA: &str = "forge.review/v1";
+pub const SCHEMA_V2: &str = "forge.review/v2";
 
 const MAX_SUMMARY_BYTES: usize = 16 * 1024;
+const MAX_PATTERNS: usize = 10;
+const MAX_PATTERN_BYTES: usize = 200;
+const MAX_COVERAGE_NOTES: usize = 20;
+const MAX_NOTE_BYTES: usize = 500;
+const MAX_KB_REF_BYTES: usize = 200;
+const MAX_TRIGGER_BYTES: usize = 500;
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct ReviewOutput {
+    pub schema: domain::SchemaVersion,
     pub summary: String,
     pub findings: Vec<RawFinding>,
-    /// A mermaid diagram, fenced or not.
+    /// A v1 answer's mermaid diagram, fenced or not; a v2 answer's `diagrams` are ignored.
     pub diagram: Option<String>,
+    /// Conventions the reviewer confirmed, for the knowledge base.
+    pub patterns: Vec<String>,
+    pub coverage_notes: Vec<String>,
 }
 
 /// A finding as the model wrote it, strings already capped.
@@ -30,12 +41,16 @@ pub struct RawFinding {
     pub body: String,
     pub evidence: String,
     pub suggestion: Option<String>,
+    /// The hypothesis the model says it hunted; the daemon keeps its agent's own.
+    pub hypothesis: Option<String>,
+    pub kb_ref: Option<String>,
+    pub reachability: Option<domain::Reachability>,
 }
 
 /// The first JSON object in `text` that carries a `schema` key, fences and prose ignored.
 ///
 /// # Errors
-/// No such object, or one whose schema is not [`SCHEMA`].
+/// No such object, or one whose schema is neither [`SCHEMA`] nor [`SCHEMA_V2`].
 pub fn parse_output(text: &str) -> Result<ReviewOutput, String> {
     let object = text
         .match_indices('{')
@@ -47,10 +62,35 @@ pub fn parse_output(text: &str) -> Result<ReviewOutput, String> {
             }
         })
         .ok_or_else(|| "no JSON object with a `schema` key in the reviewer's answer".to_owned())?;
-    let schema = object.get("schema").and_then(Value::as_str).unwrap_or("");
-    if schema != SCHEMA {
-        return Err(format!("unexpected schema `{schema}`, expected `{SCHEMA}`"));
-    }
+    let schema = match object.get("schema").and_then(Value::as_str).unwrap_or("") {
+        SCHEMA => domain::SchemaVersion::V1,
+        SCHEMA_V2 => domain::SchemaVersion::V2,
+        other => {
+            return Err(format!(
+                "unexpected schema `{other}`, expected `{SCHEMA}` or `{SCHEMA_V2}`"
+            ))
+        }
+    };
+    let strings = |key: &str, count: usize, max: usize| -> Vec<String> {
+        object
+            .get(key)
+            .and_then(Value::as_array)
+            .map(|items| {
+                items
+                    .iter()
+                    .filter_map(|item| {
+                        item.as_str()
+                            .or_else(|| item.get("note").and_then(Value::as_str))
+                    })
+                    .map(str::trim)
+                    .filter(|text| !text.is_empty())
+                    .map(|text| clip(text, max).to_owned())
+                    .take(count)
+                    .collect()
+            })
+            .unwrap_or_default()
+    };
+    let v2 = schema == domain::SchemaVersion::V2;
     let findings = object
         .get("findings")
         .and_then(Value::as_array)
@@ -64,9 +104,24 @@ pub fn parse_output(text: &str) -> Result<ReviewOutput, String> {
         })
         .unwrap_or_default();
     Ok(ReviewOutput {
+        schema,
         summary: text_field(&object, "summary", MAX_SUMMARY_BYTES).unwrap_or_default(),
         findings,
-        diagram: text_field(&object, "diagram", MAX_SUGGESTION_BYTES),
+        diagram: if v2 {
+            None
+        } else {
+            text_field(&object, "diagram", MAX_SUGGESTION_BYTES)
+        },
+        patterns: if v2 {
+            strings("patterns", MAX_PATTERNS, MAX_PATTERN_BYTES)
+        } else {
+            Vec::new()
+        },
+        coverage_notes: if v2 {
+            strings("coverage_notes", MAX_COVERAGE_NOTES, MAX_NOTE_BYTES)
+        } else {
+            Vec::new()
+        },
     })
 }
 
@@ -104,6 +159,33 @@ fn raw_finding(map: &Map<String, Value>) -> Option<RawFinding> {
         body: text_field(map, "body", MAX_TEXT_BYTES).unwrap_or_default(),
         evidence: text_field(map, "evidence", MAX_TEXT_BYTES).unwrap_or_default(),
         suggestion: text_field(map, "suggestion", MAX_SUGGESTION_BYTES),
+        hypothesis: text_field(map, "hypothesis", 64),
+        kb_ref: text_field(map, "kb_ref", MAX_KB_REF_BYTES),
+        reachability: reachability(map.get("reachability")),
+    })
+}
+
+/// `{"kind": "automatic", "trigger": "…"}`, or the same as one string, `"automatic: …"`;
+/// `None` for a kind that is none of the three.
+fn reachability(value: Option<&Value>) -> Option<domain::Reachability> {
+    let (kind, trigger) = match value? {
+        Value::Object(map) => (
+            map.get("kind")?.as_str()?.trim(),
+            map.get("trigger").and_then(Value::as_str).unwrap_or(""),
+        ),
+        Value::String(text) => {
+            let text = text.trim_start();
+            let end = text
+                .find(|c: char| !c.is_ascii_alphabetic())
+                .unwrap_or(text.len());
+            (&text[..end], &text[end..])
+        }
+        _ => return None,
+    };
+    let trigger = trigger.trim_start_matches(|c: char| c.is_whitespace() || ":-—–".contains(c));
+    Some(domain::Reachability {
+        kind: domain::ReachabilityKind::from_name(kind)?,
+        trigger: clip(trigger.trim(), MAX_TRIGGER_BYTES).to_owned(),
     })
 }
 

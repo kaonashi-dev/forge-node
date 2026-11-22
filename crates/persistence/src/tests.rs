@@ -96,8 +96,8 @@ fn migrations_apply_and_user_version_advances() {
     // count of applied migrations, and the assertion is what catches a migration
     // that was silently reordered or dropped.
     assert_eq!(
-        version, 24,
-        "twenty-four migrations applied => user_version == 24"
+        version, 33,
+        "thirty-three migrations applied => user_version == 33"
     );
 
     for table in [
@@ -193,7 +193,7 @@ fn version_two_database_upgrades_existing_projects_into_general() {
         .conn()
         .query_row("PRAGMA user_version", [], |row| row.get(0))
         .unwrap();
-    assert_eq!(version, 24);
+    assert_eq!(version, 33);
 }
 
 /// Migration 6 over a database that already has workspaces: the display_name
@@ -1090,7 +1090,7 @@ fn sessions_schema_is_unchanged() {
         .conn()
         .query_row("PRAGMA user_version", [], |r| r.get(0))
         .unwrap();
-    assert_eq!(version, 24, "every migration up to the spec runs");
+    assert_eq!(version, 33, "every migration up to the spec runs");
 
     let (db, _project, workspace_id) = db_with_workspace();
     let mut session = mk_session(workspace_id, SessionState::Running);
@@ -1244,7 +1244,7 @@ fn reset_clears_every_application_table_and_keeps_the_schema() {
         .conn()
         .query_row("PRAGMA user_version", [], |row| row.get(0))
         .unwrap();
-    assert_eq!(version, 24, "reset retains the migrated schema");
+    assert_eq!(version, 33, "reset retains the migrated schema");
 }
 
 // ---- on-disk open ----------------------------------------------------------
@@ -1654,7 +1654,7 @@ fn mk_run(workspace_id: WorkspaceId, status: domain::ReviewStatus) -> domain::Re
         },
         head_oid: "abc".into(),
         base_oid: Some("def".into()),
-        tier: domain::Tier::Base,
+        tier: domain::Tier::Quick,
         preset: "security".into(),
         provider: "claude".into(),
         status,
@@ -1674,6 +1674,11 @@ fn mk_run(workspace_id: WorkspaceId, status: domain::ReviewStatus) -> domain::Re
         finished_at: None,
         branch: Some("feature".into()),
         tree_oid: None,
+        diagrams: Vec::new(),
+        auto_approvable: false,
+        reviewers: 1,
+        schema_version: domain::SchemaVersion::V1,
+        sandbox_run_id: None,
     }
 }
 
@@ -1694,6 +1699,9 @@ fn mk_finding(id: u32) -> domain::Finding {
         suggestion: Some("s".into()),
         lineage: domain::Lineage::Persisting,
         reaction: None,
+        hypothesis: None,
+        kb_ref: None,
+        reachability: None,
     }
 }
 
@@ -1756,6 +1764,43 @@ fn reviewer_sessions_are_named_for_the_restart() {
     store.insert_run(&run).unwrap();
 
     assert!(store.reviewer_sessions().unwrap().contains(&session));
+}
+
+#[test]
+fn every_reviewer_is_named_for_the_restart_and_keeps_its_run() {
+    let (db, _, ws) = db_with_workspace();
+    let store = db.review_store().unwrap();
+    let agents = [
+        domain::SessionId::new(),
+        domain::SessionId::new(),
+        domain::SessionId::new(),
+    ];
+    let mut run = mk_run(ws, domain::ReviewStatus::Interrupted);
+    run.session_id = Some(agents[0]);
+    run.created_at = Timestamp::parse_rfc3339("2020-01-01T00:00:00Z").unwrap();
+    store.insert_run(&run).unwrap();
+    store.set_agent_sessions(run.id, &agents).unwrap();
+
+    let named = store.reviewer_sessions().unwrap();
+    assert!(
+        agents.iter().all(|agent| named.contains(agent)),
+        "{named:?}"
+    );
+
+    let only_the_third = mk_session(ws, SessionState::Orphaned);
+    let only_the_third = Session {
+        id: agents[2],
+        ..only_the_third
+    };
+    db.sessions().upsert(&only_the_third).unwrap();
+    let cutoff = Timestamp::now();
+    assert_eq!(
+        store.prune(ws, 0, cutoff).unwrap(),
+        0,
+        "the third agent's row keeps the run"
+    );
+    db.conn().execute("DELETE FROM sessions", []).unwrap();
+    assert_eq!(store.prune(ws, 0, cutoff).unwrap(), 1);
 }
 
 #[test]
@@ -2037,6 +2082,7 @@ fn a_spec_run_round_trips_as_metadata() {
             session_per_stage: false,
             publish_spec: false,
             publish_report: false,
+            checks_offline: false,
         },
         sessions: Vec::new(),
         coder_workspace_id: None,
@@ -2071,4 +2117,474 @@ fn a_spec_run_round_trips_as_metadata() {
 
     assert!(store.delete(run.id).unwrap());
     assert!(store.list().unwrap().is_empty());
+}
+
+fn graph_file(
+    path: &str,
+    source: &str,
+    defs: &[&str],
+    calls: &[&str],
+) -> codebase_graph::FileInput {
+    codebase_graph::FileInput {
+        path: path.into(),
+        lang: "rust".into(),
+        source: source.into(),
+        definitions: defs
+            .iter()
+            .map(|name| {
+                let at = source.find(&format!("fn {name}")).unwrap();
+                let end = at + source[at..].find('}').unwrap() + 1;
+                codebase_graph::Definition {
+                    kind: "function".into(),
+                    name: (*name).into(),
+                    span: (at, end),
+                    signature: source[at..end].into(),
+                }
+            })
+            .collect(),
+        calls: calls
+            .iter()
+            .map(|name| {
+                let at = source.find(&format!("{name}()")).unwrap();
+                ((*name).into(), (at, at + name.len()))
+            })
+            .collect(),
+        imports: Vec::new(),
+        inherits: Vec::new(),
+    }
+}
+
+fn graph_of(files: Vec<codebase_graph::FileInput>, oid: &str) -> codebase_graph::Graph {
+    let mut update = codebase_graph::Update::new();
+    for file in files {
+        update.add(file);
+    }
+    let mut graph = codebase_graph::Graph::default();
+    graph.apply(update, &[], oid);
+    graph
+}
+
+#[test]
+fn a_projects_graph_round_trips_and_is_queried_by_name() {
+    let (db, project, _) = db_with_workspace();
+    let store = db.review_store().unwrap();
+    assert_eq!(store.load_graph(project).unwrap(), None);
+    let graph = graph_of(
+        vec![
+            graph_file(
+                "src/a.rs",
+                "fn main() { open(); log(); }\n",
+                &["main"],
+                &["open", "log"],
+            ),
+            graph_file("src/b.rs", "fn open() {}\n", &["open"], &[]),
+        ],
+        "oid1",
+    );
+    store.replace_graph(project, &graph, &[]).unwrap();
+    assert_eq!(store.load_graph(project).unwrap(), Some(graph));
+    let named = store.graph_nodes_named(project, "open").unwrap();
+    assert_eq!(named.len(), 1);
+    assert_eq!(named[0].path, "src/b.rs");
+}
+
+#[test]
+fn replacing_a_set_of_paths_matches_the_incremental_graph() {
+    let (db, project, _) = db_with_workspace();
+    let store = db.review_store().unwrap();
+    let a = || {
+        graph_file(
+            "src/a.rs",
+            "fn main() { open(); log(); }\n",
+            &["main"],
+            &["open", "log"],
+        )
+    };
+    let mut graph = graph_of(
+        vec![
+            a(),
+            graph_file("src/b.rs", "fn open() {}\n", &["open"], &[]),
+        ],
+        "oid1",
+    );
+    store.replace_graph(project, &graph, &[]).unwrap();
+
+    let b = "\n\nfn open() {}\nfn log() {}\n";
+    store_update(
+        &store,
+        project,
+        &mut graph,
+        vec![graph_file("src/b.rs", b, &["open", "log"], &[])],
+    );
+    assert_eq!(store.load_graph(project).unwrap(), Some(graph.clone()));
+
+    store_update(
+        &store,
+        project,
+        &mut graph,
+        vec![graph_file("src/b.rs", "fn log() {}\n", &["log"], &[])],
+    );
+    assert!(graph
+        .nodes
+        .iter()
+        .any(|n| n.kind == codebase_graph::NodeKind::ExternalCall));
+    assert_eq!(store.load_graph(project).unwrap(), Some(graph));
+}
+
+/// Applies `files` to `graph` and stores only what changed, as an incremental build does.
+fn store_update(
+    store: &crate::ReviewStore,
+    project: ProjectId,
+    graph: &mut codebase_graph::Graph,
+    files: Vec<codebase_graph::FileInput>,
+) {
+    let base = graph.clone();
+    let changed: Vec<String> = files.iter().map(|file| file.path.clone()).collect();
+    let mut update = codebase_graph::Update::new();
+    for file in files {
+        update.add(file);
+    }
+    graph.apply(update, &[], "oid2");
+    store
+        .replace_graph_paths(
+            project,
+            "oid2",
+            &changed,
+            &graph.delta(&base, &changed),
+            &[],
+        )
+        .unwrap();
+}
+
+#[test]
+fn a_graphs_dirty_paths_are_replaced_with_it() {
+    let (db, project, _) = db_with_workspace();
+    let store = db.review_store().unwrap();
+    let graph = graph_of(
+        vec![graph_file("src/b.rs", "fn open() {}\n", &["open"], &[])],
+        "oid1",
+    );
+    store
+        .replace_graph(project, &graph, &["src/b.rs".into()])
+        .unwrap();
+    assert_eq!(store.graph_dirty_paths(project).unwrap(), ["src/b.rs"]);
+    store
+        .replace_graph_paths(
+            project,
+            "oid1",
+            &["src/b.rs".into()],
+            &codebase_graph::Delta::default(),
+            &[],
+        )
+        .unwrap();
+    assert!(store.graph_dirty_paths(project).unwrap().is_empty());
+}
+
+#[test]
+fn a_graph_goes_with_its_project() {
+    let db = Db::open_in_memory().unwrap();
+    let row = mk_project("/tmp/forge-graph");
+    db.projects().upsert(&row).unwrap();
+    let project = row.id;
+    let store = db.review_store().unwrap();
+    let graph = graph_of(
+        vec![graph_file("src/b.rs", "fn open() {}\n", &["open"], &[])],
+        "oid1",
+    );
+    store.replace_graph(project, &graph, &[]).unwrap();
+    db.projects().delete(project).unwrap();
+    assert_eq!(store.load_graph(project).unwrap(), None);
+}
+
+#[test]
+fn v2_run_and_finding_fields_round_trip_and_old_rows_read_as_v1() {
+    let (db, _, ws) = db_with_workspace();
+    let store = db.review_store().unwrap();
+    let mut run = mk_run(ws, domain::ReviewStatus::Queued);
+    store.insert_run(&run).unwrap();
+    assert_eq!(
+        store.get(run.id).unwrap().unwrap().0.schema_version,
+        domain::SchemaVersion::V1
+    );
+
+    run.tier = domain::Tier::Deep;
+    run.diagrams = vec![domain::Diagram {
+        kind: domain::DiagramKind::Flow,
+        title: "Branches in pick".into(),
+        nodes: vec![domain::DiagramNode {
+            id: "start".into(),
+            label: "pick".into(),
+        }],
+        edges: Vec::new(),
+    }];
+    run.auto_approvable = true;
+    run.reviewers = 3;
+    run.schema_version = domain::SchemaVersion::V2;
+    run.sandbox_run_id = Some("sandbox-1".into());
+    store.update_run(&run).unwrap();
+    let mut finding = mk_finding(1);
+    finding.hypothesis = Some(domain::Hypothesis::ErrorSwallow);
+    finding.kb_ref = Some("architecture.md#crates".into());
+    store
+        .insert_findings(run.id, &[finding.clone(), mk_finding(2)])
+        .unwrap();
+
+    let (back, findings) = store.get(run.id).unwrap().unwrap();
+    assert_eq!(back, run);
+    assert_eq!(findings, vec![finding, mk_finding(2)]);
+}
+
+#[test]
+fn kb_entries_keep_a_persons_file_beside_the_daemons_and_expire() {
+    let (db, project, _) = db_with_workspace();
+    let store = db.review_store().unwrap();
+    store
+        .set_kb_entry(project, "architecture.md", "daemon v1", "daemon", 100)
+        .unwrap();
+    store
+        .set_kb_entry(project, "architecture.md", "mine", "user", 110)
+        .unwrap();
+    store
+        .set_kb_entry(project, "architecture.md", "daemon v2", "daemon", 120)
+        .unwrap();
+    let live = store.kb_entries(project, 130).unwrap();
+    let architecture: Vec<(&str, &str)> = live
+        .iter()
+        .filter(|e| e.file == "architecture.md")
+        .map(|e| (e.source.as_str(), e.content.as_str()))
+        .collect();
+    assert_eq!(architecture, [("user", "mine"), ("daemon", "daemon v2")]);
+
+    let patterns = vec!["a".to_owned(), "b".to_owned()];
+    assert_eq!(
+        store.add_kb_patterns(project, &patterns, 130, 200).unwrap(),
+        2
+    );
+    assert_eq!(
+        store.add_kb_patterns(project, &patterns, 131, 200).unwrap(),
+        0,
+        "deduped"
+    );
+    assert_eq!(
+        store
+            .kb_entries(project, 199)
+            .unwrap()
+            .iter()
+            .filter(|e| e.file == "patterns.json")
+            .count(),
+        2
+    );
+    assert_eq!(
+        store
+            .kb_entries(project, 200)
+            .unwrap()
+            .iter()
+            .filter(|e| e.file == "patterns.json")
+            .count(),
+        0,
+        "expired"
+    );
+    store
+        .replace_kb_items(project, "patterns.json", &["c".to_owned()], "user", 140)
+        .unwrap();
+    assert_eq!(
+        store.prune_kb(300, 115).unwrap(),
+        0,
+        "user rows and the fresh daemon row stay"
+    );
+    assert_eq!(
+        store.prune_kb(300, 125).unwrap(),
+        1,
+        "the daemon's old row goes"
+    );
+    assert_eq!(store.clear_kb_entry(project, "architecture.md").unwrap(), 1);
+    assert_eq!(store.kb_entries(project, 300).unwrap().len(), 1);
+}
+
+#[test]
+fn learned_patterns_stop_at_the_file_cap_and_keep_what_is_stored() {
+    let (db, project, _) = db_with_workspace();
+    let store = db.review_store().unwrap();
+    let learned: Vec<String> = (0..400)
+        .map(|n| format!("{n:04}{}", "x".repeat(1020)))
+        .collect();
+    let added = store.add_kb_patterns(project, &learned, 100, 1000).unwrap();
+    assert!(added > 200 && added < learned.len(), "{added}");
+    assert_eq!(
+        store
+            .add_kb_patterns(project, &["late".to_owned()], 101, 1000)
+            .unwrap(),
+        1,
+        "a short pattern still fits"
+    );
+    assert_eq!(
+        store
+            .add_kb_patterns(project, &learned[added..], 102, 1000)
+            .unwrap(),
+        0
+    );
+    let stored: Vec<String> = store
+        .kb_entries(project, 103)
+        .unwrap()
+        .into_iter()
+        .map(|entry| entry.content)
+        .collect();
+    assert_eq!(stored[..added], learned[..added], "the oldest are kept");
+    assert!(knowledge_base::patterns_json(&stored).len() <= knowledge_base::MAX_FILE_BYTES);
+}
+
+#[test]
+fn false_positives_are_the_projects_thumbs_down_with_their_path() {
+    let (db, project, ws) = db_with_workspace();
+    let store = db.review_store().unwrap();
+    let run = mk_run(ws, domain::ReviewStatus::Completed);
+    store.insert_run(&run).unwrap();
+    store
+        .insert_findings(run.id, &[mk_finding(1), mk_finding(2)])
+        .unwrap();
+    store
+        .set_feedback(
+            project,
+            run.id,
+            &mk_finding(1),
+            domain::FindingReaction::Down,
+        )
+        .unwrap();
+    store
+        .set_feedback(project, run.id, &mk_finding(2), domain::FindingReaction::Up)
+        .unwrap();
+    let rows = store.false_positives(project).unwrap();
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0].fingerprint, mk_finding(1).fingerprint);
+    assert_eq!(rows[0].path.as_deref(), Some(mk_finding(1).path.as_str()));
+}
+
+#[test]
+fn a_sandbox_run_round_trips_and_goes_with_its_review() {
+    let (db, _, ws) = db_with_workspace();
+    let store = db.review_store().unwrap();
+    let review = mk_run(ws, domain::ReviewStatus::Completed);
+    store.insert_run(&review).unwrap();
+    let target = |name: &str, exit: Option<i32>| domain::SandboxTarget {
+        name: name.into(),
+        exit_code: exit,
+        duration_ms: 5,
+        timed_out: exit.is_none(),
+        stdout: "out".into(),
+        stderr: "err".into(),
+    };
+    let run = domain::SandboxRun {
+        id: "s1".into(),
+        workspace_id: ws,
+        review_id: Some(review.id),
+        targets: vec![target("lint", Some(0)), target("test", Some(1))],
+        error: None,
+        unapproved_hash: Some("abc".into()),
+        started_at: Timestamp::now(),
+        finished_at: Some(Timestamp::now()),
+    };
+    store.save_sandbox_run(&run).unwrap();
+    assert_eq!(store.sandbox_run("s1").unwrap(), Some(run.clone()));
+    assert_eq!(
+        store.linked_sandbox_runs().unwrap(),
+        [(review.id.to_string(), true)]
+    );
+    let manual = domain::SandboxRun {
+        id: "s2".into(),
+        review_id: None,
+        ..run
+    };
+    store.save_sandbox_run(&manual).unwrap();
+    db.conn().execute("DELETE FROM review_runs", []).unwrap();
+    assert_eq!(
+        store.sandbox_run("s1").unwrap(),
+        None,
+        "cascades with its review"
+    );
+    assert!(store.sandbox_run("s2").unwrap().is_some());
+}
+
+#[test]
+fn a_sandbox_approval_is_one_hash_per_project_and_goes_with_it() {
+    let (db, project, _) = db_with_workspace();
+    let store = db.review_store().unwrap();
+    assert_eq!(store.approved_sandbox(project).unwrap(), None);
+    store.approve_sandbox(project, "aaa").unwrap();
+    store.approve_sandbox(project, "bbb").unwrap();
+    assert_eq!(
+        store.approved_sandbox(project).unwrap().as_deref(),
+        Some("bbb")
+    );
+    db.conn()
+        .execute_batch("DELETE FROM workspaces; DELETE FROM projects;")
+        .unwrap();
+    assert_eq!(
+        store.approved_sandbox(project).unwrap(),
+        None,
+        "cascades with its project"
+    );
+}
+
+#[test]
+fn a_run_stored_under_a_tiers_shipped_name_still_loads() {
+    let (db, _, ws) = db_with_workspace();
+    let store = db.review_store().unwrap();
+    let mut run = mk_run(ws, domain::ReviewStatus::Completed);
+    run.tier = domain::Tier::Deep;
+    store.insert_run(&run).unwrap();
+    let id = run.id.to_string();
+    let stored: String = db
+        .conn()
+        .query_row("SELECT tier FROM review_runs WHERE id = ?1", [&id], |row| {
+            row.get(0)
+        })
+        .unwrap();
+    assert_eq!(stored, "deep");
+    for (old, tier) in [
+        ("base", domain::Tier::Quick),
+        ("plus", domain::Tier::Standard),
+        ("apex", domain::Tier::Deep),
+    ] {
+        db.conn()
+            .execute("UPDATE review_runs SET tier = ?1 WHERE id = ?2", [old, &id])
+            .unwrap();
+        assert_eq!(store.get(run.id).unwrap().unwrap().0.tier, tier);
+    }
+}
+
+#[test]
+fn a_findings_reachability_and_a_runs_proposed_count_reach_the_stats() {
+    let (db, _, ws) = db_with_workspace();
+    let store = db.review_store().unwrap();
+    let mut run = mk_run(ws, domain::ReviewStatus::Queued);
+    store.insert_run(&run).unwrap();
+    run.status = domain::ReviewStatus::Completed;
+    run.finished_at = Some(Timestamp::now());
+    run.coverage.proposed = 4;
+    run.coverage.without_reachability = 1;
+    run.coverage.hypotheses = vec![domain::HypothesisChoice {
+        hypothesis: domain::Hypothesis::TransitionCleanup,
+        reason: "diff: pending ×2".into(),
+    }];
+    run.coverage.acknowledged_scope = Some("- No Windows support.".into());
+    store.update_run(&run).unwrap();
+    let mut reached = mk_finding(1);
+    reached.reachability = Some(domain::Reachability {
+        kind: domain::ReachabilityKind::Sequence,
+        trigger: "a reconnect while a read is in flight".into(),
+    });
+    store
+        .insert_findings(run.id, &[reached.clone(), mk_finding(2)])
+        .unwrap();
+
+    let (back, findings) = store.get(run.id).unwrap().unwrap();
+    assert_eq!(back, run, "the new coverage fields ride in its JSON");
+    assert_eq!(findings, vec![reached, mk_finding(2)]);
+    let rows = store.stats_rows(Some(ws)).unwrap();
+    assert_eq!(
+        rows.iter()
+            .map(|row| (row.proposed, row.reachable))
+            .collect::<Vec<_>>(),
+        [(4, 1)]
+    );
 }

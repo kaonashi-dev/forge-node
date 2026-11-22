@@ -190,6 +190,28 @@ timeout_secs = 900              # a run with no answer by then fails
 # .forge/review/prompt.md, the preset's and the run's instructions. They never
 # replace the fixed prompt; over 4096 bytes is ignored with a note.
 instructions = ""
+# Agents per review, each hunting one hypothesis (1..=8); 1 is the single
+# reviewer. A run's --reviewers or --hypothesis overrides it.
+reviewers = 3
+max_parallel_reviews = 2        # review workers alive daemon-wide
+kb_enabled = true               # the project knowledge base, in standard and deep packs
+cross_repo_enabled = false      # other projects' signatures, when .forge/review lists them
+sandbox_checks = false          # run .forge/review/checks.toml before a deep review (macOS)
+# What a sandbox check may reach. Only this file decides it; a repository's
+# .forge/review/config.toml cannot. A FORGE_* name is dropped.
+sandbox_network = false
+sandbox_env_whitelist = ["PATH", "HOME"]
+# Writable besides the checkout, its sandbox cache and the temp directory,
+# expanded like [spec_runs] check_write_paths.
+sandbox_write_paths = ["~/.cargo", "~/.rustup", "~/.bun", "~/.npm", "~/Library/Caches"]
+
+[spec_runs]
+# A spec run's checks run under the macOS sandbox: no view of Forge's home or
+# socket, writes only to the coder's checkout, the run's checks/ directory,
+# the temp directory and these paths. `~` is your home; a path that does not
+# exist is dropped. The network stays on unless G2 picks "Run checks without
+# network" (forgectl spec gate --checks-offline).
+check_write_paths = ["~/.cargo", "~/.rustup", "~/.bun", "~/.npm", "~/Library/Caches"]
 
 [pull_requests]
 # "Open PR" runs your default agent in the background: it drafts the title,

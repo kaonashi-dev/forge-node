@@ -88,9 +88,12 @@ pub use pull_request::{
 };
 pub use rebase::{ConflictFile, RebaseState, SequencerOp};
 pub use review::{
-    Coverage, Finding, FindingReaction, Lineage, ReviewPreset, ReviewRule, ReviewRun,
-    ReviewSettings, ReviewStage, ReviewStatus, ReviewSuppression, ReviewTarget, Severity,
-    SuppressionKind, Tier, Verdict, CUSTOM_PRESET,
+    Coverage, Diagram, DiagramEdge, DiagramKind, DiagramNode, EdgeKind, Explored, Finding,
+    FindingReaction, GraphFormat, GraphNode, GraphQuery, GraphStats, Hypothesis, HypothesisChoice,
+    KbFile, Lineage, NodeKind, Reachability, ReachabilityKind, ReviewPreset, ReviewRequest,
+    ReviewRule, ReviewRun, ReviewSettings, ReviewStage, ReviewStats, ReviewStatus,
+    ReviewSuppression, ReviewTarget, ReviewerOptions, SandboxRun, SandboxTarget, SchemaVersion,
+    Severity, SuppressionKind, Tier, TierLatency, Verdict, CUSTOM_PRESET,
 };
 pub use session::{
     ActivityEvidence, ActivityState, AgentActivity, EditorFind, EditorFindCommand, EditorState,

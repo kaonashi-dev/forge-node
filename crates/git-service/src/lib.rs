@@ -5,6 +5,7 @@
 //! Neither runs inside a user PTY. Results are crate-local; the daemon maps
 //! Git output into domain objects.
 
+pub mod blob;
 pub mod change;
 pub mod command;
 pub mod diff;
@@ -15,6 +16,7 @@ pub mod remote;
 pub mod repository;
 pub mod worktree;
 
+pub use blob::read_blobs;
 pub use change::{
     change_context, commit, push, switch_new_branch, ChangeSnapshot, MAX_FILES, MAX_PATCH_BYTES,
 };

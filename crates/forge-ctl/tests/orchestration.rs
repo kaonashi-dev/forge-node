@@ -722,7 +722,7 @@ fn session_dispatch_crosses_projects_without_graph_edges_and_waits_by_events() {
     assert_eq!(responses.len(), 8);
     assert_eq!(
         responses[1]["result"]["tools"].as_array().unwrap().len(),
-        62
+        65
     );
     assert_eq!(responses[2]["result"]["structuredContent"]["ok"], true);
     for response in &responses[2..] {
@@ -3273,6 +3273,28 @@ fn spec_runs_start_with_a_drafter_and_pass_gates_from_the_cli() {
         5,
     );
     err(&ctl.run(&["spec", "gate", &id, "--changes", " "], &[]), 1);
+    let no_review = err(
+        &ctl.run(
+            &[
+                "spec",
+                "gate",
+                &id,
+                "--approve",
+                "--next",
+                "another-round",
+                "--from-review",
+            ],
+            &[],
+        ),
+        5,
+    );
+    assert!(
+        no_review["error"]["message"]
+            .as_str()
+            .unwrap()
+            .contains("has no Forge Review"),
+        "{no_review}"
+    );
     ok(&ctl.run(&["spec", "gate", &id, "--approve"], &[]));
     let shown = ok(&ctl.run(&["spec", "show", &id], &[]));
     assert_eq!(shown["run"]["stage"], "planning");
@@ -3458,6 +3480,11 @@ fn a_child_reports_to_its_parent_and_watch_follows_it_until_it_ends() {
 /// one set here is what reaches the reviewer's launch environment, and so the
 /// daemon's transcript lookup. The review tests share the store; Forge's
 /// per-run session ids keep the files apart.
+/// The single v1 reviewer these review tests were written against.
+fn single_reviewer(config: &mut daemon::config::Config) {
+    config.review.reviewers = 1;
+}
+
 fn review_store() -> &'static Path {
     static STORE: std::sync::OnceLock<PathBuf> = std::sync::OnceLock::new();
     STORE.get_or_init(|| {
@@ -3519,7 +3546,7 @@ fn review_start_waits_then_show_and_status_read_it_back() {
     install_reviewer(&harness, &review_answer("file.txt", 1, "broken"), false);
     let repo = init_repo(harness.tmp.path());
     fs::write(repo.join("file.txt"), "broken\n").unwrap();
-    let running = harness.boot();
+    let running = harness.boot_with(single_reviewer);
     let client = connect(&running.socket);
     let workspace_id = add_project(&client, &repo);
     let ctl = Ctl::new(&running.socket);
@@ -3556,7 +3583,7 @@ fn review_cancel_stops_a_running_review() {
     install_reviewer(&harness, "", true);
     let repo = init_repo(harness.tmp.path());
     fs::write(repo.join("file.txt"), "changed\n").unwrap();
-    let running = harness.boot();
+    let running = harness.boot_with(single_reviewer);
     let client = connect(&running.socket);
     let workspace = add_project(&client, &repo).to_string();
     let ctl = Ctl::new(&running.socket);
@@ -3618,7 +3645,7 @@ fn review_bench_reports_a_hit_for_a_reintroduced_bug() {
         ),
     )
     .unwrap();
-    let running = harness.boot();
+    let running = harness.boot_with(single_reviewer);
     let ctl = Ctl::new(&running.socket);
     let out = harness.tmp.path().join("bench-out");
 
@@ -3660,7 +3687,7 @@ fn review_bench_refuses_a_corpus_over_its_cap_without_reading_it() {
         .unwrap()
         .set_len(64 << 20)
         .unwrap();
-    let running = harness.boot();
+    let running = harness.boot_with(single_reviewer);
     let ctl = Ctl::new(&running.socket);
 
     let refused = err(
@@ -3733,7 +3760,7 @@ fn review_rules_check_reports_broken_rules_by_file() {
         "---\nid: money\ntitle: Charges are idempotent\nseverity: P1\ncategory: logic\nscope: [\"src/**\"]\n---\nUse a key.\n",
     )
     .unwrap();
-    let running = harness.boot();
+    let running = harness.boot_with(single_reviewer);
     let client = connect(&running.socket);
     let workspace = add_project(&client, &repo).to_string();
     let ctl = Ctl::new(&running.socket);
@@ -3771,7 +3798,7 @@ fn review_start_takes_a_preset_and_launch_options() {
     install_reviewer(&harness, &review_answer("file.txt", 1, "broken"), false);
     let repo = init_repo(harness.tmp.path());
     fs::write(repo.join("file.txt"), "broken\n").unwrap();
-    let running = harness.boot();
+    let running = harness.boot_with(single_reviewer);
     let client = connect(&running.socket);
     let workspace = add_project(&client, &repo).to_string();
     let ctl = Ctl::new(&running.socket);

@@ -164,6 +164,31 @@ fn targets(daemon: &Daemon, request: &Request) -> Vec<(Option<Account>, Access)>
     }
 }
 
+/// Against the caller the connection declared, the ledger's identity model:
+/// it stops an agent by accident, not by force.
+fn refuse_agent_for_person(
+    daemon: &Daemon,
+    caller: Option<SessionId>,
+    request: &Request,
+) -> Result<(), ProtocolError> {
+    let action = match request {
+        Request::ApproveSandboxChecks { .. } => "approving sandbox checks",
+        Request::StartFixLoop { .. } => "starting a fix loop",
+        _ => return Ok(()),
+    };
+    let agent = caller.is_some_and(|caller| {
+        daemon.lock().sessions.get(&caller).is_some_and(|session| {
+            session.kind == SessionKind::Agent && !session.state.is_terminal()
+        })
+    });
+    if agent {
+        return Err(ProtocolError::precondition_failed(format!(
+            "{action} is a person's action"
+        )));
+    }
+    Ok(())
+}
+
 /// [`Daemon::handle_request_from`] for a connection that declared the session it acts for.
 pub(crate) fn handle(
     daemon: &Arc<Daemon>,
@@ -177,6 +202,7 @@ pub(crate) fn handle(
             parent.iter().chain(connection_caller.iter()).copied(),
         )?;
     }
+    refuse_agent_for_person(daemon, connection_caller, &request)?;
     let Some(caller) = explicit_caller(&request).or(connection_caller) else {
         return daemon.handle_request_from(client_kind, request);
     };

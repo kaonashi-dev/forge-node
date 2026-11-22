@@ -216,7 +216,26 @@ pub enum DaemonEvent {
     /// A review changed status or stage. Compact: the findings are read with
     /// `GetReview` once the run is `Completed`.
     ReviewUpdated {
-        run: domain::ReviewRun,
+        run: Box<domain::ReviewRun>,
+    },
+    /// A `RunSandboxChecks` finished; the same run `GetSandboxChecks` reads.
+    SandboxChecksFinished(Box<domain::SandboxRun>),
+    /// A project's first graph build, started by a `QueryGraph` or `ExportGraph`,
+    /// finished; `error` when it failed, so a client asks again only on success.
+    GraphIndexed {
+        project_id: ProjectId,
+        #[serde(default)]
+        error: Option<String>,
+    },
+    /// A fix loop moved: `iteration` reviews have run, the last with
+    /// `findings` standing. `done` once it stopped, with `error` when it failed.
+    FixLoopUpdated {
+        workspace_id: WorkspaceId,
+        iteration: u32,
+        findings: u32,
+        done: bool,
+        #[serde(default)]
+        error: Option<String>,
     },
     /// A `DraftWithJuva` finished.
     ///

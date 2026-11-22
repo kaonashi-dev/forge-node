@@ -38,12 +38,25 @@ pub(crate) enum ReviewCmd {
         /// The reviewer's effort level; defaults to `[review] effort`, then the provider's own.
         #[arg(long)]
         effort: Option<String>,
+        /// Reviewer agents, 1 to 8; defaults to `[review] reviewers`.
+        #[arg(long, value_parser = clap::value_parser!(u8).range(1..=8))]
+        reviewers: Option<u8>,
+        /// A hypothesis for one agent (`AuthBypass`, `RaceCondition`, …); repeat for more.
+        #[arg(long = "hypothesis", alias = "hypotheses", value_parser = parse_hypothesis)]
+        hypotheses: Vec<domain::Hypothesis>,
         /// Block until the run ends and print it with its findings.
         #[arg(long)]
         wait: bool,
     },
-    /// A run and its findings.
-    Show { review: String },
+    /// A run and its findings, or with `--diagram` one diagram of what it reviewed.
+    Show {
+        review: String,
+        #[arg(long, value_enum)]
+        diagram: Option<DiagramArg>,
+        /// `forge` is Forge's own JSON; `mermaid` its mermaid text.
+        #[arg(long, value_enum, default_value = "forge", requires = "diagram")]
+        format: DiagramFormatArg,
+    },
     /// A workspace's runs, newest first.
     Status {
         #[arg(long)]
@@ -56,12 +69,50 @@ pub(crate) enum ReviewCmd {
         #[command(subcommand)]
         cmd: RulesCmd,
     },
+    /// Latency by tier and the graph, hypothesis-coverage, knowledge-base and sandbox-checks rates.
+    Stats {
+        /// One workspace; every one when left out.
+        #[arg(long)]
+        workspace: Option<String>,
+    },
+    /// Send a review's findings to a new writable agent and review again,
+    /// until nothing is found or `--max-iters` reviews ran. Asks first.
+    FixLoop {
+        #[arg(long)]
+        workspace: Option<String>,
+        /// Defaults to the workspace's latest completed review.
+        #[arg(long)]
+        review: Option<String>,
+        #[arg(long, default_value_t = 3, value_parser = clap::value_parser!(u32).range(1..=10))]
+        max_iters: u32,
+        /// Start without asking.
+        #[arg(long)]
+        yes: bool,
+    },
+    /// `.forge/review/checks.toml`'s targets, run under the macOS sandbox.
+    Checks {
+        #[command(subcommand)]
+        cmd: ChecksCmd,
+    },
+    /// The project's review knowledge base.
+    Kb {
+        #[command(subcommand)]
+        cmd: KbCmd,
+    },
+    /// The project's codebase graph.
+    Graph {
+        #[command(subcommand)]
+        cmd: GraphCmd,
+    },
     /// Review each corpus case's reintroduced bug and report how many were found.
     Bench {
         corpus: PathBuf,
         /// Defaults to `./review-bench-<unix seconds>`.
         #[arg(long)]
         out: Option<PathBuf>,
+        /// Reviewer agents per case, 1 to 8; defaults to `[review] reviewers`.
+        #[arg(long, value_parser = clap::value_parser!(u8).range(1..=8))]
+        reviewers: Option<u8>,
     },
 }
 
@@ -74,19 +125,134 @@ pub(crate) enum RulesCmd {
     },
 }
 
+#[derive(Subcommand)]
+pub(crate) enum ChecksCmd {
+    /// Run every target (or one) and wait; exit 1 when one failed.
+    Run {
+        #[arg(long)]
+        workspace: Option<String>,
+        #[arg(long)]
+        target: Option<String>,
+    },
+    /// A sandbox run's targets and output tails.
+    Results { id: String },
+    /// Let sandbox checks run the checkout's `checks.toml` for its project, as it is
+    /// now. Shows the file and asks first; a later change needs approving again.
+    Approve {
+        #[arg(long)]
+        workspace: Option<String>,
+        /// Approve without asking.
+        #[arg(long)]
+        yes: bool,
+    },
+}
+
+#[derive(Subcommand)]
+pub(crate) enum KbCmd {
+    /// Every file, or one with `--file`.
+    Show {
+        #[arg(long)]
+        workspace: Option<String>,
+        #[arg(long)]
+        file: Option<String>,
+    },
+    /// Edit `architecture.md` or `patterns.json` in `$VISUAL`, `$EDITOR`, or
+    /// the `forge-editor` beside this binary; saved only when it changed.
+    Edit {
+        #[arg(long)]
+        workspace: Option<String>,
+        file: String,
+    },
+    /// All four files as one Markdown document, to stdout or `--output`.
+    Export {
+        #[arg(long)]
+        workspace: Option<String>,
+        #[arg(long)]
+        output: Option<PathBuf>,
+    },
+}
+
+#[derive(Subcommand)]
+pub(crate) enum GraphCmd {
+    /// Bring the graph up to date with the checkout; `--full` re-parses every file.
+    Rebuild {
+        #[arg(long)]
+        workspace: Option<String>,
+        #[arg(long)]
+        full: bool,
+    },
+    /// Ask the graph one question. Without a daemon, reads the checkout's
+    /// `.forge/review/graph/cache.bin`, refusing one older than `HEAD`.
+    Query {
+        #[arg(long)]
+        workspace: Option<String>,
+        /// Who calls the function.
+        #[arg(long, group = "question")]
+        callers: bool,
+        /// What the function calls.
+        #[arg(long, group = "question")]
+        callees: bool,
+        /// Functions whose callees overlap the function's.
+        #[arg(long, group = "question")]
+        similar: bool,
+        /// The call chain from the first function to the second.
+        #[arg(long, group = "question")]
+        path: bool,
+        /// The files the file imports.
+        #[arg(long, group = "question")]
+        imports: bool,
+        /// The external calls the file makes.
+        #[arg(long, group = "question")]
+        external_calls: bool,
+        /// The function (or file); two functions for `--path`.
+        #[arg(required = true, num_args = 1..=2)]
+        names: Vec<String>,
+    },
+    /// The whole graph as text, at most 2 000 nodes.
+    Show {
+        #[arg(long)]
+        workspace: Option<String>,
+        #[arg(long, value_enum, default_value = "dot")]
+        format: GraphFormatArg,
+    },
+}
+
+#[derive(Clone, Copy, clap::ValueEnum)]
+pub(crate) enum DiagramArg {
+    Sequence,
+    Er,
+    Class,
+    Flow,
+}
+
+#[derive(Clone, Copy, clap::ValueEnum)]
+pub(crate) enum DiagramFormatArg {
+    Forge,
+    Mermaid,
+}
+
+#[derive(Clone, Copy, clap::ValueEnum)]
+pub(crate) enum GraphFormatArg {
+    Dot,
+    Mermaid,
+}
+
 #[derive(Clone, Copy, clap::ValueEnum)]
 pub(crate) enum TierArg {
-    Base,
-    Plus,
-    Apex,
+    #[value(alias = "base")]
+    Quick,
+    #[value(alias = "plus")]
+    Standard,
+    #[value(alias = "apex")]
+    Deep,
 }
 
 impl From<TierArg> for Tier {
     fn from(tier: TierArg) -> Self {
         match tier {
-            TierArg::Base => Tier::Base,
-            TierArg::Plus => Tier::Plus,
-            TierArg::Apex => Tier::Apex,
+            TierArg::Quick => Tier::Quick,
+            TierArg::Standard => Tier::Standard,
+            TierArg::Deep => Tier::Deep,
         }
     }
 }
@@ -107,6 +273,8 @@ pub(crate) fn dispatch(app: &App, client: &Client, cmd: ReviewCmd) -> Result<(),
             instructions,
             model,
             effort,
+            reviewers,
+            hypotheses,
             wait,
         } => {
             let store = places::load(app, client)?;
@@ -130,6 +298,10 @@ pub(crate) fn dispatch(app: &App, client: &Client, cmd: ReviewCmd) -> Result<(),
                 instructions,
                 model,
                 effort,
+                reviewers: domain::ReviewerOptions {
+                    count: reviewers,
+                    hypotheses,
+                },
             };
             if !wait {
                 let response = app.call(client, start, true)?;
@@ -139,10 +311,59 @@ pub(crate) fn dispatch(app: &App, client: &Client, cmd: ReviewCmd) -> Result<(),
             let (run, findings) = run_to_end(app, client, start, Wait::Leave)?;
             print_finished(app, &run, &findings)
         }
-        ReviewCmd::Show { review } => {
+        ReviewCmd::Show {
+            review,
+            diagram: None,
+            ..
+        } => {
             let review_id = review_id(app, &review)?;
             let response = app.call(client, Request::GetReview { review_id }, false)?;
-            app.print_ok(flatten(&response));
+            let mut shown = flatten(&response);
+            if let Response::Review { run, findings, .. } = &response {
+                shown["report"] = report(run, findings);
+            }
+            app.print_ok(shown);
+            Ok(())
+        }
+        ReviewCmd::Show {
+            review,
+            diagram: Some(kind),
+            format,
+        } => {
+            let review_id = review_id(app, &review)?;
+            let kind = match kind {
+                DiagramArg::Sequence => domain::DiagramKind::Sequence,
+                DiagramArg::Er => domain::DiagramKind::Er,
+                DiagramArg::Class => domain::DiagramKind::Class,
+                DiagramArg::Flow => domain::DiagramKind::Flow,
+            };
+            let response =
+                app.call(client, Request::GetReviewDiagram { review_id, kind }, false)?;
+            let Response::ReviewDiagram(diagram) = response else {
+                return Err(app.fail(
+                    1,
+                    "internal",
+                    "GetReviewDiagram was not understood",
+                    json!({}),
+                    vec![],
+                ));
+            };
+            let Some(diagram) = diagram else {
+                return Err(app.fail(
+                    4,
+                    "not_found",
+                    "the reviewed change gives no such diagram",
+                    json!({ "review_id": review_id }),
+                    vec![],
+                ));
+            };
+            match format {
+                DiagramFormatArg::Forge => app.print_ok(json!(diagram)),
+                DiagramFormatArg::Mermaid if !app.json => println!("{}", diagram.to_mermaid()),
+                DiagramFormatArg::Mermaid => {
+                    app.print_ok(json!({ "mermaid": diagram.to_mermaid() }))
+                }
+            }
             Ok(())
         }
         ReviewCmd::Status { workspace } => {
@@ -198,8 +419,618 @@ pub(crate) fn dispatch(app: &App, client: &Client, cmd: ReviewCmd) -> Result<(),
                 vec![],
             ))
         }
-        ReviewCmd::Bench { corpus, out } => bench(app, client, &corpus, out),
+        ReviewCmd::Graph { cmd } => graph(app, client, cmd),
+        ReviewCmd::Kb { cmd } => kb(app, client, cmd),
+        ReviewCmd::Checks { cmd } => checks(app, client, cmd),
+        ReviewCmd::Stats { workspace } => {
+            let workspace_id = match workspace {
+                Some(raw) => {
+                    let store = places::load(app, client)?;
+                    Some(target_workspace(app, &store, Some(&raw))?.id)
+                }
+                None => None,
+            };
+            let response = app.call(client, Request::GetReviewStats { workspace_id }, false)?;
+            app.print_ok(flatten(&response));
+            Ok(())
+        }
+        ReviewCmd::FixLoop {
+            workspace,
+            review,
+            max_iters,
+            yes,
+        } => fix_loop(
+            app,
+            client,
+            workspace.as_deref(),
+            review.as_deref(),
+            max_iters,
+            yes,
+        ),
+        ReviewCmd::Bench {
+            corpus,
+            out,
+            reviewers,
+        } => bench(app, client, &corpus, out, reviewers),
     }
+}
+
+fn graph(app: &App, client: &Client, cmd: GraphCmd) -> Result<(), u8> {
+    let store = places::load(app, client)?;
+    let response = match cmd {
+        GraphCmd::Rebuild { workspace, full } => {
+            let workspace = target_workspace(app, &store, workspace.as_deref())?;
+            let request = Request::RebuildGraph {
+                workspace_id: workspace.id,
+                full,
+            };
+            flatten(&app.call(client, request, true)?)
+        }
+        GraphCmd::Query { ref workspace, .. } => {
+            let query = graph_question(app, &cmd)?;
+            let workspace = target_workspace(app, &store, workspace.as_deref())?;
+            let request = Request::QueryGraph {
+                workspace_id: workspace.id,
+                query,
+            };
+            json!({ "nodes": flatten(&graph_read(app, client, workspace.id, request)?), "source": "daemon" })
+        }
+        GraphCmd::Show { workspace, format } => {
+            let workspace = target_workspace(app, &store, workspace.as_deref())?;
+            let request = Request::ExportGraph {
+                workspace_id: workspace.id,
+                format: match format {
+                    GraphFormatArg::Dot => domain::GraphFormat::Dot,
+                    GraphFormatArg::Mermaid => domain::GraphFormat::Mermaid,
+                },
+            };
+            let text = flatten(&graph_read(app, client, workspace.id, request)?);
+            if !app.json {
+                println!("{}", text.as_str().unwrap_or_default());
+                return Ok(());
+            }
+            json!({ "text": text })
+        }
+    };
+    app.print_ok(response);
+    Ok(())
+}
+
+/// A read that found no graph yet started the project's first build; a CLI
+/// waits for it with a synchronous rebuild instead of the event.
+fn graph_read(
+    app: &App,
+    client: &Client,
+    workspace_id: domain::WorkspaceId,
+    request: Request,
+) -> Result<Response, u8> {
+    let response = app.call(client, request.clone(), false)?;
+    if !matches!(response, Response::GraphIndexing) {
+        return Ok(response);
+    }
+    let rebuild = Request::RebuildGraph {
+        workspace_id,
+        full: false,
+    };
+    app.call(client, rebuild, true)?;
+    app.call(client, request, false)
+}
+
+fn fix_loop(
+    app: &App,
+    client: &Client,
+    workspace: Option<&str>,
+    review: Option<&str>,
+    max_iters: u32,
+    yes: bool,
+) -> Result<(), u8> {
+    let review_id = match review {
+        Some(raw) => review_id(app, raw)?,
+        None => {
+            let store = places::load(app, client)?;
+            let workspace = target_workspace(app, &store, workspace)?;
+            let request = Request::ListReviews {
+                workspace_id: workspace.id,
+                limit: STATUS_LIMIT,
+            };
+            let Response::Reviews(runs) = app.call(client, request, false)? else {
+                return Err(app.fail(
+                    1,
+                    "internal",
+                    "ListReviews was not understood",
+                    json!({}),
+                    vec![],
+                ));
+            };
+            runs.into_iter()
+                .find(|run| {
+                    run.status == ReviewStatus::Completed
+                        && matches!(run.target, ReviewTarget::Workspace { .. })
+                })
+                .map(|run| run.id)
+                .ok_or_else(|| {
+                    app.fail(
+                        4,
+                        "not_found",
+                        "the workspace has no completed review",
+                        json!({}),
+                        next(&["forgectl", "review", "start"]),
+                    )
+                })?
+        }
+    };
+    let Response::Review { findings, .. } =
+        app.call(client, Request::GetReview { review_id }, false)?
+    else {
+        return Err(app.fail(
+            1,
+            "internal",
+            "GetReview was not understood",
+            json!({}),
+            vec![],
+        ));
+    };
+    let standing = findings
+        .iter()
+        .filter(|finding| finding.reaction != Some(domain::FindingReaction::Dismiss))
+        .count();
+    if !yes {
+        use std::io::{BufRead as _, IsTerminal as _, Write as _};
+        if !std::io::stdin().is_terminal() {
+            return Err(usage_code(
+                app,
+                "the fix loop launches writable agents: confirm on a terminal or pass --yes",
+                &["forgectl", "review", "fix-loop", "--yes"],
+            ));
+        }
+        eprint!(
+            "Send {standing} finding(s) to a new writable agent and review again, up to {max_iters} time(s)? [y/N] "
+        );
+        let _ = std::io::stderr().flush();
+        let mut answer = String::new();
+        let _ = std::io::stdin().lock().read_line(&mut answer);
+        if !matches!(answer.trim(), "y" | "Y" | "yes") {
+            return Err(app.fail(
+                1,
+                "declined",
+                "the fix loop was not started",
+                json!({}),
+                vec![],
+            ));
+        }
+    }
+    let request = Request::StartFixLoop {
+        review_id,
+        max_iterations: Some(max_iters),
+        provider: None,
+        profile_id: None,
+    };
+    let response = app.call(client, request, true)?;
+    app.print_ok(json!({ "started": flatten(&response), "review_id": review_id, "findings": standing, "max_iterations": max_iters }));
+    Ok(())
+}
+
+fn approve_sandbox(
+    app: &App,
+    client: &Client,
+    workspace: Option<&str>,
+    yes: bool,
+) -> Result<(), u8> {
+    use sha2::Digest as _;
+    use std::io::{BufRead as _, IsTerminal as _, Read as _, Write as _};
+
+    let store = places::load(app, client)?;
+    let workspace = target_workspace(app, &store, workspace)?;
+    let path = workspace.path.join(runtime_sandbox::CONFIG_PATH);
+    let unreadable = |message: String| app.fail(4, "not_found", &message, json!({}), vec![]);
+    let size = std::fs::metadata(&path)
+        .map_err(|error| unreadable(format!("{}: {error}", path.display())))?
+        .len();
+    if size > runtime_sandbox::MAX_CONFIG_BYTES {
+        return Err(app.fail(
+            1,
+            "invalid_request",
+            &format!(
+                "{} is over {} bytes",
+                runtime_sandbox::CONFIG_PATH,
+                runtime_sandbox::MAX_CONFIG_BYTES
+            ),
+            json!({}),
+            vec![],
+        ));
+    }
+    let mut text = String::new();
+    std::fs::File::open(&path)
+        .and_then(|file| {
+            file.take(runtime_sandbox::MAX_CONFIG_BYTES)
+                .read_to_string(&mut text)
+        })
+        .map_err(|error| unreadable(format!("{}: {error}", path.display())))?;
+    let file_hash: String = sha2::Sha256::digest(text.as_bytes())
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect();
+    if !yes {
+        if !std::io::stdin().is_terminal() {
+            return Err(usage_code(
+                app,
+                "approving checks.toml lets every deep review run its commands: confirm on a terminal or pass --yes",
+                &["forgectl", "review", "checks", "approve", "--yes"],
+            ));
+        }
+        eprintln!("{}:\n\n{text}", path.display());
+        eprint!("Run these commands in the sandbox for this project's reviews? [y/N] ");
+        let _ = std::io::stderr().flush();
+        let mut answer = String::new();
+        let _ = std::io::stdin().lock().read_line(&mut answer);
+        if !matches!(answer.trim(), "y" | "Y" | "yes") {
+            return Err(app.fail(
+                1,
+                "declined",
+                "checks.toml was not approved",
+                json!({}),
+                vec![],
+            ));
+        }
+    }
+    let request = Request::ApproveSandboxChecks {
+        workspace_id: workspace.id,
+        file_hash: file_hash.clone(),
+    };
+    app.call(client, request, true)?;
+    app.print_ok(json!({ "workspace_id": workspace.id, "file_hash": file_hash }));
+    Ok(())
+}
+
+fn checks(app: &App, client: &Client, cmd: ChecksCmd) -> Result<(), u8> {
+    let run = match cmd {
+        ChecksCmd::Approve { workspace, yes } => {
+            return approve_sandbox(app, client, workspace.as_deref(), yes)
+        }
+        ChecksCmd::Results { id } => {
+            match app.call(
+                client,
+                Request::GetSandboxChecks { sandbox_run_id: id },
+                false,
+            )? {
+                Response::SandboxChecks(run) => *run,
+                _ => {
+                    return Err(app.fail(
+                        1,
+                        "internal",
+                        "GetSandboxChecks was not understood",
+                        json!({}),
+                        vec![],
+                    ))
+                }
+            }
+        }
+        ChecksCmd::Run { workspace, target } => {
+            let store = places::load(app, client)?;
+            let workspace = target_workspace(app, &store, workspace.as_deref())?;
+            let until = Instant::now() + app.review_wait;
+            let events = client.events();
+            let request = Request::RunSandboxChecks {
+                workspace_id: workspace.id,
+                target,
+            };
+            let Response::SandboxChecksStarted { sandbox_run_id } =
+                app.call(client, request, true)?
+            else {
+                return Err(app.fail(
+                    1,
+                    "internal",
+                    "RunSandboxChecks was not understood",
+                    json!({}),
+                    vec![],
+                ));
+            };
+            let mut finished = None;
+            let woke = app.await_event(&events, until, |event| match event {
+                DaemonEvent::SandboxChecksFinished(run) if run.id == sandbox_run_id => {
+                    finished = Some((**run).clone());
+                    true
+                }
+                _ => false,
+            })?;
+            match (woke, finished) {
+                (Woke::Deadline, _) | (_, None) => {
+                    return Err(app.fail(
+                        124,
+                        "timeout",
+                        "the sandbox is still running",
+                        json!({ "sandbox_run_id": sandbox_run_id }),
+                        next(&["forgectl", "review", "checks", "results", &sandbox_run_id]),
+                    ));
+                }
+                (_, Some(run)) => run,
+            }
+        }
+    };
+    if run.failed() {
+        return Err(app.fail(
+            1,
+            "sandbox_failed",
+            run.error.as_deref().unwrap_or("a target failed"),
+            json!(run),
+            next(&["forgectl", "review", "checks", "results", &run.id]),
+        ));
+    }
+    app.print_ok(json!(run));
+    Ok(())
+}
+
+fn kb_files(
+    app: &App,
+    client: &Client,
+    workspace_id: domain::WorkspaceId,
+) -> Result<Vec<domain::KbFile>, u8> {
+    match app.call(client, Request::GetKb { workspace_id }, false)? {
+        Response::Kb(files) => Ok(files),
+        _ => Err(app.fail(1, "internal", "GetKb was not understood", json!({}), vec![])),
+    }
+}
+
+fn kb(app: &App, client: &Client, cmd: KbCmd) -> Result<(), u8> {
+    let store = places::load(app, client)?;
+    match cmd {
+        KbCmd::Show { workspace, file } => {
+            let workspace = target_workspace(app, &store, workspace.as_deref())?;
+            let files = kb_files(app, client, workspace.id)?;
+            match file {
+                None => app.print_ok(json!({ "files": files })),
+                Some(name) => {
+                    let found = files.into_iter().find(|f| f.file == name).ok_or_else(|| {
+                        app.fail(
+                            4,
+                            "not_found",
+                            &format!("no knowledge-base file {name}"),
+                            json!({}),
+                            next(&["forgectl", "review", "kb", "show"]),
+                        )
+                    })?;
+                    app.print_ok(json!(found));
+                }
+            }
+            Ok(())
+        }
+        KbCmd::Export { workspace, output } => {
+            let workspace = target_workspace(app, &store, workspace.as_deref())?;
+            let response = app.call(
+                client,
+                Request::ExportKb {
+                    workspace_id: workspace.id,
+                },
+                false,
+            )?;
+            let Response::KbExport(text) = response else {
+                return Err(app.fail(
+                    1,
+                    "internal",
+                    "ExportKb was not understood",
+                    json!({}),
+                    vec![],
+                ));
+            };
+            match output {
+                Some(path) => {
+                    std::fs::write(&path, &text).map_err(|error| {
+                        app.fail(
+                            1,
+                            "io",
+                            &format!("cannot write {}: {error}", path.display()),
+                            json!({}),
+                            vec![],
+                        )
+                    })?;
+                    app.print_ok(json!({ "output": path, "bytes": text.len() }));
+                }
+                None if app.json => app.print_ok(json!({ "text": text })),
+                None => print!("{text}"),
+            }
+            Ok(())
+        }
+        KbCmd::Edit { workspace, file } => {
+            if !["architecture.md", "patterns.json"].contains(&file.as_str()) {
+                return Err(usage_code(
+                    app,
+                    &format!("{file} is derived from feedback; only architecture.md and patterns.json can be edited"),
+                    &["forgectl", "review", "kb", "show"],
+                ));
+            }
+            let workspace = target_workspace(app, &store, workspace.as_deref())?;
+            let current = kb_files(app, client, workspace.id)?
+                .into_iter()
+                .find(|f| f.file == file)
+                .map(|f| f.content)
+                .unwrap_or_default();
+            let edited = edit_in_editor(&file, &current).map_err(|error| {
+                app.fail(1, "editor_failed", &error, json!({ "file": file }), vec![])
+            })?;
+            if edited == current {
+                app.print_ok(json!({ "file": file, "changed": false }));
+                return Ok(());
+            }
+            let request = Request::UpdateKbEntry {
+                workspace_id: workspace.id,
+                file: file.clone(),
+                content: edited,
+            };
+            app.call(client, request, true)?;
+            app.print_ok(json!({ "file": file, "changed": true }));
+            Ok(())
+        }
+    }
+}
+
+const MAX_EDITED_BYTES: usize = 256 * 1024;
+
+/// `text` in a private temp file, opened in the person's editor; what it holds after.
+fn edit_in_editor(name: &str, text: &str) -> Result<String, String> {
+    let set = |name: &str| {
+        std::env::var(name)
+            .ok()
+            .filter(|value| !value.trim().is_empty())
+    };
+    let editor = set("VISUAL")
+        .or_else(|| set("EDITOR"))
+        .or_else(|| {
+            let sibling = std::env::current_exe().ok()?.with_file_name("forge-editor");
+            sibling
+                .exists()
+                .then(|| sibling.to_string_lossy().into_owned())
+        })
+        .ok_or_else(|| "set $VISUAL or $EDITOR".to_owned())?;
+    let dir = tempfile_dir()?;
+    let path = dir.join(name.replace('/', "_"));
+    std::fs::write(&path, text).map_err(|error| error.to_string())?;
+    let status = std::process::Command::new("/bin/sh")
+        .arg("-c")
+        .arg(format!("{editor} \"$1\""))
+        .arg("forge-kb-edit")
+        .arg(&path)
+        .status()
+        .map_err(|error| format!("cannot start {editor}: {error}"))?;
+    let read = client::read_capped(&path, MAX_EDITED_BYTES).map_err(|error| error.to_string());
+    let _ = std::fs::remove_dir_all(&dir);
+    if !status.success() {
+        return Err(format!("{editor} exited with {status}"));
+    }
+    let read = read?;
+    if read.truncated {
+        return Err(format!("{name} is over {} KiB", MAX_EDITED_BYTES / 1024));
+    }
+    String::from_utf8(read.bytes).map_err(|error| error.to_string())
+}
+
+fn tempfile_dir() -> Result<PathBuf, String> {
+    use std::os::unix::fs::DirBuilderExt;
+    let stamp = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| d.as_nanos());
+    let dir = std::env::temp_dir().join(format!("forge-kb-{}-{stamp}", std::process::id()));
+    std::fs::DirBuilder::new()
+        .mode(0o700)
+        .create(&dir)
+        .map_err(|error| error.to_string())?;
+    Ok(dir)
+}
+
+fn graph_question(app: &App, cmd: &GraphCmd) -> Result<domain::GraphQuery, u8> {
+    let GraphCmd::Query {
+        callers,
+        callees,
+        similar,
+        path,
+        imports,
+        external_calls,
+        names,
+        ..
+    } = cmd
+    else {
+        return Err(usage_code(
+            app,
+            "not a query",
+            &["forgectl", "review", "graph", "query", "--help"],
+        ));
+    };
+    let first = names.first().cloned().unwrap_or_default();
+    let usage = |message: &str| {
+        usage_code(
+            app,
+            message,
+            &["forgectl", "review", "graph", "query", "--help"],
+        )
+    };
+    if *path {
+        return match names.as_slice() {
+            [from, to] => Ok(domain::GraphQuery::Path(from.clone(), to.clone())),
+            _ => Err(usage("--path takes two functions")),
+        };
+    }
+    if names.len() != 1 {
+        return Err(usage("the question takes one name"));
+    }
+    Ok(if *callers {
+        domain::GraphQuery::Callers(first)
+    } else if *callees {
+        domain::GraphQuery::Callees(first)
+    } else if *similar {
+        domain::GraphQuery::Similar(first)
+    } else if *imports {
+        domain::GraphQuery::Imports(first)
+    } else if *external_calls {
+        domain::GraphQuery::ExternalCalls(first)
+    } else {
+        return Err(usage(
+            "say which question: --callers, --callees, --similar, --path, --imports or --external-calls",
+        ));
+    })
+}
+
+const MAX_CACHE_BYTES: usize = 512 * 1024 * 1024;
+
+/// `review graph query` with no daemon: the checkout's own `cache.bin`, as of its `HEAD`.
+pub(crate) fn offline_graph_query(app: &App, cmd: &GraphCmd) -> Result<(), u8> {
+    let query = graph_question(app, cmd)?;
+    let fail = |code: u8, kind: &str, message: &str| {
+        app.fail(
+            code,
+            kind,
+            message,
+            json!({}),
+            next(&["forgectl", "review", "graph", "rebuild"]),
+        )
+    };
+    let here = std::env::var_os("FORGE_WORKSPACE")
+        .map(PathBuf::from)
+        .or_else(|| std::env::current_dir().ok())
+        .ok_or_else(|| {
+            fail(
+                3,
+                "unreachable",
+                "the daemon is unreachable and there is no checkout",
+            )
+        })?;
+    let top = git(&here, &["rev-parse", "--show-toplevel"]).map_err(|error| {
+        fail(
+            3,
+            "unreachable",
+            &format!("the daemon is unreachable and {error}"),
+        )
+    })?;
+    let top = PathBuf::from(top.trim());
+    let head = git(&top, &["rev-parse", "HEAD"]).map_err(|error| fail(1, "no_graph", &error))?;
+    let read = client::read_capped(&top.join(".forge/review/graph/cache.bin"), MAX_CACHE_BYTES)
+        .map_err(|error| {
+            fail(
+                1,
+                "no_graph",
+                &format!("the daemon is unreachable and cache.bin cannot be read: {error}"),
+            )
+        })?;
+    if read.truncated {
+        return Err(fail(1, "no_graph", "cache.bin is over its budget"));
+    }
+    let graph = codebase_graph::Graph::decode(&read.bytes)
+        .map_err(|error| fail(1, "no_graph", &format!("cache.bin is not a graph: {error}")))?;
+    if graph.git_oid != head.trim() {
+        return Err(app.fail(
+            1,
+            "stale_graph",
+            "cache.bin was built for another HEAD; rebuild it with the daemon running",
+            json!({ "cache": graph.git_oid, "head": head.trim() }),
+            next(&["forgectl", "review", "graph", "rebuild"]),
+        ));
+    }
+    let nodes: Vec<domain::GraphNode> = graph
+        .index()
+        .query(&query)
+        .into_iter()
+        .map(codebase_graph::Node::to_wire)
+        .collect();
+    app.print_ok(json!({ "nodes": nodes, "source": "cache" }));
+    Ok(())
 }
 
 fn review_id(app: &App, raw: &str) -> Result<ReviewId, u8> {
@@ -303,9 +1134,30 @@ fn run_to_end(
     }
 }
 
+/// What a person reads first: the verdict line, each hypothesis explored and what it
+/// found, and the scope the reviewers were told not to report.
+fn report(run: &ReviewRun, findings: &[domain::Finding]) -> Value {
+    let hypotheses: Vec<Value> = domain::review::explored(&run.coverage, findings)
+        .into_iter()
+        .map(|explored| {
+            json!({
+                "hypothesis": explored.hypothesis.name(),
+                "reason": explored.reason,
+                "findings": explored.findings,
+                "outcome": if explored.findings == 0 { "explored, no findings" } else { "found" },
+            })
+        })
+        .collect();
+    json!({
+        "verdict": (run.status == ReviewStatus::Completed).then(|| domain::review::headline(findings)),
+        "hypotheses": hypotheses,
+        "acknowledged_scope": run.coverage.acknowledged_scope,
+    })
+}
+
 fn print_finished(app: &App, run: &ReviewRun, findings: &[domain::Finding]) -> Result<(), u8> {
     if run.status == ReviewStatus::Completed {
-        app.print_ok(json!({ "run": run, "findings": findings }));
+        app.print_ok(json!({ "run": run, "findings": findings, "report": report(run, findings) }));
         return Ok(());
     }
     Err(app.fail(
@@ -338,7 +1190,20 @@ struct Case {
 
 const MAX_CORPUS_BYTES: usize = 1024 * 1024;
 
-fn bench(app: &App, client: &Client, corpus: &Path, out: Option<PathBuf>) -> Result<(), u8> {
+fn parse_hypothesis(name: &str) -> Result<domain::Hypothesis, String> {
+    domain::Hypothesis::from_name(name).ok_or_else(|| {
+        let names: Vec<&str> = domain::Hypothesis::ALL.iter().map(|h| h.name()).collect();
+        format!("unknown hypothesis `{name}`; one of {}", names.join(", "))
+    })
+}
+
+fn bench(
+    app: &App,
+    client: &Client,
+    corpus: &Path,
+    out: Option<PathBuf>,
+    reviewers: Option<u8>,
+) -> Result<(), u8> {
     let bad = |message: String| {
         app.fail(
             2,
@@ -384,7 +1249,7 @@ fn bench(app: &App, client: &Client, corpus: &Path, out: Option<PathBuf>) -> Res
     for case in &parsed.cases {
         let started = Instant::now();
         let worktree = scratch.join(&case.id);
-        let row = match bench_case(app, client, &repo, &worktree, case) {
+        let row = match bench_case(app, client, &repo, &worktree, case, reviewers) {
             Ok((run, findings)) => {
                 let hit = findings.iter().any(|f| {
                     f.path == case.path
@@ -464,6 +1329,7 @@ fn bench_case(
     repo: &Path,
     worktree: &Path,
     case: &Case,
+    reviewers: Option<u8>,
 ) -> Result<(ReviewRun, Vec<domain::Finding>), String> {
     let path = worktree.to_string_lossy();
     git(repo, &["worktree", "add", "--detach", &path, &case.commit])?;
@@ -501,6 +1367,10 @@ fn bench_case(
             instructions: None,
             model: None,
             effort: None,
+            reviewers: domain::ReviewerOptions {
+                count: reviewers,
+                hypotheses: Vec::new(),
+            },
         },
         Wait::Cancel,
     )

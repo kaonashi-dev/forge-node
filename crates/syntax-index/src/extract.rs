@@ -298,14 +298,7 @@ fn annotate(text: &str, node: Node<'_>, found: &mut Receiver) {
 }
 
 fn clamp(text: &str) -> &str {
-    if text.len() <= MAX_TEXT_BYTES {
-        return text;
-    }
-    let mut end = MAX_TEXT_BYTES;
-    while !text.is_char_boundary(end) {
-        end -= 1;
-    }
-    &text[..end]
+    clip(text, MAX_TEXT_BYTES)
 }
 
 /// Byte offset of a 1-based line and UTF-16 column, clamped to that line.
@@ -483,4 +476,81 @@ fn innermost<'tree>(
             })
         })
         .min_by_key(|(scope, _)| scope.end_byte() - scope.start_byte())
+}
+
+/// Signature lines are cut here, in bytes.
+const MAX_SIGNATURE_BYTES: usize = 200;
+/// A generated file can call far more than any graph needs.
+const MAX_REFERENCES_PER_FILE: usize = 65_536;
+
+/// Definitions and the references the tags query captures, in source order.
+pub(crate) fn symbols(compiled: &Compiled, tree: &Tree, text: &str) -> crate::Symbols {
+    let tags = &compiled.tags;
+    let names = tags.query.capture_names();
+    let parent = tags.query.capture_index_for_name("parent");
+    let mut cursor = QueryCursor::new();
+    let mut matches = cursor.matches(&tags.query, tree.root_node(), text.as_bytes());
+    let mut found = crate::Symbols::default();
+    let mut seen = std::collections::HashSet::new();
+    let slice = |node: Node<'_>| text.get(node.byte_range()).unwrap_or_default().to_string();
+    while let Some(matched) = matches.next() {
+        let name = matched.captures.iter().find(|c| c.index == tags.name);
+        let parent = matched.captures.iter().find(|c| Some(c.index) == parent);
+        let Some((role, outer)) = matched.captures.iter().find_map(|c| {
+            let role = names.get(c.index as usize)?;
+            (role.starts_with("definition.") || role.starts_with("reference."))
+                .then_some((*role, c.node))
+        }) else {
+            continue;
+        };
+        let Some(name) = name.map(|c| c.node) else {
+            continue;
+        };
+        if let Some(kind) = role.strip_prefix("definition.") {
+            if found.definitions.len() < MAX_DEFINITIONS_PER_FILE && seen.insert(name.byte_range())
+            {
+                let signature = slice(outer);
+                let signature = signature.lines().next().unwrap_or_default().trim();
+                found.definitions.push(crate::Symbol {
+                    kind: kind.to_string(),
+                    name: slice(name),
+                    span: (outer.start_byte(), outer.end_byte()),
+                    signature: clip(signature, MAX_SIGNATURE_BYTES).to_string(),
+                });
+            }
+            continue;
+        }
+        let references = found.calls.len() + found.imports.len() + found.inherits.len();
+        if references >= MAX_REFERENCES_PER_FILE {
+            continue;
+        }
+        match role {
+            "reference.call" => found.calls.push(crate::Reference {
+                name: slice(name),
+                span: (name.start_byte(), name.end_byte()),
+            }),
+            "reference.import" => found.imports.push(slice(name)),
+            "reference.implementation" => {
+                if let Some(parent) = parent {
+                    found.inherits.push((slice(name), slice(parent.node)));
+                }
+            }
+            _ => {}
+        }
+    }
+    found
+        .definitions
+        .sort_by_key(|definition| definition.span.0);
+    found
+}
+
+fn clip(text: &str, max: usize) -> &str {
+    if text.len() <= max {
+        return text;
+    }
+    let mut end = max;
+    while !text.is_char_boundary(end) {
+        end -= 1;
+    }
+    &text[..end]
 }

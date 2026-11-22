@@ -11,6 +11,11 @@ members = [
     "crates/fs-service",
     "crates/languages",
     "crates/syntax-index",
+    "crates/codebase-graph",
+    "crates/diagram-gen",
+    "crates/review-hypotheses",
+    "crates/knowledge-base",
+    "crates/runtime-sandbox",
     "crates/external-index",
     "crates/lsp-client",
     "crates/persistence",
@@ -43,6 +48,11 @@ git-service = { path = "crates/git-service" }
 fs-service = { path = "crates/fs-service" }
 languages = { path = "crates/languages" }
 syntax-index = { path = "crates/syntax-index" }
+codebase-graph = { path = "crates/codebase-graph" }
+diagram-gen = { path = "crates/diagram-gen" }
+review-hypotheses = { path = "crates/review-hypotheses" }
+knowledge-base = { path = "crates/knowledge-base" }
+runtime-sandbox = { path = "crates/runtime-sandbox" }
 external-index = { path = "crates/external-index" }
 lsp-client = { path = "crates/lsp-client" }
 persistence = { path = "crates/persistence" }
@@ -104,6 +114,8 @@ glob = "0.3"
 
 # System
 nix = { version = "0.31", features = ["process", "signal", "fs", "term", "user", "poll", "socket"] }
+# `waitid` with `WNOWAIT`, which nix does not wrap on macOS. Already in the graph.
+libc = "0.2"
 directories = "6"
 notify = "7"
 

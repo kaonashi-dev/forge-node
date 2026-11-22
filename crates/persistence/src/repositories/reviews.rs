@@ -4,25 +4,29 @@
 use std::collections::{HashMap, HashSet};
 
 use domain::{
-    Coverage, Finding, FindingReaction, Lineage, ProjectId, ReviewId, ReviewRun, ReviewStage,
-    ReviewStatus, ReviewSuppression, ReviewTarget, SessionId, Severity, SuppressionKind, Tier,
-    Timestamp, Verdict, WorkspaceId,
+    Coverage, Finding, FindingReaction, Lineage, ProjectId, ReviewId, ReviewRequest, ReviewRun,
+    ReviewStage, ReviewStatus, ReviewSuppression, ReviewTarget, SessionId, Severity,
+    SuppressionKind, Tier, Timestamp, Verdict, WorkspaceId,
 };
 use rusqlite::{params, Connection, OptionalExtension, Row};
 
 use crate::db::DbError;
 use crate::repositories::{id_from_str, ts_from_opt, ts_from_str, ts_to_str};
 
+// `ReviewRun::reviewers` is stored in the `swarm_size` column.
 const RUN_COLUMNS: &str = "id, workspace_id, target, head_oid, base_oid, tier, provider, status, \
-     stage, summary, score, verdict, error, session_id, coverage, created_at, finished_at, preset, branch, tree_oid";
+     stage, summary, score, verdict, error, session_id, coverage, created_at, finished_at, preset, branch, tree_oid, \
+     diagrams, auto_approvable, swarm_size, schema_version, sandbox_run_id";
 
 const FINDING_COLUMNS: &str = "id, fingerprint, path, line, end_line, severity, category, \
-     rule_id, confidence, title, body, evidence, suggestion, lineage";
+     rule_id, confidence, title, body, evidence, suggestion, lineage, hypothesis, kb_ref, \
+     reachability, reachability_trigger";
 
 pub fn insert_run(conn: &Connection, run: &ReviewRun) -> Result<(), DbError> {
     conn.prepare_cached(&format!(
-        "INSERT INTO review_runs ({RUN_COLUMNS}) \
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20)"
+        "INSERT INTO review_runs ({RUN_COLUMNS}, proposed) \
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, \
+         ?21, ?22, ?23, ?24, ?25, ?26)"
     ))?
     .execute(params![
         run.id.to_string(),
@@ -30,7 +34,7 @@ pub fn insert_run(conn: &Connection, run: &ReviewRun) -> Result<(), DbError> {
         json(&run.target)?,
         run.head_oid,
         run.base_oid,
-        tier_tag(run.tier),
+        run.tier.name(),
         run.provider,
         status_tag(run.status),
         run.stage.map(stage_tag),
@@ -45,8 +49,50 @@ pub fn insert_run(conn: &Connection, run: &ReviewRun) -> Result<(), DbError> {
         run.preset,
         run.branch,
         run.tree_oid,
+        json(&run.diagrams)?,
+        run.auto_approvable,
+        run.reviewers,
+        schema_tag(run.schema_version),
+        run.sandbox_run_id,
+        run.coverage.proposed,
     ])?;
     Ok(())
+}
+
+/// [`insert_run`] with the request it came from, in one transaction.
+///
+/// # Errors
+/// Returns [`DbError`] on a failed statement.
+pub fn insert_requested_run(
+    conn: &mut Connection,
+    run: &ReviewRun,
+    request: &ReviewRequest,
+) -> Result<(), DbError> {
+    let tx = conn.transaction()?;
+    insert_run(&tx, run)?;
+    tx.execute(
+        "UPDATE review_runs SET request = ?2 WHERE id = ?1",
+        params![run.id.to_string(), json(request)?],
+    )?;
+    tx.commit()?;
+    Ok(())
+}
+
+/// `None` for an unknown run or one stored before requests were.
+///
+/// # Errors
+/// Returns [`DbError`] on a failed statement or an unreadable request.
+pub fn run_request(conn: &Connection, id: ReviewId) -> Result<Option<ReviewRequest>, DbError> {
+    let text: Option<String> = conn
+        .query_row(
+            "SELECT request FROM review_runs WHERE id = ?1",
+            params![id.to_string()],
+            |row| row.get(0),
+        )
+        .optional()?
+        .flatten();
+    text.map(|text| from_json("ReviewRequest", &text))
+        .transpose()
 }
 
 /// Rewrites every mutable column; a run removed meanwhile stays removed.
@@ -54,7 +100,9 @@ pub fn update_run(conn: &Connection, run: &ReviewRun) -> Result<(), DbError> {
     conn.prepare_cached(
         "UPDATE review_runs SET base_oid = ?2, status = ?3, stage = ?4, summary = ?5, \
          score = ?6, verdict = ?7, error = ?8, session_id = ?9, coverage = ?10, \
-         finished_at = ?11, head_oid = ?12, tree_oid = ?13 WHERE id = ?1",
+         finished_at = ?11, head_oid = ?12, tree_oid = ?13, tier = ?14, diagrams = ?15, \
+         auto_approvable = ?16, swarm_size = ?17, schema_version = ?18, sandbox_run_id = ?19, \
+         proposed = ?20 WHERE id = ?1",
     )?
     .execute(params![
         run.id.to_string(),
@@ -70,6 +118,13 @@ pub fn update_run(conn: &Connection, run: &ReviewRun) -> Result<(), DbError> {
         run.finished_at.as_ref().map(ts_to_str),
         run.head_oid,
         run.tree_oid,
+        run.tier.name(),
+        json(&run.diagrams)?,
+        run.auto_approvable,
+        run.reviewers,
+        schema_tag(run.schema_version),
+        run.sandbox_run_id,
+        run.coverage.proposed,
     ])?;
     Ok(())
 }
@@ -83,7 +138,7 @@ pub fn insert_findings(
     let result = (|| {
         let mut stmt = conn.prepare_cached(&format!(
             "INSERT INTO review_findings (review_id, {FINDING_COLUMNS}) \
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15)"
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19)"
         ))?;
         for f in findings {
             stmt.execute(params![
@@ -102,6 +157,10 @@ pub fn insert_findings(
                 f.evidence,
                 f.suggestion,
                 lineage_tag(f.lineage),
+                f.hypothesis.map(domain::Hypothesis::name),
+                f.kb_ref,
+                f.reachability.as_ref().map(|reach| reach.kind.name()),
+                f.reachability.as_ref().map(|reach| reach.trigger.as_str()),
             ])?;
         }
         Ok::<_, DbError>(())
@@ -159,10 +218,30 @@ pub fn interrupt_unfinished(conn: &Connection) -> Result<usize, DbError> {
     )?)
 }
 
-/// Session ids named by review runs, for the restart's read-only set.
+/// Every agent session a run launched; `session_id` stays the first.
+///
+/// # Errors
+/// Returns [`DbError`] on a failed statement.
+pub fn set_agent_sessions(
+    conn: &Connection,
+    run: ReviewId,
+    sessions: &[SessionId],
+) -> Result<(), DbError> {
+    let ids: Vec<String> = sessions.iter().map(ToString::to_string).collect();
+    conn.execute(
+        "UPDATE review_runs SET agent_sessions = ?2 WHERE id = ?1",
+        params![run.to_string(), json(&ids)?],
+    )?;
+    Ok(())
+}
+
+/// Session ids named by review runs, every reviewer's included, for the
+/// restart's read-only set.
 pub fn reviewer_sessions(conn: &Connection) -> Result<HashSet<SessionId>, DbError> {
-    let mut stmt =
-        conn.prepare("SELECT DISTINCT session_id FROM review_runs WHERE session_id IS NOT NULL")?;
+    let mut stmt = conn.prepare(
+        "SELECT session_id FROM review_runs WHERE session_id IS NOT NULL \
+         UNION SELECT j.value FROM review_runs, json_each(review_runs.agent_sessions) j",
+    )?;
     let rows = stmt.query_map([], |row| row.get::<_, String>(0))?;
     let mut ids = HashSet::new();
     for row in rows {
@@ -172,9 +251,9 @@ pub fn reviewer_sessions(conn: &Connection) -> Result<HashSet<SessionId>, DbErro
 }
 
 /// Keep a workspace's newest `keep` runs, and of those only the ones created
-/// at or after `cutoff`. Findings go with their run. A run whose reviewer
-/// session row still exists is kept: that row is what makes the restart
-/// read-only.
+/// at or after `cutoff`. Findings go with their run. A run while any of its
+/// reviewer session rows still exists is kept: that row is what makes the
+/// restart read-only.
 pub fn prune(
     conn: &Connection,
     workspace: WorkspaceId,
@@ -185,7 +264,9 @@ pub fn prune(
         "DELETE FROM review_runs WHERE workspace_id = ?1 \
          AND (created_at < ?3 OR id NOT IN \
            (SELECT id FROM review_runs WHERE workspace_id = ?1 ORDER BY id DESC LIMIT ?2)) \
-         AND (session_id IS NULL OR session_id NOT IN (SELECT id FROM sessions))",
+         AND (session_id IS NULL OR session_id NOT IN (SELECT id FROM sessions)) \
+         AND NOT EXISTS (SELECT 1 FROM json_each(review_runs.agent_sessions) j \
+           WHERE j.value IN (SELECT id FROM sessions))",
         params![workspace.to_string(), keep, ts_to_str(&cutoff)],
     )?)
 }
@@ -342,6 +423,11 @@ fn run_from_row(row: &Row<'_>) -> rusqlite::Result<Result<ReviewRun, DbError>> {
     let preset: String = row.get(17)?;
     let branch: Option<String> = row.get(18)?;
     let tree_oid: Option<String> = row.get(19)?;
+    let diagrams: String = row.get(20)?;
+    let auto_approvable: bool = row.get(21)?;
+    let reviewers: u8 = row.get(22)?;
+    let schema_version: String = row.get(23)?;
+    let sandbox_run_id: Option<String> = row.get(24)?;
     Ok((|| {
         #[allow(
             clippy::cast_possible_truncation,
@@ -354,7 +440,7 @@ fn run_from_row(row: &Row<'_>) -> rusqlite::Result<Result<ReviewRun, DbError>> {
             target: from_json::<ReviewTarget>("ReviewTarget", &target)?,
             head_oid,
             base_oid,
-            tier: parse_tag("Tier", &tier, TIERS)?,
+            tier: parse_tier(&tier)?,
             preset,
             provider,
             status: parse_tag("ReviewStatus", &status, STATUSES)?,
@@ -375,6 +461,11 @@ fn run_from_row(row: &Row<'_>) -> rusqlite::Result<Result<ReviewRun, DbError>> {
             finished_at: ts_from_opt(finished_at)?,
             branch,
             tree_oid,
+            diagrams: from_json("diagrams", &diagrams)?,
+            auto_approvable,
+            reviewers,
+            schema_version: parse_tag("SchemaVersion", &schema_version, SCHEMAS)?,
+            sandbox_run_id,
         })
     })())
 }
@@ -382,6 +473,7 @@ fn run_from_row(row: &Row<'_>) -> rusqlite::Result<Result<ReviewRun, DbError>> {
 fn finding_from_row(row: &Row<'_>) -> rusqlite::Result<Result<Finding, DbError>> {
     let severity: String = row.get(5)?;
     let lineage: String = row.get(13)?;
+    let hypothesis: Option<String> = row.get(14)?;
     let confidence: f64 = row.get(8)?;
     #[allow(
         clippy::cast_possible_truncation,
@@ -404,11 +496,28 @@ fn finding_from_row(row: &Row<'_>) -> rusqlite::Result<Result<Finding, DbError>>
         suggestion: row.get(12)?,
         lineage: domain::Lineage::New,
         reaction: None,
+        hypothesis: hypothesis
+            .as_deref()
+            .and_then(domain::Hypothesis::from_name),
+        kb_ref: row.get(15)?,
+        reachability: None,
     };
+    let reachability: Option<String> = row.get(16)?;
+    let trigger: Option<String> = row.get(17)?;
     Ok((|| {
         Ok(Finding {
             severity: parse_tag("Severity", &severity, SEVERITIES)?,
             lineage: parse_tag("Lineage", &lineage, LINEAGES)?,
+            reachability: reachability
+                .map(|kind| {
+                    domain::ReachabilityKind::from_name(&kind)
+                        .map(|kind| domain::Reachability {
+                            kind,
+                            trigger: trigger.unwrap_or_default(),
+                        })
+                        .ok_or_else(|| DbError::decode("ReachabilityKind", &kind, "unknown tag"))
+                })
+                .transpose()?,
             ..finding
         })
     })())
@@ -429,11 +538,15 @@ fn tag<T: Copy + PartialEq>(value: T, table: &[(T, &'static str)]) -> &'static s
         .map_or("", |(_, tag)| tag)
 }
 
-const TIERS: &[(Tier, &str)] = &[
-    (Tier::Base, "base"),
-    (Tier::Plus, "plus"),
-    (Tier::Apex, "apex"),
+const SCHEMAS: &[(domain::SchemaVersion, &str)] = &[
+    (domain::SchemaVersion::V1, "v1"),
+    (domain::SchemaVersion::V2, "v2"),
 ];
+
+fn schema_tag(version: domain::SchemaVersion) -> &'static str {
+    tag(version, SCHEMAS)
+}
+
 const STATUSES: &[(ReviewStatus, &str)] = &[
     (ReviewStatus::Queued, "Queued"),
     (ReviewStatus::Running, "Running"),
@@ -465,8 +578,8 @@ const REACTIONS: &[(FindingReaction, &str)] = &[
     (FindingReaction::Dismiss, "dismiss"),
 ];
 
-fn tier_tag(tier: Tier) -> &'static str {
-    tag(tier, TIERS)
+fn parse_tier(text: &str) -> Result<Tier, DbError> {
+    Tier::parse(text).ok_or_else(|| DbError::decode("Tier", text, "unknown tag"))
 }
 fn status_tag(status: ReviewStatus) -> &'static str {
     tag(status, STATUSES)
@@ -485,4 +598,91 @@ fn lineage_tag(lineage: Lineage) -> &'static str {
 }
 fn reaction_tag(reaction: FindingReaction) -> &'static str {
     tag(reaction, REACTIONS)
+}
+
+/// One completed run, as `GetReviewStats` counts it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct StatsRow {
+    pub id: String,
+    pub tier: Tier,
+    /// Wall-clock seconds from start to finish.
+    pub seconds: i64,
+    pub reviewers: u8,
+    pub hypotheses_found: u32,
+    pub cites_kb: bool,
+    /// Findings the reviewers proposed; `0` for a run stored before it was counted.
+    pub proposed: u32,
+    /// Kept findings that say how they are reached.
+    pub reachable: u32,
+}
+
+/// Completed runs, of one workspace or all, newest first.
+///
+/// # Errors
+/// Returns [`DbError`] on a failed statement or an undecodable row.
+pub fn stats_rows(
+    conn: &Connection,
+    workspace: Option<WorkspaceId>,
+) -> Result<Vec<StatsRow>, DbError> {
+    let mut statement = conn.prepare_cached(
+        "SELECT r.id, r.tier, r.created_at, r.finished_at, r.swarm_size, \
+         (SELECT COUNT(DISTINCT f.hypothesis) FROM review_findings f WHERE f.review_id = r.id AND f.hypothesis IS NOT NULL), \
+         EXISTS (SELECT 1 FROM review_findings f WHERE f.review_id = r.id AND f.kb_ref IS NOT NULL), \
+         r.proposed, \
+         (SELECT COUNT(*) FROM review_findings f WHERE f.review_id = r.id AND f.reachability IS NOT NULL) \
+         FROM review_runs r WHERE r.status = 'Completed' AND r.finished_at IS NOT NULL \
+         AND (?1 IS NULL OR r.workspace_id = ?1) ORDER BY r.id DESC LIMIT 10000",
+    )?;
+    let rows = statement.query_map(params![workspace.map(|w| w.to_string())], |row| {
+        Ok((
+            row.get::<_, String>(0)?,
+            row.get::<_, String>(1)?,
+            row.get::<_, String>(2)?,
+            row.get::<_, String>(3)?,
+            row.get::<_, u8>(4)?,
+            row.get::<_, u32>(5)?,
+            row.get::<_, bool>(6)?,
+            row.get::<_, u32>(7)?,
+            row.get::<_, u32>(8)?,
+        ))
+    })?;
+    rows.map(|row| {
+        let (
+            id,
+            tier,
+            created,
+            finished,
+            reviewers,
+            hypotheses_found,
+            cites_kb,
+            proposed,
+            reachable,
+        ) = row?;
+        let seconds = ts_from_str(&finished)?.as_offset().unix_timestamp()
+            - ts_from_str(&created)?.as_offset().unix_timestamp();
+        Ok(StatsRow {
+            id,
+            tier: parse_tier(&tier)?,
+            seconds,
+            reviewers,
+            hypotheses_found,
+            cites_kb,
+            proposed,
+            reachable,
+        })
+    })
+    .collect()
+}
+
+/// Bytes the knowledge base holds, for one project or all.
+///
+/// # Errors
+/// Returns [`DbError`] on a failed statement.
+pub fn kb_bytes(conn: &Connection, project: Option<ProjectId>) -> Result<u64, DbError> {
+    let bytes: i64 = conn.query_row(
+        "SELECT COALESCE(SUM(LENGTH(content)), 0) FROM kb_entries WHERE ?1 IS NULL OR project_id = ?1",
+        params![project.map(|p| p.to_string())],
+        |row| row.get(0),
+    )?;
+    Ok(u64::try_from(bytes).unwrap_or(0))
 }
