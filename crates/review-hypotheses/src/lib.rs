@@ -4,16 +4,20 @@
 
 use std::fmt::Write as _;
 
-use domain::{DiffFile, Finding, Hypothesis};
+use domain::{DiffFile, Finding, Hypothesis, HypothesisChoice};
 
 pub const MAX_AGENTS: usize = 8;
 
-/// The order agents take hypotheses in: the default three first.
-pub const ORDER: [Hypothesis; 15] = [
+/// The order hypotheses fill the reviewers the diff's signals left: the default three first.
+pub const ORDER: [Hypothesis; 19] = [
     Hypothesis::AuthBypass,
     Hypothesis::BrokenContract,
     Hypothesis::ErrorSwallow,
     Hypothesis::RaceCondition,
+    Hypothesis::UntrustedRepoInput,
+    Hypothesis::LifecycleCancelRetry,
+    Hypothesis::MemoryDiskDrift,
+    Hypothesis::TransitionCleanup,
     Hypothesis::NPlusOneQuery,
     Hypothesis::MissingValidation,
     Hypothesis::RetryNesting,
@@ -45,6 +49,10 @@ pub fn instruction(hypothesis: Hypothesis) -> &'static str {
         Hypothesis::MissingTest => "Look for a new branch or behaviour with no test that would fail if it broke.",
         Hypothesis::MigrationGap => "Look for a schema or migration change the code reading or writing it does not follow, or the reverse.",
         Hypothesis::ConfigDrift => "Look for a configuration key added, renamed or removed in one place but not in the code, the defaults or the documentation that read it.",
+        Hypothesis::UntrustedRepoInput => "Look for paths, symlinks, files and configuration the checked-out repository controls that the change uses as a write target, a policy or a command: a path joined without being canonicalized inside its root, a symlink followed out of the checkout, a repository file that decides what runs or what is allowed without a person approving it.",
+        Hypothesis::MemoryDiskDrift => "Look for state that lives only in memory and is lost or wrong after a restart, an incremental result that differs from what a full rebuild would produce, and a cache that is not invalidated when its source changes. Compare what is written with what is read back.",
+        Hypothesis::LifecycleCancelRetry => "Look for a cancel that does not reach the children, threads or processes the work started, a retry or restart that drops the original request's settings, a start that can run twice, and a flag or guard that one exit path (an error, an early return, a panic) leaves set.",
+        Hypothesis::TransitionCleanup => "Look for what a transition leaves behind: pending requests, reads or queued work not reset on a reconnect, restart or replacement; an old answer accepted because its generation or id is not checked; a limit enforced when reading that writing does not enforce, or the reverse.",
         _ => "Look for defects the change introduces.",
     }
 }
@@ -109,24 +117,306 @@ pub fn keywords(hypothesis: Hypothesis) -> &'static [&'static str] {
         Hypothesis::MissingTest => &["if ", "match ", "else", "case ", "test"],
         Hypothesis::MigrationGap => &["migration", "schema", "alter", "create table"],
         Hypothesis::ConfigDrift => &["config", "toml", "env", "setting", "option"],
+        Hypothesis::UntrustedRepoInput => &[
+            "path",
+            "symlink",
+            "canonicalize",
+            "write",
+            "create",
+            "rename",
+            "toml",
+            "config",
+        ],
+        Hypothesis::MemoryDiskDrift => &[
+            "cache",
+            "persist",
+            "restart",
+            "migration",
+            "incremental",
+            "rebuild",
+            "snapshot",
+            "reload",
+        ],
+        Hypothesis::LifecycleCancelRetry => &[
+            "cancel", "abort", "retry", "drop", "flag", "atomic", "kill", "guard",
+        ],
+        Hypothesis::TransitionCleanup => &[
+            "reconnect",
+            "pending",
+            "generation",
+            "limit",
+            "cap",
+            "budget",
+            "resync",
+            "stale",
+        ],
         _ => &[],
     }
 }
 
-/// `explicit` (deduplicated, at most eight) when given, else the first
-/// `size` of [`ORDER`], `size` clamped to `1..=8`.
+/// Identifier words of the diff that point at a hypothesis when choosing which to
+/// hunt. Narrower than [`keywords`]: a word every change has would pick its
+/// hypothesis for every run.
 #[must_use]
-pub fn select(size: usize, explicit: &[Hypothesis]) -> Vec<Hypothesis> {
+pub fn signals(hypothesis: Hypothesis) -> &'static [&'static str] {
+    match hypothesis {
+        Hypothesis::UntrustedRepoInput => &[
+            "symlink",
+            "symlinks",
+            "readlink",
+            "canonicalize",
+            "rename",
+            "hardlink",
+            "chmod",
+            "write",
+            "create",
+            "copy",
+            "toml",
+            "gitattributes",
+            "gitmodules",
+        ],
+        Hypothesis::LifecycleCancelRetry => &[
+            "cancel",
+            "cancelled",
+            "canceled",
+            "cancellation",
+            "abort",
+            "aborted",
+            "retry",
+            "retries",
+            "drop",
+            "flag",
+            "flags",
+            "atomic",
+            "kill",
+            "killed",
+            "shutdown",
+        ],
+        Hypothesis::MemoryDiskDrift => &[
+            "cache",
+            "cached",
+            "persist",
+            "persisted",
+            "persistence",
+            "restart",
+            "restarted",
+            "migration",
+            "migrations",
+            "incremental",
+            "rebuild",
+            "reload",
+            "stale",
+        ],
+        Hypothesis::TransitionCleanup => &[
+            "reconnect",
+            "reconnected",
+            "reconnects",
+            "pending",
+            "generation",
+            "generations",
+            "limit",
+            "limits",
+            "cap",
+            "caps",
+            "capped",
+            "resync",
+        ],
+        Hypothesis::RaceCondition => &[
+            "lock",
+            "locked",
+            "mutex",
+            "rwlock",
+            "thread",
+            "threads",
+            "spawn",
+            "spawned",
+            "concurrent",
+            "concurrently",
+            "condvar",
+        ],
+        Hypothesis::AuthBypass => &[
+            "auth",
+            "authorize",
+            "authorized",
+            "authorization",
+            "authenticate",
+            "authenticated",
+            "token",
+            "tokens",
+            "permission",
+            "permissions",
+            "credential",
+            "credentials",
+            "login",
+            "password",
+        ],
+        Hypothesis::MigrationGap => &["migration", "migrations", "alter", "schema", "column"],
+        Hypothesis::RetryNesting => &["backoff", "retry", "retries"],
+        _ => &[],
+    }
+}
+
+/// Added lines past this many are not read for signals.
+pub const MAX_SCORED_LINES: usize = 2000;
+/// Bytes of one added line read for signals.
+const MAX_SCORED_LINE_BYTES: usize = 512;
+/// A changed file whose path names a signal counts like this many lines.
+const PATH_WEIGHT: u32 = 2;
+/// Below this, a hypothesis is left to [`ORDER`].
+const MIN_SCORE: u32 = 2;
+/// Signals named in a choice's reason.
+const REASON_SIGNALS: usize = 3;
+
+/// How many reviewers [`select`] chooses for the same arguments.
+#[must_use]
+pub fn count(size: usize, explicit: &[Hypothesis]) -> usize {
+    if explicit.is_empty() {
+        return size.clamp(1, MAX_AGENTS);
+    }
+    let mut seen: Vec<Hypothesis> = Vec::new();
+    for hypothesis in explicit {
+        if !seen.contains(hypothesis) {
+            seen.push(*hypothesis);
+        }
+    }
+    seen.len().min(MAX_AGENTS)
+}
+
+/// `explicit` (deduplicated, at most eight) when given. Otherwise `size`
+/// (clamped to `1..=8`) hypotheses: those whose [`signals`] the changed
+/// paths and the first [`MAX_SCORED_LINES`] added lines name most, then
+/// [`ORDER`] for the rest.
+#[must_use]
+pub fn select(size: usize, explicit: &[Hypothesis], files: &[DiffFile]) -> Vec<HypothesisChoice> {
+    let choice = |hypothesis, reason: &str| HypothesisChoice {
+        hypothesis,
+        reason: reason.to_owned(),
+    };
     if !explicit.is_empty() {
-        let mut chosen = Vec::new();
+        let mut chosen: Vec<HypothesisChoice> = Vec::new();
         for hypothesis in explicit {
-            if !chosen.contains(hypothesis) && chosen.len() < MAX_AGENTS {
-                chosen.push(*hypothesis);
+            if !chosen.iter().any(|c| c.hypothesis == *hypothesis) && chosen.len() < MAX_AGENTS {
+                chosen.push(choice(*hypothesis, HypothesisChoice::REQUESTED));
             }
         }
         return chosen;
     }
-    ORDER[..size.clamp(1, MAX_AGENTS)].to_vec()
+    let size = count(size, &[]);
+    let mut scored = score(files);
+    scored.retain(|(_, score, _)| *score >= MIN_SCORE);
+    scored.sort_by_key(|(hypothesis, score, _)| {
+        (
+            std::cmp::Reverse(*score),
+            ORDER.iter().position(|h| h == hypothesis),
+        )
+    });
+    let mut chosen: Vec<HypothesisChoice> = scored
+        .into_iter()
+        .take(size)
+        .map(|(hypothesis, _, reason)| HypothesisChoice { hypothesis, reason })
+        .collect();
+    for hypothesis in ORDER {
+        if chosen.len() >= size {
+            break;
+        }
+        if !chosen.iter().any(|c| c.hypothesis == hypothesis) {
+            chosen.push(choice(hypothesis, HypothesisChoice::DEFAULT_ORDER));
+        }
+    }
+    chosen
+}
+
+/// Each hypothesis with signals and its score: one per added line naming one
+/// of them, [`PATH_WEIGHT`] per path that does. The reason names its most
+/// frequent signals.
+fn score(files: &[DiffFile]) -> Vec<(Hypothesis, u32, String)> {
+    let candidates: Vec<(Hypothesis, &[&str])> = ORDER
+        .iter()
+        .map(|&hypothesis| (hypothesis, signals(hypothesis)))
+        .filter(|(_, words)| !words.is_empty())
+        .collect();
+    let mut hits: Vec<Vec<u32>> = candidates
+        .iter()
+        .map(|(_, words)| vec![0; words.len()])
+        .collect();
+    let mut scores = vec![0u32; candidates.len()];
+    let mut tally = |text: &str, weight: u32| {
+        let tokens: Vec<&str> = identifier_words(text).collect();
+        for (at, (_, words)) in candidates.iter().enumerate() {
+            let mut named = false;
+            for (index, word) in words.iter().enumerate() {
+                if tokens.iter().any(|token| token.eq_ignore_ascii_case(word)) {
+                    hits[at][index] += 1;
+                    named = true;
+                }
+            }
+            if named {
+                scores[at] += weight;
+            }
+        }
+    };
+    for file in files {
+        tally(&file.path, PATH_WEIGHT);
+    }
+    let added = files.iter().flat_map(|file| {
+        file.patch
+            .lines()
+            .filter(|line| line.starts_with('+') && !line.starts_with("+++"))
+    });
+    for line in added.take(MAX_SCORED_LINES) {
+        tally(clip(&line[1..], MAX_SCORED_LINE_BYTES), 1);
+    }
+    candidates
+        .iter()
+        .zip(hits)
+        .zip(scores)
+        .map(|(((hypothesis, words), hits), score)| {
+            let mut named: Vec<(&str, u32)> = words
+                .iter()
+                .copied()
+                .zip(hits)
+                .filter(|(_, n)| *n > 0)
+                .collect();
+            named.sort_by_key(|(_, n)| std::cmp::Reverse(*n));
+            let listed: Vec<String> = named
+                .iter()
+                .take(REASON_SIGNALS)
+                .map(|(word, n)| format!("{word} ×{n}"))
+                .collect();
+            (*hypothesis, score, format!("diff: {}", listed.join(", ")))
+        })
+        .collect()
+}
+
+/// `fetchPendingReads`, `pending_reads` and `pending-reads` all give `pending`
+/// and `reads`: identifiers split on every non-alphanumeric and on a lower-to-upper case step.
+fn identifier_words(text: &str) -> impl Iterator<Item = &str> {
+    text.split(|c: char| !c.is_ascii_alphanumeric())
+        .flat_map(|part| {
+            let mut words = Vec::new();
+            let mut start = 0;
+            let bytes = part.as_bytes();
+            for at in 1..bytes.len() {
+                if bytes[at].is_ascii_uppercase() && bytes[at - 1].is_ascii_lowercase() {
+                    words.push(&part[start..at]);
+                    start = at;
+                }
+            }
+            words.push(&part[start..]);
+            words
+        })
+        .filter(|word| !word.is_empty())
+}
+
+fn clip(text: &str, max: usize) -> &str {
+    if text.len() <= max {
+        return text;
+    }
+    let mut end = max;
+    while !text.is_char_boundary(end) {
+        end -= 1;
+    }
+    &text[..end]
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -220,8 +510,8 @@ pub fn prompt(
         "{base}\n\n## Your hypothesis: {name}\n\n{instruction}\n\nYou are one of several \
          reviewers, each hunting one hypothesis. Read {slice} first: it names the files to start \
          from inside <slice-{nonce}>, but follow the code wherever the hypothesis leads. Report \
-         only findings that fit your hypothesis; an empty `findings` list is a valid answer. Set \
-         each finding's `hypothesis` to \"{name}\". `patterns` may list up to ten short \
+         only findings that fit your hypothesis; an empty `findings` list is a valid answer. A \
+         finding without `reachability` is dropped. Set each finding's `hypothesis` to \"{name}\". `patterns` may list up to ten short \
          conventions this project follows that you confirmed while reading. Do not emit \
          `diagrams` or `pr_confidence`.",
         name = spec.hypothesis.name(),

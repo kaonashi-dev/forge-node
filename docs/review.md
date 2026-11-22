@@ -63,6 +63,10 @@ Validation is what makes a finding a finding:
   only inside a new-side hunk; otherwise the finding becomes general;
 - a finding on an excluded file (below) is kept as general with an empty
   evidence: the file never reached the pack, and its text may hold secrets;
+- a finding of a `forge.review/v2` answer with no `reachability`, or one whose
+  `trigger` is empty, is dropped and counted as `Coverage::without_reachability`,
+  with the note "N finding(s) without reachability were dropped". A v1 answer
+  may leave it out;
 - `confidence` below the configured `min_confidence` is dropped. Overlapping
   findings dedupe, and so does a general finding with the fingerprint of one
   already kept; the more severe one stays. The project's feedback suppressions
@@ -74,8 +78,18 @@ Validation is what makes a finding a finding:
   named a line. General findings neither help nor hurt: the model reviewed
   something other than this change.
 
+The prompt asks each finding for a declarative, present-tense `title` (never
+"might", "could" or "consider"), a `body` that is the mechanism in two to four
+sentences (what the code does, the consequence, when), a `reachability` — `kind`
+`automatic` (a normal operation reaches it), `sequence` (a plausible sequence of
+events) or `adversarial` (input the repository or a caller controls), and a
+one-sentence `trigger` — a `suggestion` that is the fix in the imperative, and
+a `category`. `reachability` may also arrive as one string, `"automatic: …"`;
+an unknown kind reads as none. `Coverage::proposed` counts what the reviewers
+proposed before validation.
+
 The summary may carry one mermaid diagram; a suggested fix is capped text, never
-a patch Forge applies. A run that outlives the daemon is metadata: with
+a patch Forge applies. The suggestion may be shaped like a diff; it is still only text. A run that outlives the daemon is metadata: with
 `sessions.persist_history`, its reviewer session comes back `Orphaned` and
 startup still knows it is read-only, from the run's `session_id`.
 
@@ -101,6 +115,17 @@ neither joins nor supersedes the workspace's review; its join key leaves out
 the head, which is unknown until the fetch. `base` is checked with
 `check-ref-format --branch` before anything runs. A pull-request run is never
 stale, and Send and Fix are off for it.
+
+The pull request's description, as the pull-request cache holds it (matched by
+the remote that hosts it, else listed for the project; the review never asks
+the network for it), may declare an **acknowledged scope**: every section whose
+heading names a non-goal, and every bullet that does with what is nested under
+it (`non-goal`, `out of scope`, `deliberate non-goals`, `no hacemos`, `fuera de
+alcance`, any case), at most 2 KiB cut on a line. Without one, or for a
+workspace review, the review's instructions are read the same way. It enters
+the pack as a redacted `<scope-N>` block on every tier, the prompt tells the
+reviewers not to report anything it names, and the run keeps it in
+`Coverage::acknowledged_scope` with a note naming its source.
 
 ## Lineage
 
@@ -183,7 +208,7 @@ or 50 files is `deep`; over 256 KiB, or a changed path naming `auth`,
 `bench` or `cache`, is `standard`; anything else is `quick`. A run's tier, then its
 preset's, then `default_tier` win over `auto`, and the run stores the concrete
 tier. `base`, `plus` and `apex`, the names the tiers had before, are still read
-everywhere a tier is: a stored run, `default_tier`, a preset and `--tier`. Each block after the diff needs its own switch as well as its tier, is
+everywhere a tier is: a stored run, `default_tier`, a preset and `--tier`. `<scope-N>` (above) rides on every tier. Each other block after the diff needs its own switch as well as its tier, is
 escaped and redacted like the diff, and loses whole sections past its budget
 with a coverage note. With none of them, the pack and the prompt are v1's.
 
@@ -334,11 +359,28 @@ ordinary read-only `SessionKind::Agent` titled `Forge Review · <Hypothesis>`
 with its own `--session-id`, all launched together and each given the full
 `timeout_secs`. A run's `reviewers.count` or `reviewers.hypotheses` override it; a count of 1
 with no hypotheses is the single v1 reviewer, prompt and answer unchanged.
-Hypotheses are taken in this order: `AuthBypass`, `BrokenContract`,
-`ErrorSwallow`, `RaceCondition`, `NPlusOneQuery`, `MissingValidation`, then
-`RetryNesting`, `DefaultMismatch`, `ResourceLeak`, `DeadCode`,
-`InconsistentPattern`, `CrossLayerMismatch`, `MissingTest`, `MigrationGap`,
-`ConfigDrift`. The pack is written once; each agent also reads
+Without `reviewers.hypotheses`, the worker chooses them once the diff is
+known (`review_hypotheses::select`): each hypothesis with signals scores one per
+added line, of the first 2 000 of the files in the pack, that names one of its
+signal words, and two per changed path that does. Signals are whole identifier
+words, split on punctuation, `_` and a lower-to-upper case step, so `block`
+never counts as `lock` and `pendingReads` counts as `pending` (`cancel`, `abort`,
+`retry`, `Drop`, `flag`, `AtomicBool` point at `LifecycleCancelRetry`; `cache`,
+`persist`, `restart`, `migration`, `incremental` at `MemoryDiskDrift`;
+`reconnect`, `pending`, `generation`, `limit`, `cap` at `TransitionCleanup`;
+`symlink`, `rename`, `create`, `write`, `toml` at `UntrustedRepoInput`; `lock`,
+`Mutex`, `thread`, `spawn` at `RaceCondition`; `auth`, `token`, `permission` at
+`AuthBypass`; `migration`, `schema`, `alter` at `MigrationGap`). Those scoring at
+least 2 take the reviewers, highest first, a tie going to the order below; the
+rest come from that order: `AuthBypass`, `BrokenContract`, `ErrorSwallow`,
+`RaceCondition`, `UntrustedRepoInput`, `LifecycleCancelRetry`, `MemoryDiskDrift`,
+`TransitionCleanup`, `NPlusOneQuery`, `MissingValidation`, then `RetryNesting`,
+`DefaultMismatch`, `ResourceLeak`, `DeadCode`, `InconsistentPattern`,
+`CrossLayerMismatch`, `MissingTest`, `MigrationGap`, `ConfigDrift`. Requested
+hypotheses are taken as given. The run records each choice and its reason
+(`requested`, `default order`, or `diff: cancel ×3, drop ×1`) in
+`Coverage::hypotheses`, so the report can say what was explored and what found
+nothing. The pack is written once; each agent also reads
 `slice-<Hypothesis>.md` beside it, naming the files whose path or patch matches
 its keywords (every file when none does) and its instruction.
 
@@ -354,6 +396,7 @@ superseded one included. The run's `session_id` names the first agent and
 
 `parse_output` accepts `forge.review/v1` and `forge.review/v2`. v2 adds
 `findings[].hypothesis` (the agent's own is kept), `findings[].kb_ref`,
+the required `findings[].reachability`,
 `patterns` (at most 10, 200 bytes each) and `coverage_notes`; `pr_confidence`
 and `diagrams` are accepted and ignored — the reviewers' prompts ask for neither. A run
 records `reviewers` and `schema_version`.
@@ -497,7 +540,9 @@ terminal or needs `--yes`, and no MCP tool or `review_start` flag starts one.
 `GetReviewStats` (`forgectl review stats`) gives P50/P95 wall-clock latency per
 tier over completed runs, the graph hit rate (queries answered from a stored
 graph against rebuilds, since the daemon started), hypothesis coverage (hypotheses
-with a kept finding over the reviewers of multi-reviewer runs), the knowledge-base hit rate (runs with
+explored with a kept finding over the reviewers of multi-reviewer runs), the reachability
+rate (kept findings with a `reachability` over every finding the reviewers proposed,
+`Coverage::proposed`), the knowledge-base hit rate (runs with
 a finding citing it), the sandbox checks failure rate over sandbox-linked runs, and the
 knowledge base's size.
 
@@ -529,7 +574,10 @@ capability is refused, never downgraded to one that can write —
 ## Clients
 
 - `forgectl review start [--pr <n>] [--base <branch>] [--reviewers N]
-  [--hypothesis H]… --wait`, `show [--diagram <kind> [--format forge|mermaid]]`,
+  [--hypothesis H]… --wait`, `show [--diagram <kind> [--format forge|mermaid]]` (without
+  a diagram, and `start --wait`, add a `report`: the `verdict` line, each
+  hypothesis explored with its reason and `found` or `explored, no findings`, and
+  the `acknowledged_scope`; each finding carries its `reachability`),
   `status`, `cancel` (the MCP `review_start` tool takes `pr`, `reviewers` and
   `hypotheses`); `rules check` prints the repository's presets and rules (exit 1
   on an invalid file); `bench [--reviewers N]` replays a corpus of
@@ -542,6 +590,11 @@ capability is refused, never downgraded to one that can write —
   results <id>` (MCP `review_checks_run`); `checks approve [--yes]` (no MCP
   tool: an agent must not approve the commands it is about to run); `fix-loop [--review id]
   [--max-iters N] [--yes]`; `stats`.
+- A completed run opens on one verdict line, "Do not merge until: <the P0 and P1
+  titles>" or "No blocking findings", from the findings not dismissed
+  (`domain::review::headline`), then the acknowledged scope under the summary,
+  each finding's reachability (its kind and trigger) under its mechanism, and the
+  hypotheses explored after the findings, with what each found.
 - The Review mode shows a score badge above the summary, a **Diagrams** tab
   (each diagram drawn as SVG from theme colours), a **Graph** tab (each
   reviewed file's imports and external calls), a hypothesis chip on a

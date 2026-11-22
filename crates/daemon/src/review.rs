@@ -70,10 +70,11 @@ impl Daemon {
     ) -> Result<Response, ProtocolError> {
         let workspace_id = target.workspace_id();
         let size = self.config.review.reviewer_count(reviewers.count);
-        let hypotheses = if size == 1 && reviewers.hypotheses.is_empty() {
-            Vec::new()
+        let parallel = size > 1 || !reviewers.hypotheses.is_empty();
+        let agents = if parallel {
+            review_hypotheses::count(usize::from(size), &reviewers.hypotheses)
         } else {
-            review_hypotheses::select(usize::from(size), &reviewers.hypotheses)
+            1
         };
         let path = self.workspace_path(workspace_id)?;
         let provider = provider.unwrap_or_else(|| self.config.review.provider.clone());
@@ -147,8 +148,13 @@ impl Daemon {
         }
         let context = read_context(&path, &resolved.context, &mut notes);
         let key = format!(
-            "{target_key}\0{provider}\0{:?}\0{:?}\0{}\0{:?}\0{}\0{hypotheses:?}",
-            options.model, options.effort, resolved.preset, resolved.tier, resolved.instructions
+            "{target_key}\0{provider}\0{:?}\0{:?}\0{}\0{:?}\0{}\0{parallel}\0{size}\0{:?}",
+            options.model,
+            options.effort,
+            resolved.preset,
+            resolved.tier,
+            resolved.instructions,
+            reviewers.hypotheses
         );
         let max_workers = self.config.review.max_parallel_reviews.max(1);
 
@@ -208,11 +214,11 @@ impl Daemon {
             tree_oid: None,
             diagrams: Vec::new(),
             auto_approvable: false,
-            reviewers: u8::try_from(hypotheses.len().max(1)).unwrap_or(1),
-            schema_version: if hypotheses.is_empty() {
-                domain::SchemaVersion::V1
-            } else {
+            reviewers: u8::try_from(agents).unwrap_or(1),
+            schema_version: if parallel {
                 domain::SchemaVersion::V2
+            } else {
+                domain::SchemaVersion::V1
             },
             sandbox_run_id: None,
         };
@@ -230,15 +236,16 @@ impl Daemon {
             self.release_review(&slot, id);
             return Err(db_err(error));
         }
-        self.registry
-            .broadcast_domain(DaemonEvent::ReviewUpdated { run: run.clone() });
+        self.registry.broadcast_domain(DaemonEvent::ReviewUpdated {
+            run: Box::new(run.clone()),
+        });
 
         let daemon = Arc::clone(self);
         let mut queued = run.clone();
         let launch = Launch {
             provider,
             options,
-            hypotheses,
+            parallel: parallel.then(|| (usize::from(size), request.reviewers.hypotheses.clone())),
         };
         std::thread::Builder::new()
             .name("forge-review".into())
@@ -566,6 +573,10 @@ impl Daemon {
                     .sum(),
                 parallel.iter().map(|row| u64::from(row.reviewers)).sum(),
             ),
+            reachability_rate: rate(
+                rows.iter().map(|row| u64::from(row.reachable)).sum(),
+                rows.iter().map(|row| u64::from(row.proposed)).sum(),
+            ),
             kb_hit_rate: rate(
                 rows.iter().filter(|row| row.cites_kb).count() as u64,
                 rows.len() as u64,
@@ -718,7 +729,7 @@ impl Daemon {
             ReviewTarget::PullRequest { number, base, .. } => Some((*number, base.clone())),
             _ => None,
         };
-        let (merge, base_ref, diff, commits) = match pull_request.clone() {
+        let (merge, base_ref, diff, commits, description) = match pull_request.clone() {
             Some((number, base)) => self.pull_request_diff(run, path, number, base)?,
             None => {
                 let merge = base_ref.as_ref().and_then(|base| {
@@ -749,7 +760,7 @@ impl Daemon {
                         .notes
                         .push("the reviewed working tree was not kept for a later diff".into());
                 }
-                (merge, base_ref, diff, commits)
+                (merge, base_ref, diff, commits, None)
             }
         };
         run.base_oid.clone_from(&merge);
@@ -862,18 +873,54 @@ impl Daemon {
         } else {
             Vec::new()
         };
+        let scope = description
+            .as_deref()
+            .and_then(review::acknowledged_scope)
+            .map(|scope| (scope, "the pull request's description"))
+            .or_else(|| {
+                review::acknowledged_scope(&resolved.instructions)
+                    .map(|scope| (scope, "the review's instructions"))
+            });
+        if let Some((scope, source)) = &scope {
+            coverage.notes.push(format!(
+                "acknowledged scope: {} bytes from {source}, not to be reported",
+                scope.len()
+            ));
+        }
+        let scope = scope.map(|(scope, _)| review::redact(&scope).0);
         let extras = review::Extras {
             graph: changed_functions,
             kb,
             cross_repo,
             runtime,
+            scope: scope.clone(),
         };
         let (blocks, prompt_blocks) = review::blocks(&extras, resolved.tier, nonce, &mut coverage);
         pack.push_str(&blocks);
+        coverage.acknowledged_scope = scope;
         coverage
             .notes
             .splice(0..0, std::mem::take(&mut run.coverage.notes));
         run.coverage = coverage;
+        let included: Vec<domain::DiffFile> = match launch.parallel {
+            Some(_) => files
+                .iter()
+                .filter(|file| run.coverage.included.contains(&file.path))
+                .cloned()
+                .collect(),
+            None => Vec::new(),
+        };
+        run.coverage.hypotheses = launch
+            .parallel
+            .as_ref()
+            .map(|(size, explicit)| review_hypotheses::select(*size, explicit, &included))
+            .unwrap_or_default();
+        let hypotheses: Vec<Hypothesis> = run
+            .coverage
+            .hypotheses
+            .iter()
+            .map(|choice| choice.hypothesis)
+            .collect();
         let pack_file = pack_dir.join("pack.md");
         create_pack_dir(pack_dir)
             .and_then(|()| {
@@ -894,7 +941,7 @@ impl Daemon {
         };
         let mut outputs: Vec<(Option<Hypothesis>, Result<review::ReviewOutput, String>)> =
             Vec::new();
-        if launch.hypotheses.is_empty() {
+        if hypotheses.is_empty() {
             let transcript = SessionId::new().as_uuid().to_string();
             let prompt = review::prompt(resolved, &pack_file, nonce) + &prompt_blocks;
             let session_id = self.launch_reviewer(
@@ -919,12 +966,7 @@ impl Daemon {
                 Ok(self.await_answer(run.id, session_id, path, &answer)?),
             ));
         } else {
-            let included: Vec<domain::DiffFile> = files
-                .iter()
-                .filter(|file| run.coverage.included.contains(&file.path))
-                .cloned()
-                .collect();
-            let plan = review_hypotheses::plan(&launch.hypotheses, &included);
+            let plan = review_hypotheses::plan(&hypotheses, &included);
             let mut agents = Vec::new();
             for spec in &plan.agents {
                 let name = spec.hypothesis.name();
@@ -1006,6 +1048,12 @@ impl Daemon {
                 Vec::new()
             }
         };
+        let proposed: usize = outputs
+            .iter()
+            .filter_map(|(_, output)| output.as_ref().ok())
+            .map(|output| output.findings.len())
+            .sum();
+        run.coverage.proposed = u32::try_from(proposed).unwrap_or(u32::MAX);
         let mentioned: HashSet<String> = outputs
             .iter()
             .filter_map(|(_, output)| output.as_ref().ok())
@@ -1032,7 +1080,7 @@ impl Daemon {
             })
             .collect();
         let mut tally = Tally::default();
-        let (findings, summary) = if launch.hypotheses.is_empty() {
+        let (findings, summary) = if hypotheses.is_empty() {
             let Some((_, Ok(output))) = outputs.pop() else {
                 return Err(End::Failed("the reviewer gave no answer".into()));
             };
@@ -1203,7 +1251,7 @@ impl Daemon {
     }
 
     /// Fetch the pull request's head into a private ref and diff it against its
-    /// merge base with the base branch: `(merge, base ref, diff, commits)`.
+    /// merge base with the base branch: `(merge, base ref, diff, commits, cached description)`.
     fn pull_request_diff(
         &self,
         run: &mut ReviewRun,
@@ -1211,7 +1259,8 @@ impl Daemon {
         number: u32,
         base: Option<String>,
     ) -> Result<DiffStage, End> {
-        let (remote, known_base) = self.pull_request_remote(path, run.workspace_id, number)?;
+        let (remote, known_base, description) =
+            self.pull_request_remote(path, run.workspace_id, number)?;
         let base = base.or(known_base);
         let fetched = git_service::fetch_pull_request(
             path,
@@ -1238,52 +1287,38 @@ impl Daemon {
         )
         .map_err(|error| End::Failed(format!("git diff failed: {error}")))?;
         let commits = git_service::commits_between(path, &merge, &run.head_oid).0;
-        Ok((Some(merge), Some(base_ref), diff, commits))
+        Ok((Some(merge), Some(base_ref), diff, commits, description))
     }
 
     /// The remote whose repository the cached pull request `number` belongs to,
     /// with its base branch, or else the remote the pull-request listing reads
-    /// (`origin`, or the only one there is) with no base known.
+    /// (`origin`, or the only one there is) with no base known; and the cached
+    /// description, read here so the review never asks the network for it.
     fn pull_request_remote(
         &self,
         path: &Path,
         workspace: WorkspaceId,
         number: u32,
-    ) -> Result<(String, Option<String>), End> {
+    ) -> Result<(String, Option<String>, Option<String>), End> {
         let remotes = git_service::list_remotes(path)
             .map_err(|error| End::Failed(format!("could not list the remotes: {error}")))?;
         let project = self.workspace_project(workspace).ok();
-        let mut known: Vec<domain::PullRequest> = self
-            .pull_request_cache()
-            .snapshot()
-            .pull_requests
-            .into_iter()
-            .filter(|pr| {
-                pr.number == number && (pr.project_id.is_none() || pr.project_id == project)
-            })
-            .collect();
-        known.sort_by_key(|pr| pr.project_id.is_none());
-        let hosting = known.iter().find_map(|pr| {
-            remotes.iter().find_map(|(name, url)| {
-                let repo = git_service::parse_remote_url(url)?;
-                (repo.host.eq_ignore_ascii_case(&pr.host)
-                    && repo.name_with_owner().eq_ignore_ascii_case(&pr.repository))
-                .then(|| {
-                    (
-                        name.clone(),
-                        (!pr.base_ref.is_empty()).then(|| pr.base_ref.clone()),
-                    )
-                })
-            })
-        });
-        if let Some(hosting) = hosting {
-            return Ok(hosting);
+        let cached = cached_pull_request(
+            self.pull_request_cache().snapshot().pull_requests,
+            &remotes,
+            project,
+            number,
+        );
+        let description = cached.as_ref().map(|(_, pr)| pr.body.clone());
+        if let Some((Some(remote), pr)) = cached {
+            let base = (!pr.base_ref.is_empty()).then_some(pr.base_ref);
+            return Ok((remote, base, description));
         }
         remotes
             .iter()
             .find(|(name, _)| name == "origin")
             .or_else(|| remotes.first())
-            .map(|(name, _)| (name.clone(), None))
+            .map(|(name, _)| (name.clone(), None, description))
             .ok_or_else(|| {
                 End::Failed(format!(
                     "pull request #{number}: the checkout has no remote"
@@ -1403,8 +1438,9 @@ impl Daemon {
         if let Err(error) = self.review_store.update_run(run) {
             tracing::warn!(review_id = %run.id, %error, "could not save a review update");
         }
-        self.registry
-            .broadcast_domain(DaemonEvent::ReviewUpdated { run: run.clone() });
+        self.registry.broadcast_domain(DaemonEvent::ReviewUpdated {
+            run: Box::new(run.clone()),
+        });
     }
 
     fn finish_review(&self, run: &mut ReviewRun) {
@@ -1489,7 +1525,38 @@ type DiffStage = (
     Option<String>,
     git_service::WorkingTreeDiff,
     Vec<git_service::CommitEntry>,
+    Option<String>,
 );
+
+/// The cached pull request `number` that one of `remotes` hosts, with that
+/// remote's name; else the one listed for `project`, with none.
+fn cached_pull_request(
+    known: Vec<domain::PullRequest>,
+    remotes: &[(String, String)],
+    project: Option<ProjectId>,
+    number: u32,
+) -> Option<(Option<String>, domain::PullRequest)> {
+    let mut known: Vec<domain::PullRequest> = known
+        .into_iter()
+        .filter(|pr| pr.number == number && (pr.project_id.is_none() || pr.project_id == project))
+        .collect();
+    known.sort_by_key(|pr| pr.project_id.is_none());
+    let hosting = known.iter().enumerate().find_map(|(at, pr)| {
+        remotes.iter().find_map(|(name, url)| {
+            let repo = git_service::parse_remote_url(url)?;
+            (repo.host.eq_ignore_ascii_case(&pr.host)
+                && repo.name_with_owner().eq_ignore_ascii_case(&pr.repository))
+            .then(|| (at, name.clone()))
+        })
+    });
+    if let Some((at, remote)) = hosting {
+        return Some((Some(remote), known.swap_remove(at)));
+    }
+    let listed = known
+        .iter()
+        .position(|pr| project.is_some() && pr.project_id == project)?;
+    Some((None, known.swap_remove(listed)))
+}
 
 /// Keeps what a workspace review saw so `GetReviewDiff` can show it after the
 /// checkout moves on. A patch dropped for its size, or a binary, is left out:
@@ -1562,8 +1629,9 @@ fn head_overlay(
 struct Launch {
     provider: String,
     options: domain::AgentLaunchOptions,
-    /// One agent per hypothesis; empty is the single v1 reviewer.
-    hypotheses: Vec<Hypothesis>,
+    /// The reviewer count and the requested hypotheses that [`review_hypotheses::select`]
+    /// chooses from once the diff is known; `None` is the single v1 reviewer.
+    parallel: Option<(usize, Vec<Hypothesis>)>,
 }
 
 /// Every reviewer the run launched, stopped however the stage ends.
@@ -1587,6 +1655,7 @@ struct Tally {
     low_confidence: u32,
     suppressed: u32,
     unverified: u32,
+    without_reachability: u32,
 }
 
 impl Tally {
@@ -1594,6 +1663,7 @@ impl Tally {
         self.low_confidence += validated.low_confidence;
         self.suppressed += validated.suppressed;
         self.unverified += validated.unverified;
+        self.without_reachability += validated.without_reachability;
     }
 
     fn notes(&self, run: &mut ReviewRun, resolved: &review::Resolved) {
@@ -1613,6 +1683,13 @@ impl Tally {
             run.coverage.notes.push(format!(
                 "{} finding(s) suppressed by feedback",
                 self.suppressed
+            ));
+        }
+        run.coverage.without_reachability = self.without_reachability;
+        if self.without_reachability > 0 {
+            run.coverage.notes.push(format!(
+                "{} finding(s) without reachability were dropped",
+                self.without_reachability
             ));
         }
         run.coverage.unverified = self.unverified;
@@ -1935,6 +2012,74 @@ fn read_inside(root: &Path, relative: &Path, cap: u64) -> Result<Option<String>,
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn cached(
+        repository: &str,
+        number: u32,
+        project: Option<ProjectId>,
+        body: &str,
+    ) -> domain::PullRequest {
+        domain::PullRequest {
+            project_id: project,
+            repository: repository.into(),
+            host: "github.com".into(),
+            number,
+            title: String::new(),
+            body: body.into(),
+            body_truncated: false,
+            url: String::new(),
+            author: String::new(),
+            base_ref: "main".into(),
+            head_ref: "topic".into(),
+            is_draft: false,
+            review_decision: None,
+            labels: Vec::new(),
+            assignees: Vec::new(),
+            review_requests: Vec::new(),
+            additions: 0,
+            deletions: 0,
+            changed_files: 0,
+            comment_count: 0,
+            created_at: Timestamp::now(),
+            updated_at: Timestamp::now(),
+            relations: domain::PullRequestRelations {
+                assigned: false,
+                review_requested: false,
+                authored: false,
+            },
+        }
+    }
+
+    #[test]
+    fn a_cached_pull_request_is_matched_by_its_remote_then_by_its_project() {
+        let project = ProjectId::new();
+        let remotes = vec![
+            (
+                "upstream".to_owned(),
+                "git@github.com:acme/widgets.git".to_owned(),
+            ),
+            ("fork".to_owned(), "/tmp/fork.git".to_owned()),
+        ];
+        let known = vec![
+            cached("Acme/Widgets", 7, None, "hosted"),
+            cached("acme/other", 7, Some(ProjectId::new()), "another project"),
+            cached("acme/widgets", 8, Some(project), "another number"),
+        ];
+        let (remote, pr) =
+            cached_pull_request(known.clone(), &remotes, Some(project), 7).expect("hosted");
+        assert_eq!(
+            (remote.as_deref(), pr.body.as_str()),
+            (Some("upstream"), "hosted")
+        );
+
+        let listed = vec![cached("acme/elsewhere", 8, Some(project), "listed")];
+        let (remote, pr) = cached_pull_request(listed, &remotes, Some(project), 8).expect("listed");
+        assert_eq!((remote, pr.body.as_str()), (None, "listed"));
+        assert!(
+            cached_pull_request(known, &remotes, None, 8).is_none(),
+            "a pull request listed for another project, or none, is not this one"
+        );
+    }
 
     #[test]
     fn the_answer_budget_is_capped_at_a_day() {

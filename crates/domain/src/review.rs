@@ -137,6 +137,143 @@ pub struct Coverage {
     /// against the diff.
     #[serde(default)]
     pub unverified: u32,
+    /// Findings the reviewers proposed, before validation dropped any.
+    #[serde(default)]
+    pub proposed: u32,
+    /// Dropped from a `forge.review/v2` answer for want of a `reachability`.
+    #[serde(default)]
+    pub without_reachability: u32,
+    /// The parallel reviewers' hypotheses, in launch order, each with why it was chosen.
+    #[serde(default)]
+    pub hypotheses: Vec<HypothesisChoice>,
+    /// What the pull request's description (or a workspace review's
+    /// instructions) puts out of scope, as the reviewers were given it; at most 2 KiB.
+    #[serde(default)]
+    pub acknowledged_scope: Option<String>,
+}
+
+/// One reviewer's hypothesis and why the run hunts it.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct HypothesisChoice {
+    pub hypothesis: Hypothesis,
+    /// [`HypothesisChoice::REQUESTED`], [`HypothesisChoice::DEFAULT_ORDER`], or the
+    /// diff signals that chose it, such as `diff: cancel ×3, drop ×1`.
+    pub reason: String,
+}
+
+impl HypothesisChoice {
+    pub const REQUESTED: &'static str = "requested";
+    pub const DEFAULT_ORDER: &'static str = "default order";
+}
+
+/// How a finding's defect is reached.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+#[non_exhaustive]
+pub enum ReachabilityKind {
+    /// A normal operation reaches it.
+    Automatic,
+    /// A plausible sequence of events reaches it.
+    Sequence,
+    /// Input the repository or a caller controls reaches it.
+    Adversarial,
+}
+
+impl ReachabilityKind {
+    pub const ALL: [ReachabilityKind; 3] = [Self::Automatic, Self::Sequence, Self::Adversarial];
+
+    #[must_use]
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::Automatic => "automatic",
+            Self::Sequence => "sequence",
+            Self::Adversarial => "adversarial",
+        }
+    }
+
+    #[must_use]
+    pub fn from_name(name: &str) -> Option<Self> {
+        Self::ALL
+            .into_iter()
+            .find(|kind| kind.name().eq_ignore_ascii_case(name))
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Reachability {
+    pub kind: ReachabilityKind,
+    /// One sentence naming the operation, sequence or input.
+    pub trigger: String,
+}
+
+/// One hypothesis a run explored and how many of its findings stand.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Explored {
+    pub hypothesis: Hypothesis,
+    pub reason: String,
+    pub findings: usize,
+}
+
+/// Every hypothesis of `coverage`, in order, with its findings that are not dismissed.
+#[must_use]
+pub fn explored(coverage: &Coverage, findings: &[Finding]) -> Vec<Explored> {
+    coverage
+        .hypotheses
+        .iter()
+        .map(|choice| Explored {
+            hypothesis: choice.hypothesis,
+            reason: choice.reason.clone(),
+            findings: standing(findings)
+                .filter(|finding| finding.hypothesis == Some(choice.hypothesis))
+                .count(),
+        })
+        .collect()
+}
+
+fn standing(findings: &[Finding]) -> impl Iterator<Item = &Finding> {
+    findings
+        .iter()
+        .filter(|finding| finding.reaction != Some(FindingReaction::Dismiss))
+}
+
+const HEADLINE_TITLES: usize = 3;
+const HEADLINE_TITLE_CHARS: usize = 80;
+
+/// The P0 and P1 findings not dismissed, the most severe first.
+#[must_use]
+pub fn blocking(findings: &[Finding]) -> Vec<&Finding> {
+    let mut blocking: Vec<&Finding> = standing(findings)
+        .filter(|finding| finding.severity <= Severity::P1)
+        .collect();
+    blocking.sort_by_key(|finding| finding.severity);
+    blocking
+}
+
+/// One line for the top of a completed run's report: its [`blocking`]
+/// findings' titles, or that there are none.
+#[must_use]
+pub fn headline(findings: &[Finding]) -> String {
+    let blocking = blocking(findings);
+    if blocking.is_empty() {
+        return "No blocking findings".to_owned();
+    }
+    let mut titles: Vec<String> = blocking
+        .iter()
+        .take(HEADLINE_TITLES)
+        .map(|finding| {
+            let title = finding.title.trim().replace(['\n', '\r'], " ");
+            if title.chars().count() > HEADLINE_TITLE_CHARS {
+                let cut: String = title.chars().take(HEADLINE_TITLE_CHARS - 1).collect();
+                format!("{}…", cut.trim_end())
+            } else {
+                title
+            }
+        })
+        .collect();
+    if blocking.len() > HEADLINE_TITLES {
+        titles.push(format!("+{} more", blocking.len() - HEADLINE_TITLES));
+    }
+    format!("Do not merge until: {}", titles.join("; "))
 }
 
 /// Compact on purpose: it is what `ReviewUpdated` carries, so it holds no findings.
@@ -257,6 +394,9 @@ pub struct ReviewStats {
     pub graph_hit_rate: Option<f32>,
     /// Hypotheses with at least one kept finding, over the reviewers of every multi-reviewer run.
     pub hypothesis_coverage: Option<f32>,
+    /// Kept findings that say how they are reached, over every finding the reviewers proposed.
+    #[serde(default)]
+    pub reachability_rate: Option<f32>,
     /// Completed runs with a finding that cites the knowledge base.
     pub kb_hit_rate: Option<f32>,
     /// Sandbox-linked runs with a failed target.
@@ -373,10 +513,14 @@ pub enum Hypothesis {
     MissingTest,
     MigrationGap,
     ConfigDrift,
+    UntrustedRepoInput,
+    MemoryDiskDrift,
+    LifecycleCancelRetry,
+    TransitionCleanup,
 }
 
 impl Hypothesis {
-    pub const ALL: [Hypothesis; 15] = [
+    pub const ALL: [Hypothesis; 19] = [
         Hypothesis::RaceCondition,
         Hypothesis::AuthBypass,
         Hypothesis::RetryNesting,
@@ -392,6 +536,10 @@ impl Hypothesis {
         Hypothesis::MissingTest,
         Hypothesis::MigrationGap,
         Hypothesis::ConfigDrift,
+        Hypothesis::UntrustedRepoInput,
+        Hypothesis::MemoryDiskDrift,
+        Hypothesis::LifecycleCancelRetry,
+        Hypothesis::TransitionCleanup,
     ];
 
     #[must_use]
@@ -412,6 +560,10 @@ impl Hypothesis {
             Self::MissingTest => "MissingTest",
             Self::MigrationGap => "MigrationGap",
             Self::ConfigDrift => "ConfigDrift",
+            Self::UntrustedRepoInput => "UntrustedRepoInput",
+            Self::MemoryDiskDrift => "MemoryDiskDrift",
+            Self::LifecycleCancelRetry => "LifecycleCancelRetry",
+            Self::TransitionCleanup => "TransitionCleanup",
         }
     }
 
@@ -456,6 +608,9 @@ pub struct Finding {
     /// The knowledge-base section it cites: `architecture.md#<section>`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub kb_ref: Option<String>,
+    /// Required of a `forge.review/v2` answer; a v1 reviewer may leave it out.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reachability: Option<Reachability>,
 }
 
 // `confidence` is clamped to `0..=1`, never NaN, so equality is total.
@@ -832,10 +987,106 @@ mod tests {
             reaction: Some(FindingReaction::Dismiss),
             hypothesis: Some(Hypothesis::NPlusOneQuery),
             kb_ref: None,
+            reachability: Some(Reachability {
+                kind: ReachabilityKind::Adversarial,
+                trigger: "a repository names the path".into(),
+            }),
         };
         let json = serde_json::to_value(&finding).unwrap();
         assert_eq!(json["severity"], "P1");
+        assert_eq!(json["reachability"]["kind"], "adversarial");
         assert_eq!(serde_json::from_value::<Finding>(json).unwrap(), finding);
+    }
+
+    fn titled(id: u32, severity: Severity, title: &str, hypothesis: Option<Hypothesis>) -> Finding {
+        Finding {
+            id,
+            fingerprint: format!("f{id}"),
+            path: "a.rs".into(),
+            line: None,
+            end_line: None,
+            severity,
+            category: "logic".into(),
+            rule_id: None,
+            confidence: 0.9,
+            title: title.into(),
+            body: String::new(),
+            evidence: String::new(),
+            suggestion: None,
+            lineage: Lineage::New,
+            reaction: None,
+            hypothesis,
+            kb_ref: None,
+            reachability: None,
+        }
+    }
+
+    #[test]
+    fn the_headline_names_the_standing_blockers_most_severe_first() {
+        assert_eq!(headline(&[]), "No blocking findings");
+        let minor = titled(1, Severity::P2, "A name is unclear", None);
+        assert_eq!(
+            headline(std::slice::from_ref(&minor)),
+            "No blocking findings"
+        );
+        let mut dismissed = titled(2, Severity::P0, "Dismissed", None);
+        dismissed.reaction = Some(FindingReaction::Dismiss);
+        let findings = [
+            minor,
+            dismissed,
+            titled(3, Severity::P1, "The cap is not enforced on write", None),
+            titled(4, Severity::P0, "The token leaks\ninto the log", None),
+        ];
+        assert_eq!(
+            headline(&findings),
+            "Do not merge until: The token leaks into the log; The cap is not enforced on write"
+        );
+        let many: Vec<Finding> = (0..5)
+            .map(|id| titled(id, Severity::P1, &"x".repeat(100), None))
+            .collect();
+        let line = headline(&many);
+        assert!(line.ends_with("; +2 more"), "{line}");
+        assert_eq!(line.matches('…').count(), 3, "{line}");
+    }
+
+    #[test]
+    fn explored_counts_each_hypothesis_standing_findings_and_old_coverage_reads() {
+        let coverage = Coverage {
+            hypotheses: vec![
+                HypothesisChoice {
+                    hypothesis: Hypothesis::RaceCondition,
+                    reason: "diff: lock ×2".into(),
+                },
+                HypothesisChoice {
+                    hypothesis: Hypothesis::AuthBypass,
+                    reason: HypothesisChoice::DEFAULT_ORDER.into(),
+                },
+            ],
+            ..Coverage::default()
+        };
+        let mut dismissed = titled(2, Severity::P1, "d", Some(Hypothesis::AuthBypass));
+        dismissed.reaction = Some(FindingReaction::Dismiss);
+        let findings = [
+            titled(1, Severity::P1, "r", Some(Hypothesis::RaceCondition)),
+            dismissed,
+        ];
+        let found: Vec<(Hypothesis, usize)> = explored(&coverage, &findings)
+            .into_iter()
+            .map(|e| (e.hypothesis, e.findings))
+            .collect();
+        assert_eq!(
+            found,
+            [(Hypothesis::RaceCondition, 1), (Hypothesis::AuthBypass, 0)]
+        );
+        let old: Coverage = serde_json::from_value(serde_json::json!({
+            "included": [], "excluded": [], "truncated": [], "redactions": 0, "notes": []
+        }))
+        .unwrap();
+        assert!(old.hypotheses.is_empty() && old.acknowledged_scope.is_none());
+        assert_eq!(
+            ReachabilityKind::from_name("Sequence"),
+            Some(ReachabilityKind::Sequence)
+        );
     }
 
     fn diagram(kind: DiagramKind) -> Diagram {

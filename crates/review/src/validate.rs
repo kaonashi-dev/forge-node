@@ -39,6 +39,8 @@ pub struct Validated {
     pub invalid_anchors: u32,
     /// Dropped: a path outside the diff or escaping it, or evidence not in the file.
     pub unverified: u32,
+    /// Dropped from a v2 answer: no `reachability`, or one with no trigger.
+    pub without_reachability: u32,
     /// Findings considered, after the caps, the category and the confidence
     /// filters, before dedupe.
     pub total: u32,
@@ -116,6 +118,17 @@ pub fn validate(
         .into_iter()
         .partition(|raw| raw.confidence >= resolved.min_confidence);
     let low_confidence = u32::try_from(low.len()).unwrap_or(u32::MAX);
+    let (findings, unreachable): (Vec<RawFinding>, Vec<RawFinding>) =
+        if output.schema == domain::SchemaVersion::V2 {
+            findings.into_iter().partition(|raw| {
+                raw.reachability
+                    .as_ref()
+                    .is_some_and(|reach| !reach.trigger.trim().is_empty())
+            })
+        } else {
+            (findings, Vec::new())
+        };
+    let without_reachability = u32::try_from(unreachable.len()).unwrap_or(u32::MAX);
     let mut withheld: BTreeSet<String> = low
         .iter()
         .map(|raw| {
@@ -227,6 +240,7 @@ pub fn validate(
             reaction: None,
             hypothesis: None,
             kb_ref: raw.kb_ref,
+            reachability: raw.reachability,
         };
         match kept.iter_mut().find(|other| overlaps(other, &finding)) {
             Some(other) if finding.severity < other.severity => *other = finding,
@@ -271,6 +285,7 @@ pub fn validate(
         findings: kept,
         invalid_anchors,
         unverified,
+        without_reachability,
         total,
         low_confidence,
         trimmed,
@@ -283,9 +298,13 @@ fn redacted(mut raw: RawFinding) -> RawFinding {
     for text in [&mut raw.title, &mut raw.body, &mut raw.evidence] {
         *text = redact(text).0;
     }
-    for text in [raw.suggestion.as_mut(), raw.kb_ref.as_mut()]
-        .into_iter()
-        .flatten()
+    for text in [
+        raw.suggestion.as_mut(),
+        raw.kb_ref.as_mut(),
+        raw.reachability.as_mut().map(|reach| &mut reach.trigger),
+    ]
+    .into_iter()
+    .flatten()
     {
         *text = redact(text).0;
     }

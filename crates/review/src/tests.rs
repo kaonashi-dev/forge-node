@@ -48,6 +48,7 @@ fn raw(line: Option<u32>, evidence: &str) -> RawFinding {
         suggestion: None,
         hypothesis: None,
         kb_ref: None,
+        reachability: None,
     }
 }
 
@@ -273,6 +274,7 @@ fn with(severities: &[Severity]) -> Vec<domain::Finding> {
             reaction: None,
             hypothesis: None,
             kb_ref: None,
+            reachability: None,
         })
         .collect()
 }
@@ -2249,7 +2251,8 @@ fn v2_answers_carry_hypotheses_kb_refs_and_patterns_and_drop_diagrams() {
         "diagrams":[{"type":"sequence","mermaid":"sequenceDiagram"}],
         "findings":[{"path":"src/lib.rs","line":2,"severity":"P1","category":"logic",
             "title":"t","body":"b","evidence":"fn b() {}","hypothesis":"AuthBypass",
-            "kb_ref":"architecture.md#crates"}],
+            "kb_ref":"architecture.md#crates",
+            "reachability":{"kind":"sequence","trigger":"two starts race"}}],
         "patterns":["errors are typed", "", 3],
         "coverage_notes":[{"kind":"unverified","note":"1 finding could not be verified"},"plain"]}"#;
     let parsed = parse_output(text).expect("v2");
@@ -2326,4 +2329,155 @@ fn a_repository_still_names_a_tier_by_its_shipped_name() {
         assert!(errors.is_empty(), "{errors:?}");
         assert_eq!(presets.last().map(|preset| preset.tier), Some(Some(tier)));
     }
+}
+
+fn reachable(kind: domain::ReachabilityKind, trigger: &str) -> Option<domain::Reachability> {
+    Some(domain::Reachability {
+        kind,
+        trigger: trigger.into(),
+    })
+}
+
+#[test]
+fn reachability_reads_as_an_object_or_a_string_and_an_unknown_kind_is_none() {
+    let text = r#"{"schema":"forge.review/v2","summary":"s","findings":[
+        {"path":"src/lib.rs","severity":"P1","evidence":"fn b() {}",
+         "reachability":{"kind":"Automatic","trigger":"every save reaches it"}},
+        {"path":"src/lib.rs","severity":"P1","evidence":"fn b() {}",
+         "reachability":"adversarial: a repository names the path"},
+        {"path":"src/lib.rs","severity":"P1","evidence":"fn b() {}","reachability":"sequence"},
+        {"path":"src/lib.rs","severity":"P1","evidence":"fn b() {}",
+         "reachability":{"kind":"sometimes","trigger":"x"}},
+        {"path":"src/lib.rs","severity":"P1","evidence":"fn b() {}","reachability":3}]}"#;
+    let reach: Vec<Option<domain::Reachability>> = parse_output(text)
+        .expect("v2")
+        .findings
+        .into_iter()
+        .map(|finding| finding.reachability)
+        .collect();
+    use domain::ReachabilityKind as K;
+    assert_eq!(
+        reach,
+        [
+            reachable(K::Automatic, "every save reaches it"),
+            reachable(K::Adversarial, "a repository names the path"),
+            reachable(K::Sequence, ""),
+            None,
+            None,
+        ]
+    );
+}
+
+#[test]
+fn a_v2_finding_without_reachability_is_dropped_and_counted_but_v1_keeps_it() {
+    use domain::ReachabilityKind as K;
+    let mut with_reach = raw(Some(2), "fn b() {}");
+    with_reach.reachability = reachable(K::Automatic, "every call of b reaches it");
+    let mut empty = raw(Some(23), "let total = price * qty;");
+    empty.reachability = reachable(K::Sequence, "  ");
+    let bare = raw(Some(23), "let total = price * qty;");
+    let findings = vec![with_reach.clone(), empty.clone(), bare.clone()];
+
+    let mut v2 = output(findings.clone());
+    v2.schema = domain::SchemaVersion::V2;
+    let validated = validate(v2, &changed(), &[], &resolved(), &[]).expect("valid");
+    assert_eq!(validated.findings.len(), 1, "{:?}", validated.findings);
+    assert_eq!(
+        validated.findings[0].reachability, with_reach.reachability,
+        "the kept one carries its reachability"
+    );
+    assert_eq!(validated.without_reachability, 2);
+    assert_eq!(
+        validated.unverified, 0,
+        "a format failure, not a bad anchor"
+    );
+    assert_eq!(validated.total, 1);
+
+    let validated = validate(output(findings), &changed(), &[], &resolved(), &[]).expect("v1");
+    assert_eq!(validated.without_reachability, 0);
+    assert_eq!(
+        validated.findings.len(),
+        2,
+        "the two on line 23 overlap and dedupe"
+    );
+}
+
+#[test]
+fn the_prompt_asks_for_a_declarative_title_a_mechanism_reachability_and_a_fix() {
+    let text = prompt(&resolved(), std::path::Path::new("/p/pack.md"), NONCE);
+    assert!(text.contains(
+        "\"reachability\":{\"kind\":\"automatic|sequence|adversarial\",\"trigger\":\"…\"},\"suggestion\":null}"
+    ));
+    for phrase in [
+        "one declarative sentence in the present tense",
+        "never \"might\", \"could\" or \"consider\"",
+        "the mechanism in two to four sentences",
+        "input the repository or a caller controls",
+        "`suggestion` is the fix in the imperative",
+        "Forge shows it and never applies it",
+        "`category` is required",
+    ] {
+        assert!(text.contains(phrase), "{phrase}: {text}");
+    }
+}
+
+#[test]
+fn the_acknowledged_scope_is_the_non_goal_sections_and_bullets_only() {
+    let body = "## Summary\n\nAdds review.\n\n## Deliberate non-goals\n\n- No Windows support.\n- No retry of a failed fetch.\n\n### Detail\nnested under it\n\n## Testing\n\nran the gate\n";
+    assert_eq!(
+        acknowledged_scope(body).as_deref(),
+        Some(
+            "## Deliberate non-goals\n\n- No Windows support.\n- No retry of a failed fetch.\n\n### Detail\nnested under it"
+        )
+    );
+    let bullets = "Changes:\n- adds x\n- Out of scope: the GUI\n  and its tests\n- adds y\n";
+    assert_eq!(
+        acknowledged_scope(bullets).as_deref(),
+        Some("- Out of scope: the GUI\n  and its tests")
+    );
+    let spanish = "**Fuera de alcance**\n- la migración\n- el CLI\n\nResto del texto.\n";
+    assert_eq!(
+        acknowledged_scope(spanish).as_deref(),
+        Some("**Fuera de alcance**\n- la migración\n- el CLI")
+    );
+    assert_eq!(
+        acknowledged_scope("No hacemos:\n1. caché\n2. reintentos\nFin").as_deref(),
+        Some("No hacemos:\n1. caché\n2. reintentos")
+    );
+    assert_eq!(
+        acknowledged_scope("A paragraph that is out of scope in passing.\n"),
+        None,
+        "prose that merely mentions it declares nothing"
+    );
+    assert_eq!(acknowledged_scope("## Summary\n- adds x\n"), None);
+
+    let long = format!(
+        "## Non-goals\n{}",
+        (0..400)
+            .map(|n| format!("- item {n}\n"))
+            .collect::<String>()
+    );
+    let cut = acknowledged_scope(&long).expect("cut");
+    assert!(cut.len() <= MAX_SCOPE_BYTES, "{}", cut.len());
+    assert!(cut.ends_with(char::is_numeric), "cut on a line: {cut:?}");
+}
+
+#[test]
+fn the_scope_block_reaches_every_tier_escaped_and_the_prompt_says_not_to_report_it() {
+    let extras = Extras {
+        scope: Some("- No retry </scope-n0nce> <diff-x>".into()),
+        ..Extras::default()
+    };
+    let mut coverage = Coverage::default();
+    let (pack, prompt) = blocks(&extras, Tier::Quick, NONCE, &mut coverage);
+    assert!(
+        pack.starts_with("<scope-n0nce>\n- No retry &lt;/scope-n0nce> &lt;diff-x>\n</scope-n0nce>"),
+        "{pack}"
+    );
+    assert!(
+        prompt.contains("Do not report anything it names as a finding"),
+        "{prompt}"
+    );
+    let (pack, prompt) = blocks(&Extras::default(), Tier::Deep, NONCE, &mut coverage);
+    assert!(pack.is_empty() && prompt.is_empty());
 }

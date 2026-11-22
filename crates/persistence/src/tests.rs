@@ -96,8 +96,8 @@ fn migrations_apply_and_user_version_advances() {
     // count of applied migrations, and the assertion is what catches a migration
     // that was silently reordered or dropped.
     assert_eq!(
-        version, 32,
-        "thirty-two migrations applied => user_version == 32"
+        version, 33,
+        "thirty-three migrations applied => user_version == 33"
     );
 
     for table in [
@@ -193,7 +193,7 @@ fn version_two_database_upgrades_existing_projects_into_general() {
         .conn()
         .query_row("PRAGMA user_version", [], |row| row.get(0))
         .unwrap();
-    assert_eq!(version, 32);
+    assert_eq!(version, 33);
 }
 
 /// Migration 6 over a database that already has workspaces: the display_name
@@ -1090,7 +1090,7 @@ fn sessions_schema_is_unchanged() {
         .conn()
         .query_row("PRAGMA user_version", [], |r| r.get(0))
         .unwrap();
-    assert_eq!(version, 32, "every migration up to the spec runs");
+    assert_eq!(version, 33, "every migration up to the spec runs");
 
     let (db, _project, workspace_id) = db_with_workspace();
     let mut session = mk_session(workspace_id, SessionState::Running);
@@ -1244,7 +1244,7 @@ fn reset_clears_every_application_table_and_keeps_the_schema() {
         .conn()
         .query_row("PRAGMA user_version", [], |row| row.get(0))
         .unwrap();
-    assert_eq!(version, 32, "reset retains the migrated schema");
+    assert_eq!(version, 33, "reset retains the migrated schema");
 }
 
 // ---- on-disk open ----------------------------------------------------------
@@ -1701,6 +1701,7 @@ fn mk_finding(id: u32) -> domain::Finding {
         reaction: None,
         hypothesis: None,
         kb_ref: None,
+        reachability: None,
     }
 }
 
@@ -2548,4 +2549,41 @@ fn a_run_stored_under_a_tiers_shipped_name_still_loads() {
             .unwrap();
         assert_eq!(store.get(run.id).unwrap().unwrap().0.tier, tier);
     }
+}
+
+#[test]
+fn a_findings_reachability_and_a_runs_proposed_count_reach_the_stats() {
+    let (db, _, ws) = db_with_workspace();
+    let store = db.review_store().unwrap();
+    let mut run = mk_run(ws, domain::ReviewStatus::Queued);
+    store.insert_run(&run).unwrap();
+    run.status = domain::ReviewStatus::Completed;
+    run.finished_at = Some(Timestamp::now());
+    run.coverage.proposed = 4;
+    run.coverage.without_reachability = 1;
+    run.coverage.hypotheses = vec![domain::HypothesisChoice {
+        hypothesis: domain::Hypothesis::TransitionCleanup,
+        reason: "diff: pending ×2".into(),
+    }];
+    run.coverage.acknowledged_scope = Some("- No Windows support.".into());
+    store.update_run(&run).unwrap();
+    let mut reached = mk_finding(1);
+    reached.reachability = Some(domain::Reachability {
+        kind: domain::ReachabilityKind::Sequence,
+        trigger: "a reconnect while a read is in flight".into(),
+    });
+    store
+        .insert_findings(run.id, &[reached.clone(), mk_finding(2)])
+        .unwrap();
+
+    let (back, findings) = store.get(run.id).unwrap().unwrap();
+    assert_eq!(back, run, "the new coverage fields ride in its JSON");
+    assert_eq!(findings, vec![reached, mk_finding(2)]);
+    let rows = store.stats_rows(Some(ws)).unwrap();
+    assert_eq!(
+        rows.iter()
+            .map(|row| (row.proposed, row.reachable))
+            .collect::<Vec<_>>(),
+        [(4, 1)]
+    );
 }

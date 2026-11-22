@@ -227,7 +227,7 @@ pub fn build_pack(
 pub(crate) fn neutralise(text: &str) -> String {
     static TAG: OnceLock<Option<Regex>> = OnceLock::new();
     let tag =
-        TAG.get_or_init(|| Regex::new(r"(?i)<\s*/?\s*(?:diff|project_context|rules|commits|(?:graph|kb|cross-repo|runtime|slice)\b)").ok());
+        TAG.get_or_init(|| Regex::new(r"(?i)<\s*/?\s*(?:diff|project_context|rules|commits|(?:graph|kb|cross-repo|runtime|slice|scope)\b)").ok());
     match tag {
         Some(tag) => tag
             .replace_all(text, |found: &regex::Captures<'_>| {
@@ -369,8 +369,19 @@ pub fn prompt(resolved: &Resolved, pack: &Path, nonce: &str) -> String {
          {{\"schema\":\"{SCHEMA}\",\"summary\":\"Markdown: what the change does and its main risks\",\
          \"findings\":[{{\"path\":\"repo/relative/path\",\"line\":42,\"end_line\":44,\"side\":\"new\",\
          \"severity\":\"P0|P1|P2\",\"category\":\"{category}\",\
-         \"rule_id\":null,\"confidence\":0.8,\"title\":\"…\",\"body\":\"what breaks, with which \
-         input, and why\",\"evidence\":\"…\",\"suggestion\":null}}],\"diagram\":null}}\n\
+         \"rule_id\":null,\"confidence\":0.8,\"title\":\"…\",\"body\":\"…\",\"evidence\":\"…\",\
+         \"reachability\":{{\"kind\":\"automatic|sequence|adversarial\",\"trigger\":\"…\"}},\
+         \"suggestion\":null}}],\"diagram\":null}}\n\
+         \n\
+         Write each finding so the author can act on it without asking. `title` is one \
+         declarative sentence in the present tense saying what is wrong, never \"might\", \
+         \"could\" or \"consider\". `body` is the mechanism in two to four sentences: what the \
+         code does, the consequence, and when it happens. `reachability.kind` is `automatic` \
+         when a normal operation reaches the defect, `sequence` when a plausible sequence of \
+         events does, `adversarial` when it takes input the repository or a caller controls; \
+         `reachability.trigger` names that operation, sequence or input in one sentence. \
+         `suggestion` is the fix in the imperative, as prose or a short diff; Forge shows it \
+         and never applies it. `category` is required.\n\
          \n\
          `line` is a line of the new file. `evidence` must be copied literally from the new \
          code at that line. P0 blocks a merge, P1 needs a fix, P2 is minor. `confidence` is \

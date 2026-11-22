@@ -897,6 +897,7 @@ fn seeded_finding(
         reaction: None,
         hypothesis,
         kb_ref: kb_ref.map(str::to_owned),
+        reachability: None,
     }
 }
 
@@ -924,13 +925,19 @@ fn stats_report_latency_and_rates_over_the_stored_runs() {
             &[seeded_finding(1, None, Some("architecture.md#core"))],
         )
         .unwrap();
-    let parallel = seeded_run(workspace, domain::Tier::Deep, 40, 3);
+    let mut parallel = seeded_run(workspace, domain::Tier::Deep, 40, 3);
+    parallel.coverage.proposed = 4;
     store.insert_run(&parallel).unwrap();
+    let mut reached = seeded_finding(1, Some(domain::Hypothesis::AuthBypass), None);
+    reached.reachability = Some(domain::Reachability {
+        kind: domain::ReachabilityKind::Automatic,
+        trigger: "every login".into(),
+    });
     store
         .insert_findings(
             parallel.id,
             &[
-                seeded_finding(1, Some(domain::Hypothesis::AuthBypass), None),
+                reached,
                 seeded_finding(2, Some(domain::Hypothesis::AuthBypass), None),
             ],
         )
@@ -973,6 +980,10 @@ fn stats_report_latency_and_rates_over_the_stored_runs() {
         "{stats}"
     );
     assert_eq!(stats["kb_hit_rate"], 20.0);
+    assert_eq!(
+        stats["reachability_rate"], 25.0,
+        "one kept finding with reachability of four proposed"
+    );
     assert_eq!(stats["sandbox_checks_failure_rate"], 100.0);
     assert!(stats["graph_hit_rate"].is_null(), "no query asked yet");
     ok(&harness.ctl(
@@ -1005,5 +1016,60 @@ fn stats_report_latency_and_rates_over_the_stored_runs() {
     assert!(
         stats["kb_bytes"].as_u64().unwrap() > 0,
         "the rebuild wrote the architecture"
+    );
+}
+
+#[test]
+fn show_leads_with_the_verdict_the_hypotheses_explored_and_the_scope() {
+    let harness = Harness::new();
+    let repo = graph_repo(harness.tmp.path());
+    let _running = harness.boot();
+    let client = connect(&harness.socket);
+    let workspace = add_project(&client, &repo);
+    let store = persistence::Db::open(&harness.tmp.path().join("forge.db"))
+        .unwrap()
+        .review_store()
+        .unwrap();
+    let mut run = seeded_run(workspace, domain::Tier::Standard, 10, 2);
+    run.coverage.hypotheses = vec![
+        domain::HypothesisChoice {
+            hypothesis: domain::Hypothesis::LifecycleCancelRetry,
+            reason: "diff: cancel ×2".into(),
+        },
+        domain::HypothesisChoice {
+            hypothesis: domain::Hypothesis::AuthBypass,
+            reason: "default order".into(),
+        },
+    ];
+    run.coverage.acknowledged_scope = Some("- No Windows support.".into());
+    store.insert_run(&run).unwrap();
+    let mut blocker = seeded_finding(1, Some(domain::Hypothesis::LifecycleCancelRetry), None);
+    blocker.severity = domain::Severity::P1;
+    blocker.title = "The cancel flag stays set after an error".into();
+    blocker.reachability = Some(domain::Reachability {
+        kind: domain::ReachabilityKind::Sequence,
+        trigger: "a cancel that lands during a failed fetch".into(),
+    });
+    store.insert_findings(run.id, &[blocker]).unwrap();
+
+    let shown = ok(&harness.ctl(&["review", "show", &run.id.to_string()], &[]));
+    assert_eq!(
+        shown["report"]["verdict"],
+        "Do not merge until: The cancel flag stays set after an error"
+    );
+    assert_eq!(
+        shown["report"]["hypotheses"],
+        json!([
+            { "hypothesis": "LifecycleCancelRetry", "reason": "diff: cancel ×2", "findings": 1, "outcome": "found" },
+            { "hypothesis": "AuthBypass", "reason": "default order", "findings": 0, "outcome": "explored, no findings" },
+        ])
+    );
+    assert_eq!(
+        shown["report"]["acknowledged_scope"],
+        "- No Windows support."
+    );
+    assert_eq!(
+        shown["findings"][0]["reachability"],
+        json!({ "kind": "sequence", "trigger": "a cancel that lands during a failed fetch" })
     );
 }

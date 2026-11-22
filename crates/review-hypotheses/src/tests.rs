@@ -14,31 +14,43 @@ fn file(path: &str, patch: &str) -> DiffFile {
     }
 }
 
+fn names(choices: &[HypothesisChoice]) -> Vec<Hypothesis> {
+    choices.iter().map(|choice| choice.hypothesis).collect()
+}
+
 #[test]
 fn the_default_order_starts_with_the_three_default_reviewers() {
     use Hypothesis as H;
-    assert_eq!(select(1, &[]), [H::AuthBypass]);
+    let quiet = [file("src/total.rs", "+    price + qty\n")];
+    let order = |size| names(&select(size, &[], &quiet));
+    assert_eq!(order(1), [H::AuthBypass]);
     assert_eq!(
-        select(3, &[]),
+        order(3),
         [H::AuthBypass, H::BrokenContract, H::ErrorSwallow]
     );
     assert_eq!(
-        select(5, &[]),
+        order(5),
         [
             H::AuthBypass,
             H::BrokenContract,
             H::ErrorSwallow,
             H::RaceCondition,
-            H::NPlusOneQuery
+            H::UntrustedRepoInput
         ]
     );
-    assert_eq!(select(8, &[]).len(), 8);
     assert_eq!(
-        select(8, &[])[5..],
-        [H::MissingValidation, H::RetryNesting, H::DefaultMismatch]
+        order(8)[5..],
+        [
+            H::LifecycleCancelRetry,
+            H::MemoryDiskDrift,
+            H::TransitionCleanup
+        ]
     );
-    assert_eq!(select(0, &[]).len(), 1);
-    assert_eq!(select(20, &[]).len(), 8);
+    assert_eq!(order(0).len(), 1);
+    assert_eq!(order(20).len(), 8);
+    assert!(select(3, &[], &quiet)
+        .iter()
+        .all(|choice| choice.reason == HypothesisChoice::DEFAULT_ORDER));
     let mut every: Vec<Hypothesis> = ORDER.to_vec();
     every.sort();
     let mut all = Hypothesis::ALL.to_vec();
@@ -50,10 +62,19 @@ fn the_default_order_starts_with_the_three_default_reviewers() {
 fn explicit_hypotheses_override_the_size() {
     use Hypothesis as H;
     assert_eq!(
-        select(3, &[H::MigrationGap, H::MigrationGap, H::DeadCode]),
+        names(&select(
+            3,
+            &[H::MigrationGap, H::MigrationGap, H::DeadCode],
+            &[file("src/lock.rs", "+let guard = state.lock();\n")]
+        )),
         [H::MigrationGap, H::DeadCode]
     );
-    assert_eq!(select(1, &ORDER).len(), MAX_AGENTS);
+    assert_eq!(select(1, &ORDER, &[]).len(), MAX_AGENTS);
+    assert_eq!(count(1, &ORDER), MAX_AGENTS);
+    assert_eq!(count(3, &[H::DeadCode, H::DeadCode]), 1);
+    assert!(select(1, &[H::DeadCode], &[])
+        .iter()
+        .all(|choice| choice.reason == HypothesisChoice::REQUESTED));
 }
 
 #[test]
@@ -122,6 +143,8 @@ fn a_slice_file_names_its_files_redacted_and_the_prompt_asks_for_v2() {
     assert!(!prompt.contains("\"diagram\""));
     assert!(prompt.contains("/p/slice-ErrorSwallow.md"));
     assert!(prompt.contains("Do not emit `diagrams` or `pr_confidence`"));
+    assert!(prompt.contains("A finding without `reachability` is dropped."));
+    assert!(prompt.contains("\"reachability\":{\"kind\""));
 }
 
 fn finding(fingerprint: &str, severity: Severity, rule: Option<&str>) -> Finding {
@@ -143,6 +166,7 @@ fn finding(fingerprint: &str, severity: Severity, rule: Option<&str>) -> Finding
         reaction: None,
         hypothesis: None,
         kb_ref: None,
+        reachability: None,
     }
 }
 
@@ -152,6 +176,7 @@ fn validated(findings: Vec<Finding>) -> AgentAnswer {
         findings,
         invalid_anchors: 0,
         unverified: 0,
+        without_reachability: 0,
         total: 0,
         low_confidence: 0,
         trimmed: 0,
@@ -252,4 +277,110 @@ fn a_rejected_agent_is_a_note_and_max_findings_applies_once() {
         40
     )
     .is_none());
+}
+
+fn added(lines: &[&str]) -> String {
+    lines.iter().map(|line| format!("+{line}\n")).collect()
+}
+
+#[test]
+fn the_diffs_signals_choose_before_the_default_order() {
+    use Hypothesis as H;
+    let files = [file(
+        "src/worker.rs",
+        &added(&[
+            "let cancelled = Arc::new(AtomicBool::new(false));",
+            "if cancel_requested { return; }",
+            "impl Drop for Guard { fn drop(&mut self) {} }",
+            "self.pending_reads.clear();",
+            "pending.push(read);",
+            "let guard = state.lock();",
+            "let other = shared.lock();",
+        ]),
+    )];
+    let chosen = select(3, &[], &files);
+    assert_eq!(
+        names(&chosen),
+        [
+            H::LifecycleCancelRetry,
+            H::RaceCondition,
+            H::TransitionCleanup
+        ],
+        "{chosen:?}"
+    );
+    assert_eq!(
+        chosen[0].reason, "diff: cancel ×1, cancelled ×1, drop ×1",
+        "three lines, each counted once per signal: {chosen:?}"
+    );
+    assert_eq!(chosen[1].reason, "diff: lock ×2");
+    let more = select(5, &[], &files);
+    assert_eq!(
+        names(&more)[3..],
+        [H::AuthBypass, H::BrokenContract],
+        "the rest is the default order"
+    );
+    assert_eq!(more[3].reason, HypothesisChoice::DEFAULT_ORDER);
+}
+
+#[test]
+fn signals_are_whole_identifier_words_and_paths_weigh_like_two_lines() {
+    use Hypothesis as H;
+    let words = [file(
+        "src/a.rs",
+        &added(&["let block = clock.capture();", "let blocked = 1;"]),
+    )];
+    assert_eq!(
+        names(&select(1, &[], &words)),
+        [H::AuthBypass],
+        "`block`, `clock` and `capture` name no signal"
+    );
+    let path = [file("db/migrations/2.sql", "+-- nothing\n")];
+    let chosen = select(1, &[], &path);
+    assert_eq!(
+        names(&chosen),
+        [H::MemoryDiskDrift],
+        "a tie with MigrationGap goes to the default order: {chosen:?}"
+    );
+    assert_eq!(chosen[0].reason, "diff: migrations ×1");
+    let once = [file("src/a.rs", "+let guard = state.lock();\n")];
+    assert_eq!(
+        names(&select(1, &[], &once)),
+        [H::AuthBypass],
+        "one line is below the threshold"
+    );
+    let camel = [file(
+        "src/a.rs",
+        &added(&["fetchPendingReads();", "on_reconnect(pending);"]),
+    )];
+    assert_eq!(names(&select(1, &[], &camel)), [H::TransitionCleanup]);
+}
+
+#[test]
+fn only_the_first_scored_lines_are_read() {
+    use Hypothesis as H;
+    let mut lines = vec!["let x = 1;"; MAX_SCORED_LINES];
+    lines.extend(["mutex.lock();", "thread::spawn(f);"]);
+    let late = [file("src/a.rs", &added(&lines))];
+    assert_eq!(names(&select(1, &[], &late)), [H::AuthBypass]);
+}
+
+#[test]
+fn every_hypothesis_has_its_own_instruction_and_keywords() {
+    let fallback = "Look for defects the change introduces.";
+    for hypothesis in Hypothesis::ALL {
+        assert_ne!(instruction(hypothesis), fallback, "{hypothesis:?}");
+        assert!(!keywords(hypothesis).is_empty(), "{hypothesis:?}");
+    }
+    let lifecycle = plan(
+        &[
+            Hypothesis::LifecycleCancelRetry,
+            Hypothesis::UntrustedRepoInput,
+        ],
+        &[
+            file("src/cancel.rs", "+flag.store(true);\n"),
+            file("src/fs.rs", "+std::os::unix::fs::symlink(a, b);\n"),
+        ],
+    );
+    assert_eq!(lifecycle.agents[0].slice_paths, ["src/cancel.rs"]);
+    assert_eq!(lifecycle.agents[1].slice_paths, ["src/fs.rs"]);
 }

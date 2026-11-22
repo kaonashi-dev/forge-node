@@ -2236,6 +2236,29 @@ fn finding_row(
                 .color(k.c.text_muted)
                 .wrap(),
         );
+    if let Some(reach) = &finding.reachability {
+        item = item.child(
+            row()
+                .key(format!("review-reachability-{}", finding.id))
+                .w_full()
+                .gap(crate::ds::SPACE_3)
+                .items_center()
+                .child(crate::ds::chip(
+                    k,
+                    &crate::theme::roles(k),
+                    reach.kind.name(),
+                    crate::ds::Tone::Neutral,
+                ))
+                .child(
+                    text(reach.trigger.clone())
+                        .font(k.ty.small)
+                        .color(k.c.text_muted)
+                        .wrap()
+                        .min_w(0.0)
+                        .grow(1.0),
+                ),
+        );
+    }
     if let Some(suggestion) = &finding.suggestion {
         item = item.child(
             col()
@@ -2290,14 +2313,78 @@ fn resolved_group(s: &AppState, k: &Kit, report: &Report) -> El {
     group
 }
 
-fn findings(s: &AppState, k: &Kit, run: &ReviewRun) -> El {
-    let workspace = run.workspace_id;
-    let Some(report) = s
-        .code_review
+fn run_report<'a>(s: &'a AppState, run: &ReviewRun) -> Option<&'a Report> {
+    s.code_review
         .reports
-        .get(&(workspace, lane(&run.target)))
+        .get(&(run.workspace_id, lane(&run.target)))
         .filter(|report| report.run == run.id)
-    else {
+}
+
+fn headline(k: &Kit, report: &Report) -> El {
+    let ink = if domain::review::blocking(&report.findings).is_empty() {
+        k.c.success.fg
+    } else {
+        k.c.danger.fg
+    };
+    text(domain::review::headline(&report.findings))
+        .key("review-headline")
+        .role("status")
+        .font(k.ty.small_medium)
+        .color(ink)
+        .wrap()
+}
+
+fn explored(k: &Kit, run: &ReviewRun, report: &Report) -> Option<El> {
+    let explored = domain::review::explored(&run.coverage, &report.findings);
+    if explored.is_empty() {
+        return None;
+    }
+    let mut body = col()
+        .key("review-hypotheses")
+        .w_full()
+        .gap(crate::ds::SPACE_2)
+        .child(section(k, "Hypotheses explored"));
+    for hunted in explored {
+        let outcome = match hunted.findings {
+            0 => "explored, no findings".to_owned(),
+            1 => "1 finding".to_owned(),
+            n => format!("{n} findings"),
+        };
+        body = body.child(
+            note(
+                k,
+                format!(
+                    "{} · {outcome} · {}",
+                    hunted.hypothesis.name(),
+                    hunted.reason
+                ),
+            )
+            .key(format!("review-explored-{}", hunted.hypothesis.name())),
+        );
+    }
+    Some(body)
+}
+
+fn acknowledged_scope(k: &Kit, run: &ReviewRun) -> Option<El> {
+    let scope = run.coverage.acknowledged_scope.as_ref()?;
+    Some(
+        col()
+            .key("review-scope")
+            .w_full()
+            .gap(crate::ds::SPACE_2)
+            .child(section(k, "Acknowledged scope"))
+            .child(note(k, "The reviewers were told not to report these."))
+            .child(
+                text(scope.clone())
+                    .font(k.ty.small)
+                    .color(k.c.text_muted)
+                    .wrap(),
+            ),
+    )
+}
+
+fn findings(s: &AppState, k: &Kit, run: &ReviewRun) -> El {
+    let Some(report) = run_report(s, run) else {
         return col();
     };
     let lineage = report.previous.is_some();
@@ -3041,6 +3128,11 @@ pub fn view(s: &AppState, k: &Kit) -> El {
                         .wrap(),
                 );
             }
+            let completed = run.status == ReviewStatus::Completed;
+            let report = run_report(s, run);
+            if let Some(report) = report.filter(|_| completed) {
+                body = body.child(headline(k, report));
+            }
             if let Some(badge) = score_badge(k, run) {
                 body = body.child(badge);
             }
@@ -3051,7 +3143,7 @@ pub fn view(s: &AppState, k: &Kit) -> El {
                         .key("review-summary"),
                 );
             }
-            let completed = run.status == ReviewStatus::Completed;
+            body = body.children(acknowledged_scope(k, run));
             if completed {
                 body = body.child(report_actions(s, k, run));
             }
@@ -3061,6 +3153,7 @@ pub fn view(s: &AppState, k: &Kit) -> El {
                 ReviewView::Graph if completed => body.child(graph(s, k)),
                 _ => body
                     .child(findings(s, k, run))
+                    .children(report.and_then(|report| explored(k, run, report)))
                     .children(kb_section(s, k, run))
                     .children(sandbox_panel(s, k, run)),
             };
@@ -3125,6 +3218,7 @@ mod tests {
             reaction: None,
             hypothesis: None,
             kb_ref: None,
+            reachability: None,
         }
     }
 
@@ -4054,6 +4148,73 @@ mod tests {
             "a single reviewer's finding carries none"
         );
         assert!(has(&shown, "review-fix-loop"));
+    }
+
+    #[test]
+    fn a_completed_run_leads_with_its_verdict_and_shows_reachability_hypotheses_and_scope() {
+        use rune::{Env, Runtime};
+        let (mut state, workspace) = fixture_state();
+        let mut run = completed(workspace, workspace_target(workspace));
+        let choice = |hypothesis, reason: &str| domain::HypothesisChoice {
+            hypothesis,
+            reason: reason.into(),
+        };
+        run.coverage.hypotheses = vec![
+            choice(domain::Hypothesis::RaceCondition, "diff: lock ×2"),
+            choice(domain::Hypothesis::AuthBypass, "default order"),
+        ];
+        run.coverage.acknowledged_scope = Some("- No Windows support.".into());
+        let mut hunted = finding(1, "a.rs", Some(2), Severity::P1);
+        hunted.hypothesis = Some(domain::Hypothesis::RaceCondition);
+        hunted.title = "The lock is taken twice".into();
+        hunted.reachability = Some(domain::Reachability {
+            kind: domain::ReachabilityKind::Sequence,
+            trigger: "two saves in a row".into(),
+        });
+        with_report(&mut state, &run, vec![hunted], vec![], None);
+        let mut rt = Runtime::new(
+            state,
+            crate::ui::view,
+            (1180.0, 760.0),
+            Env {
+                system_dark: true,
+                scale: 1.0,
+            },
+        );
+        rt.frame(0.0);
+        rt.frame(1.0 / 60.0);
+        let elements = rt.elements();
+        let text_under = |key: &str| -> Vec<String> {
+            let Some(at) = elements.iter().find(|e| e.key.as_deref() == Some(key)) else {
+                return Vec::new();
+            };
+            elements
+                .iter()
+                .filter(|e| e.path.starts_with(&at.path))
+                .filter_map(|e| e.text.clone())
+                .collect()
+        };
+        assert_eq!(
+            text_under("review-headline"),
+            ["Do not merge until: The lock is taken twice"]
+        );
+        assert_eq!(
+            text_under("review-reachability-1"),
+            ["sequence", "two saves in a row"]
+        );
+        assert_eq!(
+            text_under("review-explored-RaceCondition"),
+            ["RaceCondition · 1 finding · diff: lock ×2"]
+        );
+        assert_eq!(
+            text_under("review-explored-AuthBypass"),
+            ["AuthBypass · explored, no findings · default order"]
+        );
+        assert!(
+            text_under("review-scope").contains(&"- No Windows support.".to_owned()),
+            "{:?}",
+            text_under("review-scope")
+        );
     }
 
     #[test]

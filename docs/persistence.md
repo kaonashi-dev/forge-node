@@ -227,7 +227,7 @@ behind it, so they stop counting while each finding stays dismissed.
 `REVIEW_TREE` (v23) adds `tree_oid`, the oid of the tree a workspace run's
 working tree was written to; the diff itself is still never stored.
 
-### Forge Review v2 (v25–v28)
+### Forge Review v2 (v25–v33)
 
 ```sql
 codebase_graph_nodes (project_id FK→projects ON DELETE CASCADE, id BLOB, kind, path,
@@ -237,8 +237,9 @@ codebase_graph_nodes (project_id FK→projects ON DELETE CASCADE, id BLOB, kind,
 codebase_graph_edges (project_id FK→projects ON DELETE CASCADE, src, dst, kind, weight,
                       PRIMARY KEY (project_id, src, dst, kind), INDEX (project_id, dst))
 review_runs     + diagrams (JSON, '[]'), auto_approvable, swarm_size (1, read as `reviewers`),
-                  schema_version ('v1'), sandbox_run_id, agent_sessions (JSON, '[]')
-review_findings + hypothesis, kb_ref
+                  schema_version ('v1'), sandbox_run_id, agent_sessions (JSON, '[]'),
+                  request (JSON), proposed (0)
+review_findings + hypothesis, kb_ref, reachability, reachability_trigger
 kb_entries      (id PK, project_id FK→projects ON DELETE CASCADE, file, section,
                  content, source ('daemon' | 'user'), created_at, expires_at)
 sandbox_runs    (id PK, review_run_id FK→review_runs ON DELETE CASCADE (nullable),
@@ -266,6 +267,12 @@ that did not run because it was not that one.
 `CODEBASE_GRAPH_DIRTY` (v31) keeps the paths a project's last graph build read
 from a dirty working tree, replaced in the build's own transaction, so the next
 build re-reads them even after a restart and a revert left them clean.
+`REVIEW_REQUEST` (v32) keeps the `StartReview` a run came from, as JSON.
+`REVIEW_REACHABILITY` (v33) adds a finding's `reachability` kind tag and its
+`reachability_trigger`, both `NULL` for a finding without one, and
+`review_runs.proposed`, the findings the reviewers proposed: it is also in
+`coverage`, but `GetReviewStats` divides by it and nothing queries inside that
+JSON.
 
 ## Repositories (`repositories/`)
 

@@ -13648,6 +13648,7 @@ mod tests {
             reaction: None,
             hypothesis: None,
             kb_ref: None,
+            reachability: None,
         };
 
         daemon.settle_review(&mut run, Ok(vec![finding]));

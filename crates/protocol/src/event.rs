@@ -216,7 +216,7 @@ pub enum DaemonEvent {
     /// A review changed status or stage. Compact: the findings are read with
     /// `GetReview` once the run is `Completed`.
     ReviewUpdated {
-        run: domain::ReviewRun,
+        run: Box<domain::ReviewRun>,
     },
     /// A `RunSandboxChecks` finished; the same run `GetSandboxChecks` reads.
     SandboxChecksFinished(Box<domain::SandboxRun>),

@@ -40,6 +40,8 @@ pub struct Extras {
     /// `path name signature`, one per line.
     pub cross_repo: Vec<String>,
     pub runtime: Vec<RuntimeResult>,
+    /// [`crate::acknowledged_scope`] of the pull request or the instructions; every tier.
+    pub scope: Option<String>,
 }
 
 fn line(node: &GraphNode) -> String {
@@ -122,6 +124,24 @@ pub fn blocks(
     let caps = TierCaps::of(tier);
     let mut pack = String::new();
     let mut prompt = String::new();
+    if let Some(scope) = &extras.scope {
+        if block(
+            "scope",
+            nonce,
+            // Escaping may lengthen a scope already cut to its own budget.
+            2 * crate::scope::MAX_SCOPE_BYTES,
+            [format!("{scope}\n")],
+            coverage,
+            &mut pack,
+        ) {
+            let _ = write!(
+                prompt,
+                "\n\n<scope-{nonce}> is what the author declared out of scope for this change. \
+                 Do not report anything it names as a finding; everything else is reviewed as \
+                 usual."
+            );
+        }
+    }
     let graph = extras.graph.iter().map(|function| {
         let mut section = format!(
             "## {}:{} {}\n",

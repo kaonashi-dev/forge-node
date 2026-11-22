@@ -19,13 +19,14 @@ const RUN_COLUMNS: &str = "id, workspace_id, target, head_oid, base_oid, tier, p
      diagrams, auto_approvable, swarm_size, schema_version, sandbox_run_id";
 
 const FINDING_COLUMNS: &str = "id, fingerprint, path, line, end_line, severity, category, \
-     rule_id, confidence, title, body, evidence, suggestion, lineage, hypothesis, kb_ref";
+     rule_id, confidence, title, body, evidence, suggestion, lineage, hypothesis, kb_ref, \
+     reachability, reachability_trigger";
 
 pub fn insert_run(conn: &Connection, run: &ReviewRun) -> Result<(), DbError> {
     conn.prepare_cached(&format!(
-        "INSERT INTO review_runs ({RUN_COLUMNS}) \
+        "INSERT INTO review_runs ({RUN_COLUMNS}, proposed) \
          VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, \
-         ?21, ?22, ?23, ?24, ?25)"
+         ?21, ?22, ?23, ?24, ?25, ?26)"
     ))?
     .execute(params![
         run.id.to_string(),
@@ -53,6 +54,7 @@ pub fn insert_run(conn: &Connection, run: &ReviewRun) -> Result<(), DbError> {
         run.reviewers,
         schema_tag(run.schema_version),
         run.sandbox_run_id,
+        run.coverage.proposed,
     ])?;
     Ok(())
 }
@@ -99,8 +101,8 @@ pub fn update_run(conn: &Connection, run: &ReviewRun) -> Result<(), DbError> {
         "UPDATE review_runs SET base_oid = ?2, status = ?3, stage = ?4, summary = ?5, \
          score = ?6, verdict = ?7, error = ?8, session_id = ?9, coverage = ?10, \
          finished_at = ?11, head_oid = ?12, tree_oid = ?13, tier = ?14, diagrams = ?15, \
-         auto_approvable = ?16, swarm_size = ?17, schema_version = ?18, sandbox_run_id = ?19 \
-         WHERE id = ?1",
+         auto_approvable = ?16, swarm_size = ?17, schema_version = ?18, sandbox_run_id = ?19, \
+         proposed = ?20 WHERE id = ?1",
     )?
     .execute(params![
         run.id.to_string(),
@@ -122,6 +124,7 @@ pub fn update_run(conn: &Connection, run: &ReviewRun) -> Result<(), DbError> {
         run.reviewers,
         schema_tag(run.schema_version),
         run.sandbox_run_id,
+        run.coverage.proposed,
     ])?;
     Ok(())
 }
@@ -135,7 +138,7 @@ pub fn insert_findings(
     let result = (|| {
         let mut stmt = conn.prepare_cached(&format!(
             "INSERT INTO review_findings (review_id, {FINDING_COLUMNS}) \
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17)"
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19)"
         ))?;
         for f in findings {
             stmt.execute(params![
@@ -156,6 +159,8 @@ pub fn insert_findings(
                 lineage_tag(f.lineage),
                 f.hypothesis.map(domain::Hypothesis::name),
                 f.kb_ref,
+                f.reachability.as_ref().map(|reach| reach.kind.name()),
+                f.reachability.as_ref().map(|reach| reach.trigger.as_str()),
             ])?;
         }
         Ok::<_, DbError>(())
@@ -495,11 +500,24 @@ fn finding_from_row(row: &Row<'_>) -> rusqlite::Result<Result<Finding, DbError>>
             .as_deref()
             .and_then(domain::Hypothesis::from_name),
         kb_ref: row.get(15)?,
+        reachability: None,
     };
+    let reachability: Option<String> = row.get(16)?;
+    let trigger: Option<String> = row.get(17)?;
     Ok((|| {
         Ok(Finding {
             severity: parse_tag("Severity", &severity, SEVERITIES)?,
             lineage: parse_tag("Lineage", &lineage, LINEAGES)?,
+            reachability: reachability
+                .map(|kind| {
+                    domain::ReachabilityKind::from_name(&kind)
+                        .map(|kind| domain::Reachability {
+                            kind,
+                            trigger: trigger.unwrap_or_default(),
+                        })
+                        .ok_or_else(|| DbError::decode("ReachabilityKind", &kind, "unknown tag"))
+                })
+                .transpose()?,
             ..finding
         })
     })())
@@ -592,6 +610,10 @@ pub struct StatsRow {
     pub reviewers: u8,
     pub hypotheses_found: u32,
     pub cites_kb: bool,
+    /// Findings the reviewers proposed; `0` for a run stored before it was counted.
+    pub proposed: u32,
+    /// Kept findings that say how they are reached.
+    pub reachable: u32,
 }
 
 /// Completed runs, of one workspace or all, newest first.
@@ -605,7 +627,9 @@ pub fn stats_rows(
     let mut statement = conn.prepare_cached(
         "SELECT r.id, r.tier, r.created_at, r.finished_at, r.swarm_size, \
          (SELECT COUNT(DISTINCT f.hypothesis) FROM review_findings f WHERE f.review_id = r.id AND f.hypothesis IS NOT NULL), \
-         EXISTS (SELECT 1 FROM review_findings f WHERE f.review_id = r.id AND f.kb_ref IS NOT NULL) \
+         EXISTS (SELECT 1 FROM review_findings f WHERE f.review_id = r.id AND f.kb_ref IS NOT NULL), \
+         r.proposed, \
+         (SELECT COUNT(*) FROM review_findings f WHERE f.review_id = r.id AND f.reachability IS NOT NULL) \
          FROM review_runs r WHERE r.status = 'Completed' AND r.finished_at IS NOT NULL \
          AND (?1 IS NULL OR r.workspace_id = ?1) ORDER BY r.id DESC LIMIT 10000",
     )?;
@@ -618,10 +642,22 @@ pub fn stats_rows(
             row.get::<_, u8>(4)?,
             row.get::<_, u32>(5)?,
             row.get::<_, bool>(6)?,
+            row.get::<_, u32>(7)?,
+            row.get::<_, u32>(8)?,
         ))
     })?;
     rows.map(|row| {
-        let (id, tier, created, finished, reviewers, hypotheses_found, cites_kb) = row?;
+        let (
+            id,
+            tier,
+            created,
+            finished,
+            reviewers,
+            hypotheses_found,
+            cites_kb,
+            proposed,
+            reachable,
+        ) = row?;
         let seconds = ts_from_str(&finished)?.as_offset().unix_timestamp()
             - ts_from_str(&created)?.as_offset().unix_timestamp();
         Ok(StatsRow {
@@ -631,6 +667,8 @@ pub fn stats_rows(
             reviewers,
             hypotheses_found,
             cites_kb,
+            proposed,
+            reachable,
         })
     })
     .collect()

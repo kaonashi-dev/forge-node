@@ -193,7 +193,7 @@ fn wait_run(
     let DaemonEvent::ReviewUpdated { run } = event else {
         unreachable!()
     };
-    run
+    *run
 }
 
 /// The single v1 reviewer the tests written before parallel reviewers assume.
@@ -2456,7 +2456,21 @@ fn install_reviewers(harness: &common::Harness, answers: &[(&str, Option<String>
     common::write_executable(harness.bin(), "claude", &script);
 }
 
+/// Each finding says how it is reached, as v2 requires, unless it names its own `reachability`.
 fn v2_answer(hypothesis: &str, findings: &[serde_json::Value]) -> String {
+    let findings: Vec<serde_json::Value> = findings
+        .iter()
+        .cloned()
+        .map(|mut finding| {
+            if finding.get("reachability").is_none() {
+                finding["reachability"] = serde_json::json!({
+                    "kind": "automatic",
+                    "trigger": "every call of total adds instead of multiplying",
+                });
+            }
+            finding
+        })
+        .collect();
     let body = serde_json::json!({
         "schema": "forge.review/v2",
         "summary": format!("{hypothesis} looked."),
@@ -2499,7 +2513,17 @@ fn several_reviewers_run_side_by_side_and_merges_their_findings() {
                     &[finding(2, "P2", "logic", "price + qty")],
                 )),
             ),
-            ("ErrorSwallow", Some(v2_answer("ErrorSwallow", &[]))),
+            (
+                "ErrorSwallow",
+                Some(v2_answer(
+                    "ErrorSwallow",
+                    &[{
+                        let mut unreached = finding(2, "P2", "logic", "price + qty");
+                        unreached["reachability"] = serde_json::Value::Null;
+                        unreached
+                    }],
+                )),
+            ),
         ],
     );
     let repo = seeded_repo();
@@ -2552,6 +2576,32 @@ fn several_reviewers_run_side_by_side_and_merges_their_findings() {
         done.coverage.notes
     );
     assert!(done.summary.contains("**AuthBypass**"), "{}", done.summary);
+    assert_eq!(
+        done.coverage
+            .hypotheses
+            .iter()
+            .map(|choice| (choice.hypothesis, choice.reason.as_str()))
+            .collect::<Vec<_>>(),
+        [
+            (domain::Hypothesis::AuthBypass, "default order"),
+            (domain::Hypothesis::BrokenContract, "default order"),
+            (domain::Hypothesis::ErrorSwallow, "default order"),
+        ],
+        "`price + qty` names no signal"
+    );
+    assert_eq!(
+        (done.coverage.proposed, done.coverage.without_reachability),
+        (3, 1)
+    );
+    assert!(
+        done.coverage
+            .notes
+            .iter()
+            .any(|n| n == "1 finding(s) without reachability were dropped"),
+        "{:?}",
+        done.coverage.notes
+    );
+    assert!(findings[0].reachability.is_some());
     assert!(
         common::poll_until(common::DEADLINE, || reviewer_sessions(&client).is_empty()),
         "every agent closed"
@@ -2768,7 +2818,8 @@ fn a_run_below_four_teaches_nothing() {
     let answer = serde_json::json!({
         "schema": "forge.review/v2", "summary": "broken",
         "findings": [{"path": "core/lib.rs", "line": 2, "severity": "P0", "category": "logic",
-            "confidence": 0.9, "title": "t", "body": "b", "evidence": "price + qty"}],
+            "confidence": 0.9, "title": "t", "body": "b", "evidence": "price + qty",
+            "reachability": {"kind": "automatic", "trigger": "every total"}}],
         "patterns": ["should not be kept"],
     })
     .to_string();
@@ -3737,4 +3788,86 @@ fn every_reviewer_restarts_read_only_after_the_daemon_restarts() {
     }
     first.kill_leftover_sessions();
     second.kill_leftover_sessions();
+}
+
+#[test]
+fn the_diffs_signals_choose_the_reviewers_and_the_instructions_scope_reaches_them() {
+    let harness = common::Harness::new();
+    let chosen = ["LifecycleCancelRetry", "AuthBypass", "BrokenContract"];
+    let answers: Vec<(&str, Option<String>)> = chosen
+        .iter()
+        .map(|h| (*h, Some(v2_answer(h, &[]))))
+        .collect();
+    install_reviewers(&harness, &answers);
+    let repo = test_support::init_repo().expect("repo");
+    std::fs::write(repo.path().join("main.rs"), source("*")).expect("write");
+    git(repo.path(), &["add", "main.rs"]);
+    git(repo.path(), &["commit", "-qm", "add total"]);
+    let stop = "fn stop(cancelled: &AtomicBool) {\n    if cancelled.load(Ordering::SeqCst) {\n        abort();\n    }\n}\n";
+    std::fs::write(repo.path().join("main.rs"), source("*") + stop).expect("write");
+    let daemon = harness.boot();
+    let client = daemon.connect("scenario-review");
+    common::wait_for_detection(&client, |providers| {
+        providers
+            .iter()
+            .any(|p| p.descriptor.id.as_str() == "claude" && p.detection.status.is_installed())
+    });
+    let events = client.events();
+    let workspace = workspace_at(&client, repo.path());
+    let review_id = match client.request(Request::StartReview {
+        target: ReviewTarget::Workspace {
+            workspace_id: workspace,
+            base: None,
+        },
+        tier: None,
+        provider: None,
+        preset: None,
+        instructions: Some("Check stop.\n\n## Non-goals\n- Windows support\n".into()),
+        model: None,
+        effort: None,
+        reviewers: domain::ReviewerOptions::default(),
+    }) {
+        Ok(Response::ReviewStarted { review_id }) => review_id,
+        other => panic!("{other:?}"),
+    };
+    assert!(
+        common::poll_until(common::DEADLINE, || {
+            reviewer_sessions(&client).len() == 3
+                && chosen
+                    .iter()
+                    .all(|h| harness.root().join(format!("started-{h}")).exists())
+        }),
+        "the cancel lines put LifecycleCancelRetry first"
+    );
+    for agent in reviewer_sessions(&client) {
+        report_idle(&client, agent.id);
+    }
+    let done = wait_run(&events, review_id, |run| run.status.is_finished());
+    assert_eq!(done.status, ReviewStatus::Completed, "{:?}", done.error);
+    let reasons: Vec<(domain::Hypothesis, &str)> = done
+        .coverage
+        .hypotheses
+        .iter()
+        .map(|choice| (choice.hypothesis, choice.reason.as_str()))
+        .collect();
+    assert_eq!(
+        reasons,
+        [
+            (
+                domain::Hypothesis::LifecycleCancelRetry,
+                "diff: cancelled ×2, abort ×1, atomic ×1"
+            ),
+            (domain::Hypothesis::AuthBypass, "default order"),
+            (domain::Hypothesis::BrokenContract, "default order"),
+        ]
+    );
+    assert_eq!(
+        done.coverage.acknowledged_scope.as_deref(),
+        Some("## Non-goals\n- Windows support")
+    );
+    let log = std::fs::read_to_string(harness.root().join("invocations")).expect("invocations");
+    assert!(
+        log.contains("is what the author declared out of scope for this change"),
+        "{log}"
+    );
 }

@@ -8,6 +8,7 @@ mod output;
 mod pack;
 mod presets;
 mod rules;
+mod scope;
 mod suppress;
 mod validate;
 
@@ -24,6 +25,7 @@ pub use presets::{
     DEFAULT_PRESET, MAX_INSTRUCTIONS_BYTES,
 };
 pub use rules::{in_scope, parse_rules, Rule};
+pub use scope::{acknowledged_scope, MAX_SCOPE_BYTES};
 pub use suppress::{suppressions, Feedback};
 pub use validate::{
     auto_approvable, fingerprint, hunks, score, validate, verdict, ChangedFile, Validated,

@@ -596,7 +596,7 @@ fn catalog() -> Vec<Tool> {
                 "provider": string, "preset": string, "instructions": string, "model": string,
                 "effort": string, "wait": boolean, "reviewers": { "type": "integer", "minimum": 1, "maximum": 8 },
                 "hypotheses": { "type": "array", "items": { "type": "string", "enum": HYPOTHESES } } })).roles(NOT_A_WORKER),
-        Tool::new("review_show", "A review run and its findings.", &["review", "show"], json!({ "review": string }))
+        Tool::new("review_show", "A review run, its findings and its report: the verdict line, each hypothesis explored and the acknowledged scope.", &["review", "show"], json!({ "review": string }))
             .required(&["review"]).positional(&["review"]).roles(NOT_A_WORKER),
         Tool::new("review_status", "A workspace's review runs, newest first.",
             &["review", "status"], json!({ "workspace": string })).roles(NOT_A_WORKER),

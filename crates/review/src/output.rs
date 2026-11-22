@@ -13,6 +13,7 @@ const MAX_PATTERN_BYTES: usize = 200;
 const MAX_COVERAGE_NOTES: usize = 20;
 const MAX_NOTE_BYTES: usize = 500;
 const MAX_KB_REF_BYTES: usize = 200;
+const MAX_TRIGGER_BYTES: usize = 500;
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct ReviewOutput {
@@ -43,6 +44,7 @@ pub struct RawFinding {
     /// The hypothesis the model says it hunted; the daemon keeps its agent's own.
     pub hypothesis: Option<String>,
     pub kb_ref: Option<String>,
+    pub reachability: Option<domain::Reachability>,
 }
 
 /// The first JSON object in `text` that carries a `schema` key, fences and prose ignored.
@@ -159,6 +161,31 @@ fn raw_finding(map: &Map<String, Value>) -> Option<RawFinding> {
         suggestion: text_field(map, "suggestion", MAX_SUGGESTION_BYTES),
         hypothesis: text_field(map, "hypothesis", 64),
         kb_ref: text_field(map, "kb_ref", MAX_KB_REF_BYTES),
+        reachability: reachability(map.get("reachability")),
+    })
+}
+
+/// `{"kind": "automatic", "trigger": "…"}`, or the same as one string, `"automatic: …"`;
+/// `None` for a kind that is none of the three.
+fn reachability(value: Option<&Value>) -> Option<domain::Reachability> {
+    let (kind, trigger) = match value? {
+        Value::Object(map) => (
+            map.get("kind")?.as_str()?.trim(),
+            map.get("trigger").and_then(Value::as_str).unwrap_or(""),
+        ),
+        Value::String(text) => {
+            let text = text.trim_start();
+            let end = text
+                .find(|c: char| !c.is_ascii_alphabetic())
+                .unwrap_or(text.len());
+            (&text[..end], &text[end..])
+        }
+        _ => return None,
+    };
+    let trigger = trigger.trim_start_matches(|c: char| c.is_whitespace() || ":-—–".contains(c));
+    Some(domain::Reachability {
+        kind: domain::ReachabilityKind::from_name(kind)?,
+        trigger: clip(trigger.trim(), MAX_TRIGGER_BYTES).to_owned(),
     })
 }
 

@@ -734,6 +734,15 @@ CREATE TABLE codebase_graph_dirty (
 /// review again; `NULL` for a run stored before it.
 pub const REVIEW_REQUEST: &str = "ALTER TABLE review_runs ADD COLUMN request TEXT;";
 
+/// A finding's reachability (its kind and trigger, `NULL` for a finding without one),
+/// and the findings a run's reviewers proposed, which `GetReviewStats` divides by. The
+/// count is also in `coverage`; this column is what a query may read.
+pub const REVIEW_REACHABILITY: &str = "\
+ALTER TABLE review_findings ADD COLUMN reachability TEXT;
+ALTER TABLE review_findings ADD COLUMN reachability_trigger TEXT;
+ALTER TABLE review_runs ADD COLUMN proposed INTEGER NOT NULL DEFAULT 0;
+";
+
 /// The full, ordered migration set. Appended to over time; never reordered.
 #[must_use]
 pub fn migrations() -> Migrations<'static> {
@@ -770,5 +779,6 @@ pub fn migrations() -> Migrations<'static> {
         M::up(SANDBOX_APPROVALS),
         M::up(CODEBASE_GRAPH_DIRTY),
         M::up(REVIEW_REQUEST),
+        M::up(REVIEW_REACHABILITY),
     ])
 }

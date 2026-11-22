@@ -318,7 +318,11 @@ pub(crate) fn dispatch(app: &App, client: &Client, cmd: ReviewCmd) -> Result<(),
         } => {
             let review_id = review_id(app, &review)?;
             let response = app.call(client, Request::GetReview { review_id }, false)?;
-            app.print_ok(flatten(&response));
+            let mut shown = flatten(&response);
+            if let Response::Review { run, findings, .. } = &response {
+                shown["report"] = report(run, findings);
+            }
+            app.print_ok(shown);
             Ok(())
         }
         ReviewCmd::Show {
@@ -1130,9 +1134,30 @@ fn run_to_end(
     }
 }
 
+/// What a person reads first: the verdict line, each hypothesis explored and what it
+/// found, and the scope the reviewers were told not to report.
+fn report(run: &ReviewRun, findings: &[domain::Finding]) -> Value {
+    let hypotheses: Vec<Value> = domain::review::explored(&run.coverage, findings)
+        .into_iter()
+        .map(|explored| {
+            json!({
+                "hypothesis": explored.hypothesis.name(),
+                "reason": explored.reason,
+                "findings": explored.findings,
+                "outcome": if explored.findings == 0 { "explored, no findings" } else { "found" },
+            })
+        })
+        .collect();
+    json!({
+        "verdict": (run.status == ReviewStatus::Completed).then(|| domain::review::headline(findings)),
+        "hypotheses": hypotheses,
+        "acknowledged_scope": run.coverage.acknowledged_scope,
+    })
+}
+
 fn print_finished(app: &App, run: &ReviewRun, findings: &[domain::Finding]) -> Result<(), u8> {
     if run.status == ReviewStatus::Completed {
-        app.print_ok(json!({ "run": run, "findings": findings }));
+        app.print_ok(json!({ "run": run, "findings": findings, "report": report(run, findings) }));
         return Ok(());
     }
     Err(app.fail(
