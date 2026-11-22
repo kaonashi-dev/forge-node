@@ -58,8 +58,9 @@ own rounds, and the gate runs after the last task.
   previous save in `spec_changes`, for G1. An approved spec is re-read with the
   criteria checks alone, so a run approved before the block existed still reads.
 - Saving a spec also checks it against the run's checkout, off every lock: each
-  `path:line` under "Code context" (at most 64, each file read to 8 MiB) must
-  name a file inside the checkout, after symlinks, with that many lines, and
+  `path:line` under "Code context" (at most 64; a line past a file's first
+  8 MiB is reported unread) must name a file inside the checkout, after
+  symlinks, with that many lines, and
   each automatic validation's program must be an executable: a path in the
   checkout, an absolute path, or a name on the launch environment's `PATH`
   (shell builtins are skipped). A miss is a warning, like the ones above.

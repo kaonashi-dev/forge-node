@@ -764,7 +764,12 @@ pub(crate) fn save(
             };
             let refs = draft::code_context_refs(&content);
             warnings.extend(checkout_warnings(daemon, &run, &refs, &doc));
-            let paths: Vec<String> = refs.into_iter().map(|r| r.path).collect();
+            let paths: Vec<String> = refs
+                .into_iter()
+                .map(|r| r.path)
+                .collect::<BTreeSet<_>>()
+                .into_iter()
+                .collect();
             let suggested = suggest_risks(&dir, &paths);
             // The checks above can take a while; a G1 decided meanwhile must not find spec.md
             // replaced under the hash it approved.

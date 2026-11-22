@@ -372,7 +372,7 @@ fn a_spec_run_passes_its_gates_and_meets_only_what_a_check_proved() {
         .replace("SHALL say fast", "SHALL say fast, if possible")
         .replace(
             "## Out of scope",
-            "## Code context\n- `README.md:1` names the repo; src/cache.rs:3 keeps reads\n\n## Out of scope",
+            "## Code context\n- `README.md:1` names the repo; src/cache.rs:3 keeps reads, src/cache.rs:9 drops them\n\n## Out of scope",
         );
     let saved =
         save(&client, id, drafter, SpecArtifactKind::Spec, &reworded).expect("spec saved again");
@@ -384,16 +384,18 @@ fn a_spec_run_passes_its_gates_and_meets_only_what_a_check_proved() {
         [
             "AC-2 hedges (if possible): state what THE SYSTEM SHALL do",
             "code context src/cache.rs:3: src/cache.rs does not exist in the checkout",
+            "code context src/cache.rs:9: src/cache.rs does not exist in the checkout",
         ]
     );
     let run = detail(&client, id).run;
     assert_eq!(run.spec_warnings, warnings);
-    let suggested: Vec<&str> = run
+    let suggested: Vec<(&str, &str)> = run
         .suggested_risks
         .iter()
-        .map(|risk| risk.hypothesis.name())
+        .map(|risk| (risk.hypothesis.name(), risk.reason.as_str()))
         .collect();
-    assert_eq!(suggested, ["MemoryDiskDrift"]);
+    // Two lines of one file count the file once.
+    assert_eq!(suggested, [("MemoryDiskDrift", "spec: cache ×1")]);
     let changes = run
         .spec_changes
         .expect("a second save is diffed against the first");
