@@ -70,20 +70,18 @@ impl Daemon {
         }
     }
 
-    /// A completed run's patterns, deduplicated against the live ones, kept 90 days.
+    /// A completed run's patterns, deduplicated against the live ones and kept
+    /// 90 days; those over the knowledge base's caps are not stored.
     pub(crate) fn remember_patterns(&self, project: ProjectId, patterns: &[String]) {
         if patterns.is_empty() || !self.config.review.kb_enabled {
             return;
         }
         let redacted: Vec<String> = patterns.iter().map(|p| review::redact(p).0).collect();
         let at = now();
-        if let Err(error) = self.review_store.add_kb_items(
-            project,
-            knowledge_base::PATTERNS,
-            &redacted,
-            at,
-            at + PATTERN_DAYS * 86_400,
-        ) {
+        if let Err(error) =
+            self.review_store
+                .add_kb_patterns(project, &redacted, at, at + PATTERN_DAYS * 86_400)
+        {
             tracing::warn!(%error, "could not store review patterns");
         }
     }

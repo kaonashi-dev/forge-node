@@ -4,9 +4,9 @@
 use std::collections::{HashMap, HashSet};
 
 use domain::{
-    Coverage, Finding, FindingReaction, Lineage, ProjectId, ReviewId, ReviewRun, ReviewStage,
-    ReviewStatus, ReviewSuppression, ReviewTarget, SessionId, Severity, SuppressionKind, Tier,
-    Timestamp, Verdict, WorkspaceId,
+    Coverage, Finding, FindingReaction, Lineage, ProjectId, ReviewId, ReviewRequest, ReviewRun,
+    ReviewStage, ReviewStatus, ReviewSuppression, ReviewTarget, SessionId, Severity,
+    SuppressionKind, Tier, Timestamp, Verdict, WorkspaceId,
 };
 use rusqlite::{params, Connection, OptionalExtension, Row};
 
@@ -55,6 +55,42 @@ pub fn insert_run(conn: &Connection, run: &ReviewRun) -> Result<(), DbError> {
         run.sandbox_run_id,
     ])?;
     Ok(())
+}
+
+/// [`insert_run`] with the request it came from, in one transaction.
+///
+/// # Errors
+/// Returns [`DbError`] on a failed statement.
+pub fn insert_requested_run(
+    conn: &mut Connection,
+    run: &ReviewRun,
+    request: &ReviewRequest,
+) -> Result<(), DbError> {
+    let tx = conn.transaction()?;
+    insert_run(&tx, run)?;
+    tx.execute(
+        "UPDATE review_runs SET request = ?2 WHERE id = ?1",
+        params![run.id.to_string(), json(request)?],
+    )?;
+    tx.commit()?;
+    Ok(())
+}
+
+/// `None` for an unknown run or one stored before requests were.
+///
+/// # Errors
+/// Returns [`DbError`] on a failed statement or an unreadable request.
+pub fn run_request(conn: &Connection, id: ReviewId) -> Result<Option<ReviewRequest>, DbError> {
+    let text: Option<String> = conn
+        .query_row(
+            "SELECT request FROM review_runs WHERE id = ?1",
+            params![id.to_string()],
+            |row| row.get(0),
+        )
+        .optional()?
+        .flatten();
+    text.map(|text| from_json("ReviewRequest", &text))
+        .transpose()
 }
 
 /// Rewrites every mutable column; a run removed meanwhile stays removed.

@@ -2,12 +2,13 @@
 //! again, until a review finds nothing or `max_iterations` reviews ran. It
 //! never commits or pushes; the person asked for it before it started.
 
+use std::collections::hash_map::Entry;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use domain::{
     ActivityEvidence, ActivityState, AgentProfileId, AgentProviderId, FindingReaction, ReviewId,
-    ReviewRun, ReviewStatus, ReviewTarget, SessionKind, SessionRole, WorkspaceId,
+    ReviewRequest, ReviewStatus, ReviewTarget, SessionKind, SessionRole, WorkspaceId,
 };
 use protocol::{DaemonEvent, ErrorCode, ProtocolError, Response};
 
@@ -16,6 +17,7 @@ use crate::core::{db_err, Daemon};
 const DEFAULT_ITERATIONS: u32 = 3;
 const MAX_ITERATIONS: u32 = 10;
 const FIXER_TITLE: &str = "Forge Review · fix loop";
+const FIXER_WAITING: &str = "the fixer is waiting for an answer in its terminal";
 
 /// Clears the workspace's loop however the worker ends.
 struct LoopGuard {
@@ -31,15 +33,19 @@ impl Drop for LoopGuard {
 
 enum Stop {
     Cancelled,
+    /// Left running so the person can answer it.
+    FixerWaiting,
     Failed(String),
 }
 
 pub(crate) struct FixLoop {
-    review_id: ReviewId,
     workspace_id: WorkspaceId,
     max_iterations: u32,
     provider: AgentProviderId,
     profile_id: Option<AgentProfileId>,
+    target: ReviewTarget,
+    review_provider: String,
+    request: ReviewRequest,
 }
 
 impl Daemon {
@@ -60,18 +66,35 @@ impl Daemon {
                 "a fix loop works on a workspace review, never a pull request's",
             ));
         }
+        let request = self
+            .review_store
+            .run_request(review_id)
+            .map_err(db_err)?
+            .unwrap_or_else(|| ReviewRequest {
+                tier: Some(run.tier),
+                preset: Some(run.preset.clone()),
+                reviewers: domain::ReviewerOptions {
+                    count: Some(run.reviewers),
+                    hypotheses: Vec::new(),
+                },
+                ..ReviewRequest::default()
+            });
         let workspace_id = run.workspace_id;
-        if self.lock().fix_loops.insert(workspace_id, false).is_some() {
-            return Err(ProtocolError::conflict(
-                "a fix loop is already running for this workspace",
-            ));
+        match self.lock().fix_loops.entry(workspace_id) {
+            Entry::Occupied(_) => {
+                return Err(ProtocolError::conflict(
+                    "a fix loop is already running for this workspace",
+                ))
+            }
+            Entry::Vacant(slot) => {
+                slot.insert(false);
+            }
         }
         let guard = LoopGuard {
             daemon: Arc::clone(self),
             workspace_id,
         };
         let job = FixLoop {
-            review_id,
             workspace_id,
             max_iterations: max_iterations
                 .unwrap_or(DEFAULT_ITERATIONS)
@@ -80,13 +103,16 @@ impl Daemon {
                 provider.unwrap_or_else(|| self.config.review.provider.clone()),
             ),
             profile_id,
+            target: run.target,
+            review_provider: run.provider,
+            request,
         };
         let daemon = Arc::clone(self);
         std::thread::Builder::new()
             .name("forge-fix-loop".into())
             .spawn(move || {
                 let _guard = guard;
-                let (iteration, findings, error) = daemon.fix_loop(&job);
+                let (iteration, findings, error) = daemon.fix_loop(&job, review_id);
                 daemon
                     .registry
                     .broadcast_domain(DaemonEvent::FixLoopUpdated {
@@ -122,11 +148,11 @@ impl Daemon {
     }
 
     /// `(reviews run, findings standing after the last, error)`.
-    fn fix_loop(self: &Arc<Self>, job: &FixLoop) -> (u32, u32, Option<String>) {
-        let mut current = job.review_id;
+    fn fix_loop(self: &Arc<Self>, job: &FixLoop, first: ReviewId) -> (u32, u32, Option<String>) {
+        let mut current = first;
         let mut iteration = 0;
         loop {
-            let (run, standing) = match self.standing(current) {
+            let standing = match self.standing(current) {
                 Ok(found) => found,
                 Err(error) => return (iteration, 0, Some(error)),
             };
@@ -136,16 +162,15 @@ impl Daemon {
             }
             let step = self
                 .fix_once(job, &standing)
-                .and_then(|()| self.review_again(job, &run));
+                .and_then(|()| self.review_again(job));
             match step {
                 Ok(next) => current = next,
                 Err(Stop::Cancelled) => return (iteration, count, Some("cancelled".into())),
+                Err(Stop::FixerWaiting) => return (iteration, count, Some(FIXER_WAITING.into())),
                 Err(Stop::Failed(error)) => return (iteration, count, Some(error)),
             }
             iteration += 1;
-            let after = self
-                .standing(current)
-                .map_or(0, |(_, findings)| findings.len());
+            let after = self.standing(current).map_or(0, |findings| findings.len());
             self.registry.broadcast_domain(DaemonEvent::FixLoopUpdated {
                 workspace_id: job.workspace_id,
                 iteration,
@@ -156,7 +181,7 @@ impl Daemon {
         }
     }
 
-    fn standing(&self, review_id: ReviewId) -> Result<(ReviewRun, Vec<domain::Finding>), String> {
+    fn standing(&self, review_id: ReviewId) -> Result<Vec<domain::Finding>, String> {
         let (run, findings) = self
             .review_store
             .get(review_id)
@@ -169,15 +194,15 @@ impl Daemon {
                 run.error.clone().unwrap_or_default()
             ));
         }
-        let standing = findings
+        Ok(findings
             .into_iter()
             .filter(|finding| finding.reaction != Some(FindingReaction::Dismiss))
-            .collect();
-        Ok((run, standing))
+            .collect())
     }
 
     /// The findings to a new writable agent, as "Fix with a new agent" sends
-    /// them; done when it idles or exits, then closed.
+    /// them; done when it idles or exits, then closed. One waiting on a prompt
+    /// stops the loop and stays open.
     fn fix_once(self: &Arc<Self>, job: &FixLoop, standing: &[domain::Finding]) -> Result<(), Stop> {
         let listed: Vec<&domain::Finding> = standing.iter().collect();
         let (prompt, _) = domain::review::findings_prompt(&listed, client::MAX_PROMPT_BYTES);
@@ -205,58 +230,60 @@ impl Daemon {
         };
         let done = self.wait_loop(job.workspace_id, |daemon| {
             let inner = daemon.lock();
-            inner.sessions.get(&session).is_none_or(|session| {
-                let idle = session.activity.evidence == Some(ActivityEvidence::Hook)
-                    && session.activity.state == ActivityState::Idle;
-                idle || session.state.is_terminal()
-            })
+            let Some(session) = inner.sessions.get(&session) else {
+                return Ok(true);
+            };
+            let hooked = session.activity.evidence == Some(ActivityEvidence::Hook);
+            if hooked && session.activity.state == ActivityState::Waiting {
+                return Err(Stop::FixerWaiting);
+            }
+            Ok(hooked && session.activity.state == ActivityState::Idle
+                || session.state.is_terminal())
         });
-        if let Err(error) = self.kill_and_close_session(session) {
-            tracing::debug!(%session, %error, "fixer already gone");
+        if !matches!(done, Err(Stop::FixerWaiting)) {
+            if let Err(error) = self.kill_and_close_session(session) {
+                tracing::debug!(%session, %error, "fixer already gone");
+            }
         }
         done
     }
 
-    fn review_again(self: &Arc<Self>, job: &FixLoop, run: &ReviewRun) -> Result<ReviewId, Stop> {
-        let base = match &run.target {
-            ReviewTarget::Workspace { base, .. } => base.clone(),
-            _ => None,
-        };
+    fn review_again(self: &Arc<Self>, job: &FixLoop) -> Result<ReviewId, Stop> {
+        let request = job.request.clone();
         let started = self.start_review(
-            ReviewTarget::Workspace {
-                workspace_id: job.workspace_id,
-                base,
-            },
-            Some(run.tier),
-            Some(run.provider.clone()),
-            Some(run.preset.clone()),
-            None,
-            domain::AgentLaunchOptions::default(),
-            domain::ReviewerOptions {
-                count: Some(run.reviewers),
-                hypotheses: Vec::new(),
-            },
+            job.target.clone(),
+            request.tier,
+            Some(job.review_provider.clone()),
+            request.preset,
+            request.instructions,
+            request.options,
+            request.reviewers,
         );
         let review_id = match started {
             Ok(Response::ReviewStarted { review_id }) => review_id,
             Ok(_) => return Err(Stop::Failed("the review did not start".into())),
             Err(error) => return Err(Stop::Failed(format!("the review did not start: {error}"))),
         };
-        self.wait_loop(job.workspace_id, |daemon| {
+        let finished = self.wait_loop(job.workspace_id, |daemon| {
             let running = daemon
                 .lock()
                 .reviews_running
                 .values()
                 .any(|running| running.id == review_id);
-            !running
+            Ok(!running
                 && daemon
                     .review_store
                     .get(review_id)
                     .ok()
                     .flatten()
-                    .is_some_and(|(run, _)| run.status.is_finished())
-        })?;
-        Ok(review_id)
+                    .is_some_and(|(run, _)| run.status.is_finished()))
+        });
+        if finished.is_err() {
+            if let Err(error) = self.cancel_review(review_id) {
+                tracing::debug!(%review_id, %error, "the re-review is already gone");
+            }
+        }
+        finished.map(|()| review_id)
     }
 
     /// Wakes on every daemon change a task waiter hears; gives up at
@@ -265,7 +292,7 @@ impl Daemon {
     fn wait_loop(
         &self,
         workspace_id: WorkspaceId,
-        mut ready: impl FnMut(&Self) -> bool,
+        mut ready: impl FnMut(&Self) -> Result<bool, Stop>,
     ) -> Result<(), Stop> {
         let (wake_tx, wake_rx) = flume::bounded(1);
         self.lock().task_waiters.push(wake_tx);
@@ -276,7 +303,7 @@ impl Daemon {
             if cancelled {
                 return Err(Stop::Cancelled);
             }
-            if ready(self) {
+            if ready(self)? {
                 return Ok(());
             }
             if let Err(flume::RecvTimeoutError::Timeout) = wake_rx.recv_deadline(deadline) {

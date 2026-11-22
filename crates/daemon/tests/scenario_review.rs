@@ -3291,9 +3291,32 @@ fn a_cancelled_deep_run_starts_no_further_target() {
         .exists());
 }
 
+#[derive(Clone, Copy)]
+enum Fixer {
+    Exits,
+    /// Stays open, as a fixer stopped on a permission prompt does.
+    Waits,
+}
+
 /// One fake `claude`: as a reviewer (`--add-dir`) it reports one finding until
 /// the fixer's marker exists and none after; as the fixer it writes the marker.
 fn install_fix_loop(harness: &common::Harness) {
+    install_fix_loop_with(
+        harness,
+        &answer(&[finding(2, "P1", "logic", "price + qty")]),
+        Some(&answer(&[])),
+        Fixer::Exits,
+    );
+}
+
+/// [`install_fix_loop`] answering `broken`, then `fixed` once the marker exists,
+/// or never when that is `None`. Each reviewer's argv is appended to `invocations`.
+fn install_fix_loop_with(
+    harness: &common::Harness,
+    broken: &str,
+    fixed: Option<&str>,
+    fixer: Fixer,
+) {
     let record = |text: &str| {
         serde_json::json!({
             "type": "assistant",
@@ -3301,32 +3324,39 @@ fn install_fix_loop(harness: &common::Harness) {
         })
         .to_string()
     };
-    let broken = harness.root().join("broken.jsonl");
-    let fixed = harness.root().join("fixed.jsonl");
-    std::fs::write(
-        &broken,
-        format!(
-            "{}\n",
-            record(&answer(&[finding(2, "P1", "logic", "price + qty")]))
-        ),
-    )
-    .expect("broken");
-    std::fs::write(&fixed, format!("{}\n", record(&answer(&[])))).expect("fixed");
+    let broken_file = harness.root().join("broken.jsonl");
+    std::fs::write(&broken_file, format!("{}\n", record(broken))).expect("broken");
+    let after = match fixed {
+        Some(fixed) => {
+            let fixed_file = harness.root().join("fixed.jsonl");
+            std::fs::write(&fixed_file, format!("{}\n", record(fixed))).expect("fixed");
+            format!(
+                "/bin/cat {} > \"$dir/$id.jsonl\"",
+                common::sh_quote(&fixed_file.to_string_lossy())
+            )
+        }
+        None => "exec /bin/cat".to_owned(),
+    };
+    let fixer_tail = match fixer {
+        Fixer::Exits => "exit 0",
+        Fixer::Waits => "exec /bin/cat",
+    };
     let marker = harness.root().join("fixed-by-agent");
     let script = format!(
         "#!/bin/sh\n\
          if [ \"$1\" = --version ]; then echo '2.1.0 (Claude Code)'; exit 0; fi\n\
          id=''\nprev=''\nreviewer=''\n\
          for a in \"$@\"; do [ \"$prev\" = --session-id ] && id=$a; [ \"$a\" = --add-dir ] && reviewer=1; prev=$a; done\n\
-         if [ -z \"$reviewer\" ]; then /usr/bin/touch {marker}; exit 0; fi\n\
+         if [ -z \"$reviewer\" ]; then /usr/bin/touch {marker}; {fixer_tail}; fi\n\
+         printf '%s\\n' \"$*\" >> {log}\n\
          slug=$(printf '%s' \"$FORGE_WORKSPACE\" | /usr/bin/tr -c 'A-Za-z0-9' '-')\n\
          dir=\"$CLAUDE_CONFIG_DIR/projects/$slug\"\n\
          /bin/mkdir -p \"$dir\"\n\
-         if [ -e {marker} ]; then /bin/cat {fixed} > \"$dir/$id.jsonl\"; else /bin/cat {broken} > \"$dir/$id.jsonl\"; fi\n\
+         if [ -e {marker} ]; then {after}; else /bin/cat {broken} > \"$dir/$id.jsonl\"; fi\n\
          exit 0\n",
         marker = common::sh_quote(&marker.to_string_lossy()),
-        fixed = common::sh_quote(&fixed.to_string_lossy()),
-        broken = common::sh_quote(&broken.to_string_lossy()),
+        broken = common::sh_quote(&broken_file.to_string_lossy()),
+        log = common::sh_quote(&harness.root().join("invocations").to_string_lossy()),
     );
     common::write_executable(harness.bin(), "claude", &script);
 }
@@ -3440,6 +3470,201 @@ fn a_fix_loop_refuses_a_pull_request_review() {
         matches!(refused, Err(client::ClientError::Protocol(ref error)) if error.code == ErrorCode::InvalidRequest),
         "{refused:?}"
     );
+}
+
+fn start_fix_loop(client: &client::Client, review_id: ReviewId) {
+    let started = client
+        .request(Request::StartFixLoop {
+            review_id,
+            max_iterations: Some(3),
+            provider: None,
+            profile_id: None,
+        })
+        .expect("StartFixLoop");
+    assert!(
+        matches!(started, Response::FixLoopStarted { .. }),
+        "{started:?}"
+    );
+}
+
+/// `(iteration, findings, error)` of the loop's last update.
+fn fix_loop_end(
+    events: &flume::Receiver<DaemonEvent>,
+    workspace: WorkspaceId,
+) -> (u32, u32, Option<String>) {
+    let finished = common::wait_for(events, common::DEADLINE, |event| {
+        matches!(event, DaemonEvent::FixLoopUpdated { workspace_id, done: true, .. } if *workspace_id == workspace)
+    })
+    .expect("the loop ends");
+    let DaemonEvent::FixLoopUpdated {
+        iteration,
+        findings,
+        error,
+        ..
+    } = finished
+    else {
+        unreachable!()
+    };
+    (iteration, findings, error)
+}
+
+fn fixer(client: &client::Client) -> Option<domain::Session> {
+    common::sessions(client)
+        .into_iter()
+        .find(|session| session.title.user.as_deref() == Some("Forge Review · fix loop"))
+}
+
+/// The `slice-<Hypothesis>.md` files the reviewers were pointed at.
+fn slices(log: &str) -> std::collections::BTreeSet<&str> {
+    log.split("slice-")
+        .skip(1)
+        .filter_map(|rest| rest.split_once(".md").map(|(name, _)| name))
+        .filter(|name| !name.is_empty() && name.chars().all(|c| c.is_ascii_alphanumeric()))
+        .collect()
+}
+
+#[test]
+fn a_fix_loop_reviews_again_with_the_first_runs_preset_instructions_and_reviewers() {
+    let harness = common::Harness::new();
+    install_fix_loop_with(
+        &harness,
+        &v2_answer("any", &[finding(2, "P1", "logic", "price + qty")]),
+        Some(&v2_answer("any", &[])),
+        Fixer::Exits,
+    );
+    let repo = seeded_repo();
+    let daemon = boot(&harness);
+    let client = daemon.connect("scenario-review");
+    let events = client.events();
+    let workspace = workspace_at(&client, repo.path());
+    let first = match client.request(Request::StartReview {
+        target: ReviewTarget::Workspace {
+            workspace_id: workspace,
+            base: None,
+        },
+        tier: None,
+        provider: None,
+        preset: Some(domain::CUSTOM_PRESET.into()),
+        instructions: Some("Check the arithmetic in total.".into()),
+        model: Some("sonnet".into()),
+        effort: Some("low".into()),
+        reviewers: domain::ReviewerOptions {
+            count: None,
+            hypotheses: vec![
+                domain::Hypothesis::AuthBypass,
+                domain::Hypothesis::MigrationGap,
+            ],
+        },
+    }) {
+        Ok(Response::ReviewStarted { review_id }) => review_id,
+        other => panic!("expected ReviewStarted, got {other:?}"),
+    };
+    let done = wait_run(&events, first, |run| run.status.is_finished());
+    assert_eq!(done.status, ReviewStatus::Completed, "{:?}", done.error);
+    let invocations = harness.root().join("invocations");
+    let before = std::fs::read_to_string(&invocations)
+        .expect("invocations")
+        .len();
+
+    start_fix_loop(&client, first);
+    assert_eq!(fix_loop_end(&events, workspace), (1, 0, None));
+    let log = std::fs::read_to_string(&invocations).expect("invocations");
+    let again = &log[before..];
+    assert_eq!(
+        slices(again),
+        ["AuthBypass", "MigrationGap"].into_iter().collect(),
+        "{again}"
+    );
+    assert_eq!(again.matches("--model sonnet").count(), 2, "{again}");
+    assert_eq!(again.matches("--effort low").count(), 2, "{again}");
+    assert!(again.contains("Check the arithmetic in total."), "{again}");
+}
+
+#[test]
+fn cancelling_a_fix_loop_cancels_the_review_it_is_waiting_on() {
+    let harness = common::Harness::new();
+    install_fix_loop_with(
+        &harness,
+        &answer(&[finding(2, "P1", "logic", "price + qty")]),
+        None,
+        Fixer::Exits,
+    );
+    let repo = seeded_repo();
+    let daemon = boot(&harness);
+    let client = daemon.connect("scenario-review");
+    let events = client.events();
+    let workspace = workspace_at(&client, repo.path());
+    let first = start(&client, workspace, None).expect("StartReview");
+    wait_run(&events, first, |run| run.status.is_finished());
+
+    start_fix_loop(&client, first);
+    let again = common::wait_for(&events, common::DEADLINE, |event| {
+        matches!(event, DaemonEvent::ReviewUpdated { run } if run.id != first && run.session_id.is_some())
+    })
+    .expect("the loop reviews again");
+    let DaemonEvent::ReviewUpdated { run: again } = again else {
+        unreachable!()
+    };
+    client
+        .request(Request::CancelFixLoop {
+            workspace_id: workspace,
+        })
+        .expect("CancelFixLoop");
+    assert_eq!(
+        fix_loop_end(&events, workspace).2.as_deref(),
+        Some("cancelled")
+    );
+    assert!(common::poll_until(common::DEADLINE, || get(
+        &client, again.id
+    )
+    .0
+    .status
+    .is_finished()));
+    assert_eq!(get(&client, again.id).0.status, ReviewStatus::Cancelled);
+    assert!(
+        common::poll_until(common::DEADLINE, || common::sessions(&client)
+            .iter()
+            .all(|session| session.title.user.as_deref() != Some("Forge Review"))),
+        "the reviewer was closed"
+    );
+}
+
+#[test]
+fn a_fixer_waiting_for_an_answer_stops_the_loop_and_stays_open() {
+    let harness = common::Harness::new();
+    install_fix_loop_with(
+        &harness,
+        &answer(&[finding(2, "P1", "logic", "price + qty")]),
+        Some(&answer(&[])),
+        Fixer::Waits,
+    );
+    let repo = seeded_repo();
+    let daemon = boot(&harness);
+    let client = daemon.connect("scenario-review");
+    let events = client.events();
+    let workspace = workspace_at(&client, repo.path());
+    let first = start(&client, workspace, None).expect("StartReview");
+    wait_run(&events, first, |run| run.status.is_finished());
+
+    start_fix_loop(&client, first);
+    let mut found = None;
+    assert!(common::poll_until(common::DEADLINE, || {
+        found = fixer(&client);
+        found.is_some()
+    }));
+    let session = found.expect("the fixer");
+    report_waiting(&client, session.id);
+    assert_eq!(
+        fix_loop_end(&events, workspace),
+        (
+            0,
+            1,
+            Some("the fixer is waiting for an answer in its terminal".into())
+        )
+    );
+    let left = fixer(&client).expect("the fixer is left for the person");
+    assert_eq!(left.id, session.id);
+    assert!(!left.state.is_terminal(), "{:?}", left.state);
 }
 
 #[test]

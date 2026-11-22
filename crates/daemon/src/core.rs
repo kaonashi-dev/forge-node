@@ -13572,12 +13572,8 @@ mod tests {
             .expect("attempt is writable");
     }
 
-    #[test]
-    fn a_cancel_that_lands_during_validation_wins() {
-        let (daemon, _tmp) = test_daemon();
-        let project = add_project_row(&daemon, "p", None);
-        let workspace_id = add_workspace_row(&daemon, project, false);
-        let mut run = domain::ReviewRun {
+    fn review_run(workspace_id: WorkspaceId, status: domain::ReviewStatus) -> domain::ReviewRun {
+        domain::ReviewRun {
             id: domain::ReviewId::new(),
             workspace_id,
             target: domain::ReviewTarget::Workspace {
@@ -13589,7 +13585,7 @@ mod tests {
             tier: domain::Tier::Quick,
             preset: "standard".into(),
             provider: "claude".into(),
-            status: domain::ReviewStatus::Running,
+            status,
             stage: Some(domain::ReviewStage::Validate),
             summary: String::new(),
             score: Some(5.0),
@@ -13606,7 +13602,32 @@ mod tests {
             reviewers: 1,
             schema_version: domain::SchemaVersion::V1,
             sandbox_run_id: None,
-        };
+        }
+    }
+
+    #[test]
+    fn a_second_fix_loop_leaves_the_running_loops_cancel_alone() {
+        let (daemon, _tmp) = test_daemon();
+        let project = add_project_row(&daemon, "p", None);
+        let workspace_id = add_workspace_row(&daemon, project, false);
+        let run = review_run(workspace_id, domain::ReviewStatus::Completed);
+        daemon.review_store.insert_run(&run).expect("insert run");
+        // A running loop that a `CancelFixLoop` has just marked.
+        daemon.lock().fix_loops.insert(workspace_id, true);
+
+        let refused = daemon
+            .start_fix_loop(run.id, None, None, None)
+            .expect_err("a loop is running");
+        assert_eq!(refused.code, ErrorCode::Conflict);
+        assert_eq!(daemon.lock().fix_loops.get(&workspace_id), Some(&true));
+    }
+
+    #[test]
+    fn a_cancel_that_lands_during_validation_wins() {
+        let (daemon, _tmp) = test_daemon();
+        let project = add_project_row(&daemon, "p", None);
+        let workspace_id = add_workspace_row(&daemon, project, false);
+        let mut run = review_run(workspace_id, domain::ReviewStatus::Running);
         daemon.review_store.insert_run(&run).expect("insert run");
         daemon.lock().review_cancel.insert(run.id);
         let finding = domain::Finding {

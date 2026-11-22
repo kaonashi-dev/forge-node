@@ -160,6 +160,34 @@ pub fn patterns_json(patterns: &[String]) -> String {
     serde_json::to_string_pretty(patterns).unwrap_or_else(|_| "[]".to_owned())
 }
 
+/// The `learned` patterns to store beside the live `stored` ones, in order and
+/// deduplicated. One that would take `patterns.json` or the project, with
+/// `others` bytes in its other files, over its cap is refused, as a person's
+/// write would be; nothing stored is dropped for it.
+#[must_use]
+pub fn admit_patterns(stored: &[String], others: usize, learned: &[String]) -> Vec<String> {
+    let rendered = |item: &String| serde_json::to_string(item).map_or(usize::MAX, |s| s.len());
+    // `patterns_json`'s pretty list: `[\n` and `\n]`, then two spaces and `,\n` per item.
+    let mut size = 2 + stored
+        .iter()
+        .map(|item| rendered(item).saturating_add(4))
+        .fold(0usize, usize::saturating_add);
+    let mut seen: BTreeSet<&str> = stored.iter().map(String::as_str).collect();
+    let mut admitted = Vec::new();
+    for item in learned {
+        if !seen.insert(item) {
+            continue;
+        }
+        let grown = size.saturating_add(rendered(item).saturating_add(4));
+        if grown > MAX_FILE_BYTES || others.saturating_add(grown) > MAX_PROJECT_BYTES {
+            continue;
+        }
+        size = grown;
+        admitted.push(item.clone());
+    }
+    admitted
+}
+
 /// `patterns.json` as a person wrote it: a JSON list of strings.
 ///
 /// # Errors

@@ -96,8 +96,8 @@ fn migrations_apply_and_user_version_advances() {
     // count of applied migrations, and the assertion is what catches a migration
     // that was silently reordered or dropped.
     assert_eq!(
-        version, 31,
-        "thirty-one migrations applied => user_version == 31"
+        version, 32,
+        "thirty-two migrations applied => user_version == 32"
     );
 
     for table in [
@@ -193,7 +193,7 @@ fn version_two_database_upgrades_existing_projects_into_general() {
         .conn()
         .query_row("PRAGMA user_version", [], |row| row.get(0))
         .unwrap();
-    assert_eq!(version, 31);
+    assert_eq!(version, 32);
 }
 
 /// Migration 6 over a database that already has workspaces: the display_name
@@ -1090,7 +1090,7 @@ fn sessions_schema_is_unchanged() {
         .conn()
         .query_row("PRAGMA user_version", [], |r| r.get(0))
         .unwrap();
-    assert_eq!(version, 31, "every migration up to the spec runs");
+    assert_eq!(version, 32, "every migration up to the spec runs");
 
     let (db, _project, workspace_id) = db_with_workspace();
     let mut session = mk_session(workspace_id, SessionState::Running);
@@ -1244,7 +1244,7 @@ fn reset_clears_every_application_table_and_keeps_the_schema() {
         .conn()
         .query_row("PRAGMA user_version", [], |row| row.get(0))
         .unwrap();
-    assert_eq!(version, 31, "reset retains the migrated schema");
+    assert_eq!(version, 32, "reset retains the migrated schema");
 }
 
 // ---- on-disk open ----------------------------------------------------------
@@ -2355,15 +2355,11 @@ fn kb_entries_keep_a_persons_file_beside_the_daemons_and_expire() {
 
     let patterns = vec!["a".to_owned(), "b".to_owned()];
     assert_eq!(
-        store
-            .add_kb_items(project, "patterns.json", &patterns, 130, 200)
-            .unwrap(),
+        store.add_kb_patterns(project, &patterns, 130, 200).unwrap(),
         2
     );
     assert_eq!(
-        store
-            .add_kb_items(project, "patterns.json", &patterns, 131, 200)
-            .unwrap(),
+        store.add_kb_patterns(project, &patterns, 131, 200).unwrap(),
         0,
         "deduped"
     );
@@ -2401,6 +2397,38 @@ fn kb_entries_keep_a_persons_file_beside_the_daemons_and_expire() {
     );
     assert_eq!(store.clear_kb_entry(project, "architecture.md").unwrap(), 1);
     assert_eq!(store.kb_entries(project, 300).unwrap().len(), 1);
+}
+
+#[test]
+fn learned_patterns_stop_at_the_file_cap_and_keep_what_is_stored() {
+    let (db, project, _) = db_with_workspace();
+    let store = db.review_store().unwrap();
+    let learned: Vec<String> = (0..400)
+        .map(|n| format!("{n:04}{}", "x".repeat(1020)))
+        .collect();
+    let added = store.add_kb_patterns(project, &learned, 100, 1000).unwrap();
+    assert!(added > 200 && added < learned.len(), "{added}");
+    assert_eq!(
+        store
+            .add_kb_patterns(project, &["late".to_owned()], 101, 1000)
+            .unwrap(),
+        1,
+        "a short pattern still fits"
+    );
+    assert_eq!(
+        store
+            .add_kb_patterns(project, &learned[added..], 102, 1000)
+            .unwrap(),
+        0
+    );
+    let stored: Vec<String> = store
+        .kb_entries(project, 103)
+        .unwrap()
+        .into_iter()
+        .map(|entry| entry.content)
+        .collect();
+    assert_eq!(stored[..added], learned[..added], "the oldest are kept");
+    assert!(knowledge_base::patterns_json(&stored).len() <= knowledge_base::MAX_FILE_BYTES);
 }
 
 #[test]

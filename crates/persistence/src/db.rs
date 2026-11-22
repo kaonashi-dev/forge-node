@@ -253,15 +253,14 @@ impl ReviewStore {
         crate::repositories::kb::replace_items(&mut self.conn(), project, file, items, source, now)
     }
 
-    pub fn add_kb_items(
+    pub fn add_kb_patterns(
         &self,
         project: domain::ProjectId,
-        file: &str,
         items: &[String],
         now: i64,
         expires_at: i64,
     ) -> Result<usize, DbError> {
-        crate::repositories::kb::add_items(&mut self.conn(), project, file, items, now, expires_at)
+        crate::repositories::kb::add_patterns(&mut self.conn(), project, items, now, expires_at)
     }
 
     pub fn clear_kb_entry(&self, project: domain::ProjectId, file: &str) -> Result<usize, DbError> {
@@ -316,6 +315,21 @@ impl ReviewStore {
 
     pub fn insert_run(&self, run: &domain::ReviewRun) -> Result<(), DbError> {
         reviews::insert_run(&self.conn(), run)
+    }
+
+    pub fn insert_requested_run(
+        &self,
+        run: &domain::ReviewRun,
+        request: &domain::ReviewRequest,
+    ) -> Result<(), DbError> {
+        reviews::insert_requested_run(&mut self.conn(), run, request)
+    }
+
+    pub fn run_request(
+        &self,
+        id: domain::ReviewId,
+    ) -> Result<Option<domain::ReviewRequest>, DbError> {
+        reviews::run_request(&self.conn(), id)
     }
 
     pub fn update_run(&self, run: &domain::ReviewRun) -> Result<(), DbError> {

@@ -120,6 +120,42 @@ fn writes_are_limited_to_stored_files_and_the_caps() {
 }
 
 #[test]
+fn learned_patterns_are_admitted_only_within_the_caps_a_write_has() {
+    let stored = vec!["kept \"quoted\"".to_owned()];
+    let learned: Vec<String> = ["kept \"quoted\"", "new", "new", "é\n"]
+        .iter()
+        .map(|s| (*s).to_owned())
+        .collect();
+    let admitted = admit_patterns(&stored, 0, &learned);
+    assert_eq!(admitted, ["new", "é\n"]);
+
+    let item = "p".repeat(1000);
+    let one = vec![item.clone()];
+    let mut stored = Vec::new();
+    loop {
+        let next = admit_patterns(&stored, 0, &[format!("{}{item}", stored.len())]);
+        if next.is_empty() {
+            break;
+        }
+        stored.extend(next);
+        let content = patterns_json(&stored);
+        assert!(
+            check_write(PATTERNS, &content, 0).is_ok(),
+            "{}",
+            content.len()
+        );
+    }
+    assert!(patterns_json(&stored).len() + 1010 > MAX_FILE_BYTES);
+
+    let others = MAX_PROJECT_BYTES - patterns_json(&one).len() + 1;
+    assert!(
+        admit_patterns(&[], others, &one).is_empty(),
+        "the project cap"
+    );
+    assert_eq!(admit_patterns(&[], others - 1, &one), one);
+}
+
+#[test]
 fn the_export_carries_every_file() {
     let file = |name: &str, content: &str| domain::KbFile {
         file: name.into(),

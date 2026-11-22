@@ -338,6 +338,22 @@ pub struct ReviewerOptions {
     pub hypotheses: Vec<Hypothesis>,
 }
 
+/// What a `StartReview` asked for, with the daemon's model, effort and
+/// reviewer count filled in: enough to start the same review again.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ReviewRequest {
+    #[serde(default)]
+    pub tier: Option<Tier>,
+    #[serde(default)]
+    pub preset: Option<String>,
+    #[serde(default)]
+    pub instructions: Option<String>,
+    #[serde(default)]
+    pub options: crate::AgentLaunchOptions,
+    #[serde(default)]
+    pub reviewers: ReviewerOptions,
+}
+
 /// What one reviewer hunts for; serialized as its name.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
 #[non_exhaustive]

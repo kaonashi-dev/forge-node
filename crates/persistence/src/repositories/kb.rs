@@ -93,38 +93,45 @@ pub fn replace_items(
     Ok(())
 }
 
-/// Appends each item not already a live row of `file`; returns how many were added.
+/// Appends the learned `patterns.json` items that
+/// [`knowledge_base::admit_patterns`] lets in beside the project's live rows;
+/// returns how many were added.
 ///
 /// # Errors
 /// Returns [`DbError`] on a failed statement.
-pub fn add_items(
+pub fn add_patterns(
     conn: &mut Connection,
     project: ProjectId,
-    file: &str,
     items: &[String],
     now: i64,
     expires_at: i64,
 ) -> Result<usize, DbError> {
     let tx = conn.transaction()?;
-    let mut added = 0;
-    for item in items {
-        let exists: bool = tx.query_row(
-            "SELECT EXISTS (SELECT 1 FROM kb_entries WHERE project_id = ?1 AND file = ?2 \
-             AND content = ?3 AND (expires_at IS NULL OR expires_at > ?4))",
-            params![project.to_string(), file, item, now],
-            |row| row.get(0),
-        )?;
-        if !exists {
-            tx.execute(
-                "INSERT INTO kb_entries (project_id, file, content, source, created_at, expires_at) \
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
-                params![project.to_string(), file, item, DAEMON, now, expires_at],
-            )?;
-            added += 1;
+    let (mut stored, mut others) = (Vec::new(), 0usize);
+    for entry in entries(&tx, project, now)? {
+        if entry.file == knowledge_base::PATTERNS {
+            stored.push(entry.content);
+        } else {
+            others = others.saturating_add(entry.content.len());
         }
     }
+    let admitted = knowledge_base::admit_patterns(&stored, others, items);
+    for item in &admitted {
+        tx.execute(
+            "INSERT INTO kb_entries (project_id, file, content, source, created_at, expires_at) \
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+            params![
+                project.to_string(),
+                knowledge_base::PATTERNS,
+                item,
+                DAEMON,
+                now,
+                expires_at
+            ],
+        )?;
+    }
     tx.commit()?;
-    Ok(added)
+    Ok(admitted.len())
 }
 
 /// # Errors

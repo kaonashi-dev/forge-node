@@ -216,7 +216,17 @@ impl Daemon {
             },
             sandbox_run_id: None,
         };
-        if let Err(error) = self.review_store.insert_run(&run) {
+        let request = domain::ReviewRequest {
+            tier,
+            preset,
+            instructions,
+            options: options.clone(),
+            reviewers: domain::ReviewerOptions {
+                count: Some(size),
+                hypotheses: reviewers.hypotheses,
+            },
+        };
+        if let Err(error) = self.review_store.insert_requested_run(&run, &request) {
             self.release_review(&slot, id);
             return Err(db_err(error));
         }

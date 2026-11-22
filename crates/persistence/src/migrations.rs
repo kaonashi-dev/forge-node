@@ -730,6 +730,10 @@ CREATE TABLE codebase_graph_dirty (
 );
 ";
 
+/// The `StartReview` a run came from, as JSON, so a fix loop can start the same
+/// review again; `NULL` for a run stored before it.
+pub const REVIEW_REQUEST: &str = "ALTER TABLE review_runs ADD COLUMN request TEXT;";
+
 /// The full, ordered migration set. Appended to over time; never reordered.
 #[must_use]
 pub fn migrations() -> Migrations<'static> {
@@ -765,5 +769,6 @@ pub fn migrations() -> Migrations<'static> {
         M::up(REVIEW_AGENT_SESSIONS),
         M::up(SANDBOX_APPROVALS),
         M::up(CODEBASE_GRAPH_DIRTY),
+        M::up(REVIEW_REQUEST),
     ])
 }

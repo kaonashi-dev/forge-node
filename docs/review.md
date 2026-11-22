@@ -404,11 +404,13 @@ least 4, deduplicated and kept 90 days; and `learned-rules.md` and
 `false-positives.json`, derived at read time from the project's suppressions
 and 👎 rows. A person may write `architecture.md` and `patterns.json` (a JSON
 list of strings); the daemon never overwrites a person's `architecture.md`.
-Caps: 256 KiB per file, 1 MiB per project. Everything is redacted before it is
-stored. Daemon entries older than 90 days and expired patterns go with each
-review's prune. `<kb-N>` (standard and deep, `[kb] enabled` and `[review]
-kb_enabled`) carries the architecture sections of the diff's modules and the
-learned rules; a finding cites one as `kb_ref: "architecture.md#<section>"`.
+Caps: 256 KiB per file, 1 MiB per project; a learned pattern that would go over
+either is not stored, as a person's write over them is refused. Everything is
+redacted before it is stored. Daemon entries older than 90 days and expired
+patterns go with each review's prune. `<kb-N>` (standard and deep, `[kb]
+enabled` and `[review] kb_enabled`) carries the architecture sections of the
+diff's modules and the learned rules; a finding cites one as
+`kb_ref: "architecture.md#<section>"`.
 
 ### Cross-repo context
 
@@ -478,10 +480,14 @@ one per workspace at a time, under the same approval and without the budget.
 `StartFixLoop { review_id, max_iterations }` (3 by default, at most 10) sends a
 workspace review's standing findings to a new writable agent with the same
 8 KiB prompt "Fix with a new agent" builds, waits for it to idle or exit within
-`timeout_secs`, closes it, runs the same review (target, tier, preset,
-provider, reviewer count) and repeats until a review finds nothing or
-`max_iterations` reviews ran. It never commits or pushes. Progress arrives as
-`FixLoopUpdated`; `CancelFixLoop` stops it. A pull-request review is refused,
+`timeout_secs`, closes it, runs the same review again (the first run's stored
+`StartReview`: target, tier, preset, instructions, provider, model, effort and
+reviewers or hypotheses) and repeats until a review finds nothing or
+`max_iterations` reviews ran. It never commits or pushes. A fixer that stops on
+a prompt (hook `Waiting`) ends the loop with "the fixer is waiting for an answer
+in its terminal" and is left open for the person. Progress arrives as
+`FixLoopUpdated`; `CancelFixLoop` stops it, and a cancel or timeout during a
+re-review cancels that review too. A pull-request review is refused,
 and a second loop on the workspace is `Conflict`. A person starts it: the GUI's
 **Fix Loop** opens a confirmation first, `forgectl review fix-loop` asks on a
 terminal or needs `--yes`, and no MCP tool or `review_start` flag starts one.
