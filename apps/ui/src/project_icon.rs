@@ -293,6 +293,16 @@ impl AppState {
             .map(|project| project.id)
     }
 
+    pub fn icon_picker_reconnected(&mut self) {
+        if let Some(Picker {
+            project,
+            candidates: None,
+        }) = &self.project_icons.picker
+        {
+            self.open_icon_picker(*project);
+        }
+    }
+
     /// Asks for the files of `project`'s checkout that could be its icon.
     pub fn open_icon_picker(&mut self, project: ProjectId) {
         let workspace = self.store.as_ref().and_then(|store| {

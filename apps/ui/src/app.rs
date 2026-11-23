@@ -1833,7 +1833,10 @@ impl AppState {
                 self.editor.autosave.reset();
                 self.workbench.reconnected();
                 self.project_icons.forget_reads();
+                self.icon_picker_reconnected();
                 crate::code_review::reconnected(self);
+                self.pr_link_reconnected();
+                self.spec_panel_reconnected();
                 self.session_changes.loading = false;
                 self.usage.pending = None;
                 if self.workbench.mode == CenterMode::SessionChanges {

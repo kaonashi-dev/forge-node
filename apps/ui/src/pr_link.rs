@@ -7,6 +7,9 @@ use rune_kit::{Button, ButtonVariant, Kit, TextInput};
 use crate::app::AppState;
 use crate::pr_url::PullRequestLink;
 
+/// A read in flight when the connection drops is never answered.
+pub const LINK_DROPPED: &str = "The connection dropped while GitHub was being read; try again.";
+
 pub struct LinkDialog {
     pub url: TextEdit,
     /// The pull request the daemon is reading; the dialog waits on it.
@@ -115,6 +118,14 @@ impl AppState {
         if let (Some(error), Some(dialog)) = (error, self.pr_link.as_mut()) {
             dialog.pending = None;
             dialog.error = Some(error);
+        }
+    }
+
+    pub fn pr_link_reconnected(&mut self) {
+        if let Some(dialog) = self.pr_link.as_mut()
+            && dialog.pending.take().is_some()
+        {
+            dialog.error = Some(LINK_DROPPED.to_owned());
         }
     }
 

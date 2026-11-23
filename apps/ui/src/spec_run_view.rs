@@ -146,6 +146,17 @@ impl AppState {
         }
     }
 
+    /// The open panel's reads asked on the old connection are never answered.
+    pub fn spec_panel_reconnected(&mut self) {
+        let Some(panel) = self.spec_panel.as_mut() else {
+            return;
+        };
+        if panel.review_round.is_none() {
+            panel.review_asked = None;
+        }
+        self.load_spec_run();
+    }
+
     /// A `SpecRunUpdated` for the open run re-reads it once per update.
     pub fn spec_run_changed(&mut self, run: &SpecRunView) {
         let stale = self.spec_panel.as_ref().is_some_and(|panel| {

@@ -3991,15 +3991,11 @@ fn handle_live_command(
             request,
         } => {
             metrics.note_socket_op();
+            // A directory, a path outside the checkout or a dropped socket is not a spec file either.
             let in_checkout = |relative: &std::path::Path| {
-                match client.read_file(workspace_id, relative.to_string_lossy()) {
-                    Ok(_) => true,
-                    // Too large or binary is still a file; only absence is not.
-                    Err(client::ClientError::Protocol(error)) => {
-                        error.code != client::ErrorCode::NotFound
-                    }
-                    Err(_) => false,
-                }
+                client
+                    .read_file(workspace_id, relative.to_string_lossy())
+                    .is_ok()
             };
             let is_file = |path: crate::spec_run::SpecPath<'_>| match path {
                 crate::spec_run::SpecPath::InCheckout(relative) => in_checkout(relative),

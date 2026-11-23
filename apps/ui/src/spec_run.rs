@@ -70,7 +70,7 @@ impl From<&Choice> for SpecAgent {
 pub enum SpecPath<'a> {
     /// Relative and inside the checkout: the daemon answers.
     InCheckout(&'a Path),
-    /// Anywhere else, already expanded.
+    /// Anywhere else, as an absolute path.
     Elsewhere(PathBuf),
 }
 
@@ -83,18 +83,39 @@ pub struct SpecLaunch {
     pub options: SpecOptions,
 }
 
-fn place<'a>(raw: &'a Path, home: Option<&Path>) -> SpecPath<'a> {
+/// A `../` path is resolved against `checkout`: the connection worker's cwd
+/// is not the checkout, and the daemon refuses a relative spec path.
+fn place<'a>(raw: &'a Path, checkout: &Path, home: Option<&Path>) -> SpecPath<'a> {
     if let (Ok(rest), Some(home)) = (raw.strip_prefix("~"), home) {
         return SpecPath::Elsewhere(home.join(rest));
     }
     let escapes = raw
         .components()
         .any(|part| matches!(part, Component::ParentDir));
-    if raw.is_absolute() || escapes {
+    if raw.is_absolute() {
         SpecPath::Elsewhere(raw.to_path_buf())
+    } else if escapes {
+        SpecPath::Elsewhere(normalized(&checkout.join(raw)))
     } else {
         SpecPath::InCheckout(raw)
     }
+}
+
+/// `..` and `.` folded lexically: canonicalizing would read the disk from the GUI (ADR-012).
+fn normalized(path: &Path) -> PathBuf {
+    let mut out = PathBuf::new();
+    for part in path.components() {
+        match part {
+            Component::ParentDir => {
+                if !out.pop() && !out.has_root() {
+                    out.push(part);
+                }
+            }
+            Component::CurDir => {}
+            other => out.push(other),
+        }
+    }
+    out
 }
 
 /// `#123`, `123`, or an https link to an issue.
@@ -180,11 +201,11 @@ pub fn spec_launch(
 ) -> Result<SpecLaunch, String> {
     let source = match issue_reference(&request.spec) {
         Some(reference) => SpecRunSource::Issue { reference },
-        None => match classify(&request.spec, |raw| is_file(place(raw, home)))
+        None => match classify(&request.spec, |raw| is_file(place(raw, checkout, home)))
             .map_err(|error| error.to_string())?
         {
             SpecSource::File(raw) => SpecRunSource::File {
-                path: match place(&raw, home) {
+                path: match place(&raw, checkout, home) {
                     SpecPath::InCheckout(relative) => checkout.join(relative),
                     SpecPath::Elsewhere(path) => path,
                 }
@@ -748,20 +769,44 @@ mod tests {
 
     #[test]
     fn a_home_or_escaping_path_is_looked_up_where_it_points() {
+        let checkout = Path::new("/work/repo");
         assert_eq!(
-            place(Path::new("~/specs/x.md"), Some(Path::new("/home/me"))),
+            place(
+                Path::new("~/specs/x.md"),
+                checkout,
+                Some(Path::new("/home/me"))
+            ),
             SpecPath::Elsewhere("/home/me/specs/x.md".into())
         );
         assert_eq!(
-            place(Path::new("../other/x.md"), None),
-            SpecPath::Elsewhere("../other/x.md".into())
+            place(Path::new("../other/./x.md"), checkout, None),
+            SpecPath::Elsewhere("/work/other/x.md".into())
         );
-        let launch = launch(&request("~/specs/x.md", "claude"), &["/home/me/specs/x.md"]);
         assert_eq!(
-            launch.expect("launch").source,
-            SpecRunSource::File {
+            place(Path::new("../../../../x.md"), checkout, None),
+            SpecPath::Elsewhere("/x.md".into()),
+            "climbing past the root stays at it"
+        );
+        let launch_of =
+            |spec: &str, files: &[&str]| launch(&request(spec, "claude"), files).map(|l| l.source);
+        assert_eq!(
+            launch_of("~/specs/x.md", &["/home/me/specs/x.md"]),
+            Ok(SpecRunSource::File {
                 path: "/home/me/specs/x.md".into()
-            }
+            })
+        );
+        assert_eq!(
+            launch_of("../other/x.md", &["/work/other/x.md"]),
+            Ok(SpecRunSource::File {
+                path: "/work/other/x.md".into()
+            }),
+            "the daemon is sent an absolute path, never one relative to the GUI"
+        );
+        assert_eq!(
+            launch_of("docs/../specs/x.md", &["/work/repo/specs/x.md"]),
+            Ok(SpecRunSource::File {
+                path: "/work/repo/specs/x.md".into()
+            }),
         );
     }
 
