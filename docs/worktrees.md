@@ -29,7 +29,7 @@ code must not.
 Network operations use `git_service::run_git_network`, with the configured
 network timeout (120 s by default), SSH batch mode, and askpass disabled.
 
-## Project discovery (§14.1, `repository.rs`)
+## Project discovery (`repository.rs`)
 
 `AddProject { path }`:
 
@@ -58,7 +58,7 @@ when they ask, because that is the state in which Forge and the terminal
 disagree.
 
 Startup does the same sweep across every project: `Daemon::start` calls
-`rescan_worktrees` before accepting clients (§15.3 steps 3 and 4). It runs
+`rescan_worktrees` before accepting clients. It runs
 `git worktree list` per Git project, adds workspaces for worktrees created
 outside the app, and removes the rows whose worktree is really gone,
 broadcasting `WorkspaceCreated` / `WorkspaceRemoved`.
@@ -77,7 +77,7 @@ workspace loaded from SQLite starts unmeasured, which the sidebar renders as
 *nothing* rather than as "clean": a row that claims to be clean because nobody
 looked is worse than a row that says nothing.
 
-## Where managed worktrees live (§14.2)
+## Where managed worktrees live
 
 ```
 <worktrees.root>/<repo-slug>-<id6>/<slug>
@@ -120,7 +120,7 @@ worktree left in the old location keeps working. See
 
 `feature/auth refactor` → `feature-auth-refactor`.
 
-## Branches and remotes (§14.3)
+## Branches and remotes
 
 `ListBranches { project_id }` → `Response::Branches { branches, remotes,
 default_branch }`. It is a **local read**: `for-each-ref` over `refs/heads` and
@@ -179,7 +179,7 @@ An explicit `CreatePullRequest` pushes the workspace branch through
 `git_service::run_git_network` before opening the PR with `gh`. Sweepers never
 push; committing alone remains local.
 
-## Create (§14.3, `CreateWorktree { project_id, branch, base, name }`)
+## Create (`CreateWorktree { project_id, branch, base, name }`)
 
 1. Project must be Git (`GitError` otherwise).
 2. `validate_branch_name` via `git check-ref-format --branch`.
@@ -211,7 +211,7 @@ Verified against real git in
 `git-service/tests/integration.rs::a_worktree_created_from_a_remote_ref_tracks_it`
 and end to end in `daemon/tests/scenario_branches.rs`.
 
-### Provisioning: shared files (§14.2)
+### Provisioning: shared files
 
 A managed worktree lives under `worktrees.root`, away from the repository, so
 it starts **without the untracked files a project needs to run**: `.env`, a
@@ -287,7 +287,7 @@ a `DaemonNotice`) rather than passing as a clone.
 the daemon creates the workspace before the child, using `branch_hint` and
 `base` when supplied. A missing or blank branch hint gets a generated branch.
 
-## Remove (§14.4, `RemoveWorktree { workspace_id, force }`)
+## Remove (`RemoveWorktree { workspace_id, force }`)
 
 Safety first: **a branch is never deleted**, by any path.
 
@@ -321,8 +321,8 @@ the workspace was stuck in the rail with no action that could clear it.
 
 The same situation is also repaired without the user asking:
 `RefreshWorkspaceStatus` on a workspace whose path no longer exists re-runs the
-§15.3 step 4 diff for its project instead of silently answering `Ack`. Before
-that, step 4 ran only at daemon start and from `RefreshProject`, so a worktree
+startup worktree rescan for its project instead of silently answering `Ack`. Before
+that, the rescan ran only at daemon start and from `RefreshProject`, so a worktree
 removed in a terminal kept its row — and its status dot — until the next
 restart.
 
@@ -331,7 +331,7 @@ branch of the table to every managed worktree of the project (always forced,
 since sessions were just killed). See
 [protocol.md](./protocol.md#removeprojectpolicy).
 
-## Forgetting a worktree (§14.4)
+## Forgetting a worktree
 
 Dropping a worktree's row is not enough for one Forge did not create. Its
 directory and its git registration are not Forge's to delete, so the next

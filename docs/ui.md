@@ -15,7 +15,7 @@ because Rune needs edition 2024. `scripts/dev check` runs both gates.
 | App state, event application, polling | `apps/ui/src/app.rs` |
 | Client worker, reconnect, command channel | `apps/ui/src/connection.rs` |
 | Shell, titlebar, sidebar, centre card | `apps/ui/src/ui.rs`, `chrome.rs` |
-| Projects rail, groups, checkouts, sessions | `apps/ui/src/projects.rs`, `rail.rs`, `project_ops.rs` |
+| Projects rail, groups, checkouts, sessions | `apps/ui/src/projects.rs`, `rail.rs`, `project_ops.rs`, `project_icon.rs` |
 | Workbench: diff, files, history, PRs, processes | `apps/ui/src/workbench/` |
 | Editor surface | `apps/ui/src/editor/` |
 | Terminal replica, renderer, input, splits | `apps/ui/src/terminal/` |
@@ -24,8 +24,9 @@ because Rune needs edition 2024. `scripts/dev check` runs both gates.
 | Icons, file marks, file types | `apps/ui/src/glyphs.rs`, `file_icons.rs` |
 | Context and native menus | `apps/ui/src/menus.rs`, `native_menus.rs` |
 | Palette, keymap, tab strip, toasts | `apps/ui/src/palette.rs`, `keymap.rs`, `tabs.rs`, `toasts.rs` |
-| Agent workflow and review | `apps/ui/src/agent_ops.rs`, `handoff.rs`, `code_review.rs` |
-| Git/PR depth | `apps/ui/src/workbench/`, `pr_review.rs`, `pr_detail.rs`, `open_pr.rs` |
+| Agent workflow and review | `apps/ui/src/agent_ops.rs`, `handoff.rs`, `code_review.rs`, `code_review/`, `review_subject.rs`, `diagram_svg.rs` |
+| Git/PR depth | `apps/ui/src/workbench/`, `pr_review.rs`, `pr_detail.rs`, `open_pr.rs`, `pr_link.rs` |
+| Spec runs: Run Spec, the run panel and its gates | `apps/ui/src/spec_run.rs`, `spec_run_view.rs`, `spec_gate.rs` |
 | Updater | `apps/ui/src/updates.rs` |
 | App README and commands | `apps/ui/README.md` |
 

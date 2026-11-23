@@ -23,7 +23,7 @@ spelling. OpenCode is the one that names its prompt: `opencode [project]`
 reads its positional as a *directory*, so a prompt put there would launch it
 in a folder named after the prompt.
 
-## Read-only mode (§16.9)
+## Read-only mode
 
 `AgentDescriptor.review` is how a provider is launched so that it reads and
 reasons but does not write — the third sibling of `ResumeStyle` and
@@ -51,7 +51,7 @@ the opposite of what it does with the initial prompt, which is deliberately not
 re-sent: a restarted review that came back able to write would be a different
 session wearing the same name.
 
-## Resume (§13.5)
+## Resume
 
 `AgentDescriptor.resume` is how a provider re-enters one of its own earlier
 sessions, as data rather than behavior: `ResumeStyle::Flag` names the flag
@@ -104,13 +104,13 @@ A provider that needs *behavior* (an initial prompt, a resume that is not just
 `AgentRegistry` has no public registration API today, so wiring one in also
 means extending the registry.
 
-Custom user-defined *providers* from `config.toml` (§13.4) are post-MVP and not
+Custom user-defined *providers* from `config.toml` are post-MVP and not
 implemented; the owned `String` fields in `AgentDescriptor` already allow
 descriptors to travel over IPC when they arrive. Launch **profiles** (below)
 are implemented and orthogonal: they key on `provider_id`, so a future custom
 provider gains them for free.
 
-## Launch profiles (§13.4)
+## Launch profiles
 
 A **profile** is a named way to start a known provider — its own binary, its
 own account and its own arguments. It replaces the hand-written shell wrapper
@@ -246,7 +246,7 @@ until that account is signed in.
   line became one argument. No shell ever runs any of it: `$HOME`, `*` and `;`
   reach the agent as characters.
 
-## Detection (`detection.rs`, §13.1)
+## Detection (`detection.rs`)
 
 Runs in the daemon at startup (in the background, off the snapshot path) and on
 `RefreshAgentDetection`, always against the **resolved login+interactive
@@ -303,11 +303,11 @@ refresh.
 
 Overrides survive a restart: `SetProviderExecutable` writes to both the
 registry and the `provider_overrides` table, and `Daemon::start` replays that
-table into the registry (§13.2). Both detection paths additionally read the
+table into the registry. Both detection paths additionally read the
 override straight from SQLite, so the persisted value wins regardless of
 registry state.
 
-## Launch (`descriptor.rs`, §13.3)
+## Launch (`descriptor.rs`)
 
 `build_launch(descriptor, req, env) -> SpawnSpec`:
 
@@ -503,7 +503,7 @@ For a session recorded in the database there is no per-session file left, so
 `transcript_path` is the database itself: that is where the run is recorded, and
 what "reveal the transcript" has to point at.
 
-## Token analytics (§16.2)
+## Token analytics
 
 `ProviderUsage` says how much allowance is left; `agents::collect_analytics`
 says what was actually spent. It reads the same transcript stores discovery
@@ -558,7 +558,7 @@ missing number into a wrong one.
 (fake executables on a temp PATH: correct marker, wrong marker, hanging probe,
 a profile directory that must not touch `TERM`, a bare executable name found on
 PATH, and directory creation).
-`crates/daemon/tests/scenario_profiles.rs` covers §13.4 end to end: a relative
+`crates/daemon/tests/scenario_profiles.rs` covers launch profiles end to end: a relative
 directory lands under `$HOME` and an absolute one where it says, the child
 process really receives it along with the profile's arguments, a wrapper named
 like a shell alias is found on PATH, a restart repeats all of it, and every

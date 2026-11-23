@@ -20,6 +20,7 @@ Orchestration: [`docs/orchestration.md`](docs/orchestration.md).
 | ADR numbers cited in code (`ADR-002` …) | [`docs/decisions.md`](docs/decisions.md) |
 | Cost rungs (per cell / delta / frame / request) | [`docs/performance.md`](docs/performance.md) |
 | Workspace review (pack, rules, presets; v2: codebase graph, parallel reviewers, diagrams, knowledge base, cross-repo, sandbox checks, fix loop) | [`docs/review.md`](docs/review.md) |
+| Spec runs (stages, gates G1–G3, checks, report) | [`docs/spec-runs.md`](docs/spec-runs.md) |
 | Commands and "where to change X" | [`docs/development.md`](docs/development.md) |
 | GUI layout, module ownership, tokens, keymap | [`docs/ui.md`](docs/ui.md) |
 | Repeatable architecture/quality review | `/forge-clean-code` (`.agents/skills/forge-clean-code`) |

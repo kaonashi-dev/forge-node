@@ -1,8 +1,7 @@
 //! Shared serializable model: ids, projects, workspaces, sessions, agents,
 //! and the terminal grid wire types.
 //!
-//! No I/O, Git, or PTY. Depends on `serde`, `uuid`, `time`, `thiserror`, and
-//! `compact_str`. Glossary: `docs/domain.md`.
+//! No I/O, Git, or PTY. Glossary: `docs/domain.md`.
 
 pub mod action;
 pub mod agent;
