@@ -26,6 +26,9 @@ use protocol::{
 /// 64 KiB reads).
 const READ_BUF: usize = 64 * 1024;
 
+/// A live daemon answers `Hello` from its accept task, without the core lock.
+const HANDSHAKE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
+
 /// Errors raised by the GUI protocol client.
 #[derive(Debug, thiserror::Error)]
 #[non_exhaustive]
@@ -49,6 +52,10 @@ pub enum ClientError {
         /// The version the daemon requires.
         got: u32,
     },
+    /// The daemon accepted the connection but sent no handshake reply in time:
+    /// it is alive enough to hold the socket and too stuck to serve it.
+    #[error("the daemon did not answer the handshake within {secs} s")]
+    HandshakeTimeout { secs: u64 },
     /// The connection to the daemon is closed.
     #[error("the connection to the daemon is closed")]
     Disconnected,
@@ -235,15 +242,38 @@ impl Client {
 
     /// Connect with a caller-built handshake, e.g. one naming the session it acts for.
     pub fn connect_with(socket_path: &Path, hello: Hello) -> Result<Self, ClientError> {
+        Self::connect_within(socket_path, hello, HANDSHAKE_TIMEOUT)
+    }
+
+    fn connect_within(
+        socket_path: &Path,
+        hello: Hello,
+        handshake: std::time::Duration,
+    ) -> Result<Self, ClientError> {
         let mut stream = UnixStream::connect(socket_path)?;
+        stream.set_read_timeout(Some(handshake))?;
 
         let hello = ClientMessage::Hello(hello);
         write_frame(&mut stream, &hello)?;
 
         let mut decoder = FrameDecoder::new();
         let mut buf = vec![0u8; READ_BUF];
-        let first =
-            read_message(&mut stream, &mut decoder, &mut buf)?.ok_or(ClientError::Disconnected)?;
+        let first = match read_message(&mut stream, &mut decoder, &mut buf) {
+            Err(ClientError::Io(error))
+                if matches!(
+                    error.kind(),
+                    std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut
+                ) =>
+            {
+                return Err(ClientError::HandshakeTimeout {
+                    secs: handshake.as_secs(),
+                });
+            }
+            other => other?.ok_or(ClientError::Disconnected)?,
+        };
+        // Darwin refuses `setsockopt` with EINVAL once the peer has closed;
+        // the reader then sees EOF, so the leftover timeout never fires.
+        let _ = stream.set_read_timeout(None);
 
         let daemon = match first {
             DaemonMessage::HelloAck(ack) => {
@@ -2834,6 +2864,26 @@ mod tests {
             }
             other => panic!("expected VersionMismatch, got {other:?}"),
         }
+        server.join().unwrap();
+    }
+
+    #[test]
+    fn a_daemon_that_accepts_and_never_answers_times_out_the_handshake() {
+        let sock = socket_path();
+        let listener = UnixListener::bind(&sock.path).unwrap();
+        let (release, held) = std::sync::mpsc::channel::<()>();
+        let server = thread::spawn(move || {
+            let (_stream, _) = listener.accept().unwrap();
+            let _ = held.recv();
+        });
+
+        let hello = Hello::new("0.1.0", ClientKind::Gui);
+        let result = Client::connect_within(&sock.path, hello, Duration::from_millis(100));
+        assert!(
+            matches!(result, Err(ClientError::HandshakeTimeout { .. })),
+            "{result:?}"
+        );
+        release.send(()).unwrap();
         server.join().unwrap();
     }
 

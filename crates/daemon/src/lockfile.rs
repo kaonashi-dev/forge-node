@@ -74,6 +74,49 @@ pub fn acquire_blocking(
     )
 }
 
+/// The pid the daemon holding the lock at `path` wrote into it, or `None`
+/// when nobody holds it. Never writes: a probe must not repaint the body.
+///
+/// # Errors
+/// I/O on the lock file, or [`std::io::ErrorKind::InvalidData`] when the
+/// lock is held but its body names no pid.
+pub fn holder(path: &Path) -> std::io::Result<Option<u32>> {
+    let file = match File::open(path) {
+        Ok(file) => file,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => return Err(error),
+    };
+    let mut file = match Flock::lock(file, FlockArg::LockExclusiveNonblock) {
+        Ok(_free) => return Ok(None),
+        Err((file, nix::errno::Errno::EWOULDBLOCK)) => file,
+        Err((_file, error)) => return Err(std::io::Error::from(error)),
+    };
+    let mut body = String::new();
+    std::io::Read::read_to_string(&mut file, &mut body)?;
+    #[derive(serde::Deserialize)]
+    struct Pid {
+        pid: u32,
+    }
+    serde_json::from_str::<Pid>(&body)
+        .map(|info| Some(info.pid))
+        .map_err(|error| std::io::Error::new(std::io::ErrorKind::InvalidData, error))
+}
+
+/// Block until nobody holds the lock at `path`, without writing to it.
+///
+/// # Errors
+/// I/O opening or locking the file; a missing file is already released.
+pub fn wait_released(path: &Path) -> std::io::Result<()> {
+    let file = match File::open(path) {
+        Ok(file) => file,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(error) => return Err(error),
+    };
+    Flock::lock(file, FlockArg::LockExclusive)
+        .map(drop)
+        .map_err(|(_file, error)| std::io::Error::from(error))
+}
+
 fn acquire_with(
     path: &Path,
     instance_id: &str,
@@ -139,5 +182,21 @@ mod tests {
             let _first = acquire(&path, "inst-1", "0.1.0", ts).expect("first lock");
         } // released here
         let _again = acquire(&path, "inst-2", "0.1.0", ts).expect("reacquire after release");
+    }
+
+    #[test]
+    fn holder_names_the_pid_only_while_the_lock_is_held() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("daemon.lock");
+        assert_eq!(holder(&path).unwrap(), None, "a missing lock has no holder");
+
+        let held = acquire(&path, "inst-1", "0.1.0", domain::Timestamp::now()).unwrap();
+        let body = std::fs::read_to_string(&path).unwrap();
+        assert_eq!(holder(&path).unwrap(), Some(std::process::id()));
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), body);
+
+        drop(held);
+        assert_eq!(holder(&path).unwrap(), None);
+        wait_released(&path).expect("a released lock does not block");
     }
 }

@@ -211,39 +211,17 @@ pub fn section(s: &AppState, k: &Kit) -> El {
                     ),
             ),
     )
-    .child(
-        row()
-            .gap(crate::ds::SPACE_3)
-            .flex_wrap()
-            .child(button(
-                k,
-                "Reconnect",
-                "daemon-reconnect",
-                ButtonVariant::Outline,
-                AppState::request_reconnect,
-            ))
-            .child(button(
-                k,
-                "Reload from the daemon",
-                "daemon-reload",
-                ButtonVariant::Outline,
-                AppState::request_refresh,
-            ))
-            .child(button(
-                k,
-                "Stop the daemon",
-                "daemon-stop",
-                ButtonVariant::Outline,
-                |s| s.stop_daemon(false),
-            ))
-            .child(button(
-                k,
-                "Stop and kill sessions",
-                "daemon-stop-kill",
-                ButtonVariant::Danger,
-                |s| s.stop_daemon(true),
-            )),
-    );
+    .children((s.status == LinkStatus::Reconnecting).then(|| {
+        text(
+            "Forge Node cannot reach the daemon. If reconnecting does not help, restart it: \
+             every running session ends.",
+        )
+        .key("daemon-unreachable")
+        .font(k.ty.small)
+        .color(k.c.text_muted)
+        .wrap()
+    }))
+    .child(daemon_actions(s, k));
 
     let danger = group(
         k,
@@ -282,6 +260,48 @@ pub fn section(s: &AppState, k: &Kit) -> El {
         .child(daemon)
         .children(notice(s, k))
         .child(danger)
+}
+
+/// Requests that need an answer from the daemon show only while it is
+/// connected; Restart reaches it by signal, so it is always offered.
+fn daemon_actions(s: &AppState, k: &Kit) -> El {
+    let mut actions = row().gap(crate::ds::SPACE_3).flex_wrap().child(button(
+        k,
+        "Reconnect",
+        "daemon-reconnect",
+        ButtonVariant::Outline,
+        AppState::request_reconnect,
+    ));
+    if s.status == LinkStatus::Connected {
+        actions = actions
+            .child(button(
+                k,
+                "Reload from the daemon",
+                "daemon-reload",
+                ButtonVariant::Outline,
+                AppState::request_refresh,
+            ))
+            .child(button(
+                k,
+                "Stop the daemon",
+                "daemon-stop",
+                ButtonVariant::Outline,
+                |s| s.stop_daemon(false),
+            ));
+    }
+    actions.child(
+        Button::new(if s.settings.restarting {
+            "Restarting…"
+        } else {
+            "Restart the daemon"
+        })
+        .variant(ButtonVariant::Danger)
+        .control_size(ControlSize::Small)
+        .disabled(s.settings.restarting)
+        .on_press(|s: &mut AppState| s.settings.confirm_restart = true)
+        .build(k)
+        .key("daemon-restart"),
+    )
 }
 
 fn updates(s: &AppState, k: &Kit) -> El {
@@ -409,6 +429,28 @@ impl AppState {
         }
     }
 
+    pub fn confirm_restart_daemon(&mut self) {
+        self.settings.confirm_restart = false;
+        let Some(connection) = &self.connection else {
+            return;
+        };
+        match connection.restart_daemon() {
+            Ok(()) => {
+                self.settings.restarting = true;
+                self.settings.notice = None;
+            }
+            Err(error) => self.settings.notice = Some((false, error)),
+        }
+    }
+
+    pub fn daemon_restarted(&mut self, result: Result<String, String>) {
+        self.settings.restarting = false;
+        self.settings.notice = Some(match result {
+            Ok(outcome) => (true, format!("forge-daemon stop: {outcome}. Reconnecting…")),
+            Err(error) => (false, format!("Restart failed: {error}")),
+        });
+    }
+
     pub fn confirm_factory_reset(&mut self) {
         self.settings.confirm_reset = false;
         if let Some(connection) = &self.connection {
@@ -456,6 +498,37 @@ pub fn reset_dialog(s: &AppState, k: &Kit, layer: &mut Vec<El>) {
                 .child(el().grow(1.0))
                 .child(cancel)
                 .child(reset),
+        )
+        .build(s, k, layer);
+}
+
+pub fn restart_dialog(s: &AppState, k: &Kit, layer: &mut Vec<El>) {
+    if !s.settings.confirm_restart {
+        return;
+    }
+    let cancel = Button::new("Cancel")
+        .variant(ButtonVariant::Ghost)
+        .on_press(|s: &mut AppState| s.settings.confirm_restart = false)
+        .build(k)
+        .key("restart-cancel");
+    let restart = Button::new("Restart the daemon")
+        .variant(ButtonVariant::Danger)
+        .on_press(AppState::confirm_restart_daemon)
+        .build(k)
+        .key("restart-confirm");
+    crate::modal::Modal::new("daemon-restart", "Restart the daemon?")
+        .description(
+            "Every running session ends. Forge Node asks the daemon to stop, kills it if it is \
+             still running 10 seconds later, then starts a fresh one and reconnects.",
+        )
+        .width(crate::modal::WIDTH_STANDARD)
+        .on_close(|s: &mut AppState| s.settings.confirm_restart = false)
+        .child(
+            row()
+                .gap(crate::ds::SPACE_4)
+                .child(el().grow(1.0))
+                .child(cancel)
+                .child(restart),
         )
         .build(s, k, layer);
 }

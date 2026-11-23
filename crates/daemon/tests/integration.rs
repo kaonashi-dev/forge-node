@@ -1644,6 +1644,60 @@ fn stats_does_not_touch_singleton_lock() {
 }
 
 #[test]
+fn stop_cli_ends_the_daemon_holding_the_lock() {
+    use std::os::unix::process::CommandExt;
+    let tmp = tempfile::tempdir_in("/tmp").unwrap();
+    let socket = tmp.path().join("d.sock");
+    let mut child = std::process::Command::new(env!("CARGO_BIN_EXE_forge-daemon"))
+        .arg("run")
+        .env("FORGE_SOCKET", &socket)
+        .env("FORGE_DATA_DIR", tmp.path().join("data"))
+        .env("FORGE_CONFIG_DIR", tmp.path().join("config"))
+        .process_group(0)
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+        .unwrap();
+    let stop = || {
+        std::process::Command::new(env!("CARGO_BIN_EXE_forge-daemon"))
+            .arg("stop")
+            .env("FORGE_SOCKET", &socket)
+            .output()
+            .expect("spawn forge-daemon stop")
+    };
+    let listening = poll_until(Duration::from_secs(30), || {
+        Client::connect(&socket, "test").is_ok()
+    });
+    let output = listening.then(stop);
+    let exited = poll_until(Duration::from_secs(10), || {
+        child.try_wait().unwrap().is_some()
+    });
+    if !exited {
+        let _ = nix::sys::signal::kill(
+            nix::unistd::Pid::from_raw(-(child.id() as i32)),
+            nix::sys::signal::Signal::SIGKILL,
+        );
+        let _ = child.wait();
+    }
+    assert!(listening, "the daemon must start listening");
+    let output = output.unwrap();
+    assert!(
+        output.status.success(),
+        "stderr={}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert_eq!(
+        String::from_utf8_lossy(&output.stdout).trim(),
+        format!("stopped pid {}", child.id())
+    );
+    assert!(exited, "SIGTERM must end the daemon within its grace");
+    assert_eq!(
+        String::from_utf8_lossy(&stop().stdout).trim(),
+        "not running"
+    );
+}
+
+#[test]
 fn another_socket_cannot_initialize_an_owned_data_directory() {
     use std::os::unix::process::CommandExt;
     let tmp = tempfile::tempdir_in("/tmp").unwrap();

@@ -640,6 +640,10 @@ pub enum UiEvent {
         action: crate::storage::MigrationAction,
         result: Result<crate::storage::MigrationReport, String>,
     },
+    /// Not tied to a generation: it outlives the connection it ends.
+    DaemonRestart {
+        result: Result<String, String>,
+    },
 }
 
 pub type EventSink = Arc<dyn Fn(Vec<UiEvent>) + Send + Sync>;
@@ -719,6 +723,16 @@ pub struct ConnectionHandle {
     tx: Sender<Command>,
     stop: Arc<AtomicBool>,
     pub metrics: Arc<Metrics>,
+    restart: Option<RestartTarget>,
+}
+
+/// What a restart signals: the daemon behind this window's socket, reached by
+/// its lock rather than its protocol.
+#[derive(Clone)]
+struct RestartTarget {
+    socket: PathBuf,
+    daemon: Option<PathBuf>,
+    sink: EventSink,
 }
 
 impl ConnectionHandle {
@@ -730,6 +744,7 @@ impl ConnectionHandle {
                 tx,
                 stop: Arc::new(AtomicBool::new(false)),
                 metrics,
+                restart: None,
             },
             rx,
         )
@@ -1433,6 +1448,26 @@ impl ConnectionHandle {
         self.send(Command::ForceReconnect)
     }
 
+    /// Stops the daemon by signal on a thread of its own, so it reaches one
+    /// that speaks another protocol or has stopped answering. The worker then
+    /// reconnects, starting a daemon when it may, as after any disconnect.
+    pub fn restart_daemon(&self) -> Result<(), String> {
+        let target = self
+            .restart
+            .clone()
+            .ok_or("this window does not run against a daemon")?;
+        let metrics = Arc::clone(&self.metrics);
+        thread::Builder::new()
+            .name("forge-daemon-restart".into())
+            .spawn(move || {
+                let result =
+                    crate::storage::stop_daemon(target.daemon.as_deref(), &target.socket, &metrics);
+                (target.sink)(vec![UiEvent::DaemonRestart { result }]);
+            })
+            .map(drop)
+            .map_err(|error| format!("could not start the restart: {error}"))
+    }
+
     pub fn editor_find(
         &self,
         session_id: SessionId,
@@ -1591,10 +1626,23 @@ pub fn spawn(boot: Arc<Boot>, sink: EventSink, wake: WakeSink) -> ConnectionHand
     let worker_stop = Arc::clone(&stop);
     let metrics = Arc::clone(&boot.metrics);
     let builder = thread::Builder::new().name("forge-rune-client".to_string());
+    let restart = match &boot.mode {
+        Mode::Live { socket, daemon, .. } => Some(RestartTarget {
+            socket: socket.clone(),
+            daemon: daemon.clone(),
+            sink: Arc::clone(&sink),
+        }),
+        Mode::Fixture { .. } => None,
+    };
     if let Err(error) = builder.spawn(move || worker(boot, sink, wake, rx, worker_stop)) {
         eprintln!("forge-ui: could not start client worker: {error}");
     }
-    ConnectionHandle { tx, stop, metrics }
+    ConnectionHandle {
+        tx,
+        stop,
+        metrics,
+        restart,
+    }
 }
 
 fn worker(
@@ -1678,6 +1726,7 @@ fn wait_offline(
                 stop.store(true, Ordering::Release);
                 break;
             }
+            Ok(Command::ForceReconnect) => break,
             Ok(command) => {
                 let label = command_label(&command);
                 metrics.commands_completed.fetch_add(1, Ordering::Relaxed);
@@ -3071,7 +3120,7 @@ fn connect_live(
                 return Ok(LiveLink { client, events });
             }
             Err(error) => {
-                last = error.to_string();
+                last = connect_failure(&error);
                 if attempt == CONNECT_ATTEMPTS {
                     break;
                 }
@@ -3088,6 +3137,18 @@ fn connect_live(
         }
     }
     Err(format!("could not connect to {}: {last}", socket.display()))
+}
+
+/// Why a connect failed, in words that point at the fix.
+fn connect_failure(error: &client::ClientError) -> String {
+    match error {
+        client::ClientError::VersionMismatch { expected, got } => format!(
+            "the running daemon speaks protocol {got} and this window speaks {expected}; \
+             restart the daemon to replace it"
+        ),
+        client::ClientError::Io(io) => format!("{error}: {io}"),
+        other => other.to_string(),
+    }
 }
 
 fn daemon_absent(error: &client::ClientError) -> bool {
@@ -4976,6 +5037,19 @@ mod tests {
     use std::path::Path;
     use std::sync::Arc;
     use std::time::Duration;
+
+    #[test]
+    fn reconnect_while_offline_retries_now_instead_of_being_refused() {
+        let (tx, rx) = flume::bounded(4);
+        tx.send(Command::ForceReconnect).unwrap();
+        let events = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let seen = Arc::clone(&events);
+        let sink: EventSink = Arc::new(move |batch| seen.lock().unwrap().extend(batch));
+        let started = Instant::now();
+        wait_offline(1, &sink, &rx, &AtomicBool::new(false), &Metrics::default());
+        assert!(started.elapsed() < RETRY);
+        assert!(events.lock().unwrap().is_empty());
+    }
 
     fn fake_daemon(name: &str) -> (std::path::PathBuf, std::path::PathBuf) {
         use std::os::unix::fs::PermissionsExt;

@@ -652,6 +652,30 @@ pub fn migrate_home(
     })
 }
 
+/// Covers `forge-daemon stop`'s SIGTERM grace and its SIGKILL wait.
+const STOP_TIMEOUT: Duration = Duration::from_secs(30);
+
+/// Runs `forge-daemon stop` for `socket`. The lock names the process, so this
+/// reaches a daemon that speaks another protocol or no longer answers.
+pub fn stop_daemon(
+    preferred: Option<&Path>,
+    socket: &Path,
+    metrics: &crate::connection::Metrics,
+) -> Result<String, String> {
+    let mut command = Command::new(daemon_executable(preferred)?);
+    command.arg("stop").env("FORGE_SOCKET", socket);
+    let (status, stdout, stderr) = run_bounded(command, STOP_TIMEOUT, metrics)?;
+    if status.success() {
+        return Ok(String::from_utf8_lossy(&stdout).trim().to_string());
+    }
+    let detail = String::from_utf8_lossy(&stderr).trim().to_string();
+    Err(if detail.is_empty() {
+        format!("forge-daemon stop exited with {status}")
+    } else {
+        detail
+    })
+}
+
 fn daemon_executable(preferred: Option<&Path>) -> Result<PathBuf, String> {
     if let Some(path) = preferred.filter(|path| path.is_file()) {
         return Ok(path.to_path_buf());

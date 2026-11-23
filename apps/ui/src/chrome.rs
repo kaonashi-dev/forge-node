@@ -233,14 +233,27 @@ pub fn footer(s: &AppState, k: &Kit) -> El {
         .gap(ds::SPACE_4)
         .center_y();
     if let Some((label, tone)) = link_line(s.status) {
-        foot = foot.child(ds::dot(k, &roles, tone)).child(
-            text(label)
-                .role("status")
-                .label(label)
-                .font(k.ty.small)
-                .color(k.c.text_faint)
-                .truncate()
-                .min_w(0.0),
+        foot = foot.child(
+            row()
+                .key("connection-status-open")
+                .gap(ds::SPACE_4)
+                .center_y()
+                .min_w(0.0)
+                .radius(k.radius.md)
+                .hover(k.c.hover)
+                .on_press(|s: &mut AppState| {
+                    s.open_settings(Some(crate::settings::Section::General));
+                })
+                .child(ds::dot(k, &roles, tone))
+                .child(
+                    text(label)
+                        .role("status")
+                        .label(label)
+                        .font(k.ty.small)
+                        .color(k.c.text_faint)
+                        .truncate()
+                        .min_w(0.0),
+                ),
         );
     }
     foot.child(el().grow(1.0)).child(icon_button(
