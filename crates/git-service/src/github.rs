@@ -255,9 +255,10 @@ pub fn issue_markdown(cli: &GitHubCli, repo: &Path, reference: &str) -> Result<S
     let args = vec![
         "issue".to_string(),
         "view".to_string(),
-        reference.to_string(),
         "--json".to_string(),
         "title,body,url".to_string(),
+        "--".to_string(),
+        reference.to_string(),
     ];
     let output = run_gh(cli, Some(repo), &args)?;
     if !output.success() {

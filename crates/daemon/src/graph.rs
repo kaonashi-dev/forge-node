@@ -353,6 +353,7 @@ impl Daemon {
         let nodes = graph
             .index()
             .query(query)
+            .ok_or_else(|| ProtocolError::invalid_request("an unknown graph question"))?
             .into_iter()
             .map(codebase_graph::Node::to_wire)
             .collect();

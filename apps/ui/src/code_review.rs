@@ -90,6 +90,16 @@ impl ReviewGraph {
     }
 }
 
+/// The knowledge base read for the run whose findings cite it: a newer run of
+/// the same workspace may cite sections the daemon has rewritten since.
+#[derive(Clone, Debug)]
+pub struct KbRead {
+    pub run: ReviewId,
+    pub workspace: WorkspaceId,
+    /// `None` while the daemon reads it.
+    pub files: Option<Result<Vec<domain::KbFile>, String>>,
+}
+
 /// A workspace's fix loop as its events report it.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct FixLoopProgress {
@@ -243,8 +253,7 @@ pub struct CodeReview {
     /// Each checkout's lanes in order, extended when a run of a new lane lands.
     lanes: HashMap<WorkspaceId, Vec<Lane>>,
     pub graph: Option<ReviewGraph>,
-    /// The knowledge base of the workspace whose run cites it, once read.
-    pub kb: Option<(WorkspaceId, Result<Vec<domain::KbFile>, String>)>,
+    pub kb: Option<KbRead>,
     pub kb_open: bool,
     pub sandbox: Option<(ReviewId, Result<domain::SandboxRun, String>)>,
     /// The `checks.toml` hash the daemon acknowledged approving.
@@ -343,10 +352,6 @@ impl CodeReview {
         for report in self.reports.values_mut() {
             report.regroup(grouping);
         }
-    }
-
-    fn knows(&self, workspace: WorkspaceId) -> bool {
-        self.latest.keys().any(|(owner, _)| *owner == workspace)
     }
 
     #[must_use]
@@ -580,6 +585,7 @@ pub fn refresh(s: &mut AppState) {
     s.code_review.errors.remove(&workspace);
     s.code_review.report_asked.clear();
     s.code_review.diff = None;
+    s.code_review.kb = None;
     sync(s);
 }
 
@@ -587,7 +593,32 @@ pub fn refresh(s: &mut AppState) {
 /// waiting on one is asked again on the next sync.
 pub fn reconnected(s: &mut AppState) {
     s.code_review.starting = false;
+    s.code_review.asked_config.clear();
+    s.code_review.asked_list.clear();
     s.code_review.report_asked.clear();
+    if s.code_review.awaiting.take().is_some()
+        && let Some(workspace) = s.code_review.workspace
+    {
+        s.code_review
+            .errors
+            .insert(workspace, crate::pr_link::LINK_DROPPED.to_owned());
+    }
+    if s.code_review
+        .kb
+        .as_ref()
+        .is_some_and(|kb| kb.files.is_none())
+    {
+        s.code_review.kb = None;
+    }
+    if let Some(confirm) = s
+        .code_review
+        .sandbox_confirm
+        .as_ref()
+        .filter(|confirm| confirm.file.is_none())
+    {
+        let (workspace, hash) = (confirm.workspace_id, confirm.hash.clone());
+        s.confirm_sandbox(workspace, hash);
+    }
     if s.code_review.diff.as_ref().is_some_and(|diff| !diff.loaded) {
         s.code_review.diff = None;
     }
@@ -634,9 +665,9 @@ fn sync(s: &mut AppState) {
         return;
     }
     let generation = s.generation;
-    if !s.code_review.configs.contains_key(&workspace)
-        && s.code_review.asked_config.get(&workspace) != Some(&generation)
-    {
+    // The settings and the runs are read once per connection, not once ever:
+    // a restarted daemon interrupts the runs it had without broadcasting it.
+    if s.code_review.asked_config.get(&workspace) != Some(&generation) {
         s.code_review.asked_config.insert(workspace, generation);
         let result = match &s.connection {
             Some(connection) => connection.review_config(generation, workspace),
@@ -646,9 +677,7 @@ fn sync(s: &mut AppState) {
             s.code_review.errors.insert(workspace, error);
         }
     }
-    if !s.code_review.knows(workspace)
-        && s.code_review.asked_list.get(&workspace) != Some(&generation)
-    {
+    if s.code_review.asked_list.get(&workspace) != Some(&generation) {
         s.code_review.asked_list.insert(workspace, generation);
         let result = match &s.connection {
             Some(connection) => connection.list_reviews(generation, workspace),
@@ -714,16 +743,19 @@ fn sync(s: &mut AppState) {
     }
 }
 
-/// The Graph tab's and the Sandbox checks section's reads, once per shown run.
+/// The Graph tab's, the Sandbox checks section's and an open knowledge base's
+/// reads, once per shown run. Runs every poll, so the run is borrowed, never cloned.
 fn sync_reads(s: &mut AppState, workspace: WorkspaceId, generation: u64) {
-    let Some(run) = s.code_review.shown_run(workspace).cloned() else {
+    let review = &mut s.code_review;
+    let lane = review.shown_lane(workspace);
+    let Some(run) = review.latest.get(&(workspace, lane)) else {
         return;
     };
     if run.status != ReviewStatus::Completed {
         return;
     }
-    if s.code_review.view == ReviewView::Graph
-        && s.code_review
+    if review.view == ReviewView::Graph
+        && review
             .graph
             .as_ref()
             .is_none_or(|graph| graph.run != run.id)
@@ -754,21 +786,37 @@ fn sync_reads(s: &mut AppState, workspace: WorkspaceId, generation: u64) {
                 }
             }
         }
-        s.code_review.graph = Some(ReviewGraph {
+        review.graph = Some(ReviewGraph {
             run: run.id,
             files,
             indexing: false,
         });
     }
     if let Some(id) = &run.sandbox_run_id
-        && s.code_review
+        && review
             .sandbox
             .as_ref()
             .is_none_or(|(read, _)| *read != run.id)
         && let Some(connection) = &s.connection
     {
-        s.code_review.sandbox = Some((run.id, Err(SANDBOX_READING.into())));
+        review.sandbox = Some((run.id, Err(SANDBOX_READING.into())));
         let _ = connection.get_sandbox_checks(generation, run.id, id.clone());
+    }
+    let cites_kb = review
+        .reports
+        .get(&(workspace, lane))
+        .filter(|report| report.run == run.id)
+        .is_some_and(|report| report.findings.iter().any(|f| f.kb_ref.is_some()));
+    if review.kb_open && cites_kb && review.kb.as_ref().is_none_or(|kb| kb.run != run.id) {
+        let files = match &s.connection {
+            Some(connection) => connection.get_kb(generation, workspace).err().map(Err),
+            None => Some(Err("The client worker is still starting.".to_string())),
+        };
+        review.kb = Some(KbRead {
+            run: run.id,
+            workspace,
+            files,
+        });
     }
 }
 
@@ -1367,8 +1415,13 @@ impl AppState {
         workspace: WorkspaceId,
         result: Result<Vec<domain::KbFile>, String>,
     ) -> bool {
-        self.code_review.kb = Some((workspace, result));
-        true
+        match &mut self.code_review.kb {
+            Some(kb) if kb.workspace == workspace && kb.files.is_none() => {
+                kb.files = Some(result);
+                true
+            }
+            _ => false,
+        }
     }
 
     pub fn apply_sandbox_run(
@@ -1406,19 +1459,9 @@ impl AppState {
         true
     }
 
-    pub fn toggle_review_kb(&mut self, workspace: WorkspaceId) {
+    pub fn toggle_review_kb(&mut self) {
         self.code_review.kb_open = !self.code_review.kb_open;
-        if self.code_review.kb_open
-            && self
-                .code_review
-                .kb
-                .as_ref()
-                .is_none_or(|(read, _)| *read != workspace)
-            && let Some(connection) = &self.connection
-            && let Err(error) = connection.get_kb(self.generation, workspace)
-        {
-            self.code_review.kb = Some((workspace, Err(error)));
-        }
+        sync(self);
     }
 
     /// Opens the confirmation and reads the file it shows through the daemon (ADR-012).
@@ -1887,8 +1930,11 @@ fn setup(s: &AppState, k: &Kit) -> El {
         .gap(crate::ds::SPACE_4)
         .items_center()
         .child(el().grow(1.0));
-    if busy {
+    // A review runs for minutes: the vsync `Loader` would repaint the window all along.
+    if busy && s.reduce_motion() {
         actions = actions.child(crate::ui::busy(s, k));
+    } else if busy {
+        actions = actions.child(crate::ds::working(14.0, k.c.icon_muted).key("review-busy"));
     }
     body = body.child(
         actions.child(
@@ -2873,7 +2919,6 @@ fn kb_section(s: &AppState, k: &Kit, run: &ReviewRun) -> Option<El> {
     if cited.is_empty() {
         return None;
     }
-    let workspace = run.workspace_id;
     let open = s.code_review.kb_open;
     let mut body = col()
         .key("review-kb")
@@ -2887,7 +2932,7 @@ fn kb_section(s: &AppState, k: &Kit, run: &ReviewRun) -> Option<El> {
             ))
             .variant(ButtonVariant::GhostMuted)
             .control_size(ControlSize::Small)
-            .on_press(move |s: &mut AppState| s.toggle_review_kb(workspace))
+            .on_press(|s: &mut AppState| s.toggle_review_kb())
             .build(k)
             .key("review-kb-toggle"),
         );
@@ -2898,8 +2943,8 @@ fn kb_section(s: &AppState, k: &Kit, run: &ReviewRun) -> Option<El> {
         .code_review
         .kb
         .as_ref()
-        .filter(|(read, _)| *read == workspace)
-        .map(|(_, files)| files);
+        .filter(|kb| kb.run == run.id)
+        .and_then(|kb| kb.files.as_ref());
     for (at, reference) in cited.iter().enumerate() {
         let excerpt = match files {
             None => "Reading the knowledge base…".to_owned(),
@@ -4087,6 +4132,147 @@ mod tests {
         }
     }
 
+    fn reconnect(state: &mut AppState, generation: u64) {
+        state.apply_events(
+            vec![
+                crate::connection::UiEvent::Connecting {
+                    generation,
+                    detail: String::new(),
+                },
+                crate::connection::UiEvent::Connected {
+                    generation,
+                    detail: String::new(),
+                    editor_surface: client::EditorSurface::Cells,
+                },
+            ],
+            &mut rune::Tx::default(),
+        );
+    }
+
+    fn count(
+        rx: &flume::Receiver<crate::connection::Command>,
+        wanted: impl Fn(&crate::connection::Command) -> bool,
+    ) -> usize {
+        rx.try_iter().filter(|command| wanted(command)).count()
+    }
+
+    fn lists(command: &crate::connection::Command) -> bool {
+        matches!(command, crate::connection::Command::ListReviews { .. })
+    }
+
+    #[test]
+    fn a_known_workspace_lists_its_runs_again_after_a_reconnect() {
+        let (mut state, workspace) = fixture_state();
+        let rx = connected(&mut state);
+        let mut running = run(ReviewId::new(), Some(ReviewStage::Model), false);
+        running.workspace_id = workspace;
+        running.target = workspace_target(workspace);
+        state.apply_review_run(&running);
+        assert!(state.code_review.busy(workspace));
+
+        state.sync_review();
+        assert_eq!(count(&rx, lists), 1);
+        state.sync_review();
+        assert_eq!(count(&rx, lists), 0, "once per connection");
+
+        reconnect(&mut state, 2);
+        state.sync_review();
+        assert_eq!(
+            count(&rx, lists),
+            1,
+            "a run already on screen is listed again"
+        );
+        let mut interrupted = running.clone();
+        interrupted.status = ReviewStatus::Interrupted;
+        interrupted.finished_at = Some(Timestamp::now());
+        assert!(state.apply_reviews(workspace, Ok(vec![interrupted])));
+        assert!(!state.code_review.busy(workspace), "Start is free again");
+    }
+
+    #[test]
+    fn refresh_reads_the_settings_again_while_keeping_the_old_ones() {
+        let (mut state, workspace) = fixture_state();
+        let rx = connected(&mut state);
+        let reads_config = |command: &crate::connection::Command| {
+            matches!(command, crate::connection::Command::ReviewConfig { .. })
+        };
+        state.sync_review();
+        assert_eq!(count(&rx, reads_config), 1);
+        state.sync_review();
+        assert_eq!(count(&rx, reads_config), 0);
+        refresh(&mut state);
+        assert_eq!(count(&rx, reads_config), 1);
+        assert!(state.code_review.configs.contains_key(&workspace));
+    }
+
+    #[test]
+    fn a_github_read_lost_to_a_reconnect_frees_start_and_says_why() {
+        let (mut state, workspace) = fixture_state();
+        let _rx = connected(&mut state);
+        state.code_review.subject = Subject::PullRequest;
+        state.code_review.pull_request = TextEdit::new("https://github.com/acme/forge/pull/5");
+        state.start_code_review();
+        assert!(state.code_review.busy(workspace));
+        state.open_pr_link();
+        if let Some(dialog) = state.pr_link.as_mut() {
+            dialog.url = TextEdit::new("https://github.com/acme/forge/pull/6");
+        }
+        state.submit_pr_link();
+        assert!(state.pr_link.as_ref().is_some_and(|d| d.pending.is_some()));
+
+        reconnect(&mut state, 2);
+        assert!(state.code_review.awaiting.is_none());
+        assert!(!state.code_review.busy(workspace));
+        assert_eq!(
+            state.code_review.errors.get(&workspace).map(String::as_str),
+            Some(crate::pr_link::LINK_DROPPED)
+        );
+        let dialog = state.pr_link.as_ref().expect("the dialog stays");
+        assert!(dialog.pending.is_none(), "Open is pressable again");
+        assert_eq!(dialog.error.as_deref(), Some(crate::pr_link::LINK_DROPPED));
+    }
+
+    #[test]
+    fn the_knowledge_base_is_read_for_each_run_on_refresh_and_after_a_reconnect() {
+        let (mut state, workspace) = fixture_state();
+        let rx = connected(&mut state);
+        let reads_kb = |command: &crate::connection::Command| {
+            matches!(command, crate::connection::Command::GetKb { .. })
+        };
+        let mut cited = finding(1, "a.rs", Some(2), Severity::P1);
+        cited.kb_ref = Some("architecture.md#crates".into());
+        let first = completed(workspace, workspace_target(workspace));
+        with_report(&mut state, &first, vec![cited.clone()], vec![], None);
+        state.toggle_review_kb();
+        assert_eq!(count(&rx, reads_kb), 1);
+        assert!(state.apply_kb(workspace, Ok(Vec::new())));
+        state.sync_review();
+        assert_eq!(count(&rx, reads_kb), 0, "read once per run");
+
+        let second = completed(workspace, workspace_target(workspace));
+        with_report(&mut state, &second, vec![cited], vec![], None);
+        state.sync_review();
+        assert_eq!(
+            count(&rx, reads_kb),
+            1,
+            "a newer run is not shown the older read"
+        );
+        assert!(
+            state
+                .code_review
+                .kb
+                .as_ref()
+                .is_some_and(|kb| kb.run == second.id && kb.files.is_none())
+        );
+        assert!(state.apply_kb(workspace, Ok(Vec::new())));
+
+        refresh(&mut state);
+        assert_eq!(count(&rx, reads_kb), 1);
+        reconnect(&mut state, 2);
+        state.sync_review();
+        assert_eq!(count(&rx, reads_kb), 1, "the read in flight is asked again");
+    }
+
     #[test]
     fn a_link_in_the_instructions_reviews_that_pull_request_not_the_changes() {
         let (mut state, workspace) = fixture_state();
@@ -4510,15 +4696,16 @@ mod tests {
         cited.kb_ref = Some("architecture.md#crates".into());
         with_report(&mut state, &run, vec![cited], vec![], None);
         state.code_review.kb_open = true;
-        state.code_review.kb = Some((
+        state.code_review.kb = Some(KbRead {
+            run: run.id,
             workspace,
-            Ok(vec![domain::KbFile {
+            files: Some(Ok(vec![domain::KbFile {
                 file: "architecture.md".into(),
                 content: "# Architecture\n\n## crates\n\n- 3 file(s)\n".into(),
                 source: "daemon".into(),
                 updated_at: None,
-            }]),
-        ));
+            }])),
+        });
         state.code_review.sandbox = Some((
             run.id,
             Ok(domain::SandboxRun {

@@ -81,7 +81,7 @@ client           sync UDS client + passive CellGrid replica (no tokio)
 daemon           the runtime: core dispatcher, server, registry, terminal loop,
                  shell env, services  → binary forge-daemon
 forge-ctl        MCP-first client for runs, tasks, context and session dispatch
-                 → binary forgectl. Depends only on client → protocol → domain.
+                 → binary forgectl. Never depends on daemon.
 test-support     FakePtyBackend, fake agents, temp git repos
 ```
 
@@ -103,9 +103,10 @@ terminal-core, terminal-input, domain}`, `fs-service → {git-service, languages
 `persistence → {codebase-graph, knowledge-base, review, domain}`,
 `{syntax-index, external-index} → {fs-service, git-service, languages}`,
 `editor-cli → {editor-core, editor-control}` and `test-support → {domain,
-terminal-core}`. `forgectl` is `forge-ctl → {client, git-service}` (with
-`client → protocol → domain`) for its review bench; its binary and library never
-depend on `daemon` (only its integration tests boot one).
+terminal-core}`. `forgectl` is `forge-ctl → {client, protocol, domain, git-service,
+codebase-graph, runtime-sandbox}` — git for its review bench, `codebase-graph`
+to read `cache.bin` without a daemon, `runtime-sandbox` for the `checks.toml`
+path and cap; its binary and library never depend on `daemon` (only its integration tests boot one).
 Every other crate depends on `domain` alone or on nothing (`editor-core`,
 `editor-control`, `languages`, `lsp-client`), there is no cycle, and the host depends on neither
 `protocol` nor `terminal-core` directly. The GUI renders `domain::terminal` wire types, it does
@@ -227,7 +228,9 @@ channel that would have carried the request also carries every keystroke.
 
 SQLite stores metadata only — organizational project groups, projects,
 execution workspaces, sessions and their graph, context envelopes, provider
-overrides, opaque app state. Never the terminal
+overrides, the orchestration ledger, Forge Review runs with their findings,
+feedback, codebase graph, knowledge base and sandbox runs, spec-run metadata,
+opaque app state. Never the terminal
 stream (scrollback lives in bounded daemon memory). `terminal_id` is runtime-only
 and never persisted.
 
@@ -242,8 +245,8 @@ worktrees land in `$FORGE_DEV_DIR/worktrees`; one writer owns one set of paths.
 
 ## Concurrency
 
-The daemon runs tokio (multi-thread). All domain state sits behind one
-`Mutex<Inner>`; request handlers are synchronous and run via `spawn_blocking`
+The daemon runs tokio (multi-thread). Domain state sits behind one
+`Mutex<Inner>`; spec runs and slow-read caches keep their own locks; request handlers are synchronous and run via `spawn_blocking`
 (git and PTY spawns block), so the lock is never held across `.await`. Each PTY
 has a dedicated OS thread that feeds the engine and routes deltas. Lock order is
-always `inner → registry`.
+always `spec runs → inner → registry`.

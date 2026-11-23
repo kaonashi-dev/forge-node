@@ -1026,6 +1026,13 @@ pub(crate) fn offline_graph_query(app: &App, cmd: &GraphCmd) -> Result<(), u8> {
     let nodes: Vec<domain::GraphNode> = graph
         .index()
         .query(&query)
+        .ok_or_else(|| {
+            usage_code(
+                app,
+                "an unknown graph question",
+                &["forgectl", "review", "graph", "query", "--help"],
+            )
+        })?
         .into_iter()
         .map(codebase_graph::Node::to_wire)
         .collect();

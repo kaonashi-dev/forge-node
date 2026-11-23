@@ -123,8 +123,9 @@ pub fn key_label(key: &Key) -> String {
 /// An IME event for the log, without its composition or committed text.
 pub fn ime_label(ev: &Ime) -> String {
     match ev {
-        Ime::Preedit(text, _) => format!("preedit {} bytes", text.len()),
+        Ime::Preedit(text, _, _) => format!("preedit {} bytes", text.len()),
         Ime::Commit(text) => format!("commit {} bytes", text.len()),
+        Ime::Select(_) => "select".into(),
         Ime::Enabled => "enabled".into(),
         Ime::Disabled => "disabled".into(),
     }
@@ -667,7 +668,7 @@ pub fn focus(idx: usize, ui: &mut TerminalUi, grid: &CellGrid, focused: bool, ou
 /// Preedit draws at the cursor and inserts nothing; only a commit becomes PTY bytes.
 pub fn ime(idx: usize, ui: &mut TerminalUi, ev: &Ime, out: &mut Outbox) -> bool {
     match ev {
-        Ime::Preedit(text, _) => {
+        Ime::Preedit(text, _, _) => {
             ui.preedit = text.chars().take(PREEDIT_MAX_CHARS).collect();
             ui.request_frame();
             true
@@ -680,7 +681,8 @@ pub fn ime(idx: usize, ui: &mut TerminalUi, ev: &Ime, out: &mut Outbox) -> bool 
             ui.request_frame();
             true
         }
-        Ime::Enabled | Ime::Disabled => true,
+        // Bytes already sent to the PTY cannot be taken back to convert again.
+        Ime::Select(_) | Ime::Enabled | Ime::Disabled => true,
     }
 }
 
@@ -808,7 +810,7 @@ mod tests {
             .chain(out.notes.iter().cloned())
             .chain([
                 ime_label(&Ime::Commit("passé".into())),
-                ime_label(&Ime::Preedit("かな".into(), None)),
+                ime_label(&Ime::Preedit("かな".into(), None, Vec::new())),
             ])
             .collect();
         for line in &logged {
@@ -1351,7 +1353,7 @@ mod tests {
         assert!(ime(
             0,
             &mut ui,
-            &Ime::Preedit("かん".into(), Some((0, 6))),
+            &Ime::Preedit("かん".into(), Some((0, 6)), Vec::new()),
             &mut out
         ));
         assert_eq!(ui.preedit, "かん");
@@ -1359,11 +1361,16 @@ mod tests {
         assert!(ime(
             0,
             &mut ui,
-            &Ime::Preedit(String::new(), None),
+            &Ime::Preedit(String::new(), None, Vec::new()),
             &mut out
         ));
         assert!(ui.preedit.is_empty() && out.entries.is_empty());
-        ime(0, &mut ui, &Ime::Preedit("かん".into(), None), &mut out);
+        ime(
+            0,
+            &mut ui,
+            &Ime::Preedit("かん".into(), None, Vec::new()),
+            &mut out,
+        );
         ime(0, &mut ui, &Ime::Commit("漢".into()), &mut out);
         assert!(ui.preedit.is_empty());
         assert_eq!(out.entries[0].bytes, "漢".as_bytes());

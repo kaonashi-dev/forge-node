@@ -1588,14 +1588,19 @@ fn reviewed_texts(repo: &Path, run: &ReviewRun, files: &[&str]) -> HashMap<Strin
         Some(rev) => {
             git_service::read_blobs(repo, rev, files, MAX_FILE_TEXT_BYTES, MAX_REVIEWED_BYTES)
         }
-        None => files
-            .iter()
-            .map(|file| {
-                read_inside(repo, Path::new(file), MAX_FILE_TEXT_BYTES)
-                    .ok()
-                    .flatten()
-            })
-            .collect(),
+        None => {
+            let mut left = MAX_REVIEWED_BYTES;
+            files
+                .iter()
+                .map(|file| {
+                    let text = read_inside(repo, Path::new(file), MAX_FILE_TEXT_BYTES.min(left))
+                        .ok()
+                        .flatten()?;
+                    left = left.saturating_sub(text.len() as u64);
+                    Some(text)
+                })
+                .collect()
+        }
     };
     files
         .iter()

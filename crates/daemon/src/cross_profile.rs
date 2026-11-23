@@ -171,12 +171,15 @@ fn refuse_agent_for_person(
     caller: Option<SessionId>,
     request: &Request,
 ) -> Result<(), ProtocolError> {
-    let action = match request {
-        Request::ApproveSandboxChecks { .. } => "approving sandbox checks",
-        Request::StartFixLoop { .. } => "starting a fix loop",
+    let (action, declared) = match request {
+        Request::ApproveSandboxChecks { .. } => ("approving sandbox checks", None),
+        Request::StartFixLoop { .. } => ("starting a fix loop", None),
+        Request::SpecGate {
+            caller_session_id, ..
+        } => ("passing a spec gate", *caller_session_id),
         _ => return Ok(()),
     };
-    let agent = caller.is_some_and(|caller| {
+    let agent = [declared, caller].into_iter().flatten().any(|caller| {
         daemon.lock().sessions.get(&caller).is_some_and(|session| {
             session.kind == SessionKind::Agent && !session.state.is_terminal()
         })
@@ -189,6 +192,31 @@ fn refuse_agent_for_person(
     Ok(())
 }
 
+/// The session a request that launches an agent declares as its launcher; `Some(None)` for one
+/// that declares none, so only the connection's caller is checked.
+fn agent_launcher(request: &Request) -> Option<Option<SessionId>> {
+    match request {
+        Request::CreateAgentSession { parent, .. } => Some(*parent),
+        Request::StartAttempt {
+            caller_session_id, ..
+        }
+        | Request::RunTask {
+            caller_session_id, ..
+        } => Some(*caller_session_id),
+        Request::CreateRun {
+            caller_session_id,
+            controller: domain::orchestration::ControllerSpec::Agent { .. },
+            ..
+        } => Some(*caller_session_id),
+        Request::CreateChildSession {
+            parent_session_id,
+            kind: SessionKind::Agent,
+            ..
+        } => Some(Some(*parent_session_id)),
+        _ => None,
+    }
+}
+
 /// [`Daemon::handle_request_from`] for a connection that declared the session it acts for.
 pub(crate) fn handle(
     daemon: &Arc<Daemon>,
@@ -196,10 +224,10 @@ pub(crate) fn handle(
     connection_caller: Option<SessionId>,
     request: Request,
 ) -> Result<Response, ProtocolError> {
-    if let Request::CreateAgentSession { parent, .. } = &request {
+    if let Some(launcher) = agent_launcher(&request) {
         crate::spec_runs::refuse_early_coder(
             daemon,
-            parent.iter().chain(connection_caller.iter()).copied(),
+            launcher.iter().chain(connection_caller.iter()).copied(),
         )?;
     }
     refuse_agent_for_person(daemon, connection_caller, &request)?;

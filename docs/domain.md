@@ -32,7 +32,7 @@ Source: `crates/domain/src/`.
 - `ProjectGroupId`, `ProjectId`, `WorkspaceId`, `SessionId`, `TerminalId`, `ClientId`,
   `ContextId`, `RunId`, `TaskId`, `AttemptId`, `ShareRuleId`, `ProjectActionId` are newtypes over **UUID v7**. v7 is time-ordered, so sorting by
   id gives creation order for free (sidebar ordering, session lists).
-- `AgentProfileId` is a UUID v7 too: a launch profile (§13.4) is a saved row
+- `AgentProfileId` is a UUID v7 too: a launch profile is a saved row
   the user can rename, so its identity cannot be its name.
 - `AgentProviderId` is a plain string (`"claude"`, `"cursor"`, …) so
   descriptors and overrides can key on a stable, human-readable value.
@@ -56,7 +56,7 @@ that is the user-facing collection of related projects; the existing
 Git worktree. Deleting a group leaves its projects intact and moves them to
 General through `ON DELETE SET NULL`.
 
-### `Project` (§7.1)
+### `Project`
 
 | Field | Notes |
 |-------|-------|
@@ -66,7 +66,7 @@ General through `ON DELETE SET NULL`.
 | `name` | Defaults to the basename; user-editable via `RenameProject`. |
 | `icon` | The glyph the user picked to stand for the project, set via `SetProjectIcon`. `None` — where every project starts — means the UI draws the project's initials. An opaque string, not an enum of known icons: the point is that the mark is the user's to choose. `domain::is_valid_icon` is the shared rule for what can be stored (one drawable mark, no whitespace, at most `MAX_ICON_CHARS`), and both the GUI and the daemon apply it. |
 
-### `Workspace` (§7.2)
+### `Workspace`
 
 | Field | Notes |
 |-------|-------|
@@ -74,10 +74,10 @@ General through `ON DELETE SET NULL`.
 | `path` | Unique across workspaces. |
 | `branch` | `None` when detached/unborn or not Git. |
 | `display_name` | Optional human label, independent of the branch. When set, the sidebar leads with it and keeps the branch as a secondary line. Cleared by `RenameWorkspace`. |
-| `managed_by_app` | `true` only for worktrees Forge created. Gate for any on-disk removal (§14.4). |
+| `managed_by_app` | `true` only for worktrees Forge created. Gate for any on-disk removal. |
 | `status` | `WorkspaceStatus { dirty, head, ahead, behind, measured_at }`. **Runtime-only**, like `Session::terminal_id`: never a column, and `Default` (unmeasured) on load. `measured_at: None` means "nobody has looked", which the sidebar draws as nothing rather than as "clean". `head` is the commit HEAD points at (`None` before the first commit or unmeasured): the "the checkout moved" signal — a `git pull` rewrites it while leaving `branch` unchanged, and the GUI re-reads the file tree and diff when it differs from last time. |
 
-### `BranchRef` (§14.3)
+### `BranchRef`
 
 What the branch picker lists. Reported by the daemon on every `ListBranches`,
 never cached: a stale row is then a stale answer to an old question rather than
@@ -95,7 +95,7 @@ a wrong model.
 `origin/<name>` for a remote one — which is what makes git configure the
 upstream by itself.
 
-### `Session` (§7.3, ADR-010)
+### `Session` (ADR-010)
 
 | Field | Notes |
 |-------|-------|
@@ -104,7 +104,7 @@ upstream by itself.
 | `parent_session_id` / `root_session_id` | The graph. Roots have `parent = None` and `root == id`. |
 | `terminal_id` | `Some` only while a PTY exists. `None` in `Failed`/`Orphaned` and while a restart is pending. |
 | `agent_provider_id` | `Some` for `Agent` sessions. |
-| `agent_profile_id` | `Some` when the session was launched from a profile (§13.4). Kept even after that profile is deleted: the row is history, and the GUI falls back to the provider's name. |
+| `agent_profile_id` | `Some` when the session was launched from a profile. Kept even after that profile is deleted: the row is history, and the GUI falls back to the provider's name. |
 | `title` | `SessionTitle { user, terminal }`; see the title rule below. |
 | `state` | The state machine below. |
 | `last_activity_at` | Last PTY output or input. **Runtime-only**, like `terminal_id`: never a column, and reconstructed as `ended_at` (else `created_at`) on load. `idle_for(now)` reads it; `age(now)` reads `created_at`; see the idle policy below. |
@@ -140,7 +140,7 @@ There is no separate "exited" event: exit code/signal ride on
 
 `Orphaned` is set by the daemon at startup for any session that was
 `Starting`/`Running` when the previous daemon died — a PTY never survives the
-daemon (§15.3). It only appears when `sessions.persist_history` is on; the
+daemon. It only appears when `sessions.persist_history` is on; the
 default drops those rows instead of keeping them.
 
 #### Idle and age
@@ -174,7 +174,7 @@ the caller's fallback (`"Shell"` or the provider display name).
 - The graph is *logical*. Process-level cleanup is handled separately by
   signaling the whole process group (see [terminal.md](./terminal.md)).
 
-### `ChildWorkspacePolicy` (§8.2)
+### `ChildWorkspacePolicy`
 
 Where a child created via `CreateChildSession` runs:
 
@@ -182,7 +182,7 @@ Where a child created via `CreateChildSession` runs:
 - `NewManagedWorktree { branch_hint, base }` — Forge creates a worktree first.
 - `ExistingWorkspace(WorkspaceId)` — any workspace of the same project.
 
-### `ContextEnvelope` (§8.3)
+### `ContextEnvelope`
 
 `source_session_id: Option<SessionId>` (`None` when a human with no session sent
 it), optional `target_session_id`, `summary`, `instructions`,
@@ -250,7 +250,7 @@ Enterprise from GitLab, so it is never guessed.
 
 ### `ReviewRecipe` (`pr_review.rs`)
 
-What to ask an agent for when reviewing someone else's pull request (§16.9).
+What to ask an agent for when reviewing someone else's pull request.
 The sibling of the pull-request prompt (`pr_task.rs`), and deliberately not the
 same thing: that prompt is about your own work on the way to *opening* a pull
 request, a recipe is about one that already exists.
@@ -333,11 +333,11 @@ patch is not a patch, and a viewer that rendered one would show a lie.
 | Type | Role |
 |------|------|
 | `AgentDescriptor` | Declarative provider definition: `binary_candidates` (in preference order), `default_args`, `version_probe`, `capabilities`, `config_dir`, `resume`. Owned `String`s so it can travel over IPC and support custom agents later. |
-| `AgentProfile` | A named way to start a provider (§13.4): `provider_id`, `name`, optional `executable`, optional `config_dir`, `args`. `resolve_config_dir` is what makes a relative directory absolute — against the launching user's `$HOME`, never the daemon's working directory. |
+| `AgentProfile` | A named way to start a provider: `provider_id`, `name`, optional `executable`, optional `config_dir`, `args`. `resolve_config_dir` is what makes a relative directory absolute — against the launching user's `$HOME`, never the daemon's working directory. |
 | `ConfigDirSpec` | How a provider is pointed at a profile's directory, as data: the variables it is written to (two for OpenCode, which splits configuration from credentials) and one line of help. `None` on a descriptor means the provider has no such switch. |
 | `VersionProbe` | `args` (`--version`), optional `expect_substring` to reject look-alike binaries, `timeout_ms`. |
 | `AgentCapabilities` | `interactive_tui`, `supports_initial_prompt` — informational. `supports_resume` restates whether the descriptor carries a `ResumeStyle`; `supports_review` whether it carries a `ReviewStyle`. |
-| `ResumeStyle` | How a provider re-enters an earlier session of its own (§13.5): `Flag { flag }` (`claude --resume <id>`). `None` on the descriptor means its history is read-only. |
+| `ResumeStyle` | How a provider re-enters an earlier session of its own: `Flag { flag }` (`claude --resume <id>`). `None` on the descriptor means its history is read-only. |
 | `DetectionResult` / `DetectionStatus` | `Installed { executable, version }`, `NotFound`, `Rejected { candidate, reason }`, `ProbeTimeout`. |
 | `ResolvedEnvironment` | The login-shell environment resolved once by the daemon (`EnvSource::LoginShell` or `ProcessFallback`). |
 | `LaunchAgentRequest` | `provider_id`, `cwd`, `extra_args`, `executable_override`, `resume_session_id`, `initial_prompt`, `read_only`. |
@@ -354,7 +354,7 @@ answers neither question.
 | Type | Role |
 |------|------|
 | `UsageSource` / `UsageProbe` | Where a provider's *allowance* reading comes from: a CLI printing one documented JSON document (`Cli`), or its existing local OAuth credentials (`ClaudeOauth`). |
-| `ProviderUsage` / `UsageWindow` | The provider's own word on how much of a rolling window is gone: a whole `used_percent` (no float in a wire type), a human `window` label, an optional `resets_at`, and `collected_at` so a stale reading can be shown as stale. Empty `windows` means "reported nothing", rendered as no meter — never as 0%. A reading belongs to one *account*: `profile_id` names the launch profile whose login it describes, `None` being the provider's default one (§13.4). |
+| `ProviderUsage` / `UsageWindow` | The provider's own word on how much of a rolling window is gone: a whole `used_percent` (no float in a wire type), a human `window` label, an optional `resets_at`, and `collected_at` so a stale reading can be shown as stale. Empty `windows` means "reported nothing", rendered as no meter — never as 0%. A reading belongs to one *account*: `profile_id` names the launch profile whose login it describes, `None` being the provider's default one. |
 | `UsageAnalytics` | *Our* count, from the transcripts the CLIs write to disk: `providers`, activity-only `daily` buckets carrying tokens and estimated cost, the `window_days` scanned, `scanned`/`skipped` so a bounded scan never looks exhaustive, and `collected_at`. |
 | `ProviderAnalytics` | One provider's totals: `tokens`, `sessions`, `turns`, `cost_micros`, `unpriced_turns` (a non-zero count means the cost is a floor), `top_model`, `worked_secs`, the first/last activity seen, `daily`, and `accounts: Vec<AccountAnalytics>` splitting the same totals by config directory (`profile_id`, `tokens`, `sessions`, `turns`, `cost_micros`, `unpriced_turns`, `worked_secs`, `daily`). Profiles that share a directory share an account. |
 | `TokenTotals` | `input`, `output`, `cache_write`, `cache_read`, `reasoning`. `reasoning` is a subset of `output` and is *not* in `total()`; the other four are disjoint. |
@@ -364,7 +364,7 @@ Money is counted in micro-dollars (`MICROS_PER_USD`), never in `f64`: the
 protocol stays `Eq`. Which models have a published price is a provider-specific
 fact and lives in `agents`, like every other one.
 
-## Terminal wire types (`terminal.rs`, §11.4)
+## Terminal wire types (`terminal.rs`)
 
 These are the data the daemon's engine produces and the GUI renders. They live
 in `domain` rather than `terminal-core` so the GUI and `client` never depend on

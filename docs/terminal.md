@@ -8,7 +8,7 @@ How a session's process becomes cells on screen. Crates involved:
 ADRs: 005 (PTY owned by the daemon),
 011 (daemon is the single source of truth for the grid).
 
-## Layers (§11.1)
+## Layers
 
 ```
  process  ──►  PTY master  ──►  pty_loop thread  ──►  AlacrittyEngine  ──►  DeltaBuilder
@@ -90,7 +90,7 @@ Both sides share the cell types so the client never links the engine (ADR-011):
 Field-by-field notes are in
 [domain.md](./domain.md#terminal-wire-types-terminalrs-114).
 
-## Spawn (§11.2, §13.3)
+## Spawn
 
 The daemon builds one `SpawnSpec` per session:
 
@@ -111,7 +111,7 @@ The daemon builds one `SpawnSpec` per session:
   `sessions.term` (default `xterm-ghostty`), resolved once per daemon by
   `daemon/src/terminfo.rs`.
 
-### `TERM` for shell sessions (§13.3, `daemon/src/terminfo.rs`)
+### `TERM` for shell sessions (`daemon/src/terminfo.rs`)
 
 `sessions.term` only reaches the child if its terminfo entry is findable — an
 unknown `TERM` leaves ncurses programs with no capabilities at all. Terminals
@@ -129,7 +129,7 @@ promising capabilities beyond that is the user's call, not a claim we verify.
 
 Each spawn gets a fresh `TerminalId` and its own process group (`setsid`).
 
-### Login-shell environment (§12, `daemon/src/environment.rs`)
+### Login-shell environment (`daemon/src/environment.rs`)
 
 A GUI launched from Finder or a launcher does not inherit an interactive
 shell's `PATH`, so the daemon runs once at startup:
@@ -183,7 +183,7 @@ byte as the OSC terminator rather than dispatching it
 (`terminal-core/tests/engine.rs::title_and_bell`), or `needs-you` would latch on
 permanently.
 
-## Sequence numbers and resync (§10.5)
+## Sequence numbers and resync
 
 Every emitted delta/snapshot carries `seq`; `emit_seq` advances **once per
 emitted delta**, not once per engine feed — otherwise clients would see false
@@ -228,7 +228,7 @@ someone else's `vim`. `ResizeTerminal` always applies — with several clients
 attached, **last writer wins** (MVP). Engine and PTY are resized together under
 the lock and the next delta reflects the new grid.
 
-## Kill semantics (§11.3)
+## Kill semantics
 
 ```
 KillSession / SendSignal  ──►  signal the PROCESS GROUP, never a single pid

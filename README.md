@@ -246,8 +246,9 @@ running `make run-live` there.
 | `forge-daemon info` | Print resolved runtime paths and effective configuration |
 | `forge-daemon stop` | Stop the daemon that holds the lock by signal (SIGTERM, then SIGKILL after `--grace`, default 10 s); reaches one that speaks another protocol or stopped answering |
 
-CI runs the workspace and Rune gates on macOS, split into `fmt`, clippy and test
-jobs so lint and the two workspaces do not queue behind each other. `cargo deny
+CI runs the same gates as one job per workspace and phase — `fmt` and the
+OpenCode plugin on Ubuntu, clippy and tests for each workspace on macOS — so
+lint and the two workspaces do not queue behind each other. `cargo deny
 check` is a separate dependency policy check, not part of those gates.
 `forge-daemon dump` remains
 an unwired placeholder; `forge-daemon stats` reads a running daemon and does

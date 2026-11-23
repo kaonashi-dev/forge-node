@@ -1,6 +1,6 @@
 //! Sandbox checks: a repository's `.forge/review/checks.toml` targets run as written,
-//! under macOS `sandbox-exec`, with no network, writes only to the run, the
-//! cache and the temp directory, no view of Forge's own socket or home, and a
+//! under macOS `sandbox-exec`: network off unless the policy allows it, writes only to the run,
+//! the cache, the temp directory and listed paths, no view of Forge's own socket or home, and a
 //! cleared environment. Each target is its own process group, killed whole when
 //! its leader exits or times out, and only the tail of its output is kept.
 
@@ -81,7 +81,13 @@ pub fn parse(text: &str) -> Result<SandboxConfig, String> {
         .get("targets")
         .and_then(toml::Value::as_array)
         .ok_or_else(|| "checks.toml: no `[[targets]]`".to_owned())?;
-    for item in listed.iter().take(MAX_TARGETS) {
+    if listed.len() > MAX_TARGETS {
+        return Err(format!(
+            "checks.toml: {} targets listed, at most {MAX_TARGETS}",
+            listed.len()
+        ));
+    }
+    for item in listed {
         let field = |key: &str| {
             item.get(key)
                 .and_then(toml::Value::as_str)

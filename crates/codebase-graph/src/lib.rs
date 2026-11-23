@@ -3,6 +3,7 @@
 //! Pure: the daemon parses the files and hands each one's symbols in.
 
 use std::borrow::Cow;
+use std::cmp::Reverse;
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::{Arc, OnceLock};
 
@@ -156,9 +157,112 @@ fn dir(path: &str) -> &str {
     path.rsplit_once('/').map_or("", |(dir, _)| dir)
 }
 
-fn line_at(source: &str, byte: usize) -> u32 {
-    let before = source.get(..byte).unwrap_or(source);
-    u32::try_from(before.bytes().filter(|b| *b == b'\n').count() + 1).unwrap_or(u32::MAX)
+struct Lines<'s> {
+    source: &'s str,
+    newlines: Vec<usize>,
+}
+
+impl<'s> Lines<'s> {
+    fn new(source: &'s str) -> Self {
+        let newlines = source
+            .bytes()
+            .enumerate()
+            .filter(|(_, b)| *b == b'\n')
+            .map(|(at, _)| at)
+            .collect();
+        Self { source, newlines }
+    }
+
+    /// Counts the whole source for a byte that is not a char boundary inside it.
+    fn at(&self, byte: usize) -> u32 {
+        let byte = if self.source.is_char_boundary(byte) {
+            byte
+        } else {
+            self.source.len()
+        };
+        let before = self.newlines.partition_point(|&at| at < byte);
+        u32::try_from(before + 1).unwrap_or(u32::MAX)
+    }
+}
+
+/// The smallest span of a set that strictly contains another, found by walking
+/// up the set's containment forest; a set whose spans cross or invert is scanned.
+struct Enclosing {
+    members: Vec<usize>,
+    spans: Vec<(u32, u32)>,
+    owner: Vec<usize>,
+    parent: Vec<Option<usize>>,
+    nested: bool,
+}
+
+impl Enclosing {
+    fn new(declared: &[Node], kinds: &[NodeKind]) -> Self {
+        let members: Vec<usize> = (0..declared.len())
+            .filter(|&i| kinds.contains(&declared[i].kind))
+            .collect();
+        let mut sorted = members.clone();
+        sorted.sort_by_key(|&i| (forest_order(declared[i].span), i));
+        let mut spans: Vec<(u32, u32)> = Vec::new();
+        let mut owner = Vec::new();
+        for i in sorted {
+            if spans.last() != Some(&declared[i].span) {
+                spans.push(declared[i].span);
+                owner.push(i);
+            }
+        }
+        let mut nested = spans.iter().all(|span| span.0 <= span.1);
+        let mut parent = vec![None; spans.len()];
+        let mut stack: Vec<usize> = Vec::new();
+        for (at, span) in spans.iter().enumerate() {
+            while let Some(&top) = stack.last() {
+                let outer = spans[top];
+                if outer.1 <= span.0 {
+                    stack.pop();
+                } else if span.1 <= outer.1 {
+                    parent[at] = Some(top);
+                    break;
+                } else {
+                    nested = false;
+                    break;
+                }
+            }
+            stack.push(at);
+        }
+        Self {
+            members,
+            spans,
+            owner,
+            parent,
+            nested,
+        }
+    }
+
+    fn find(&self, declared: &[Node], inner: (u32, u32)) -> Option<usize> {
+        // An empty span where two spans touch lies in both, which the forest cannot hold.
+        if !self.nested || inner.0 >= inner.1 {
+            return self
+                .members
+                .iter()
+                .copied()
+                .filter(|&i| contains(declared[i].span, inner))
+                .min_by_key(|&i| declared[i].span.1 - declared[i].span.0);
+        }
+        let after = self
+            .spans
+            .partition_point(|&span| forest_order(span) <= forest_order(inner));
+        let mut at = after.checked_sub(1);
+        while let Some(i) = at {
+            if contains(self.spans[i], inner) {
+                return Some(self.owner[i]);
+            }
+            at = self.parent[i];
+        }
+        None
+    }
+}
+
+fn forest_order(span: (u32, u32)) -> (u32, Reverse<u32>) {
+    (span.0, Reverse(span.1))
 }
 
 fn identifiers(text: &str) -> HashSet<&str> {
@@ -202,6 +306,7 @@ impl Update {
             lang: file.lang.clone(),
             signature: String::new(),
         };
+        let lines = Lines::new(&file.source);
         let mut declared: Vec<Node> = Vec::new();
         for definition in &file.definitions {
             let Some(kind) = node_kind(&definition.kind) else {
@@ -214,22 +319,17 @@ impl Update {
                 path: file.path.clone(),
                 name: definition.name.clone(),
                 span,
-                line: line_at(&file.source, definition.span.0),
-                end_line: line_at(&file.source, definition.span.1),
+                line: lines.at(definition.span.0),
+                end_line: lines.at(definition.span.1),
                 lang: file.lang.clone(),
                 signature: definition.signature.clone(),
             });
         }
-        let enclosing = |inner: (u32, u32), kinds: &[NodeKind]| {
-            declared
-                .iter()
-                .filter(|n| kinds.contains(&n.kind) && contains(n.span, inner))
-                .min_by_key(|n| n.span.1 - n.span.0)
-        };
+        let owners = Enclosing::new(&declared, &[NodeKind::Function, NodeKind::Class]);
         let mut kept = Vec::new();
         let mut variables = Vec::new();
         for node in &declared {
-            match enclosing(node.span, &[NodeKind::Function, NodeKind::Class]) {
+            match owners.find(&declared, node.span).map(|i| &declared[i]) {
                 None => {
                     self.edge(file_node.id, node.id, EdgeKind::Defines);
                     if node.kind == NodeKind::Variable {
@@ -258,13 +358,14 @@ impl Update {
                 }
             }
         }
+        let functions = Enclosing::new(&declared, &[NodeKind::Function]);
         let calls = file
             .calls
             .iter()
             .map(|(name, span)| {
-                let caller = enclosing(span32(*span), &[NodeKind::Function])
-                    .filter(|f| kept.iter().any(|k| k.id == f.id))
-                    .map_or(file_node.id, |f| f.id);
+                let caller = functions
+                    .find(&declared, span32(*span))
+                    .map_or(file_node.id, |i| declared[i].id);
                 (caller, name.clone())
             })
             .collect();
@@ -290,9 +391,9 @@ impl Update {
 
 impl Graph {
     /// Replaces the files in `update` and drops `removed`, then resolves the
-    /// new files' references against the whole graph. An edge from an
-    /// untouched file into a replaced one follows its target by kind and name,
-    /// and its external calls resolve again against the functions `update` defines.
+    /// new files' references against the whole graph. An untouched file's import
+    /// or inheritance into a replaced file follows its target by kind and path; its
+    /// calls to a name `update` defines or drops resolve again, as a full build would.
     pub fn apply(&mut self, update: Update, removed: &[String], git_oid: &str) {
         let Update {
             nodes,
@@ -323,87 +424,96 @@ impl Graph {
             }
         }
         self.edges = kept_edges;
-        let defined: HashMap<NodeId, String> = nodes
+        let changed_names: HashSet<String> = nodes
             .iter()
+            .chain(gone.values())
             .filter(|n| n.kind == NodeKind::Function)
-            .map(|n| (external(&n.name).id, n.name.clone()))
+            .map(|n| n.name.clone())
             .collect();
         self.nodes.extend(nodes);
         self.edges.extend(edges);
         self.git_oid = git_oid.to_owned();
 
         let mut externals: HashMap<String, Node> = HashMap::new();
+        let mut external_id = |name: &str| {
+            externals
+                .entry(name.to_owned())
+                .or_insert_with(|| external(name))
+                .id
+        };
         let mut added = Vec::new();
         {
             let lookup = Lookup::new(&self.nodes);
-            let place: HashMap<NodeId, &str> =
-                self.nodes.iter().map(|n| (n.id, n.path.as_str())).collect();
-            let mut imports: HashMap<NodeId, Vec<NodeId>> = HashMap::new();
-            for edge in self.edges.iter().filter(|e| e.kind == EdgeKind::Imports) {
-                imports.entry(edge.src).or_default().push(edge.dst);
+            let place: HashMap<NodeId, &Node> = self.nodes.iter().map(|n| (n.id, n)).collect();
+            let replaced_imports = dangling.iter().filter_map(|(edge, target)| {
+                Some((edge.src, lookup.same_place(target)?, edge.kind))
+            });
+            let mut imports: HashMap<&str, HashSet<&str>> = HashMap::new();
+            for (src, dst, kind) in self
+                .edges
+                .iter()
+                .map(|e| (e.src, e.dst, e.kind))
+                .chain(replaced_imports)
+            {
+                if kind != EdgeKind::Imports {
+                    continue;
+                }
+                if let (Some(from), Some(to)) =
+                    (lookup.file_paths.get(&src), lookup.file_paths.get(&dst))
+                {
+                    imports.entry(*from).or_default().insert(*to);
+                }
             }
+            let nothing = HashSet::new();
             // As a full build resolves the call: from the caller's file and what it imports.
             let resolve_call = |caller: NodeId, name: &str| {
-                let path = place.get(&caller).copied().unwrap_or_default();
-                let file = node_id(NodeKind::File, path, path, (0, 0));
-                lookup.function(name, path, imports.get(&file).map_or(&[], Vec::as_slice))
+                let path = place.get(&caller).map_or("", |n| n.path.as_str());
+                lookup.function(name, path, imports.get(path).unwrap_or(&nothing))
             };
             for file in &pending {
                 let imported = lookup.imported_files(&file.path, &file.imports);
+                let imported_paths = lookup.paths(&imported);
                 let file_id = node_id(NodeKind::File, &file.path, &file.path, (0, 0));
                 for target in &imported {
                     added.push((file_id, *target, EdgeKind::Imports));
                 }
                 for (caller, name) in &file.calls {
-                    let dst = match lookup.function(name, &file.path, &imported) {
-                        Some(id) => id,
-                        None => {
-                            externals
-                                .entry(name.clone())
-                                .or_insert_with(|| external(name))
-                                .id
-                        }
-                    };
+                    let dst = lookup
+                        .function(name, &file.path, &imported_paths)
+                        .unwrap_or_else(|| external_id(name));
                     added.push((*caller, dst, EdgeKind::Calls));
                 }
                 for (child, parent) in &file.inherits {
-                    let child = lookup.class(child, &file.path, &[]);
-                    let parent = lookup.class(parent, &file.path, &imported);
+                    let child = lookup.class(child, &file.path, &nothing);
+                    let parent = lookup.class(parent, &file.path, &imported_paths);
                     if let (Some(child), Some(parent)) = (child, parent) {
                         added.push((child, parent, EdgeKind::Inherits));
                     }
                 }
             }
-            for (edge, target) in dangling {
-                let same = lookup.same_place(&target);
-                let dst = match (same, edge.kind) {
-                    (Some(id), _) => Some(id),
-                    (None, EdgeKind::Calls) => {
-                        Some(resolve_call(edge.src, &target.name).unwrap_or_else(|| {
-                            externals
-                                .entry(target.name.clone())
-                                .or_insert_with(|| external(&target.name))
-                                .id
-                        }))
-                    }
-                    (None, _) => None,
+            for (edge, target) in &dangling {
+                let dst = match edge.kind {
+                    EdgeKind::Calls => Some(
+                        resolve_call(edge.src, &target.name)
+                            .unwrap_or_else(|| external_id(&target.name)),
+                    ),
+                    _ => lookup.same_place(target),
                 };
                 if let Some(dst) = dst {
                     added.push((edge.src, dst, edge.kind));
                 }
             }
-            // An untouched file's external call may now name a function this update defines.
-            if !defined.is_empty() {
-                for edge in &mut self.edges {
-                    let Some(name) = defined
+            // A function added or removed under a name changes how an untouched file's call to it resolves.
+            if !changed_names.is_empty() {
+                for edge in self.edges.iter_mut().filter(|e| e.kind == EdgeKind::Calls) {
+                    let Some(name) = place
                         .get(&edge.dst)
-                        .filter(|_| edge.kind == EdgeKind::Calls)
+                        .map(|n| n.name.as_str())
+                        .filter(|name| changed_names.contains(*name))
                     else {
                         continue;
                     };
-                    if let Some(dst) = resolve_call(edge.src, name) {
-                        edge.dst = dst;
-                    }
+                    edge.dst = resolve_call(edge.src, name).unwrap_or_else(|| external_id(name));
                 }
             }
         }
@@ -574,21 +684,41 @@ impl Node {
 /// Name resolution over a node list.
 struct Lookup<'g> {
     by_name: HashMap<&'g str, Vec<&'g Node>>,
-    files: Vec<&'g Node>,
+    by_stem: HashMap<&'g str, Vec<&'g Node>>,
+    file_at: HashMap<&'g str, &'g Node>,
+    file_paths: HashMap<NodeId, &'g str>,
 }
 
 impl<'g> Lookup<'g> {
     fn new(nodes: &'g [Node]) -> Self {
         let mut by_name: HashMap<&str, Vec<&Node>> = HashMap::new();
-        let mut files = Vec::new();
+        let mut by_stem: HashMap<&str, Vec<&Node>> = HashMap::new();
+        let mut file_at = HashMap::new();
+        let mut file_paths = HashMap::new();
         for node in nodes {
             match node.kind {
-                NodeKind::File => files.push(node),
+                NodeKind::File => {
+                    by_stem.entry(file_stem(&node.path)).or_default().push(node);
+                    file_at.entry(node.path.as_str()).or_insert(node);
+                    file_paths.insert(node.id, node.path.as_str());
+                }
                 NodeKind::ExternalCall => {}
                 _ => by_name.entry(node.name.as_str()).or_default().push(node),
             }
         }
-        Self { by_name, files }
+        Self {
+            by_name,
+            by_stem,
+            file_at,
+            file_paths,
+        }
+    }
+
+    fn paths(&self, files: &[NodeId]) -> HashSet<&'g str> {
+        files
+            .iter()
+            .filter_map(|id| self.file_paths.get(id).copied())
+            .collect()
     }
 
     fn imported_files(&self, from: &str, imports: &[String]) -> Vec<NodeId> {
@@ -596,10 +726,12 @@ impl<'g> Lookup<'g> {
         for import in imports {
             for stem in import_stems(import) {
                 let matching: Vec<&Node> = self
-                    .files
-                    .iter()
+                    .by_stem
+                    .get(stem.as_str())
+                    .into_iter()
+                    .flatten()
                     .copied()
-                    .filter(|f| f.path != from && file_stem(&f.path) == stem)
+                    .filter(|f| f.path != from)
                     .collect();
                 let near: Vec<&Node> = matching
                     .iter()
@@ -626,25 +758,21 @@ impl<'g> Lookup<'g> {
         name: &str,
         kind: NodeKind,
         path: &str,
-        imported: &[NodeId],
+        imported: &HashSet<&str>,
     ) -> Option<NodeId> {
         let candidates: Vec<&Node> = self
             .by_name
-            .get(name)
-            .map(|nodes| nodes.iter().copied().filter(|n| n.kind == kind).collect())
-            .unwrap_or_default();
+            .get(name)?
+            .iter()
+            .copied()
+            .filter(|n| n.kind == kind)
+            .collect();
         if let Some(local) = candidates.iter().find(|n| n.path == path) {
             return Some(local.id);
         }
-        let imported_paths: Vec<&str> = self
-            .files
-            .iter()
-            .filter(|f| imported.contains(&f.id))
-            .map(|f| f.path.as_str())
-            .collect();
         if let Some(from_import) = candidates
             .iter()
-            .find(|n| imported_paths.contains(&n.path.as_str()))
+            .find(|n| imported.contains(n.path.as_str()))
         {
             return Some(from_import.id);
         }
@@ -654,17 +782,17 @@ impl<'g> Lookup<'g> {
         }
     }
 
-    fn function(&self, name: &str, path: &str, imported: &[NodeId]) -> Option<NodeId> {
+    fn function(&self, name: &str, path: &str, imported: &HashSet<&str>) -> Option<NodeId> {
         self.resolve(name, NodeKind::Function, path, imported)
     }
 
-    fn class(&self, name: &str, path: &str, imported: &[NodeId]) -> Option<NodeId> {
+    fn class(&self, name: &str, path: &str, imported: &HashSet<&str>) -> Option<NodeId> {
         self.resolve(name, NodeKind::Class, path, imported)
     }
 
     fn same_place(&self, old: &Node) -> Option<NodeId> {
         if old.kind == NodeKind::File {
-            return self.files.iter().find(|f| f.path == old.path).map(|f| f.id);
+            return self.file_at.get(old.path.as_str()).map(|f| f.id);
         }
         self.by_name
             .get(old.name.as_str())?
@@ -678,8 +806,12 @@ impl<'g> Lookup<'g> {
 struct Adjacency {
     at: HashMap<NodeId, usize>,
     by_name: HashMap<String, Vec<usize>>,
+    by_path: HashMap<String, Vec<usize>>,
     out: Vec<Vec<(usize, EdgeKind)>>,
     incoming: Vec<Vec<(usize, EdgeKind)>>,
+    /// Distinct `Calls` targets; `calling_functions` is the inverse, from functions only.
+    callees: Vec<Vec<usize>>,
+    calling_functions: Vec<Vec<usize>>,
 }
 
 impl Adjacency {
@@ -691,22 +823,44 @@ impl Adjacency {
             .map(|(i, n)| (n.id, i))
             .collect();
         let mut by_name: HashMap<String, Vec<usize>> = HashMap::new();
+        let mut by_path: HashMap<String, Vec<usize>> = HashMap::new();
         for (i, node) in graph.nodes.iter().enumerate() {
             by_name.entry(node.name.clone()).or_default().push(i);
+            match by_path.get_mut(&node.path) {
+                Some(found) => found.push(i),
+                None => {
+                    by_path.insert(node.path.clone(), vec![i]);
+                }
+            }
         }
         let mut out = vec![Vec::new(); graph.nodes.len()];
         let mut incoming = vec![Vec::new(); graph.nodes.len()];
+        let mut callees = vec![Vec::new(); graph.nodes.len()];
+        let mut calling_functions = vec![Vec::new(); graph.nodes.len()];
         for edge in &graph.edges {
             if let (Some(&src), Some(&dst)) = (at.get(&edge.src), at.get(&edge.dst)) {
                 out[src].push((dst, edge.kind));
                 incoming[dst].push((src, edge.kind));
+                if edge.kind == EdgeKind::Calls {
+                    callees[src].push(dst);
+                    if graph.nodes[src].kind == NodeKind::Function {
+                        calling_functions[dst].push(src);
+                    }
+                }
             }
+        }
+        for list in callees.iter_mut().chain(calling_functions.iter_mut()) {
+            list.sort_unstable();
+            list.dedup();
         }
         Self {
             at,
             by_name,
+            by_path,
             out,
             incoming,
+            callees,
+            calling_functions,
         }
     }
 }
@@ -817,34 +971,23 @@ impl<'g> Index<'g> {
         found
     }
 
-    fn callee_set(&self, at: usize) -> HashSet<usize> {
-        self.adjacency.out[at]
-            .iter()
-            .filter(|(_, k)| *k == EdgeKind::Calls)
-            .map(|(dst, _)| *dst)
-            .collect()
-    }
-
     /// Up to three other functions whose callees overlap `name`'s by a Jaccard index of at least 0.5.
     #[must_use]
     pub fn similar(&self, name: &str) -> Vec<&'g Node> {
         let mine = self.functions(name);
         let mut scored: Vec<(f64, usize)> = Vec::new();
         for &f in &mine {
-            let calls = self.callee_set(f);
-            if calls.is_empty() {
-                continue;
+            let calls = &self.adjacency.callees[f];
+            let mut shared_with: HashMap<usize, usize> = HashMap::new();
+            for &callee in calls {
+                for &other in &self.adjacency.calling_functions[callee] {
+                    if !mine.contains(&other) {
+                        *shared_with.entry(other).or_default() += 1;
+                    }
+                }
             }
-            for (other, node) in self.graph.nodes.iter().enumerate() {
-                if node.kind != NodeKind::Function || mine.contains(&other) {
-                    continue;
-                }
-                let theirs = self.callee_set(other);
-                if theirs.is_empty() {
-                    continue;
-                }
-                let shared = calls.intersection(&theirs).count();
-                let union = calls.union(&theirs).count();
+            for (other, shared) in shared_with {
+                let union = calls.len() + self.adjacency.callees[other].len() - shared;
                 #[allow(clippy::cast_precision_loss, reason = "callee counts are small")]
                 let jaccard = shared as f64 / union as f64;
                 if jaccard >= SIMILAR_THRESHOLD {
@@ -923,14 +1066,7 @@ impl<'g> Index<'g> {
     /// The external calls made from `path`.
     #[must_use]
     pub fn external_calls(&self, path: &str) -> Vec<&'g Node> {
-        let callers = self
-            .graph
-            .nodes
-            .iter()
-            .enumerate()
-            .filter(|(_, n)| n.path == path)
-            .map(|(i, _)| i);
-        let mut found = self.collect(callers.flat_map(|caller| {
+        let mut found = self.collect(self.at_path(path).flat_map(|caller| {
             self.adjacency.out[caller]
                 .iter()
                 .filter(|(dst, k)| {
@@ -957,19 +1093,19 @@ impl<'g> Index<'g> {
         )
     }
 
-    /// Answers a wire query.
+    /// Answers a wire query; `None` for a question this build does not know.
     #[must_use]
-    pub fn query(&self, query: &domain::GraphQuery) -> Vec<&'g Node> {
+    pub fn query(&self, query: &domain::GraphQuery) -> Option<Vec<&'g Node>> {
         use domain::GraphQuery as Q;
-        match query {
+        Some(match query {
             Q::Callers(name) => self.callers(name),
             Q::Callees(name) => self.callees(name),
             Q::Similar(name) => self.similar(name),
             Q::Path(from, to) => self.path(from, to),
             Q::Imports(path) => self.imports(path),
             Q::ExternalCalls(path) => self.external_calls(path),
-            _ => Vec::new(),
-        }
+            _ => return None,
+        })
     }
 
     /// The functions of `path` whose lines overlap `lines`, inclusive.
@@ -982,14 +1118,22 @@ impl<'g> Index<'g> {
     #[must_use]
     pub fn declared_in(&self, path: &str, lines: (u32, u32), kind: NodeKind) -> Vec<&'g Node> {
         let mut found: Vec<&Node> = self
-            .graph
-            .nodes
-            .iter()
-            .filter(|n| n.kind == kind && n.path == path)
+            .at_path(path)
+            .map(|i| self.node(i))
+            .filter(|n| n.kind == kind)
             .filter(|n| n.line <= lines.1 && n.end_line >= lines.0)
             .collect();
         found.sort_by_key(|n| n.line);
         found
+    }
+
+    fn at_path(&self, path: &str) -> impl Iterator<Item = usize> + '_ {
+        self.adjacency
+            .by_path
+            .get(path)
+            .into_iter()
+            .flatten()
+            .copied()
     }
 }
 

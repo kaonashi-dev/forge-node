@@ -32,7 +32,7 @@ Versioned by `rusqlite_migration` through SQLite's `PRAGMA user_version`
 
 - **Append only.** Add a new `M::up(...)` to `migrations()`; never edit or
   reorder an existing one, or already-migrated databases will diverge.
-- Twenty-one migrations so far: `INITIAL_SCHEMA`, `REFERENTIAL_ACTIONS`,
+- `migrations()` is the order of record: `INITIAL_SCHEMA`, `REFERENTIAL_ACTIONS`,
   `PROJECT_GROUPS`, `AGENT_PROFILES`, `PROJECT_ICONS`,
   `WORKSPACE_DISPLAY_NAMES`, `SESSION_LAUNCH_COMMAND`, `WORKTREE_SHARES`,
   `SESSION_BASE_COMMIT`, `PROFILE_CONFIG_DIR`, `WORKTREE_IGNORES`,
@@ -44,7 +44,8 @@ Versioned by `rusqlite_migration` through SQLite's `PRAGMA user_version`
   startup session purge does not scan `runs` and `attempts` once per row),
   and `PROJECT_ACTIONS` (below), and `REVIEWS` + `REVIEW_PRESET` +
   `REVIEW_PRESET_STANDARD` (below), `PROJECT_ICON_IMAGES`, and
-  `REVIEW_LINEAGE` + `REVIEW_FEEDBACK` (below).
+  `REVIEW_LINEAGE` + `REVIEW_FEEDBACK` (below), `SPEC_RUNS` (v24, rows only; see
+  [spec-runs.md](spec-runs.md)), and the Forge Review v2 tables (v25–v33, below).
   Session activity is not a column. A restart reconciles live attempts to lost
   and an active run to interrupted before the socket is bound. Factory reset
   deletes those tables with the rest of the application rows.
@@ -124,7 +125,7 @@ agent_profiles    (id PK, provider_id, name, executable_path, config_dir,
 sessions          + agent_profile_id
 ```
 
-Launch profiles (§13.4), the saved form of a shell wrapper like
+Launch profiles, the saved form of a shell wrapper like
 `CLAUDE_CONFIG_DIR=~/.claude-personal claude --model opus`. Four deliberate
 choices:
 
@@ -152,7 +153,7 @@ worktree_shares   (id PK, project_id FK→projects ON DELETE CASCADE, path,
                   UNIQUE (project_id, path)
 ```
 
-Which files a project shares between its workspaces (§14.2). Three choices,
+Which files a project shares between its workspaces. Three choices,
 for reasons that mirror `AGENT_PROFILES`:
 
 - `strategy` is JSON (`{"kind":"clone"}`, `{"kind":"run","command":"pnpm
@@ -186,7 +187,7 @@ ignoring case because a chip and a palette entry name an action by label. A
 run's session (`SessionKind::Task`) is an ordinary `sessions` row; which action
 it runs is runtime-only.
 
-## Schema (v16 — `REVIEWS`, v20–v23, v25–v31)
+## Schema (v16 — `REVIEWS`, v20–v23, v25–v33)
 
 ```sql
 review_runs     (id PK, workspace_id FK→workspaces ON DELETE CASCADE, target,
@@ -279,12 +280,14 @@ JSON.
 One repository per table, obtained from the handle: `db.projects()`,
 `db.project_groups()`, `db.workspaces()`, `db.sessions()`, `db.context()`,
 `db.orchestration()`, `db.provider_overrides()`, `db.agent_profiles()`,
-`db.shares()`, `db.ignores()`, `db.app_state()`, plus `db.review_store()` for
-`review_runs`/`review_findings`/`review_feedback`. Each maps every domain field to
+`db.shares()`, `db.ignores()`, `db.actions()`, `db.app_state()`, plus two stores
+on their own connections: `db.spec_run_store()` for `spec_runs`, and
+`db.review_store()` for the review, codebase-graph, knowledge-base and sandbox
+tables. Each maps every domain field to
 and from its columns; the daemon loads all rows into memory at startup and
 writes through on every mutation (`upsert`/`delete`).
 
-## Startup reconciliation (§15.3)
+## Startup reconciliation
 
 A PTY never survives the daemon, so every session row a new daemon finds is
 already dead. `sessions.persist_history` picks what that means, before any

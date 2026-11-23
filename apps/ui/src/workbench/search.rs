@@ -411,9 +411,11 @@ mod tests {
             "the comment opened on the line above still colours this one"
         );
         assert!(
-            run[2]
-                .syntax
-                .contains(&(0..5, Paint::Kind(Syntax::Keyword)))
+            run[2].syntax.iter().any(|(range, paint)| range.start == 0
+                && range.end >= "async".len()
+                && *paint == Paint::Kind(Syntax::Keyword)),
+            "Rune may carry the trailing space in the keyword's span: {:?}",
+            run[2].syntax
         );
         assert!(
             files[1].excerpts[0][0].syntax.is_empty(),

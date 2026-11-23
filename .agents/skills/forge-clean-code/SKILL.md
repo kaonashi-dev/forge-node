@@ -46,9 +46,10 @@ Read `CONTEXT.md` and `docs/architecture.md`. Split work by **owned paths** (no 
 
 | Slice | Owns |
 |-------|------|
-| Docs / AGENTS / agent-nav | `AGENTS.md`, `CONTEXT.md`, `docs/**`, `.agents/**`, crate `lib.rs` headers, `scripts/dev`, `Makefile` |
+| Docs / AGENTS / agent-nav | `AGENTS.md`, `CONTEXT.md`, `README.md`, `docs/**`, `.agents/**`, crate `lib.rs` headers, `scripts/dev`, `Makefile`, `init.sh`, `.github/workflows/**` |
 | Daemon runtime | `crates/daemon/src/**`, `crates/terminal-core/**` |
 | Crate seams | `domain`, `protocol`, `client`, `git-service`, `fs-service`, `persistence`, `terminal-input`, `apps/ui/Cargo.toml` |
+| Review, spec runs and definitions | `review`, `codebase-graph`, `diagram-gen`, `review-hypotheses`, `knowledge-base`, `runtime-sandbox`, `syntax-index`, `external-index`, `lsp-client`, `languages`, `agents`, `forge-ctl`, `editor-*` |
 | Rune client | `apps/ui/src/**` (UI-thread rules, `client::Client` worker, `memo` keys) |
 | Comments | module `//!` / file headers only — no repo-wide comment sweep |
 

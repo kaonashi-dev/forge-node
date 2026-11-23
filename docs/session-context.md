@@ -5,7 +5,7 @@ spawns a child — without providers talking to each other.
 
 Source: `crates/daemon/src/context_xfer.rs`, `session_cli.rs`, `core.rs`
 (`SendContext` / `CreateChildSession`); GUI: `SpawnChildDialog`,
-`SendContextDialog`, `HandoffDialog`. Domain: §8.2–8.3. Protocol: v18+.
+`SendContextDialog`, `HandoffDialog`. Domain: `ChildWorkspacePolicy` and `ContextEnvelope` in [domain.md](./domain.md). Protocol: v18+.
 
 ## The rule
 

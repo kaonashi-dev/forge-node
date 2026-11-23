@@ -266,17 +266,33 @@ pub fn excluded_path(path: &str, ignore: &[String]) -> bool {
     excluded(path, &ignores)
 }
 
+type Patterns = (Vec<glob::Pattern>, Vec<glob::Pattern>);
+
+// Compiled once: `excluded` runs per listed path, and a graph build lists every file.
+fn builtin_patterns() -> &'static Patterns {
+    static PATTERNS: OnceLock<Patterns> = OnceLock::new();
+    PATTERNS.get_or_init(|| {
+        let compile = |globs: &[&str]| {
+            globs
+                .iter()
+                .filter_map(|glob| glob::Pattern::new(glob).ok())
+                .collect()
+        };
+        (compile(&EXCLUDED_NAMES), compile(&SECRET_NAMES))
+    })
+}
+
 fn excluded(path: &str, ignores: &[glob::Pattern]) -> bool {
     let name = path.rsplit('/').next().unwrap_or(path);
     let mut dirs = path.split('/').rev().skip(1);
-    let matches =
-        |glob: &&str| glob::Pattern::new(glob).is_ok_and(|p| p.matches_with(name, ANY_CASE));
+    let matches = |pattern: &glob::Pattern| pattern.matches_with(name, ANY_CASE);
     let source = Path::new(name)
         .extension()
         .and_then(|ext| ext.to_str())
         .is_some_and(|ext| SOURCE_EXTENSIONS.contains(&ext));
-    EXCLUDED_NAMES.iter().any(matches)
-        || (!source && SECRET_NAMES.iter().any(matches))
+    let (names, secrets) = builtin_patterns();
+    names.iter().any(matches)
+        || (!source && secrets.iter().any(matches))
         || dirs.any(|dir| dir == "generated")
         || path.starts_with("dist/")
         || ignores

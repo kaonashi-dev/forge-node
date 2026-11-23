@@ -523,7 +523,8 @@ one per workspace at a time, under the same approval and without the budget.
 
 ### Fix loop
 
-`StartFixLoop { review_id, max_iterations }` (3 by default, at most 10) sends a
+`StartFixLoop { review_id, max_iterations, provider, profile_id }` (3 by default,
+at most 10; the fixer is `[review] provider` unless named) sends a
 workspace review's standing findings to a new writable agent with the same
 8 KiB prompt "Fix with a new agent" builds, waits for it to idle or exit within
 `timeout_secs`, closes it, runs the same review again (the first run's stored
@@ -573,8 +574,8 @@ knowledge base's size.
 | `sandbox_env_whitelist` | `["PATH", "HOME"]` | variables copied into a sandbox check's environment; `FORGE_*` is dropped |
 | `sandbox_write_paths` | the tool caches (`~/.cargo`, `~/.rustup`, `~/.bun`, `~/.npm`, `~/Library/Caches`) | writable to a sandbox check besides the run, its cache and `$TMPDIR`; `~` is the home, a missing path is dropped |
 
-A reviewer is launched in the provider's **read-only** mode *and* with the
-structured-review flag: Claude gets `--session-id` with a UUID Forge minted (so
+A reviewer is a `read_only` launch with the structured-review flag, which runs
+outside the provider's own read-only mode: its prompt forbids writes. Claude gets `--session-id` with a UUID Forge minted (so
 the transcript is findable) and `--add-dir` for the pack. A provider without that
 capability is refused, never downgraded to one that can write —
 [agents.md](./agents.md). Every key with its default:

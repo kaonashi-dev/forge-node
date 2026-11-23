@@ -70,7 +70,7 @@ root, rejecting control characters. This host-local envelope adds no daemon
 message: the encoded bytes travel through ordinary terminal input. Filesystem
 drops use the correlated workbench `rename_path` operation above.
 
-## Handshake (§9.2)
+## Handshake
 
 ```
 client → Hello { protocol_version, client_version, client_kind }
@@ -84,7 +84,7 @@ daemon restart. `ClientKind` is `Gui` (the desktop GUI; the daemon's own session
 CLI also uses it), `Cli` (`forgectl`, which is not sent terminal chatter), or
 `Unknown`.
 
-## Message model (§10.1)
+## Message model
 
 ```
 ClientMessage::Request  { request_id: u64, body: Request }
@@ -102,7 +102,7 @@ DaemonMessage::Event    (DaemonEvent)
   clients that attached to that terminal; others get a coalesced
   `TerminalActivity` (≤1/s per terminal) for unread badges.
 
-## Requests (§10.2)
+## Requests
 
 | Group | Request | Answer / side effect |
 |-------|---------|----------------------|
@@ -131,7 +131,7 @@ DaemonMessage::Event    (DaemonEvent)
 | | `RefreshWorkspaceStatus { workspace_id }` | `WorkspaceUpdated` carrying branch + `WorkspaceStatus { dirty, head, ahead, behind }` — `head` is the commit oid, the signal the GUI re-reads the file tree and diff on. Throttled to one `git status` every 2 s per workspace (ADR-008). |
 | Branches | `ListBranches { project_id }` | `Response::Branches { branches, remotes, default_branch }`. A **local**, synchronous ref read; the GUI runs it on the workbench worker because Git can block terminal input even without network access. Each `BranchRef` says which workspace already has it checked out. |
 | | `FetchRemote { project_id, remote }` | `Ack` **as soon as the fetch starts**, then `RemoteRefsUpdated` when it finishes. One of the asynchronous requests (with `CreatePullRequest`, `CommitAndOpenPullRequest` and `RefreshPullRequests`): a fetch can take minutes and the GUI's command channel also carries terminal input. A fetch already in flight for that project is coalesced, not queued. `remote: None` = `origin`, falling back to the first remote configured when `origin` is absent; `GitError` when there is none. |
-| | `GetWorkspaceDiff { workspace_id, context_lines }` | `Response::WorkspaceDiff(WorkspaceDiff)` — the checkout's uncommitted changes, one unified patch per file (§16.7). Local and **synchronous**, like `ListBranches`: `git diff` opens no socket, so there is nothing to ack early and report through an event. Not broadcast either: a diff is a view one client asked for, not shared state. `context_lines: None` takes the service default (12, wider than git's 3 — this feeds a window, not a pager). |
+| | `GetWorkspaceDiff { workspace_id, context_lines }` | `Response::WorkspaceDiff(WorkspaceDiff)` — the checkout's uncommitted changes, one unified patch per file. Local and **synchronous**, like `ListBranches`: `git diff` opens no socket, so there is nothing to ack early and report through an event. Not broadcast either: a diff is a view one client asked for, not shared state. `context_lines: None` takes the service default (12, wider than git's 3 — this feeds a window, not a pager). |
 | | `ListFiles { workspace_id }` | `Response::FileTree(FileTree)` — tracked and untracked-but-not-ignored paths, plus opaque ignored directories (ADR-012). Language dependency directories (`node_modules`, `vendor`, …) are omitted. Local and **synchronous** like `GetWorkspaceDiff`. Paths are relative and stay inside the checkout. |
 | | `ListDirectory { workspace_id, path }` | `Response::DirectoryListing { path, entries, truncated }` — immediate real disk children; `path: ""` reads root. Includes empty/hidden/ignored directories; `.git` and dependency directories are omitted. Optional `FileEntry.symlink` distinguishes internal file/directory links from external, broken and unavailable targets. Internal aliases retain their logical paths. Bounded to 2000 entries and 1 MiB per answer, with 4096-byte paths; partial results are explicit and read errors propagate. Local and **synchronous** like `ListFiles`. |
 | | `ReadFile { workspace_id, path }` | `Response::FileContents(FileContents)` — text plus a `revision` the next write must present. A binary or oversize file is not an error: it answers with empty `text` and `binary`/`too_large` set, never a truncated read. |
@@ -196,11 +196,17 @@ DaemonMessage::Event    (DaemonEvent)
 | | `StartFixLoop { review_id, max_iterations, provider, profile_id }` | `Response::FixLoopStarted { workspace_id }`, then `FixLoopUpdated`. `InvalidRequest` for a pull-request review, `Conflict` while a loop runs for the workspace. A person's request: no MCP tool sends it. |
 | | `CancelFixLoop { workspace_id }` | `Ack`; `NotFound` when no loop runs. |
 | | `GetReviewStats { workspace_id }` | `Response::ReviewStats` — latency per tier and the graph, hypothesis-coverage, reachability, knowledge-base and sandbox-checks rates. |
+| Spec runs | `StartSpecRun { workspace_id, name, source, planner, coder, options }` | `Response::SpecRunStarted`, then `SpecRunUpdated`; saves the source under the run's directory and launches the drafter. [spec-runs.md](./spec-runs.md). |
+| | `SaveSpecArtifact { spec_run_id, caller_session_id, kind, content, artifact_url }` | `Response::SpecArtifactSaved { warnings }`; a run agent's spec, research, plan or early exit, validated before it is kept. `InvalidRequest` lists every reason; `spec_run_id: None` is the caller's run. |
+| | `SubmitSpecReport { spec_run_id, caller_session_id, content, artifact_url }` | `Ack`; the planner's report, validated against the approved spec, the reviewed diff and the checks Forge ran this round. |
+| | `SpecRound { spec_run_id, caller_session_id, findings }` | `Ack`; findings start another coder round (`PreconditionFailed` past the run's rounds), none accepts the current task. |
+| | `SpecGate { spec_run_id, caller_session_id, gate, decision }` | `Ack`; a person passes, sends back or rejects a gate. `PreconditionFailed` for any live agent session, `Conflict` when the run is not at that gate. |
+| | `GetSpecRun { spec_run_id }` | `Response::SpecRun`, with its spec, plan and report. Local read. |
 | Project actions | `SuggestActions { workspace_id }` | `Response::ActionSuggestions` — what the workspace root's manifests suggest, plus what `.forge/actions.toml` offers for import (`repo_file`, with parse `error` and `drift`). Bounded, local, **synchronous**; writes and runs nothing. [actions.md](./actions.md). |
 | | `SetProjectActions { project_id, actions }` | Replaces the project's whole action set. `InvalidRequest` for a duplicate label (ignoring case), a `cwd` outside the checkout, a probe without its port, a dependency outside the set, a cycle, or a chain deeper than 4. A live session of a dropped action is untagged (`SessionUpdated`). `ProjectActionsChanged`. |
 | | `RunAction { workspace_id, action_id }` | `SessionCreated`, `ActionAlreadyRunning { session_id }` for a live single-instance action in that workspace, or `ActionQueued { session_id }` while its dependencies come up. The live check and the creation share one critical section. `NotFound` for an action not in the workspace's project. |
 | Shared files | `DetectShareCandidates { project_id }` | `Response::ShareCandidates` — the project's ignored paths, classified, with the strategy Forge would propose. One `git status --ignored=matching` plus a bounded walk: local and **synchronous** like `ListBranches`, and `truncated` says the list is a floor rather than the whole tree. |
-| | `SetProjectShares { project_id, rules }` | Replaces the project's whole rule set (§14.2). The set, not a row: adding, reordering, enabling and re-pointing a strategy are one edit of one list. `InvalidRequest` for a path that is absolute, contains `..`, or names the git directory. `ProjectSharesChanged`. |
+| | `SetProjectShares { project_id, rules }` | Replaces the project's whole rule set. The set, not a row: adding, reordering, enabling and re-pointing a strategy are one edit of one list. `InvalidRequest` for a path that is absolute, contains `..`, or names the git directory. `ProjectSharesChanged`. |
 | | `RemoveShareRule { project_id, rule_id, cleanup }` | Drops one rule and says what happens to the files it already wrote: `Leave`, `RemoveInjected` or `Materialize`. Answers `Response::SharePlan` with what the cleanup did per workspace. Its own request because it is the only edit that can delete a file. `ProjectSharesChanged`. |
 | | `PreviewShares { workspace_id }` | `Response::SharePlan` — what applying would do. Writes nothing. |
 | | `GetShareStatus { workspace_id }` | `Response::ShareStatus` — per rule: `Applied`, `Missing`, `Severed` (a link a tool replaced with a real file), `Diverged`, `Skipped` or `Failed`. One `lstat` per rule, no subprocess. |
@@ -208,9 +214,9 @@ DaemonMessage::Event    (DaemonEvent)
 | | `AdoptIntoShareStore { project_id, path }` | Moves a real file into `<git common dir>/forge/shared` and leaves a symlink, backing the original up first. Explicit because it is the only operation that changes the primary checkout. |
 | | `MaterializeFromShareStore { project_id, path, workspace_id }` | The inverse: writes the store file back as a real file. `workspace_id: None` does it for every workspace of the project. |
 | Worktree ignores | `ListWorktreeIgnores { project_id }` | `Response::WorktreeIgnores(Vec<WorktreeIgnore>)` — the project's ignore rules, served from the daemon's cache. Local and synchronous; no scan, no broadcast. |
-| | `SetWorktreeIgnores { project_id, rules }` | Replaces the project's whole ignore set (§14.4). Paths are resolved and canonicalized by the daemon; `InvalidRequest` for more than 200 rules or for a path that would hide the project's own checkout, and the daemon fills in `created_at`. The project is rescanned before the `Ack`, so rows the new rules cover are already gone; `ProjectWorktreeIgnoresChanged`. |
-| | `ListProviderUsage` | `Response::ProviderUsage(Vec<ProviderUsage>)` — each *account's* remaining allowance, read from its own endpoint or CLI (§16.2): the default login of every provider that declares a source, plus one reading per launch profile that moved the config directory, each stamped with its `profile_id`. Re-read rather than served from the cache, and also broadcast as `ProviderUsageChanged` so every client sees the same reading. A provider that declares no source is simply absent. |
-| | `GetUsageAnalytics { window_days }` | `Response::UsageAnalytics(Box<UsageAnalytics>)` — what the agents on this machine actually spent, counted off their own transcripts (§16.2). Local and **synchronous**, like `GetWorkspaceDiff`, and a read in the same sense: nothing is broadcast and nothing is stored. The daemon caches the scan for 60 s per window, because it is line-by-line IO over every recent transcript. `window_days: None` takes the reader's default (30) and an over-large value is clamped, never refused. |
+| | `SetWorktreeIgnores { project_id, rules }` | Replaces the project's whole ignore set. Paths are resolved and canonicalized by the daemon; `InvalidRequest` for more than 200 rules or for a path that would hide the project's own checkout, and the daemon fills in `created_at`. The project is rescanned before the `Ack`, so rows the new rules cover are already gone; `ProjectWorktreeIgnoresChanged`. |
+| | `ListProviderUsage` | `Response::ProviderUsage(Vec<ProviderUsage>)` — each *account's* remaining allowance, read from its own endpoint or CLI: the default login of every provider that declares a source, plus one reading per launch profile that moved the config directory, each stamped with its `profile_id`. Re-read rather than served from the cache, and also broadcast as `ProviderUsageChanged` so every client sees the same reading. A provider that declares no source is simply absent. |
+| | `GetUsageAnalytics { window_days }` | `Response::UsageAnalytics(Box<UsageAnalytics>)` — what the agents on this machine actually spent, counted off their own transcripts. Local and **synchronous**, like `GetWorkspaceDiff`, and a read in the same sense: nothing is broadcast and nothing is stored. The daemon caches the scan for 60 s per window, because it is line-by-line IO over every recent transcript. `window_days: None` takes the reader's default (30) and an over-large value is clamped, never refused. |
 
 ### Change workflows and headless editor
 
@@ -246,7 +252,7 @@ Removed relative to the v1 plan: `FocusSession` (pure GUI state) and generic
 | `KillSessionsKeepWorktrees` | killed | untouched | untouched |
 | `KillSessionsRemoveManagedWorktrees` | killed | only `managed_by_app` worktrees removed from disk | **never deleted** |
 
-## Events (§10.3)
+## Events
 
 | Event | Notes |
 |-------|-------|
@@ -272,19 +278,20 @@ Removed relative to the v1 plan: `FocusSession` (pure GUI state) and generic
 | `PullRequestFetched { host, repository, number, error }` | A `FetchPullRequest` ended; `host`, `repository` and `number` echo the request. On success the pull request is already in the state of the `PullRequestsUpdated` sent just before; `error` names why not otherwise (not found or not visible, merged, closed, `gh` missing or signed out). |
 | `FileChanged { workspace_id, path }` | Native watch notifications go to the watching connection; successful Forge renames also broadcast invalidations for both paths. An event is not proof of watch coverage. Carries no content; clients reconcile relevant reads without discarding dirty buffers. `path` is workspace-relative; an **empty** path asks the client to resync its visible surface. An undeliverable native notification becomes an owed resync, retried rather than disconnecting. |
 | `AgentDetectionChanged { results }` | After startup detection or a refresh. |
-| `AgentProfilesChanged { profiles }` | The whole set after any profile write (§13.4) — like usage and detection, a merge would strand a deleted profile. |
+| `AgentProfilesChanged { profiles }` | The whole set after any profile write — like usage and detection, a merge would strand a deleted profile. |
 | `ReviewUpdated { run }` | A Forge Review changed status or stage. Compact: findings are read with `GetReview` once the run is `Completed`. Protocol 46 added `Coverage::{proposed, without_reachability, hypotheses, acknowledged_scope}`, `Finding::reachability` and `ReviewStats::reachability_rate`, each defaulted when absent. |
 | `SandboxChecksFinished(SandboxRun)` | A `RunSandboxChecks` ended. |
 | `GraphIndexed { project_id, error }` | The first build a `QueryGraph` or `ExportGraph` started ended; a client asks again only without `error`. |
 | `FixLoopUpdated { workspace_id, iteration, findings, done, error }` | A fix loop ran another review, or stopped (`done`). |
+| `SpecRunUpdated(SpecRunView)` | A spec run changed stage, round, sessions, checks or attention. |
 | `ProjectActionsChanged { project_id, actions }` | One project's whole action set after `SetProjectActions`. |
-| `ProjectSharesChanged { project_id, rules }` | One project's whole rule set after any write (§14.2), for the same reason as the profiles event. |
-| `ProjectWorktreeIgnoresChanged { project_id, rules }` | One project's whole ignore set after `SetWorktreeIgnores` (§14.4) — and when a rescan collects a tombstone, so the GUI's list matches the daemon's. |
+| `ProjectSharesChanged { project_id, rules }` | One project's whole rule set after any write, for the same reason as the profiles event. |
+| `ProjectWorktreeIgnoresChanged { project_id, rules }` | One project's whole ignore set after `SetWorktreeIgnores` — and when a rescan collects a tombstone, so the GUI's list matches the daemon's. |
 | `SharesApplied { workspace_id, trigger, actions, error }` | A provisioning run finished — after `CreateWorktree`, after a worktree was adopted, or after `ApplyShares`. `actions` is one line per rule (`verb`, `bytes`, `fallback`, `note`); `error` is set only when the run could not be attempted at all, because a worktree with three of four shares is still a usable worktree. |
 | `DaemonNotice { level, message }` | `Warning`/`Error`/`Info`, e.g. login-shell env fallback. |
 | `DaemonShuttingDown { reason }` | |
 
-## Attach, sequences and resync (§10.5)
+## Attach, sequences and resync
 
 ```
 GUI                                DAEMON
@@ -334,9 +341,12 @@ reader thread, `flume` channels — no tokio, no GUI toolkit):
   `PROTOCOL_VERSION` and `ClientKind::Gui`; callers do not supply one.
   `connect_as(..., ClientKind::Cli)` is what `forgectl` uses. A CLI connection
   is not sent `TerminalActivity`, `TerminalBell`, `ClipboardStore`,
-  `EditorFrame`, `EditorFocusRequested`, or `ProviderUsageChanged`. Orchestration requests and events
-  (runs, tasks, attempts, the board, inbox) are documented with the run ledger
-  in [orchestration.md](./orchestration.md).
+  `EditorFrame`, `EditorFocusRequested`, or `ProviderUsageChanged`. Orchestration requests
+  (`CreateRun` … `WatchInbox`) and their events (`RunUpdated`, `TaskUpdated`,
+  `AttemptUpdated`, `MailboxChanged`, `RunStateChanged`, `RunRemoved`) are
+  defined in `crates/protocol/src/{request,event}.rs`; their semantics, through
+  the `forgectl` commands that send them, are in
+  [orchestration.md](./orchestration.md).
 - `request(body)` / `request_timeout(body, dur)` block until the matching
   response arrives. They must be bridged off the UI thread.
 - `events()` returns a bounded receiver (64 events). The reader uses nonblocking

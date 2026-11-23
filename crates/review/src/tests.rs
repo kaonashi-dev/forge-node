@@ -2515,3 +2515,16 @@ fn the_scope_never_excuses_a_defect_a_security_issue_or_a_p0_or_p1() {
         "{prompt}"
     );
 }
+
+#[test]
+fn one_unverified_finding_does_not_sink_verified_general_ones() {
+    let findings = vec![
+        raw(None, "line 5"),
+        raw(None, "line 6"),
+        raw(None, "line 7"),
+        raw(None, "nowhere in the file"),
+    ];
+    let v = validate(output(findings), &changed(), &[], &resolved(), &[]).unwrap();
+    assert_eq!(v.unverified, 1);
+    assert_eq!(v.findings.len(), 3);
+}

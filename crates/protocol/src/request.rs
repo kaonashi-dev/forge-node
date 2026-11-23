@@ -728,7 +728,7 @@ pub enum Request {
         #[serde(default)]
         findings: Option<String>,
     },
-    /// A person passes, sends back or rejects a gate → `Ack`. Refused for the run's own agents;
+    /// A person passes, sends back or rejects a gate → `Ack`. Refused for any live agent session;
     /// `Conflict` when the run is not at `gate`.
     SpecGate {
         spec_run_id: SpecRunId,

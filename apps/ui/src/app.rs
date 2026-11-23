@@ -1833,7 +1833,10 @@ impl AppState {
                 self.editor.autosave.reset();
                 self.workbench.reconnected();
                 self.project_icons.forget_reads();
+                self.icon_picker_reconnected();
                 crate::code_review::reconnected(self);
+                self.pr_link_reconnected();
+                self.spec_panel_reconnected();
                 self.session_changes.loading = false;
                 self.usage.pending = None;
                 if self.workbench.mode == CenterMode::SessionChanges {
@@ -3234,12 +3237,12 @@ impl AppState {
                     }
                     return true;
                 }
-                Ime::Preedit(text, _) => {
+                Ime::Preedit(text, _, _) => {
                     pane.preedit = text.chars().take(input::PREEDIT_MAX_CHARS).collect();
                     pane.request_frame();
                     return true;
                 }
-                Ime::Enabled | Ime::Disabled => return true,
+                Ime::Select(_) | Ime::Enabled | Ime::Disabled => return true,
             }
         }
         let shared = Arc::clone(&self.pane(idx).shared);

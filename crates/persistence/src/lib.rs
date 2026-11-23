@@ -1,7 +1,5 @@
-//! SQLite metadata store (ADR-009).
+//! SQLite metadata store (ADR-009). Never the terminal stream, never a runtime `terminal_id`.
 //!
-//! Projects, workspaces, sessions, context, profiles, shares, ignores, and
-//! opaque app state. Never the terminal stream, never a runtime `terminal_id`.
 //! Encoding and schema: `docs/persistence.md`. Migrations are append-only.
 
 pub mod db;

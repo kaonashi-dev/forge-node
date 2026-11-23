@@ -364,14 +364,16 @@ command as a tool: places (`list_projects`, `list_providers`,
 `list_external_sessions`, `read_external_session`, `adopt_session`,
 `spawn_session`, `spawn_shell`, `exec_shell`, `send_prompt`, `wait_session`,
 `rename_session`, `signal_session`, `kill_session`, `restart_session`,
-`close_session`, `run_spec`, `spec_brief`), a worker's side of a run
+`close_session`, `run_spec`, `spec_brief`, `spec_save`, `spec_report`,
+`spec_round`, `spec_show`, `spec_status`), a worker's side of a run
 (`context`, `report`, `report_show`, `ask`, `inbox`, `send_message`,
 `state_list`, `state_get`, `state_set`, `state_delete`, `state_watch`,
 `pr_draft`), a controller's (`run_start`, `run_list`, `run_show`,
 `run_brief`, `run_wait`, `run_close`, `run_resume`, `task_add`, `task_list`,
 `task_show`, `task_start`, `task_review`, `task_accept`, `task_reject`,
 `task_cancel`, `task_integrate`, `task_cleanup`) and Forge Review
-(`review_start`, `review_show`, `review_status`, `review_cancel`; see
+(`review_start`, `review_show`, `review_status`, `review_cancel`,
+`review_graph_query`, `review_kb_get`, `review_checks_run`; see
 [review.md](./review.md)). A tool's
 arguments are the command's flags without dashes; `report`'s `outcome` and
 `task_integrate`'s `how` name the flag (`done`, `squash`), and list arguments

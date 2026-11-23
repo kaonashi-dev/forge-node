@@ -24,8 +24,8 @@ scripts/dev check          # root fmt + clippy + test, the Bun plugin, then apps
 ```
 
 `scripts/dev check --root-only` skips the Rune client. CI runs the same checks
-split into one job per workspace and phase — `fmt` on Ubuntu, clippy and tests
-for the root workspace and `apps/ui` on macOS — so lint and the two workspaces
+split into one job per workspace and phase — `fmt` and the OpenCode plugin on Ubuntu,
+clippy and tests for the root workspace and `apps/ui` on macOS — so lint and the two workspaces
 do not queue behind each other. `cargo fmt --all` at the root does not cover
 `apps/ui`; `scripts/dev ui check` does. `cargo deny check` is a separate policy
 check, not part of the gate; `cargo-deny` is not installed by the pinned
@@ -47,10 +47,10 @@ new one needs `cargo-insta` installed separately.
 
 ```sh
 scripts/dev daemon                 # isolated daemon in the foreground
-scripts/dev daemon info            # the scratch socket/home/worktrees paths
+FORGE_DEV_DIR=<dir> scripts/dev daemon info  # that runtime's paths (without it: a new scratch dir)
 scripts/dev ui run                 # Rune client on recorded fixture data
 scripts/dev ui run --daemon        # connect to FORGE_SOCKET or the daily socket
-scripts/dev ui --help              # every flag (--snap/--tree/--script/--bench)
+scripts/dev ui run --help          # every flag (--snap/--tree/--script/--bench)
 ```
 
 `scripts/dev daemon` isolates itself: a fresh `$FORGE_DEV_DIR` gets
@@ -130,6 +130,9 @@ executable = "/path/to/forge-node/target/debug/forge-editor"
 | SQLite schema and migrations | `crates/persistence` → [persistence.md](./persistence.md) |
 | Rune shell, views, keymap, theme | `apps/ui/src` → [ui.md](./ui.md), [theming.md](./theming.md) |
 | Release packaging and updater | `scripts/package-macos`, `scripts/rune-app`, `apps/ui/src/updates.rs` |
+| Forge Review engine and worker | `crates/review`, `crates/review-hypotheses`, `crates/daemon/src/review.rs` → [review.md](./review.md) |
+| Codebase graph, diagrams, knowledge base, sandbox checks | `crates/{codebase-graph,diagram-gen,knowledge-base,runtime-sandbox}`, `crates/daemon/src/{graph,kb,sandbox,fix_loop}.rs` → [review.md](./review.md) |
+| Spec runs | `crates/domain/src/spec_run/`, `crates/daemon/src/spec_runs.rs`, `crates/forge-ctl/src/spec.rs` → [spec-runs.md](./spec-runs.md) |
 | Cost rules | [performance.md](./performance.md) |
 
 ## macOS capture and diagnostics
