@@ -45,6 +45,7 @@ mod shares;
 mod spec_gate;
 mod spec_run;
 mod spec_run_view;
+mod status_refresh;
 mod storage;
 mod sync;
 mod tabs;

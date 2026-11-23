@@ -140,6 +140,10 @@ pub struct AppState {
     pub generation: u64,
     pub status: LinkStatus,
     pub status_detail: String,
+    status_refresh: crate::status_refresh::StatusRefresh,
+    /// Each pane's grid epoch when the status refresh last looked, so one
+    /// burst of output postpones it once.
+    status_epochs: [u64; 2],
     pub last_snapshot_us: Option<u64>,
     pub last_command: Option<CommandStatus>,
     pub metrics: Arc<Metrics>,
@@ -262,6 +266,8 @@ impl AppState {
             generation: 0,
             status: LinkStatus::Connecting,
             status_detail: "starting client worker".to_string(),
+            status_refresh: crate::status_refresh::StatusRefresh::default(),
+            status_epochs: [0; 2],
             last_snapshot_us: None,
             last_command: None,
             metrics,
@@ -1976,6 +1982,18 @@ impl AppState {
                         | client::DaemonEvent::AgentDetectionChanged { .. }
                         | client::DaemonEvent::PullRequestsUpdated { .. }
                 );
+                if let client::DaemonEvent::SessionUpdated(session) = event.as_ref()
+                    && session.activity.state != ActivityState::Working
+                    && self.store.as_ref().is_some_and(|store| {
+                        store.sessions.iter().any(|old| {
+                            old.id == session.id && old.activity.state == ActivityState::Working
+                        })
+                    })
+                {
+                    // An agent's turn may have committed or switched branches.
+                    self.status_refresh
+                        .request(session.workspace_id, Instant::now());
+                }
                 if let Some(store) = &mut self.store {
                     let _ = store.apply_event(&event);
                     // Indexed now, not on the next poll: a frame drawn between
@@ -2788,6 +2806,7 @@ impl AppState {
             }
             self.mirror_at = clock;
         }
+        self.poll_status_refresh();
         let mut floor = self.next_wake(Instant::now());
         let mut fetched = false;
         for idx in 0..self.pane_count() {
@@ -2824,10 +2843,14 @@ impl AppState {
     /// window itself, so nothing here polls for it.
     #[must_use]
     pub fn next_wake(&self, now: Instant) -> f64 {
-        let due = [self.tabs.reveal_at(), self.workbench.next_due()]
-            .into_iter()
-            .flatten()
-            .min();
+        let due = [
+            self.tabs.reveal_at(),
+            self.workbench.next_due(),
+            self.status_refresh.next_due(),
+        ]
+        .into_iter()
+        .flatten()
+        .min();
         due.map_or(POLL_FALLBACK_SECS, |due| {
             // A deadline poll cannot consume yet (no scope, the diff hidden)
             // stays overdue; one frame is the most often that wakes.
@@ -2993,8 +3016,72 @@ impl AppState {
         drop(slot);
         if taken {
             self.apply_effects(fx, tx);
+            if ev.key == rune::Key::Enter
+                && let Some(workspace) = self.pane_workspace(idx)
+            {
+                self.status_refresh.command_sent(workspace, Instant::now());
+            }
         }
         taken
+    }
+
+    fn pane_workspace(&self, idx: usize) -> Option<WorkspaceId> {
+        let session = self.pane(idx).shared.meta().session_id?;
+        self.rows
+            .iter()
+            .find(|row| row.id == session)
+            .map(|row| row.workspace_id)
+    }
+
+    /// Notes fresh output in the panes, then asks the daemon for every
+    /// workspace whose refresh has come due.
+    fn poll_status_refresh(&mut self) {
+        if !self.status_refresh.armed() {
+            return;
+        }
+        let now = Instant::now();
+        for idx in 0..self.pane_count().min(self.status_epochs.len()) {
+            let epoch = self.pane(idx).shared.grid_epoch();
+            if epoch != self.status_epochs[idx] {
+                self.status_epochs[idx] = epoch;
+                if let Some(workspace) = self.pane_workspace(idx) {
+                    self.status_refresh.output(workspace, now);
+                }
+            }
+        }
+        for workspace in self.status_refresh.take_due(now) {
+            self.refresh_status(workspace);
+        }
+    }
+
+    fn refresh_status(&self, workspace: WorkspaceId) {
+        if let Some(connection) = &self.connection {
+            let _ = connection.refresh_workspace_status(workspace);
+        }
+    }
+
+    /// A git command typed in another app is seen when Forge is back in
+    /// front, for the project on screen rather than every checkout.
+    fn refresh_project_on_screen(&mut self) {
+        let Some(store) = &self.store else {
+            return;
+        };
+        let Some(project) = self
+            .active
+            .and_then(|active| self.rows.iter().find(|row| row.id == active))
+            .and_then(|row| store.workspaces.iter().find(|ws| ws.id == row.workspace_id))
+            .map(|ws| ws.project_id)
+        else {
+            return;
+        };
+        let now = Instant::now();
+        for ws in store
+            .workspaces
+            .iter()
+            .filter(|ws| ws.project_id == project)
+        {
+            self.status_refresh.request(ws.id, now);
+        }
     }
 
     fn observe_terminal_resync(&mut self) {
@@ -3163,7 +3250,9 @@ impl AppState {
     }
 
     pub fn terminal_window_focus(&mut self, focused: bool, tx: &mut Tx) {
-        if !focused {
+        if focused {
+            self.refresh_project_on_screen();
+        } else {
             self.tabs.cancel_gesture();
         }
         let idx = self.focused_pane();
@@ -3954,6 +4043,45 @@ mod tests {
         state.terminal.begin_attach(1, terminal);
         state.terminal.attach_generation = 1;
         (state, rx, terminal)
+    }
+
+    #[test]
+    fn an_agent_turn_that_ends_re_reads_its_workspace_status() {
+        let shared = SharedTerminal::new();
+        let (mut state, rx, _terminal) = attaching_state(&shared);
+        let mut tx = Tx::default();
+        let store = state.store.as_mut().expect("store");
+        store.sessions[0].activity.state = ActivityState::Working;
+        let mut ended = store.sessions[0].clone();
+        ended.activity.state = ActivityState::Idle;
+        let workspace = ended.workspace_id;
+        state.apply_events(
+            vec![UiEvent::Daemon {
+                generation: 1,
+                event: Box::new(client::DaemonEvent::SessionUpdated(ended.clone())),
+            }],
+            &mut tx,
+        );
+        state.poll_status_refresh();
+        let refreshed = |rx: &flume::Receiver<crate::connection::Command>| {
+            rx.try_iter().any(|command| {
+                matches!(command, crate::connection::Command::RefreshWorkspaceStatus(id) if id == workspace)
+            })
+        };
+        assert!(refreshed(&rx));
+
+        state.apply_events(
+            vec![UiEvent::Daemon {
+                generation: 1,
+                event: Box::new(client::DaemonEvent::SessionUpdated(ended)),
+            }],
+            &mut tx,
+        );
+        state.poll_status_refresh();
+        assert!(
+            !refreshed(&rx),
+            "an idle session staying idle is no new work"
+        );
     }
 
     #[test]
