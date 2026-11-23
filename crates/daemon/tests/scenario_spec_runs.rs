@@ -1221,3 +1221,87 @@ fn a_rejected_run_stops_its_coder_and_its_checks_and_stays_rejected() {
         "the planner was handed a review: {handed:?}"
     );
 }
+
+#[test]
+fn a_round_whose_checks_never_ran_does_not_lend_the_report_an_earlier_round() {
+    let harness = common::Harness::new();
+    install_claude(&harness);
+    let repo = test_support::init_repo().expect("git repo");
+    let daemon = harness.boot();
+    let client = connect(&daemon, "spec-run-unverified-round");
+    let workspace = common::add_main_workspace(&client, repo.path());
+    let (id, run) = drive_to_review(
+        &client,
+        workspace,
+        options(worktree("spec/unverified")),
+        &plan(&check("true"), &check("true"), Some("true")),
+        approve(),
+        &[],
+    );
+    let planner = run.session(SpecRole::Planner).expect("planner");
+    round(&client, id, planner, Some("1. Tighten the loader.")).expect("second round");
+    let run = wait_stage(&client, id, SpecStage::Executing);
+    fs::write(
+        run_dir(&harness, id).join("plan.md"),
+        "edited outside Forge",
+    )
+    .expect("tamper");
+    coder_reports(&client, run.session(SpecRole::Coder).expect("coder"));
+    let run = wait_stage(&client, id, SpecStage::Reviewing);
+    assert!(run.attention.is_some(), "{run:?}");
+
+    let refused = submit(&client, id, planner, &report("not_met", &[])).expect_err("refused");
+    assert!(
+        refused.message.contains("AC-1 is met, but not every check"),
+        "{refused:?}"
+    );
+}
+
+#[test]
+fn an_agent_outside_the_run_cannot_pass_a_gate_or_launch_a_coder_before_the_plan_gate() {
+    let harness = common::Harness::new();
+    install_claude(&harness);
+    let repo = test_support::init_repo().expect("git repo");
+    let daemon = harness.boot();
+    let client = connect(&daemon, "spec-run-person-only");
+    let watcher = daemon.connect("spec-run-person-only-events");
+    let events = watcher.events();
+    let workspace = common::add_main_workspace(&client, repo.path());
+    let (id, drafter) = start(&client, workspace, options(worktree("spec/person")));
+    save(&client, id, drafter, SpecArtifactKind::Spec, SPEC).expect("spec saved");
+    wait_stage(&client, id, SpecStage::SpecGate);
+    let (outsider, _) = common::create_agent_session(&watcher, &events, workspace, "claude");
+
+    let refused = client
+        .request(Request::SpecGate {
+            spec_run_id: id,
+            caller_session_id: Some(outsider),
+            gate: GateKind::Spec,
+            decision: approve(),
+        })
+        .expect_err("an agent is not a person");
+    assert!(
+        matches!(&refused, client::ClientError::Protocol(e) if e.code == ErrorCode::PreconditionFailed),
+        "{refused:?}"
+    );
+    assert_eq!(detail(&client, id).run.stage, SpecStage::SpecGate);
+
+    gate(&client, id, GateKind::Spec, approve()).expect("G1");
+    let run = wait_stage(&client, id, SpecStage::Planning);
+    let planner = run.session(SpecRole::Planner).expect("planner launched");
+    let early = client
+        .request(Request::CreateChildSession {
+            parent_session_id: planner,
+            kind: domain::SessionKind::Agent,
+            provider_id: Some(AgentProviderId::new("claude")),
+            profile_id: None,
+            role: domain::SessionRole::Generic,
+            workspace_policy: domain::ChildWorkspacePolicy::SameWorkspace,
+            initial_prompt: None,
+        })
+        .expect_err("the coder waits for the plan gate");
+    assert!(
+        matches!(&early, client::ClientError::Protocol(e) if e.message.contains("approves the plan")),
+        "{early:?}"
+    );
+}

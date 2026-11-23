@@ -23,8 +23,8 @@ Source: `crates/domain/src/spec_run/` (prompts, model, pure validation),
 | `result_gate` (G3) | a person | finish, draft PR, another round, discard worktree |
 
 A gate passes only through `SpecGate` (the GUI or `forgectl spec gate`); a
-caller that is one of the run's own sessions is refused, and a change request
-or a rejection without a reason is refused. The reason reaches the agent
+caller that is one of the run's own sessions, or any live agent session, is
+refused, and a change request or a rejection without a reason is refused. The reason reaches the agent
 verbatim. A rejection also ends a run outside a gate (a lost coder, a
 restart), so no run is stuck at a stage nobody can leave. The caller is the
 session `forgectl` declares from `FORGE_SESSION_ID`, the ledger's identity model:

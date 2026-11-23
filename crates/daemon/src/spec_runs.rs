@@ -2,7 +2,7 @@
 //!
 //! Agents are ordinary sessions and the coder is a ledger attempt. Files live under
 //! `<forge home>/spec-runs/<id>/`; the row keeps metadata only. Lock order is `runs` before
-//! `inner`, and no disk, git or session work happens while `runs` is held.
+//! `inner`; while `runs` is held only the row is written, never a file, git or a session.
 
 use std::collections::{BTreeSet, HashMap};
 use std::io::{Read as _, Seek as _, SeekFrom};
@@ -180,8 +180,9 @@ fn write_file(dir: &Path, name: &str, content: &str) -> Result<(), ProtocolError
 /// A run file, capped before it is read.
 fn read_file(dir: &Path, name: &str, cap: usize) -> Option<String> {
     let path = dir.join(name);
-    let len = std::fs::metadata(&path).ok()?.len();
-    if len > cap as u64 {
+    let meta = std::fs::metadata(&path).ok()?;
+    // A FIFO an agent left in place would block this thread on open.
+    if !meta.is_file() || meta.len() > cap as u64 {
         return None;
     }
     let mut text = String::new();
@@ -259,10 +260,14 @@ fn read_source(source: &SpecRunSource) -> Result<(SourceRef, Option<String>), Pr
             ("inline", String::new(), Some(text.clone()))
         }
         SpecRunSource::File { path } => {
-            let len = std::fs::metadata(path)
-                .map_err(|_| ProtocolError::not_found(format!("spec file {path}")))?
-                .len();
-            if len > cap as u64 {
+            let meta = std::fs::metadata(path)
+                .map_err(|_| ProtocolError::not_found(format!("spec file {path}")))?;
+            if !meta.is_file() {
+                return Err(ProtocolError::invalid_request(
+                    "a spec file is a regular file",
+                ));
+            }
+            if meta.len() > cap as u64 {
                 return Err(ProtocolError::invalid_request(format!(
                     "a spec file is capped at {cap} bytes"
                 )));
@@ -1408,39 +1413,75 @@ pub(crate) fn attempt_reported(daemon: &Arc<Daemon>, attempt_id: domain::Attempt
     {
         return;
     }
-    let daemon_for_thread = Arc::clone(daemon);
-    let id = run.id;
+    // Built before the spawn: a thread that never starts drops the closure, and with it the
+    // guard, so the run does not stay in Verifying.
+    let guard = VerifyGuard {
+        daemon: Arc::clone(daemon),
+        id: run.id,
+    };
     let spawned = std::thread::Builder::new()
         .name("forge-spec-checks".into())
         .spawn(move || {
-            let _guard = VerifyGuard {
-                daemon: &daemon_for_thread,
-                id,
-            };
-            verify(&daemon_for_thread, id, report);
+            verify(&guard.daemon, guard.id, report);
+            drop(guard);
         });
     if let Err(error) = spawned {
-        attention(daemon, id, format!("could not start the checks: {error}"));
+        attention(
+            daemon,
+            run.id,
+            format!("could not start the checks: {error}"),
+        );
     }
 }
 
 /// A verification that stopped early leaves the run waiting on the person, not latched in
 /// Verifying; after a normal one the stage has already moved on.
-struct VerifyGuard<'a> {
-    daemon: &'a Arc<Daemon>,
+struct VerifyGuard {
+    daemon: Arc<Daemon>,
     id: SpecRunId,
 }
 
-impl Drop for VerifyGuard<'_> {
+impl Drop for VerifyGuard {
     fn drop(&mut self) {
-        let _ = update(self.daemon, self.id, |run| {
+        const STOPPED: &str = "the checks stopped before they finished";
+        let Ok(run) = self.daemon.spec_runs.get(self.id) else {
+            return;
+        };
+        if run.stage != SpecStage::Verifying {
+            return;
+        }
+        let record = unverified_round(&dir_of(&self.daemon, self.id), &run, STOPPED);
+        let _ = update(&self.daemon, self.id, |run| {
             if run.stage == SpecStage::Verifying {
+                run.checks.push(record);
                 run.stage = SpecStage::Reviewing;
-                run.attention = Some("the checks stopped before they finished".to_owned());
+                run.attention = Some(STOPPED.to_owned());
             }
             Ok(())
         });
     }
+}
+
+/// Marks a round whose checks never ran, so the report cannot fall back on an earlier round's.
+fn unverified_round(dir: &Path, run: &SpecRunView, reason: &str) -> CheckRecord {
+    let record = CheckRecord {
+        criterion: GATE.to_owned(),
+        task: run.current_task,
+        round: run.round,
+        command: String::new(),
+        exit_code: None,
+        timed_out: false,
+        not_verified: Some(reason.to_owned()),
+        not_sandboxed: None,
+        duration_ms: 0,
+        log: format!(
+            "checks/{GATE}-t{}-r{}-0.log",
+            run.current_task + 1,
+            run.round
+        ),
+    };
+    write_log(dir, &record, "");
+    record
 }
 
 fn verify(
@@ -1468,7 +1509,10 @@ fn verify(
         ),
     };
     let dir = dir_of(daemon, id);
-    let mut records: Vec<CheckRecord> = Vec::with_capacity(planned.len());
+    let mut records: Vec<CheckRecord> = Vec::with_capacity(planned.len().max(1));
+    if let Some(reason) = &unreadable {
+        records.push(unverified_round(&dir, &run, reason));
+    }
     for (index, check) in planned.iter().enumerate() {
         if !daemon
             .spec_runs
