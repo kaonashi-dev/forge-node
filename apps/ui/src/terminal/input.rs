@@ -1365,7 +1365,12 @@ mod tests {
             &mut out
         ));
         assert!(ui.preedit.is_empty() && out.entries.is_empty());
-        ime(0, &mut ui, &Ime::Preedit("かん".into(), None, Vec::new()), &mut out);
+        ime(
+            0,
+            &mut ui,
+            &Ime::Preedit("かん".into(), None, Vec::new()),
+            &mut out,
+        );
         ime(0, &mut ui, &Ime::Commit("漢".into()), &mut out);
         assert!(ui.preedit.is_empty());
         assert_eq!(out.entries[0].bytes, "漢".as_bytes());
