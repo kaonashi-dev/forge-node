@@ -81,6 +81,10 @@ fn checks_toml_parses_and_bad_files_are_explained() {
     )
     .unwrap_err()
     .contains("twice"));
+    let many: String = (0..33)
+        .map(|n| format!("[[targets]]\nname = \"t{n}\"\ncommand = \"true\"\n"))
+        .collect();
+    assert!(parse(&many).unwrap_err().contains("33 targets"));
 }
 
 #[test]

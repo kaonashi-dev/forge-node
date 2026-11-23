@@ -145,6 +145,7 @@ pub fn validate(
     let mut invalid_anchors = 0u32;
     let mut anchor_attempts = 0u32;
     let mut unverified = 0u32;
+    let mut verified = 0u32;
     let mut kept: Vec<Finding> = Vec::new();
     let prepared: Vec<Prepared<'_>> = files
         .iter()
@@ -181,6 +182,7 @@ pub fn validate(
                 continue;
             }
         };
+        verified += 1;
         let mut line = None;
         let mut end_line = None;
         if let Some(asked) = raw.line.filter(|_| !excluded) {
@@ -250,7 +252,9 @@ pub fn validate(
         }
     }
 
-    if (invalid_anchors + unverified) * 2 > anchor_attempts + unverified {
+    // Each kind against its own population: a general finding has no anchor to misplace, but
+    // its verified evidence does count against findings whose evidence is nowhere.
+    if invalid_anchors * 2 > anchor_attempts || unverified * 2 > verified + unverified {
         return Err(format!(
             "{invalid_anchors} of {anchor_attempts} anchors were outside the diff or away from \
              their evidence and {unverified} could not be verified: the answer reviewed \
