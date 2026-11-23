@@ -318,7 +318,7 @@ impl EditorUi {
     /// as committed text, the way a paste is.
     pub fn ime(&mut self, event: &Ime) {
         match event {
-            Ime::Preedit(text, _) => {
+            Ime::Preedit(text, _, _) => {
                 self.preedit = text.chars().take(PREEDIT_MAX_CHARS).collect();
             }
             Ime::Commit(text) => {
@@ -328,7 +328,8 @@ impl EditorUi {
                     self.queue(EditorInputEvent::Text(clean));
                 }
             }
-            Ime::Enabled | Ime::Disabled => {}
+            // The draft lives in the editor process, so committed text cannot be taken back.
+            Ime::Select(_) | Ime::Enabled | Ime::Disabled => {}
         }
     }
 
@@ -869,8 +870,8 @@ pub(crate) mod tests {
     #[test]
     fn a_composition_is_drawn_and_only_its_commit_is_sent() {
         let (mut ui, session) = surface(0.0);
-        ui.ime(&Ime::Preedit("に".into(), None));
-        ui.ime(&Ime::Preedit("にほ".into(), None));
+        ui.ime(&Ime::Preedit("に".into(), None, Vec::new()));
+        ui.ime(&Ime::Preedit("にほ".into(), None, Vec::new()));
         assert_eq!(ui.preedit, "にほ");
         assert_eq!(ui.take_requests().input, None);
         ui.ime(&Ime::Commit("日本\n".into()));

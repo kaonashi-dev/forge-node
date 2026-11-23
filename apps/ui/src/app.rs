@@ -3237,12 +3237,12 @@ impl AppState {
                     }
                     return true;
                 }
-                Ime::Preedit(text, _) => {
+                Ime::Preedit(text, _, _) => {
                     pane.preedit = text.chars().take(input::PREEDIT_MAX_CHARS).collect();
                     pane.request_frame();
                     return true;
                 }
-                Ime::Enabled | Ime::Disabled => return true,
+                Ime::Select(_) | Ime::Enabled | Ime::Disabled => return true,
             }
         }
         let shared = Arc::clone(&self.pane(idx).shared);
