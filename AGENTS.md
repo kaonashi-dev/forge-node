@@ -103,6 +103,27 @@ When touching existing code, remove nearby redundant or stale comments instead o
 - A mutation that mints an id returns the id (`Response::SessionCreated` carries `session_id` **and** `terminal_id`), so a caller never reloads a snapshot to guess what it just created; that single `Ack` dragged a 201 MB transcript rescan and two sequential un-pooled HTTPS calls onto every <kbd>Cmd</kbd>+<kbd>T</kbd>. A convenience wrapper must not smuggle in a network call, a TTL shorter than the gap between two user actions is not a cache, and a cache key is fingerprinted from its **inputs**, never from the resolved output it was supposed to avoid computing.
 - Before optimizing against a dependency's behaviour, read that dependency's source under `~/.cargo/registry/src/`. The whole-grid delta on every line feed looks narrowable via `scrolled_lines`; it is not, because `Term::damage()` returns early with `TermDamage::Full` and the per-line damage a mid-screen edit carried in the same chunk is then unreachable. `scripts/dev check` is the gate for correctness, not for cost, and would not have caught a single finding in `docs/performance.md`.
 
+## Rules From Past Defects
+
+Each one was a shipped bug. Follow the shape, not only the case.
+
+- **A person-only action refuses every live agent, not only the owner's.** Add the request to `cross_profile::refuse_agent_for_person`, which checks the request's `caller_session_id` and the connection's caller. "Not one of this run's sessions" does not mean "a person".
+- **Every request that launches an agent is gated, not only the obvious one.** `CreateAgentSession`, `StartAttempt`, `RunTask`, an agent-led `CreateRun` and `CreateChildSession { kind: Agent }` all launch one. A new launching request goes into `cross_profile::agent_launcher`.
+- **Missing evidence is a recorded failure, never a fallback.** A check that could not run leaves a `not_verified` record for *this* round. Validation never reaches back to an earlier round's pass.
+- **Build the `Drop` guard before `spawn`, then move it in.** If the thread never starts, the closure is dropped and the guard still runs. A guard created inside the closure does not.
+  ```rust
+  let guard = VerifyGuard { daemon: Arc::clone(daemon), id };
+  thread::Builder::new().spawn(move || { verify(&guard.daemon, guard.id); drop(guard); })
+  ```
+- **A cap refuses or reports; it never truncates silently.** `listed.iter().take(MAX_TARGETS)` ran 32 of 40 checks and reported them as passed. Refuse (`"40 targets listed, at most 32"`) or set `truncated`.
+- **Weigh each failure kind against its own population.** A ratio whose denominator leaves out valid items of that kind rejects good answers: one unverified finding sank three verified findings that had no line.
+- **Per-item loops index first.** Never scan `files`/`nodes` inside a loop over imports, calls or hunks. Build the `HashMap` once, and compile globs and regexes once (`OnceLock`), not once per path. An incremental update must equal a full rebuild, with a test that compares the two.
+- **A wire string passed to a CLI goes after `--`.** Write `gh issue view --json … -- <ref>`, so a reference like `-R other/repo` cannot become a flag.
+- **An agent-writable path is checked with `is_file()` before `open`.** Calling `metadata` then `File::open` on a FIFO blocks the handler forever.
+- **GUI "asked once" markers and in-flight waits die with the connection.** Key them on the connection generation and clear them in `reconnected()`. A restarted daemon rewrites state without broadcasting it (unfinished reviews become `Interrupted`), and a lost answer must become an error, not a spinner. Waits that last minutes use `ds::working`, not the vsync `Loader`.
+- **Bumping Rune bumps its vendored patches.** `apps/ui/Cargo.toml`'s `[patch.crates-io]` (`parley_engine`, `winit`, `accesskit_macos`, `wgpu-hal`) stays on Rune's `rev`, because a dependency's `[patch]` never reaches this workspace. Diff Rune's root `[patch.crates-io]` on every bump.
+- **A doc cites the source, not a count.** Write "`migrations()` is the order of record", not "Twenty-one migrations". A copied list or number is stale by the next feature.
+
 ## Gate
 
 - The canonical gate is `scripts/dev check`. `./init.sh` checks the toolchain pin and then runs that gate; `./init.sh --fast` runs only the toolchain check.
