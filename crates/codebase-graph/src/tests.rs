@@ -475,12 +475,115 @@ fn an_indexed_graph_builds_its_index_once_and_answers_like_a_fresh_one() {
     let indexed = Indexed::new(Arc::new(build(project())));
     assert!(!indexed.is_indexed());
     let query = domain::GraphQuery::Path("main".into(), "check".into());
-    let fresh = names(&indexed.graph().index().query(&query));
+    let fresh = names(&indexed.graph().index().query(&query).expect("known"));
     assert!(!indexed.is_indexed(), "a fresh index is not the kept one");
-    assert_eq!(names(&indexed.index().query(&query)), fresh);
+    assert_eq!(names(&indexed.index().query(&query).expect("known")), fresh);
     assert!(indexed.is_indexed());
     assert_eq!(
         names(&indexed.index().callers("check")),
         names(&indexed.graph().index().callers("check"))
     );
+}
+
+fn defining(path: &str, name: &str) -> FileInput {
+    file(
+        path,
+        &format!("pub fn {name}() {{}}\n"),
+        &[("function", name, "pub fn")],
+        &[],
+    )
+}
+
+fn calling_helper() -> FileInput {
+    file(
+        "src/main.rs",
+        "fn main() { helper(); }\n",
+        &[("function", "main", "fn main")],
+        &["helper"],
+    )
+}
+
+#[test]
+fn a_second_or_one_fewer_definition_resolves_untouched_calls_like_a_full_build() {
+    let one = || vec![calling_helper(), defining("src/a.rs", "helper")];
+    let two = || {
+        let mut all = one();
+        all.push(defining("src/b.rs", "helper"));
+        all
+    };
+    let main = ("src/main.rs", "main");
+
+    let added = apply_to(build(one()), vec![defining("src/b.rs", "helper")], &[]);
+    assert_eq!(added, build(two()));
+    assert!(
+        has_edge(&added, main, ("", "helper"), EdgeKind::Calls),
+        "two candidates and no import leave the call external"
+    );
+
+    let removed = apply_to(build(two()), Vec::new(), &["src/b.rs".into()]);
+    assert_eq!(removed, build(one()));
+    assert!(has_edge(
+        &removed,
+        main,
+        ("src/a.rs", "helper"),
+        EdgeKind::Calls
+    ));
+
+    let replaced = apply_to(build(two()), vec![defining("src/b.rs", "other")], &[]);
+    let mut rest = one();
+    rest.push(defining("src/b.rs", "other"));
+    assert_eq!(replaced, build(rest));
+    assert!(has_edge(
+        &replaced,
+        main,
+        ("src/a.rs", "helper"),
+        EdgeKind::Calls
+    ));
+}
+
+#[test]
+fn a_call_belongs_to_the_smallest_function_around_it() {
+    let nested = file(
+        "src/lib.rs",
+        "fn outer() { fn inner() { a(); } b(); }\n",
+        &[
+            ("function", "outer", "fn outer"),
+            ("function", "inner", "fn inner"),
+        ],
+        &["a", "b"],
+    );
+    let graph = build(vec![nested]);
+    let calls = |caller: &str, called: &str| {
+        has_edge(
+            &graph,
+            ("src/lib.rs", caller),
+            ("", called),
+            EdgeKind::Calls,
+        )
+    };
+    assert!(calls("inner", "a") && calls("outer", "b"));
+    assert!(!calls("outer", "a"));
+
+    let span = |name: &str, span: (usize, usize)| Definition {
+        kind: "function".into(),
+        name: name.into(),
+        span,
+        signature: String::new(),
+    };
+    // The later-starting span is the larger one, so a walk up from it would pick wrong.
+    let crossing = FileInput {
+        path: "src/odd.rs".into(),
+        lang: "rust".into(),
+        source: " ".repeat(40),
+        definitions: vec![span("first", (0, 20)), span("second", (10, 40))],
+        calls: vec![("c".into(), (15, 16))],
+        ..FileInput::default()
+    };
+    let graph = build(vec![crossing]);
+    assert!(has_edge(
+        &graph,
+        ("src/odd.rs", "first"),
+        ("", "c"),
+        EdgeKind::Calls
+    ));
 }

@@ -222,7 +222,8 @@ impl<'a, 'g> Change<'a, 'g> {
             DiagramKind::Sequence => self.sequence(),
             DiagramKind::Er => self.er(),
             DiagramKind::Class => self.class(),
-            _ => self.flow(),
+            DiagramKind::Flow => self.flow(),
+            _ => None,
         }
     }
 
