@@ -3,7 +3,7 @@
 use super::brief::{coder_rules, Tools, REPORT_FORMAT};
 use super::model::{CheckRecord, Route, MAX_REASON_BYTES};
 use super::principles::{ARTIFACT_RULES, POWER_OF_THE_SIMPLE, PRINCIPLES, QUESTIONS};
-use super::schema::{PLAN_SCHEMA, REPORT_SCHEMA};
+use super::schema::{PlannedCheck, PLAN_SCHEMA, REPORT_SCHEMA};
 use crate::orchestration::ToolSurface;
 use crate::review::{findings_prompt, Finding, FindingReaction, ReviewStatus};
 
@@ -125,6 +125,13 @@ changes, its automatic check (exact command and expected result) and a manual ch
 nothing can be automated.
 - Before saving, build the table AC → step → check. Do not save while a criterion has no step or \
 a step serves no criterion; Forge repeats that cross and refuses the plan otherwise.
+- Forge runs each check unattended: `/bin/sh` from the root of the coder's checkout, no terminal \
+and no prompts, 10 minutes unless the step sets `timeout_secs`, writing only inside the checkout, \
+the temp directory and the build caches, possibly without network, and with no way to reach Forge \
+or its tools. Exit 127 counts as not verified. Write checks that pass or fail on the criterion \
+alone under those conditions.
+- A criterion's check is the narrowest command that proves it, such as one exact test name; the \
+whole suite is the gate's job.
 - Write \"What we are not doing\".
 - The repository gate is the last check: {gate}{tasks}
 - {QUESTIONS}
@@ -188,7 +195,7 @@ pub struct ReviewInput<'a> {
     pub task: Option<(&'a str, bool)>,
 }
 
-fn check_line(check: &CheckRecord) -> String {
+fn check_line(ctx: &StageContext, check: &CheckRecord) -> String {
     let result = match (&check.not_verified, check.timed_out, check.exit_code) {
         (Some(reason), _, _) => format!("not run ({reason})"),
         (None, true, _) => "timed out".to_owned(),
@@ -202,7 +209,9 @@ fn check_line(check: &CheckRecord) -> String {
         .unwrap_or_default();
     format!(
         "- {}: `{}` → {result}{sandbox}; log {}",
-        check.criterion, check.command, check.log
+        check.criterion,
+        check.command,
+        ctx.path(&check.log)
     )
 }
 
@@ -216,7 +225,7 @@ pub fn review_stage_prompt(input: &ReviewInput) -> String {
         input
             .checks
             .iter()
-            .map(check_line)
+            .map(|check| check_line(ctx, check))
             .collect::<Vec<_>>()
             .join("\n")
     };
@@ -272,6 +281,8 @@ more changes, accept it with {} and Forge starts the next one.",
         "Spec run {id}: the coder (session {coder}) reported round {round} of {rounds}, and Forge \
 ran the plan's checks in {workspace}.
 
+{POWER_OF_THE_SIMPLE}
+{PRINCIPLES}
 ## 5. Review
 
 The coder's summary is a hint, never evidence: \"{summary}\".{report_file}
@@ -279,7 +290,8 @@ Checks Forge ran this round:
 {checks}
 
 Read the spec {spec} and the plan {plan}, and the diff with `git -C {workspace} diff {base}` plus \
-its untracked files.{dirty}
+its untracked files (`git -C {workspace} ls-files --others --exclude-standard`).{dirty}
+- Open the log of every check that did not pass before you judge its criterion.
 - First look for missing criteria and scope drift, then for quality.
 - Every finding cites file:line and an excerpt. A finding you cannot cite is not a finding.
 - Before you classify, read the project's learned rules and false positives with {kb}; do not \
@@ -291,8 +303,9 @@ the person with options).
 ## Next
 
 {next}
-- Patches and {rounds_left} round(s) left: send numbered findings with {round_tool}. Forge starts \
-the next coder round with them.
+- Patches and {rounds_left} round(s) left: send the patches as numbered findings with \
+{round_tool}, each `N. AC-n path:line — what is wrong`, the excerpt, and the fix you expect. The \
+coder sees only this text and the checkout. Forge starts the next coder round with them.
 - Nothing left to patch, or no round left: write the report and save it once with {report_tool}.
 
 {REPORT_FORMAT}
@@ -332,6 +345,8 @@ pub struct CoderInput<'a> {
     /// Commits on its branch (delivery "commit"), otherwise none.
     pub commit: bool,
     pub findings: Option<&'a str>,
+    /// What Forge runs after this round's report.
+    pub checks: &'a [PlannedCheck],
 }
 
 /// Stage 3, the coder's launch prompt for one round.
@@ -355,16 +370,31 @@ with `{ctl} ask --wait \"<question>\"`.",
         .map(|text| {
             format!(
                 "\n## Findings from the planner's review\n\nFix these first; the rest of your \
-earlier work stays as it is in this checkout.\n\n{text}\n"
+earlier work stays as it is in this checkout. A finding you do not fix needs its reason in your \
+report.\n\n{text}\n"
             )
         })
         .unwrap_or_default();
+    let checks = if input.checks.is_empty() {
+        String::new()
+    } else {
+        let lines: Vec<String> = input
+            .checks
+            .iter()
+            .map(|check| format!("- {}: `{}`", check.criterion, check.command))
+            .collect();
+        format!(
+            " These are this round's, run from the root of this checkout; run them yourself \
+before you report:\n{}\n",
+            lines.join("\n")
+        )
+    };
     format!(
         "You are the coder of spec run {id} ({name}), round {round}. Your task: {task}, covering \
 {criteria}.
 
 Read the approved spec {spec} and the plan {plan} completely before you change anything. Forge \
-runs the plan's checks after your report, so a claim without them is only a hint.
+runs the plan's checks after your report, so a claim without them is only a hint.{checks}
 {findings}
 {rules}",
         id = ctx.id,
@@ -477,12 +507,21 @@ mod tests {
                 criteria: &["AC-1".into()],
                 commit: false,
                 findings: Some("1. src/x.rs:3 off by one"),
+                checks: &[
+                    PlannedCheck {
+                        criterion: "AC-1".into(),
+                        command: "cargo test -p x cache_hit -- --exact".into(),
+                        timeout_secs: None,
+                    },
+                    PlannedCheck {
+                        criterion: "gate".into(),
+                        command: "scripts/dev check".into(),
+                        timeout_secs: None,
+                    },
+                ],
             });
             for text in [&plan, &review, &coder] {
-                assert!(
-                    text.contains(POWER_OF_THE_SIMPLE) || text == &review,
-                    "{text}"
-                );
+                assert!(text.contains(POWER_OF_THE_SIMPLE), "{text}");
                 for section in text.split("\n## ") {
                     assert!(count(section) < MAX_STAGE_INSTRUCTIONS, "{section}");
                 }
@@ -511,6 +550,18 @@ mod tests {
             assert!(plan.contains("note every caller with file:line"));
             assert!(review.contains("do not raise what it marks as a false positive"));
             assert!(review.contains("exit 0 (not sandboxed: Forge sandboxes checks only on macOS)"));
+            // The planner's cwd is the person's checkout, so a run-relative log path is unreadable.
+            assert!(review.contains("; log /home/me/.forge/spec-runs/r1/checks/AC-1-t1-r1-1.log"));
+            // With a session per stage the review prompt opens a fresh session.
+            assert!(review.contains(PRINCIPLES));
+            assert!(review.contains("git -C /w ls-files --others --exclude-standard"));
+            assert!(review.contains("each `N. AC-n path:line — what is wrong`"));
+            assert!(plan.contains("no way to reach Forge or its tools"));
+            assert!(plan.contains("Exit 127 counts as not verified"));
+            assert!(coder.contains(
+                "run them yourself before you report:\n- AC-1: `cargo test -p x cache_hit -- --exact`\n- gate: `scripts/dev check`\n"
+            ));
+            assert!(coder.contains("A finding you do not fix needs its reason in your report."));
             assert!(plan.contains("split the plan into `tasks`"));
             assert!(review.contains("notes.md"));
             assert!(review.contains("failed this round and the one before"));

@@ -1312,6 +1312,7 @@ fn start_round(
         .get(run.current_task)
         .ok_or_else(|| ProtocolError::precondition_failed("the run has no task left"))?;
     let (title, criteria) = task_criteria(daemon, run)?;
+    let checks = planned_checks(daemon, run)?;
     let round = run.round + 1;
     let dir = dir_of(daemon, run.id);
     let tools = tools(daemon, &run.coder);
@@ -1327,6 +1328,7 @@ fn start_round(
         criteria: &criteria,
         commit: run.options.delivery == Delivery::Commit,
         findings: findings.as_deref(),
+        checks: &checks,
     });
     let (_, session_id) = crate::orchestration::start_spec_attempt(
         daemon,

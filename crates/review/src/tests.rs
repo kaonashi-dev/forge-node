@@ -492,6 +492,9 @@ fn the_prompt_names_the_language_the_pack_and_the_schema() {
         "`confidence` is your probability, from 0 to 1, that the finding is a real defect \
          the author would fix."
     ));
+    assert!(text.contains("P0 blocks a merge: data loss, a security hole"));
+    assert!(text.contains("Report one finding per root cause"));
+    assert!(!text.contains("Only the prose is translated"));
 }
 
 #[test]
@@ -500,7 +503,13 @@ fn english_is_the_default_language_and_a_repository_can_change_it() {
     let (config, notes) = Config::parse("language = \"es\"\n");
     assert!(notes.is_empty(), "{notes:?}");
     let resolved = resolve(&config, &[], &builtins(), None, None, None).unwrap();
-    assert!(prompt(&resolved, std::path::Path::new("/p"), NONCE).contains("in the language `es`."));
+    let text = prompt(&resolved, std::path::Path::new("/p"), NONCE);
+    assert!(text.contains("in the language `es`."));
+    // `raw_finding` drops a translated severity; validation files an unknown category as logic.
+    assert!(text.contains(
+        "the values of `severity`, `category`, `side` and `reachability.kind`, and `evidence` \
+         stay exactly as specified"
+    ));
 }
 
 #[test]
