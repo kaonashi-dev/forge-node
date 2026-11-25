@@ -400,7 +400,11 @@ pub fn prompt(resolved: &Resolved, pack: &Path, nonce: &str) -> String {
          and never applies it. `category` is required.\n\
          \n\
          `line` is a line of the new file. `evidence` must be copied literally from the new \
-         code at that line. P0 blocks a merge, P1 needs a fix, P2 is minor. `confidence` is \
+         code at that line. P0 blocks a merge: data loss, a security hole, a crash or a broken \
+         build on a path normal use reaches. P1 needs a fix before it ships: wrong behaviour \
+         in a case that is reachable but uncommon. P2 is minor: a narrow edge case or a \
+         maintenance cost. Report one finding per root cause: when the same defect appears in \
+         several places, anchor it at the first and name the others in `body`. `confidence` is \
          your probability, from 0 to 1, that the finding is a real defect the author would \
          fix. Set `rule_id` to \
          the id of the rule in <rules-{nonce}> the finding violates, otherwise null. Report at most \
@@ -422,6 +426,13 @@ pub fn prompt(resolved: &Resolved, pack: &Path, nonce: &str) -> String {
         "Write the summary and the findings in the language `{}`.",
         resolved.language
     );
+    if !resolved.language.eq_ignore_ascii_case("en") {
+        text.push_str(
+            " Only the prose is translated: JSON keys, the values of `severity`, `category`, \
+             `side` and `reachability.kind`, and `evidence` stay exactly as specified, or Forge \
+             drops or misfiles the finding.",
+        );
+    }
     if !resolved.instructions.is_empty() {
         let _ = write!(
             text,

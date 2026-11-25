@@ -135,6 +135,13 @@ weighs the review hypothesis families as risks, each covered by a criterion or
 out of scope, and writes "Out of scope" under the heading Forge Review
 recognizes as acknowledged scope.
 
+The planner is told how Forge runs a check (`/bin/sh` from the checkout's
+root, unattended, sandboxed, timed out, exit 127 not verified) so it writes
+checks that can pass there. Each coder round's prompt lists the exact commands
+Forge will run after its report (`planned_checks`), and each review prompt
+names the check logs by absolute path and carries the shared principles, since
+with `session_per_stage` it opens a fresh planner session.
+
 The planner's research step asks the codebase graph who calls each function a
 criterion touches and what it calls (MCP `review_graph_query`, CLI `forgectl
 --json review graph query --callers <function>`), and records every caller with
