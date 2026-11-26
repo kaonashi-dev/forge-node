@@ -1,12 +1,251 @@
 //! The Review mode's helpers that have a right and a wrong answer, apart from
 //! the view so a test reaches them without a window.
 
-use domain::{Finding, FindingReaction, ReviewRun, ReviewStage, ReviewTarget, Severity};
+use domain::{Finding, FindingReaction, Lineage, ReviewRun, ReviewStage, ReviewTarget, Severity};
 use rune_kit::diff::{Annotation, LineRef, Side};
 
 pub use domain::review::findings_prompt;
 
 use super::{Grouping, PROMPT_BUDGET};
+
+/// Bytes of a run's summary a chat's first prompt carries; the findings come first.
+const CHAT_SUMMARY_BYTES: usize = 2048;
+/// Bytes of a typed question that travel, so a pasted log cannot crowd out the findings.
+pub const QUESTION_BYTES: usize = 2048;
+
+/// Which findings the Review tab's list shows.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum FindingFilter {
+    #[default]
+    Open,
+    New,
+    Dismissed,
+}
+
+impl FindingFilter {
+    #[must_use]
+    pub fn keeps(self, finding: &Finding) -> bool {
+        let dismissed = finding.reaction == Some(FindingReaction::Dismiss);
+        match self {
+            Self::Open => !dismissed,
+            Self::New => !dismissed && finding.lineage == Lineage::New,
+            Self::Dismissed => dismissed,
+        }
+    }
+}
+
+/// A severity group's heading says what it means for the merge, not only its level.
+#[must_use]
+pub fn group_title(grouping: Grouping, key: &str) -> String {
+    match (grouping, key) {
+        (Grouping::Severity, "P0" | "P1") => format!("Blocks merge · {key}"),
+        (Grouping::Severity, "P2") => format!("Worth fixing · {key}"),
+        _ => key.to_owned(),
+    }
+}
+
+/// The ids the list shows, in its order: `groups` as indices into `findings`.
+#[must_use]
+pub fn listed(
+    findings: &[Finding],
+    groups: &[(String, Vec<usize>)],
+    filter: FindingFilter,
+) -> Vec<u32> {
+    groups
+        .iter()
+        .flat_map(|(_, group)| group.iter())
+        .map(|at| &findings[*at])
+        .filter(|finding| filter.keeps(finding))
+        .map(|finding| finding.id)
+        .collect()
+}
+
+/// The finding the detail pane shows: the chosen one while it is listed, else the first.
+#[must_use]
+pub fn shown_finding(order: &[u32], chosen: Option<u32>) -> Option<u32> {
+    chosen
+        .filter(|id| order.contains(id))
+        .or_else(|| order.first().copied())
+}
+
+/// The neighbour `j`/`k` moves to; stays put at either end.
+#[must_use]
+pub fn step(order: &[u32], current: Option<u32>, forward: bool) -> Option<u32> {
+    let Some(at) = current.and_then(|id| order.iter().position(|known| *known == id)) else {
+        return order.first().copied();
+    };
+    let next = if forward {
+        (at + 1).min(order.len().saturating_sub(1))
+    } else {
+        at.saturating_sub(1)
+    };
+    order.get(next).copied()
+}
+
+/// `text`'s first `max` bytes, on a char boundary.
+#[must_use]
+pub fn head(text: &str, max: usize) -> &str {
+    if text.len() <= max {
+        return text;
+    }
+    let mut end = max;
+    while !text.is_char_boundary(end) {
+        end -= 1;
+    }
+    &text[..end]
+}
+
+fn place(finding: &Finding) -> String {
+    match finding.line {
+        Some(line) => format!("{}:{line}", finding.path),
+        None => finding.path.clone(),
+    }
+}
+
+/// A question about one finding names it the way the chat's first prompt listed it.
+#[must_use]
+pub fn about(finding: &Finding, question: &str) -> String {
+    format!(
+        "About finding {} ({:?}, {}, \"{}\"): {}",
+        finding.id,
+        finding.severity,
+        place(finding),
+        finding.title.trim(),
+        head(question.trim(), QUESTION_BYTES)
+    )
+}
+
+fn finding_block(finding: &Finding) -> String {
+    format!(
+        "- Finding {} [{:?}] {} — {}\n  {}\n\n",
+        finding.id,
+        finding.severity,
+        place(finding),
+        finding.title.trim(),
+        finding.body.trim().replace('\n', "\n  "),
+    )
+}
+
+/// Whole standing findings within `budget` bytes, and how many did not fit.
+fn finding_list(findings: &[Finding], budget: usize) -> (String, usize) {
+    let mut list = String::new();
+    let mut left_out = 0;
+    for finding in findings
+        .iter()
+        .filter(|finding| finding.reaction != Some(FindingReaction::Dismiss))
+    {
+        let block = finding_block(finding);
+        if list.len() + block.len() <= budget {
+            list.push_str(&block);
+        } else {
+            left_out += 1;
+        }
+    }
+    (list, left_out)
+}
+
+/// The first prompt of a review's chat: what was reviewed, the verdict, the
+/// standing findings and an optional first question, closed by the read-only
+/// rules, within [`PROMPT_BUDGET`] on whole findings.
+#[must_use]
+pub fn chat_prompt(
+    subject: &str,
+    run: &ReviewRun,
+    findings: &[Finding],
+    question: Option<&str>,
+) -> String {
+    let mut opening = format!(
+        "You are the chat for a finished Forge Review of {subject} in this checkout \
+         (head {}). The person reading the report will ask about it. Explain a \
+         finding, read the code it points at, and say plainly whether it holds. \
+         Never fix anything yourself: a fix goes to another agent.\n\n",
+        run.head_oid.chars().take(7).collect::<String>()
+    );
+    if let Some(verdict) = run.verdict {
+        opening.push_str(&format!(
+            "Verdict: {} · score {}\n\n",
+            super::verdict_label(verdict),
+            super::score_label(run.score)
+        ));
+    }
+    let summary = run.summary.trim();
+    if !summary.is_empty() {
+        opening.push_str("## Summary\n\n");
+        opening.push_str(head(summary, CHAT_SUMMARY_BYTES));
+        opening.push_str("\n\n");
+    }
+    let question = question
+        .map(str::trim)
+        .filter(|question| !question.is_empty())
+        .map(|question| {
+            format!(
+                "## First question\n\n{}\n\n",
+                head(question, QUESTION_BYTES)
+            )
+        })
+        .unwrap_or_default();
+    let rules = domain::pr_review::READ_ONLY_RULES;
+    let heading = "## Findings\n\n";
+    let fixed = opening.len() + heading.len() + question.len() + rules.len();
+    let (list, left_out) = finding_list(findings, PROMPT_BUDGET.saturating_sub(fixed + 64));
+    let mut prompt = opening;
+    prompt.push_str(heading);
+    if list.is_empty() && left_out == 0 {
+        prompt.push_str("None standing.\n\n");
+    }
+    prompt.push_str(&list);
+    if left_out > 0 {
+        prompt.push_str(&format!("({left_out} more left out to fit.)\n\n"));
+    }
+    prompt.push_str(&question);
+    prompt.push_str(rules);
+    prompt
+}
+
+/// What a chat is told when its review ran again: the new verdict, what
+/// resolved and what is new, within [`PROMPT_BUDGET`].
+#[must_use]
+pub fn chat_update(run: &ReviewRun, findings: &[Finding], resolved: &[Finding]) -> String {
+    let mut update = format!(
+        "The review ran again at head {}.",
+        run.head_oid.chars().take(7).collect::<String>()
+    );
+    if let Some(verdict) = run.verdict {
+        update.push_str(&format!(
+            " Verdict: {} · score {}.",
+            super::verdict_label(verdict),
+            super::score_label(run.score)
+        ));
+    }
+    update.push('\n');
+    for finding in resolved {
+        let line = format!(
+            "Resolved: [{:?}] {} — {}\n",
+            finding.severity,
+            place(finding),
+            finding.title.trim()
+        );
+        if update.len() + line.len() > PROMPT_BUDGET / 4 {
+            break;
+        }
+        update.push_str(&line);
+    }
+    let fresh: Vec<Finding> = findings
+        .iter()
+        .filter(|finding| finding.lineage == Lineage::New)
+        .cloned()
+        .collect();
+    let (list, left_out) = finding_list(&fresh, PROMPT_BUDGET.saturating_sub(update.len() + 64));
+    if !list.is_empty() {
+        update.push_str("New findings:\n");
+        update.push_str(&list);
+    }
+    if left_out > 0 {
+        update.push_str(&format!("({left_out} more left out to fit.)\n"));
+    }
+    update.push_str("Answer from this run from now on.");
+    update
+}
 
 const SEVERITIES: [Severity; 3] = [Severity::P0, Severity::P1, Severity::P2];
 pub const STAGES: [ReviewStage; 4] = [
@@ -278,6 +517,89 @@ mod tests {
         assert!(left_out > 0 && left_out < 200);
 
         assert_eq!(findings_prompt(&[&big], PROMPT_BUDGET), (String::new(), 1));
+    }
+
+    #[test]
+    fn the_list_filters_and_keys_move_within_it() {
+        let mut dismissed = finding(2, "a.rs", Some(4), Severity::P1);
+        dismissed.reaction = Some(FindingReaction::Dismiss);
+        let mut persisting = finding(3, "b.rs", Some(1), Severity::P2);
+        persisting.lineage = Lineage::Persisting;
+        let findings = vec![
+            finding(1, "a.rs", Some(2), Severity::P0),
+            dismissed,
+            persisting,
+        ];
+        let groups = group_findings(&findings, Grouping::Severity);
+        assert_eq!(listed(&findings, &groups, FindingFilter::Open), [1, 3]);
+        assert_eq!(listed(&findings, &groups, FindingFilter::New), [1]);
+        assert_eq!(listed(&findings, &groups, FindingFilter::Dismissed), [2]);
+
+        let order = [1, 3];
+        assert_eq!(shown_finding(&order, Some(3)), Some(3));
+        assert_eq!(
+            shown_finding(&order, Some(2)),
+            Some(1),
+            "a hidden choice falls back"
+        );
+        assert_eq!(shown_finding(&[], Some(2)), None);
+        assert_eq!(step(&order, Some(1), true), Some(3));
+        assert_eq!(step(&order, Some(3), true), Some(3), "the end stays put");
+        assert_eq!(step(&order, Some(1), false), Some(1));
+        assert_eq!(step(&order, None, true), Some(1));
+
+        assert_eq!(group_title(Grouping::Severity, "P1"), "Blocks merge · P1");
+        assert_eq!(group_title(Grouping::Severity, "P2"), "Worth fixing · P2");
+        assert_eq!(group_title(Grouping::File, "P1"), "P1");
+    }
+
+    #[test]
+    fn a_chat_prompt_ends_with_the_read_only_rules_within_its_budget() {
+        let mut review = run(ReviewId::new(), None, true);
+        review.summary = "s".repeat(10 * 1024);
+        let mut dismissed = finding(2, "gone.rs", Some(1), Severity::P1);
+        dismissed.reaction = Some(FindingReaction::Dismiss);
+        let mut findings = vec![finding(1, "a.rs", Some(2), Severity::P0), dismissed];
+        let prompt = chat_prompt("PR #7", &review, &findings, Some("  is 1 real?  "));
+        assert!(prompt.len() <= PROMPT_BUDGET, "{}", prompt.len());
+        assert!(prompt.ends_with(domain::pr_review::READ_ONLY_RULES));
+        assert!(prompt.contains("Finding 1 [P0] a.rs:2"));
+        assert!(!prompt.contains("gone.rs"), "dismissed findings stay out");
+        assert!(prompt.contains("## First question\n\nis 1 real?"));
+
+        findings.extend((10..400).map(|id| {
+            let mut f = finding(id, "c.rs", Some(id), Severity::P2);
+            f.body = "y".repeat(200);
+            f
+        }));
+        let prompt = chat_prompt("PR #7", &review, &findings, Some(&"q".repeat(9000)));
+        assert!(prompt.len() <= PROMPT_BUDGET, "{}", prompt.len());
+        assert!(prompt.contains("more left out to fit"));
+        assert!(prompt.ends_with(domain::pr_review::READ_ONLY_RULES));
+    }
+
+    #[test]
+    fn a_chat_update_names_what_resolved_and_what_is_new() {
+        let review = run(ReviewId::new(), None, true);
+        let mut persisting = finding(1, "a.rs", Some(2), Severity::P1);
+        persisting.lineage = Lineage::Persisting;
+        let update = chat_update(
+            &review,
+            &[persisting, finding(2, "b.rs", None, Severity::P2)],
+            &[finding(9, "gone.rs", Some(3), Severity::P0)],
+        );
+        assert!(update.contains("Resolved: [P0] gone.rs:3"), "{update}");
+        assert!(update.contains("Finding 2 [P2] b.rs"));
+        assert!(
+            !update.contains("Finding 1 "),
+            "a persisting finding is not news"
+        );
+        assert!(update.len() <= PROMPT_BUDGET);
+        assert_eq!(
+            about(&finding(4, "a.rs", None, Severity::P2), " why? "),
+            "About finding 4 (P2, a.rs, \"finding 4\"): why?"
+        );
+        assert_eq!(head("aé", 2), "a");
     }
 }
 

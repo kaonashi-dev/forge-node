@@ -200,6 +200,26 @@ fn rail_sessions(s: &AppState) -> Vec<(WorkspaceId, SessionId)> {
         .collect()
 }
 
+fn rail_reviews(s: &AppState) -> Vec<crate::rail::RailReview> {
+    let Some(store) = &s.store else {
+        return Vec::new();
+    };
+    store
+        .workspaces
+        .iter()
+        .flat_map(|workspace| {
+            s.code_review
+                .tree(workspace.id, &s.rows)
+                .into_iter()
+                .map(|review| crate::rail::RailReview {
+                    workspace: workspace.id,
+                    lane: crate::code_review::lane_key(review.lane),
+                    chat: review.chat,
+                })
+        })
+        .collect()
+}
+
 fn select_row(s: &mut AppState, id: String) {
     s.projects.rail.cursor = Some(id);
     s.projects.rail.keyed = false;
@@ -214,6 +234,17 @@ fn activate(s: &mut AppState, row: &crate::rail::RailRow, tx: &mut Tx) {
                 s.select(id);
                 s.show_mode(CenterMode::Session);
                 tx.blur();
+            }
+        }
+        RowKind::Review => {
+            let parsed = row.target.split_once(':').and_then(|(workspace, lane)| {
+                Some((
+                    workspace.parse::<WorkspaceId>().ok()?,
+                    crate::code_review::parse_lane_key(lane)?,
+                ))
+            });
+            if let Some((workspace, lane)) = parsed {
+                crate::code_review::open_lane(s, workspace, lane);
             }
         }
         _ => toggle_fold(s, &row.target),
@@ -232,6 +263,7 @@ pub fn rail_key(s: &mut AppState, ev: &KeyEvent, tx: &mut Tx) -> bool {
         store,
         &s.projects.rail,
         &rail_sessions(s),
+        &rail_reviews(s),
         s.workbench.workspace,
     );
     if rows.is_empty() {
@@ -940,26 +972,87 @@ fn workspace_row(s: &AppState, k: &Kit, workspace: &Workspace) -> El {
                 }),
         );
     if open {
-        let mut children: Vec<El> = s
-            .rows
+        let reviews = s.code_review.tree(id, &s.rows);
+        let mut children: Vec<El> = reviews
             .iter()
-            .enumerate()
-            .filter(|(_, row)| row.workspace_id == id)
-            .map(|(index, row)| {
-                cursored(
-                    s,
-                    k,
-                    &format!("session:{}", row.id),
-                    crate::ui::session_row(s, row, index, 0, k),
-                )
-            })
+            .map(|review| review_row(s, k, id, review))
             .collect();
+        children.extend(
+            s.rows
+                .iter()
+                .enumerate()
+                .filter(|(_, row)| row.workspace_id == id && !s.code_review.is_chat(row.id))
+                .map(|(index, row)| {
+                    cursored(
+                        s,
+                        k,
+                        &format!("session:{}", row.id),
+                        crate::ui::session_row(s, row, index, 0, k),
+                    )
+                }),
+        );
         if current {
             children.extend(pinned_actions(s, k, id));
         }
         if !children.is_empty() {
             block = block.child(subtree(k, children));
         }
+    }
+    block
+}
+
+/// A lane's latest review under its checkout, with the lane's chat under it.
+fn review_row(
+    s: &AppState,
+    k: &Kit,
+    workspace: WorkspaceId,
+    review: &crate::code_review::TreeReview,
+) -> El {
+    let roles = crate::theme::roles(k);
+    let lane = review.lane;
+    let key = crate::code_review::lane_key(lane);
+    let id = format!("review:{workspace}:{key}");
+    let shown = s.workbench.mode == CenterMode::Review
+        && s.code_review.workspace == Some(workspace)
+        && s.code_review.shown_lane(workspace) == lane;
+    let select = id.clone();
+    let line = Row::new(
+        format!("review-row-{workspace}-{key}"),
+        review.title.clone(),
+    )
+    .role("treeitem")
+    .label(format!("{}, {}", review.title, review.status))
+    .height(s.chrome_metrics().row)
+    .emphasis(Emphasis::Quiet)
+    .selected(shown)
+    .leading(rune::icon(&crate::glyphs::REVIEW, ds::ICON_ROW).color(k.c.icon_muted))
+    .meta(review.status.clone(), review.tone)
+    .build(k, &roles)
+    .on_press(move |s: &mut AppState| {
+        select_row(s, select.clone());
+        crate::code_review::open_lane(s, workspace, lane);
+    })
+    .focusable(true)
+    .no_focus_ring()
+    .on_key(rail_key);
+    let mut block = col()
+        .key(format!("review-{workspace}-{key}"))
+        .w_full()
+        .gap(ds::SPACE_1)
+        .child(cursored(s, k, &id, line));
+    let chat = review
+        .chat
+        .and_then(|chat| s.rows.iter().enumerate().find(|(_, row)| row.id == chat));
+    if let Some((index, row)) = chat {
+        block = block.child(subtree(
+            k,
+            vec![cursored(
+                s,
+                k,
+                &format!("session:{}", row.id),
+                crate::ui::session_row(s, row, index, 0, k),
+            )],
+        ));
     }
     block
 }

@@ -166,7 +166,17 @@ pub enum RowKind {
     Project,
     Idle,
     Workspace,
+    Review,
     Session,
+}
+
+/// A checkout's review as the rail lists it: `lane` is its key, `chat` the
+/// session hung under it instead of among the checkout's own.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct RailReview {
+    pub workspace: WorkspaceId,
+    pub lane: String,
+    pub chat: Option<SessionId>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -212,6 +222,7 @@ pub fn rows(
     store: &client::Store,
     rail: &Rail,
     sessions: &[(WorkspaceId, SessionId)],
+    reviews: &[RailReview],
     current: Option<WorkspaceId>,
 ) -> Vec<RailRow> {
     let open = |id: &str| !rail.folds.contains(id);
@@ -252,7 +263,7 @@ pub fn rows(
                 current,
             );
             for workspace in shown {
-                push_checkout(&mut out, rail, sessions, workspace, &id);
+                push_checkout(&mut out, rail, sessions, reviews, workspace, &id);
             }
             if idle.is_empty() {
                 continue;
@@ -269,7 +280,7 @@ pub fn rows(
             });
             if listed {
                 for workspace in idle {
-                    push_checkout(&mut out, rail, sessions, workspace, &target);
+                    push_checkout(&mut out, rail, sessions, reviews, workspace, &target);
                 }
             }
         }
@@ -281,6 +292,7 @@ fn push_checkout(
     out: &mut Vec<RailRow>,
     rail: &Rail,
     sessions: &[(WorkspaceId, SessionId)],
+    reviews: &[RailReview],
     workspace: &Workspace,
     parent: &str,
 ) {
@@ -293,12 +305,41 @@ fn push_checkout(
         parent: Some(parent.to_string()),
         expandable: true,
         expanded: open,
-        target,
+        target: target.clone(),
     });
     if !open {
         return;
     }
-    for (_, session) in sessions.iter().filter(|(w, _)| *w == workspace.id) {
+    let here: Vec<&RailReview> = reviews
+        .iter()
+        .filter(|review| review.workspace == workspace.id)
+        .collect();
+    for review in &here {
+        let id = format!("review:{target}:{}", review.lane);
+        out.push(RailRow {
+            id: id.clone(),
+            kind: RowKind::Review,
+            parent: Some(workspace_row.clone()),
+            expandable: false,
+            expanded: false,
+            target: format!("{target}:{}", review.lane),
+        });
+        if let Some(chat) = review.chat {
+            out.push(RailRow {
+                id: format!("session:{chat}"),
+                kind: RowKind::Session,
+                parent: Some(id),
+                expandable: false,
+                expanded: false,
+                target: chat.to_string(),
+            });
+        }
+    }
+    let chats: Vec<SessionId> = here.iter().filter_map(|review| review.chat).collect();
+    for (_, session) in sessions
+        .iter()
+        .filter(|(w, session)| *w == workspace.id && !chats.contains(session))
+    {
         out.push(RailRow {
             id: format!("session:{session}"),
             kind: RowKind::Session,
@@ -434,7 +475,7 @@ mod tests {
         let session = SessionId::new();
         let sessions = [(workspace, session)];
         let mut rail = Rail::default();
-        let all = rows(&store, &rail, &sessions, None);
+        let all = rows(&store, &rail, &sessions, &[], None);
         let kinds: Vec<RowKind> = all.iter().map(|row| row.kind).collect();
         assert_eq!(kinds[0], RowKind::Group, "the fixture's project is grouped");
         assert!(all.iter().any(|row| row.id == format!("session:{session}")));
@@ -456,7 +497,7 @@ mod tests {
             Some(Step::Fold(workspace.to_string()))
         );
         rail.folds.insert(workspace.to_string());
-        let folded = rows(&store, &rail, &sessions, None);
+        let folded = rows(&store, &rail, &sessions, &[], None);
         assert!(!folded.iter().any(|row| row.kind == RowKind::Session));
         assert_eq!(
             expand_target(&folded, at),
@@ -464,9 +505,52 @@ mod tests {
         );
         rail.folds.insert(all[0].target.clone());
         assert_eq!(
-            rows(&store, &rail, &sessions, None).len(),
+            rows(&store, &rail, &sessions, &[], None).len(),
             1,
             "a folded group is one row"
+        );
+    }
+
+    #[test]
+    fn a_review_leads_its_checkout_and_carries_its_chat_instead_of_the_checkout() {
+        let store = store();
+        let project = store.projects[0].id;
+        let workspace = crate::projects::checkouts_of(&store.workspaces, project)[0].id;
+        let (chat, shell) = (SessionId::new(), SessionId::new());
+        let sessions = [(workspace, chat), (workspace, shell)];
+        let reviews = [RailReview {
+            workspace,
+            lane: "pr7".into(),
+            chat: Some(chat),
+        }];
+        let all = rows(&store, &Rail::default(), &sessions, &reviews, None);
+        let at = all
+            .iter()
+            .position(|row| row.id == format!("workspace:{workspace}"))
+            .expect("the checkout row");
+        let review = format!("review:{workspace}:pr7");
+        let after: Vec<(&str, Option<&str>)> = all[at + 1..at + 4]
+            .iter()
+            .map(|row| (row.id.as_str(), row.parent.as_deref()))
+            .collect();
+        let workspace_row = format!("workspace:{workspace}");
+        assert_eq!(
+            after,
+            [
+                (review.as_str(), Some(workspace_row.as_str())),
+                (format!("session:{chat}").as_str(), Some(review.as_str())),
+                (
+                    format!("session:{shell}").as_str(),
+                    Some(workspace_row.as_str())
+                ),
+            ]
+        );
+        assert_eq!(
+            all.iter()
+                .filter(|row| row.id == format!("session:{chat}"))
+                .count(),
+            1,
+            "the chat is listed once, under its review"
         );
     }
 
@@ -487,21 +571,21 @@ mod tests {
             .collect();
         let idle_row = idle_target(project);
         let mut rail = Rail::default();
-        let folded = rows(&store, &rail, &[], None);
+        let folded = rows(&store, &rail, &[], &[], None);
         assert!(folded.iter().any(|row| row.id == idle_row));
         assert!(
             !folded.iter().any(|row| row.kind == RowKind::Workspace),
             "every clean checkout is behind the fold"
         );
         rail.folds.insert(idle_row.clone());
-        let listed = rows(&store, &rail, &[], None);
+        let listed = rows(&store, &rail, &[], &[], None);
         let checkout = listed
             .iter()
             .find(|row| row.id == format!("workspace:{}", ids[0]))
             .expect("listed once unfolded");
         assert_eq!(checkout.parent.as_deref(), Some(idle_row.as_str()));
 
-        let on_screen = rows(&store, &Rail::default(), &[], Some(ids[0]));
+        let on_screen = rows(&store, &Rail::default(), &[], &[], Some(ids[0]));
         assert!(
             on_screen
                 .iter()
@@ -520,7 +604,7 @@ mod tests {
             .expect("second checkout");
         unmeasured.status = domain::WorkspaceStatus::default();
         assert!(
-            !rows(&store, &Rail::default(), &[], None)
+            !rows(&store, &Rail::default(), &[], &[], None)
                 .iter()
                 .any(|row| row.id == idle_row),
             "unmeasured is not clean, so it is not folded"
