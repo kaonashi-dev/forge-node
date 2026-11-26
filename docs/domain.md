@@ -262,14 +262,19 @@ identity block, and whatever the user added.
 
 | Field | Meaning |
 |-------|---------|
-| `id` | stable key, for remembering the last choice — `standard`, `deep`, `security`, `custom` |
+| `id` | stable key, for remembering the last choice — `builtin_recipes()` is the list of record |
 | `name` / `detail` | what the menu entry says, and one line on what picking it does |
 | `body` | the wording sent before the context; empty for `custom`, which is the user's own text and nothing else |
+| `explainer` | the answer is one HTML page at `explainer_path` (`$TMPDIR/forge-show-me/`), outside every checkout, published as a Claude artifact when the agent has a tool for it and opened locally otherwise; the closing rules then name that file as their one exception |
 
 The prompt is the guard: the launch is an ordinary writable session, so any
 agent and profile can run it. `READ_ONLY_RULES` closes every prompt, after
 anything the user added, and overrides it — no edits, commits or pushes, and
 nothing posted to GitHub; findings stay in the session.
+
+The "Show me" recipe, adapted from HumanLayer's `show-me` skill, is the one
+explainer: it draws the change (file tree, call flow, types, diagrams) instead
+of judging it, and the pull-request view opens the dialog with it preselected.
 
 ### `WorkspaceDiff` (`diff.rs`)
 

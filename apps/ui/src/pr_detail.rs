@@ -287,7 +287,21 @@ fn review_button(k: &Kit, pr: &PullRequest, variant: ButtonVariant, key: &'stati
     Button::new("Review with an agent")
         .variant(variant)
         .control_size(ControlSize::Small)
-        .on_press(move |s: &mut AppState| s.open_review(&repository, number))
+        .on_press(move |s: &mut AppState| s.open_review(&repository, number, None))
+        .build(k)
+        .key(key)
+}
+
+fn show_me_button(k: &Kit, pr: &PullRequest, key: &'static str) -> El {
+    let repository = pr.repository.clone();
+    let number = pr.number;
+    Button::new("Show me")
+        .variant(ButtonVariant::Outline)
+        .control_size(ControlSize::Small)
+        .help("An agent draws this pull request as one HTML page, opened as an artifact")
+        .on_press(move |s: &mut AppState| {
+            s.open_review(&repository, number, Some(domain::pr_review::SHOW_ME_RECIPE));
+        })
         .build(k)
         .key(key)
 }
@@ -336,6 +350,7 @@ fn rail(k: &Kit, pr: &PullRequest) -> El {
             ButtonVariant::Outline,
             "pr-detail-review",
         ))
+        .child(show_me_button(k, pr, "pr-detail-show-me"))
         .child(forge_review_button(k, pr, "pr-detail-forge-review"))
         .child(
             text(
@@ -483,6 +498,7 @@ pub fn view(s: &AppState, k: &Kit) -> El {
                     ButtonVariant::Contrast,
                     "pr-detail-review-main",
                 ))
+                .child(show_me_button(k, pr, "pr-detail-show-me-main"))
                 .child(forge_review_button(k, pr, "pr-detail-forge-review-main"))
                 .child(
                     text(format!(

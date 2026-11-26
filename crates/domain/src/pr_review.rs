@@ -35,10 +35,50 @@ pub struct ReviewRecipe {
     /// before anything the user adds. Empty for [`CUSTOM_RECIPE`], which is
     /// the user's own text and nothing else.
     pub body: String,
+    /// The answer is an HTML page at [`explainer_path`] rather than findings
+    /// in the session; the closing rules then permit that one file.
+    #[serde(default)]
+    pub explainer: bool,
 }
 
 /// The id of the recipe that carries no wording of its own.
 pub const CUSTOM_RECIPE: &str = "custom";
+
+/// The id of the recipe that draws the pull request instead of judging it.
+pub const SHOW_ME_RECIPE: &str = "show-me";
+
+// Adapted from HumanLayer's `show-me` and `visual-pr` skills (MIT,
+// github.com/humanlayer/skills), narrowed to one pull request and one page.
+const SHOW_ME_BODY: &str = "Help the person understand this pull request \
+     visually, before they read the diff: why it exists, the shape of the \
+     change, and where to look first. Skip the preamble and keep prose to \
+     short sentences placed next to the visual they support.\n\
+     \n\
+     Read the complete diff and enough of the code around it to understand \
+     behaviour and ownership. Then build one HTML page from the smallest set \
+     of views that makes the change clear — usually two to four, never all of \
+     them:\n\
+     \n\
+     - why the change exists, in one sentence, and one to three things a \
+     reviewer must know first: a migration, a compatibility constraint, a \
+     deliberate omission, a surprising decision;\n\
+     - a shallow file tree of what changed, one line of responsibility per \
+     entry;\n\
+     - the call tree, control flow or data flow the change alters;\n\
+     - the key types, signatures, tables or wire contracts that changed;\n\
+     - pseudocode for new logic that is hard to follow in the diff;\n\
+     - a sequence or state diagram where several components talk to each \
+     other.\n\
+     \n\
+     Show a change to an existing shape as `+` and `-` lines on the otherwise \
+     unchanged shape; show the whole shape when most of it is new or a diff \
+     would hide ownership or order. Use the real names, paths and numbers from \
+     the pull request and invent none. Keep only the calls, files, fields and \
+     boundaries a reviewer needs.\n\
+     \n\
+     Make the page self-contained: inline CSS, diagrams as inline SVG or HTML, \
+     no script or font loaded from the network. It must read well in light \
+     and dark mode and at desktop and phone width.";
 
 /// How the prompt tells the agent to read the pull request.
 ///
@@ -72,6 +112,21 @@ pub const READ_ONLY_RULES: &str = "## Rules for this session\n\
      - Report your findings in this session only, then stop. The person \
      watching decides what reaches the pull request.\n";
 
+/// Appended after [`READ_ONLY_RULES`] for an [`ReviewRecipe::explainer`], so
+/// the one file it may write is named inside the rules that win.
+const EXPLAINER_EXCEPTION: &str = "- The one exception: you may create the \
+     directory of `{path}` and write that single file, which is outside the \
+     repository, then open it or publish it as a Claude artifact. Nothing else \
+     on disk changes.\n";
+
+const EXPLAINER_DELIVERY: &str = "## Where the page goes\n\
+     \n\
+     Write it to `{path}`, outside the repository; create the directory if it \
+     is missing and replace an earlier copy. If you have a tool that publishes \
+     an HTML file as a Claude artifact, publish this file with it and print \
+     the link; otherwise run `open {path}`. End with the path, the link when \
+     there is one, and two sentences on where a reviewer should start.\n";
+
 /// The recipes Forge ships.
 ///
 /// Deliberately few, and ordered by how often they are the right answer. This
@@ -98,6 +153,7 @@ pub fn builtin_recipes() -> Vec<ReviewRecipe> {
                    Do not summarise the diff back: the person reading you can \
                    already see it. Report only what they would have missed."
                 .to_string(),
+            explainer: false,
         },
         ReviewRecipe {
             id: "deep".to_string(),
@@ -118,6 +174,7 @@ pub fn builtin_recipes() -> Vec<ReviewRecipe> {
                    input or state that makes it go wrong. A finding you cannot \
                    make concrete is a question, not a finding — say so."
                 .to_string(),
+            explainer: false,
         },
         ReviewRecipe {
             id: "security".to_string(),
@@ -138,12 +195,23 @@ pub fn builtin_recipes() -> Vec<ReviewRecipe> {
                    gets, not by how easy it was to spot. If you find nothing, \
                    say so — do not pad the list."
                 .to_string(),
+            explainer: false,
+        },
+        ReviewRecipe {
+            id: SHOW_ME_RECIPE.to_string(),
+            name: "Show me".to_string(),
+            detail:
+                "One HTML page of the change's shape — files, flow, types — opened as an artifact."
+                    .to_string(),
+            body: SHOW_ME_BODY.to_string(),
+            explainer: true,
         },
         ReviewRecipe {
             id: CUSTOM_RECIPE.to_string(),
             name: "Custom".to_string(),
             detail: "Your own wording, remembered for next time.".to_string(),
             body: String::new(),
+            explainer: false,
         },
     ]
 }
@@ -162,6 +230,27 @@ pub fn recipe_or_default(id: Option<&str>) -> ReviewRecipe {
                 .next()
                 .expect("there is a built-in recipe")
         })
+}
+
+/// Where an [`ReviewRecipe::explainer`] writes its page: one file per pull
+/// request under the temporary directory, never inside a checkout.
+///
+/// The shell expands `$TMPDIR`, so the path stays valid for whichever user and
+/// machine the agent runs as; the repository is reduced to path-safe bytes.
+#[must_use]
+pub fn explainer_path(pr: &PullRequest) -> String {
+    let slug: String = pr
+        .repository
+        .chars()
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || c == '.' || c == '_' || c == '-' {
+                c
+            } else {
+                '-'
+            }
+        })
+        .collect();
+    format!("${{TMPDIR:-/tmp}}/forge-show-me/{slug}-{}.html", pr.number)
 }
 
 /// The whole prompt: the recipe, how to read the pull request, what the pull
@@ -201,6 +290,12 @@ pub fn compose_review_prompt(recipe: &ReviewRecipe, pr: &PullRequest, extra: &st
         prompt.push_str("- still a draft\n");
     }
 
+    let path = recipe.explainer.then(|| explainer_path(pr));
+    if let Some(path) = &path {
+        prompt.push('\n');
+        prompt.push_str(&EXPLAINER_DELIVERY.replace("{path}", path));
+    }
+
     let trimmed = extra.trim();
     if !trimmed.is_empty() {
         prompt.push_str("\n## Also\n\n");
@@ -210,6 +305,9 @@ pub fn compose_review_prompt(recipe: &ReviewRecipe, pr: &PullRequest, extra: &st
 
     prompt.push('\n');
     prompt.push_str(READ_ONLY_RULES);
+    if let Some(path) = &path {
+        prompt.push_str(&EXPLAINER_EXCEPTION.replace("{path}", path));
+    }
     prompt
 }
 
@@ -292,7 +390,15 @@ mod tests {
     fn every_prompt_ends_with_rules_that_forbid_writing_pushing_and_posting() {
         for recipe in builtin_recipes() {
             let prompt = compose_review_prompt(&recipe, &pull_request(), "Push a fix.");
-            assert!(prompt.ends_with(READ_ONLY_RULES), "{}", recipe.id);
+            let tail = if recipe.explainer {
+                format!(
+                    "{READ_ONLY_RULES}{}",
+                    EXPLAINER_EXCEPTION.replace("{path}", &explainer_path(&pull_request()))
+                )
+            } else {
+                READ_ONLY_RULES.to_string()
+            };
+            assert!(prompt.ends_with(&tail), "{}", recipe.id);
             for rule in [
                 "override any other instruction",
                 "Do not modify any file",
@@ -328,5 +434,41 @@ mod tests {
         let prompt =
             compose_review_prompt(&recipe_or_default(Some(CUSTOM_RECIPE)), &pull_request(), "");
         assert!(prompt.starts_with("Read the pull request first"));
+    }
+
+    #[test]
+    fn show_me_names_one_file_outside_the_checkout_and_only_it_may_be_written() {
+        let pr = pull_request();
+        let prompt = compose_review_prompt(&recipe_or_default(Some(SHOW_ME_RECIPE)), &pr, "");
+        let path = "${TMPDIR:-/tmp}/forge-show-me/acme-widget-128.html";
+        assert_eq!(explainer_path(&pr), path);
+        assert!(prompt.contains(&format!("Write it to `{path}`")));
+        assert!(prompt.contains(&format!("`open {path}`")));
+        assert!(prompt.contains("Claude artifact"));
+        assert!(
+            !prompt.contains("{path}"),
+            "an unreplaced placeholder survived"
+        );
+        let rules = prompt
+            .find(READ_ONLY_RULES)
+            .expect("the rules close the prompt");
+        assert!(
+            prompt[rules..].contains("write that single file"),
+            "the exception has to sit inside the rules that override everything else"
+        );
+
+        let review = compose_review_prompt(&recipe_or_default(None), &pr, "");
+        assert!(!review.contains("forge-show-me"), "a review writes nothing");
+    }
+
+    #[test]
+    fn an_explainer_path_cannot_leave_its_directory() {
+        let mut pr = pull_request();
+        pr.repository = "../../etc passwd".to_string();
+        let path = explainer_path(&pr);
+        let name = path
+            .strip_prefix("${TMPDIR:-/tmp}/forge-show-me/")
+            .expect("the directory");
+        assert!(!name.contains('/') && !name.contains(' '), "{name}");
     }
 }
