@@ -401,7 +401,7 @@ fn center(s: &AppState, k: &Kit, layer: &mut Vec<El>) -> El {
     } else if s.workbench.mode == CenterMode::SessionChanges {
         crate::session_changes::view(s, k)
     } else if s.workbench.mode == CenterMode::Review {
-        crate::code_review::view(s, k)
+        crate::code_review::view(s, k, layer)
     } else if s.workbench.mode == CenterMode::Compare {
         crate::workbench::compare::view(s, k, layer)
     } else if s.workbench.mode == CenterMode::PrDetail {

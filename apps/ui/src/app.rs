@@ -500,6 +500,7 @@ impl AppState {
         self.sync_project_icons();
         self.refresh_send_targets();
         self.refresh_reviewers();
+        crate::code_review::list_every_checkout(self);
     }
 
     pub fn apply_events(&mut self, events: Vec<UiEvent>, tx: &mut Tx) {
@@ -2405,6 +2406,16 @@ impl AppState {
                     self.select_when_listed = Some(session_id);
                 }
                 true
+            }
+            UiEvent::ReviewChatOpened {
+                generation,
+                review_id,
+                session_id,
+            } => {
+                if !self.accept_generation(generation) {
+                    return false;
+                }
+                self.review_chat_opened(review_id, session_id)
             }
             UiEvent::CommandResult {
                 generation,

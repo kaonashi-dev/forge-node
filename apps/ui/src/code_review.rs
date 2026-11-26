@@ -14,7 +14,7 @@ use rune::{El, ScrollSpec, TextEdit, col, el, row, text};
 use rune_kit::diff::{Annotation, DiffState, DiffView, LineRef, Side};
 use rune_kit::{
     Button, ButtonVariant, ControlSize, Kit, Markdown, Progress, RadioGroup, RadioItem,
-    SegmentedControl, TextArea, TextInput,
+    SegmentedControl, Select, TextArea, TextInput,
 };
 
 use crate::app::AppState;
@@ -26,8 +26,10 @@ mod model;
 
 pub use client::CUSTOM_PRESET;
 pub use client::MAX_PROMPT_BYTES as PROMPT_BUDGET;
+pub use model::FindingFilter;
 use model::{
-    STAGES, annotations, findings_prompt, group_findings, is_stale, standing_prompt, supersedes,
+    STAGES, annotations, findings_prompt, group_findings, group_title, is_stale, listed,
+    shown_finding, standing_prompt, supersedes,
 };
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -126,6 +128,35 @@ pub fn lane(target: &ReviewTarget) -> Lane {
 }
 
 type Slot = (WorkspaceId, Lane);
+
+/// The sentence's word whose listbox is open.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Picker {
+    Subject,
+    Focus,
+    Depth,
+    Agent,
+}
+
+/// A lane's chat: an ordinary agent session started with the run's report.
+/// Runtime-only, like `Session::action`: the link dies with this window, the
+/// session does not.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ReviewChat {
+    pub session: SessionId,
+    /// The run the chat was last told about.
+    pub run: ReviewId,
+}
+
+/// One lane's latest run as the project tree lists it under its checkout.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct TreeReview {
+    pub lane: Lane,
+    pub title: String,
+    pub status: String,
+    pub tone: crate::ds::Tone,
+    pub chat: Option<SessionId>,
+}
 
 pub struct Report {
     pub run: ReviewId,
@@ -265,6 +296,18 @@ pub struct CodeReview {
     /// The run a person pressed Fix Loop on, until they confirm or cancel.
     pub fix_loop_confirm: Option<ReviewId>,
     pub fix_loops: HashMap<WorkspaceId, FixLoopProgress>,
+    /// The four-question form instead of the one-sentence setup.
+    pub customizing: bool,
+    pub picker: Option<Picker>,
+    pub filter: FindingFilter,
+    /// The finding the detail pane shows, while the list holds it.
+    pub chosen: Option<u32>,
+    pub chats: HashMap<Slot, ReviewChat>,
+    /// The run whose chat is being started, until its session id is back.
+    pub chat_starting: Option<ReviewId>,
+    pub question: TextEdit,
+    /// The finding the next question is about.
+    pub question_about: Option<u32>,
 }
 
 impl Default for CodeReview {
@@ -310,6 +353,14 @@ impl Default for CodeReview {
             sandbox_confirm: None,
             fix_loop_confirm: None,
             fix_loops: HashMap::new(),
+            customizing: false,
+            picker: None,
+            filter: FindingFilter::Open,
+            chosen: None,
+            chats: HashMap::new(),
+            chat_starting: None,
+            question: TextEdit::new(""),
+            question_about: None,
         }
     }
 }
@@ -379,6 +430,40 @@ impl CodeReview {
                 Err(_) => None,
             },
         }
+    }
+
+    /// Each lane's latest run of `workspace`, in lane order, with its chat
+    /// when that session is still listed in `rows`.
+    #[must_use]
+    pub fn tree(&self, workspace: WorkspaceId, rows: &[crate::app::SessionRow]) -> Vec<TreeReview> {
+        self.lanes(workspace)
+            .iter()
+            .filter_map(|lane| {
+                let run = self.latest.get(&(workspace, *lane))?;
+                let (status, tone) = tree_status(run);
+                let chat = self
+                    .chats
+                    .get(&(workspace, *lane))
+                    .map(|chat| chat.session)
+                    .filter(|session| rows.iter().any(|row| row.id == *session));
+                Some(TreeReview {
+                    lane: *lane,
+                    title: match lane {
+                        Lane::Workspace => "Review · changes".to_owned(),
+                        Lane::PullRequest(number) => format!("Review · PR #{number}"),
+                    },
+                    status,
+                    tone,
+                    chat,
+                })
+            })
+            .collect()
+    }
+
+    /// Whether `session` is some lane's chat, which the tree hangs under its review.
+    #[must_use]
+    pub fn is_chat(&self, session: SessionId) -> bool {
+        self.chats.values().any(|chat| chat.session == session)
     }
 
     /// Whether pressing start again would send a second review of the same
@@ -509,10 +594,50 @@ pub fn score_label(score: Option<f32>) -> String {
 #[must_use]
 pub fn verdict_label(verdict: Verdict) -> &'static str {
     match verdict {
-        Verdict::Block => "Bloquea",
-        Verdict::Review => "Revisar",
-        Verdict::Ok => "OK",
+        Verdict::Block => "Blocks merge",
+        Verdict::Review => "Needs review",
+        Verdict::Ok => "OK to merge",
     }
+}
+
+/// What a tree row says about its lane's latest run, and in which tone.
+#[must_use]
+pub fn tree_status(run: &ReviewRun) -> (String, crate::ds::Tone) {
+    use crate::ds::Tone;
+    if running(run) {
+        return ("Reviewing".to_owned(), Tone::Info);
+    }
+    match (run.status, run.verdict) {
+        (ReviewStatus::Completed, Some(verdict)) => {
+            (verdict_label(verdict).to_owned(), verdict_tone(verdict))
+        }
+        (ReviewStatus::Completed, None) => ("Done".to_owned(), Tone::Neutral),
+        (ReviewStatus::Failed, _) => ("Failed".to_owned(), Tone::Danger),
+        (status, _) => (status_label(status).to_owned(), Tone::Neutral),
+    }
+}
+
+/// Lanes as the rail's row targets spell them.
+#[must_use]
+pub fn lane_key(lane: Lane) -> String {
+    match lane {
+        Lane::Workspace => "changes".to_owned(),
+        Lane::PullRequest(number) => format!("pr{number}"),
+    }
+}
+
+#[must_use]
+pub fn parse_lane_key(key: &str) -> Option<Lane> {
+    if key == "changes" {
+        return Some(Lane::Workspace);
+    }
+    key.strip_prefix("pr")?.parse().ok().map(Lane::PullRequest)
+}
+
+/// Shows one lane's review from the project tree.
+pub fn open_lane(s: &mut AppState, workspace: WorkspaceId, lane: Lane) {
+    s.code_review.shown.insert(workspace, lane);
+    open(s, workspace);
 }
 
 #[must_use]
@@ -593,6 +718,7 @@ pub fn refresh(s: &mut AppState) {
 /// waiting on one is asked again on the next sync.
 pub fn reconnected(s: &mut AppState) {
     s.code_review.starting = false;
+    s.code_review.chat_starting = None;
     s.code_review.asked_config.clear();
     s.code_review.asked_list.clear();
     s.code_review.report_asked.clear();
@@ -653,6 +779,23 @@ pub fn graph_indexed(s: &mut AppState, error: Option<&str>) {
     for file in &mut graph.files {
         for read in [&mut file.imports, &mut file.external] {
             read.get_or_insert_with(|| Err(error.to_owned()));
+        }
+    }
+}
+
+/// The project tree shows every checkout's reviews, so each checkout's runs
+/// are read once per connection, when the store arrives or changes.
+pub fn list_every_checkout(s: &mut AppState) {
+    let (Some(store), Some(connection)) = (&s.store, &s.connection) else {
+        return;
+    };
+    let generation = s.generation;
+    for workspace in store.workspaces.iter().map(|workspace| workspace.id) {
+        if s.code_review.asked_list.get(&workspace) == Some(&generation) {
+            continue;
+        }
+        if connection.list_reviews(generation, workspace).is_ok() {
+            s.code_review.asked_list.insert(workspace, generation);
         }
     }
 }
@@ -896,11 +1039,81 @@ impl AppState {
         let Some(workspace) = self.code_review.workspace else {
             return;
         };
+        let Some((provider, preset, instructions)) = self.review_choices(workspace) else {
+            return;
+        };
+        let target = match (
+            self.code_review.pinned_to(workspace),
+            self.code_review.subject,
+        ) {
+            (Some(pin), _) => ReviewTarget::PullRequest {
+                workspace_id: workspace,
+                number: pin.number,
+                base: pin.base.clone(),
+            },
+            (None, Subject::Changes) => ReviewTarget::Workspace {
+                workspace_id: workspace,
+                base: None,
+            },
+            (None, Subject::PullRequest) => match self.pull_request_target(workspace) {
+                Some(target) => target,
+                None => return,
+            },
+        };
+        self.send_review(
+            target,
+            Some(preset),
+            self.code_review.tier,
+            Some(provider),
+            instructions,
+        );
+    }
+
+    /// The shown run's target again, with the sentence's current choices.
+    pub fn rerun_code_review(&mut self) {
+        let Some(workspace) = self.code_review.workspace else {
+            return;
+        };
+        let Some(target) = self
+            .code_review
+            .shown_run(workspace)
+            .map(|run| run.target.clone())
+        else {
+            return;
+        };
+        let Some((provider, preset, instructions)) = self.review_choices(workspace) else {
+            return;
+        };
+        self.send_review(
+            target,
+            Some(preset),
+            self.code_review.tier,
+            Some(provider),
+            instructions,
+        );
+    }
+
+    pub fn cancel_review_run(&mut self, workspace: WorkspaceId, run: ReviewId) {
+        let result = match &self.connection {
+            Some(connection) => connection.cancel_review(run),
+            None => Err("The client worker is still starting.".to_string()),
+        };
+        if let Err(error) = result {
+            self.code_review.errors.insert(workspace, error);
+        }
+    }
+
+    /// The provider, preset and instructions a start sends, or `None` with
+    /// the reason on screen.
+    fn review_choices(
+        &mut self,
+        workspace: WorkspaceId,
+    ) -> Option<(String, String, Option<String>)> {
         let Some(config) = self.code_review.configs.get(&workspace) else {
             self.code_review
                 .errors
                 .insert(workspace, "Review settings have not been read yet.".into());
-            return;
+            return None;
         };
         let provider = self.code_review.provider.clone().or_else(|| {
             self.code_review
@@ -931,37 +1144,10 @@ impl AppState {
             self.code_review
                 .errors
                 .insert(workspace, problem.to_string());
-            return;
+            return None;
         }
-        let Some(provider) = provider else {
-            return;
-        };
         let instructions = (!instructions.is_empty()).then_some(instructions);
-        let target = match (
-            self.code_review.pinned_to(workspace),
-            self.code_review.subject,
-        ) {
-            (Some(pin), _) => ReviewTarget::PullRequest {
-                workspace_id: workspace,
-                number: pin.number,
-                base: pin.base.clone(),
-            },
-            (None, Subject::Changes) => ReviewTarget::Workspace {
-                workspace_id: workspace,
-                base: None,
-            },
-            (None, Subject::PullRequest) => match self.pull_request_target(workspace) {
-                Some(target) => target,
-                None => return,
-            },
-        };
-        self.send_review(
-            target,
-            Some(preset),
-            self.code_review.tier,
-            Some(provider),
-            instructions,
-        );
+        Some((provider?, preset, instructions))
     }
 
     /// `None` when the review cannot start yet: the reason is on screen, or a
@@ -1295,6 +1481,10 @@ impl AppState {
     }
 
     pub fn review_command_result(&mut self, label: &str, ok: bool, message: &str) {
+        if label == "CreateReviewChat" && !ok && self.code_review.chat_starting.take().is_some() {
+            self.toasts
+                .danger("The review chat did not start", message.to_string());
+        }
         if matches!(label, "SetFindingFeedback" | "ClearReviewSuppression") {
             self.review_feedback_settled(ok);
         }
@@ -1739,6 +1929,178 @@ impl AppState {
         }
     }
 
+    /// The lane's chat while its session still runs.
+    #[must_use]
+    pub fn live_chat(&self, slot: Slot) -> Option<ReviewChat> {
+        let chat = self.code_review.chats.get(&slot)?;
+        self.rows
+            .iter()
+            .any(|row| row.id == chat.session && row.running)
+            .then_some(*chat)
+    }
+
+    /// Asks the shown lane's chat the typed question, starting the chat with
+    /// the run's report first when it has none running.
+    pub fn ask_review_chat(&mut self) {
+        let Some(workspace) = self.code_review.workspace else {
+            return;
+        };
+        let (Some(run), Some(report)) = (
+            self.code_review.shown_run(workspace),
+            self.code_review.shown_report(workspace),
+        ) else {
+            return;
+        };
+        let slot = (workspace, lane(&run.target));
+        let typed = self.code_review.question.text.trim().to_owned();
+        let question = match self
+            .code_review
+            .question_about
+            .and_then(|id| report.findings.iter().find(|finding| finding.id == id))
+        {
+            Some(finding) if !typed.is_empty() => model::about(finding, &typed),
+            _ => model::head(&typed, model::QUESTION_BYTES).to_owned(),
+        };
+        let Some(chat) = self.live_chat(slot) else {
+            self.start_review_chat((!question.is_empty()).then_some(question));
+            return;
+        };
+        if question.is_empty() {
+            return;
+        }
+        let result = match &self.connection {
+            Some(connection) => connection.send_session_prompt(chat.session, question, 0),
+            None => Err("The client worker is still starting.".to_string()),
+        };
+        match result {
+            Ok(()) => {
+                self.code_review.question = TextEdit::new("");
+                self.code_review.question_about = None;
+            }
+            Err(error) => {
+                self.code_review.errors.insert(workspace, error);
+            }
+        }
+    }
+
+    /// A new read-only chat for the shown run: an ordinary agent session whose
+    /// first prompt is the report, closed by the read-only rules.
+    pub fn start_review_chat(&mut self, question: Option<String>) {
+        let Some(workspace) = self.code_review.workspace else {
+            return;
+        };
+        if self.code_review.chat_starting.is_some() {
+            return;
+        }
+        let (Some(run), Some(report)) = (
+            self.code_review.shown_run(workspace),
+            self.code_review.shown_report(workspace),
+        ) else {
+            return;
+        };
+        let subject = match lane(&run.target) {
+            Lane::Workspace => "the changes in this checkout".to_owned(),
+            Lane::PullRequest(number) => format!(
+                "pull request #{number}, which is not checked out here (read it with \
+                 `gh pr view {number}` and `gh pr diff {number}`)"
+            ),
+        };
+        let prompt = model::chat_prompt(&subject, run, &report.findings, question.as_deref());
+        let review = run.id;
+        let (provider, profile) = match self.prompt_agent() {
+            Ok(agent) => agent,
+            Err(reason) => {
+                self.code_review.errors.insert(workspace, reason);
+                return;
+            }
+        };
+        let result = match &self.connection {
+            Some(connection) => {
+                connection.create_review_chat(workspace, provider, profile, prompt, review)
+            }
+            None => Err("The client worker is still starting.".to_string()),
+        };
+        match result {
+            Ok(()) => {
+                self.code_review.chat_starting = Some(review);
+                self.code_review.question = TextEdit::new("");
+                self.code_review.question_about = None;
+            }
+            Err(error) => {
+                self.code_review.errors.insert(workspace, error);
+            }
+        }
+    }
+
+    /// The daemon's id for the chat `review` asked for.
+    pub fn review_chat_opened(&mut self, review: ReviewId, session: SessionId) -> bool {
+        if self.code_review.chat_starting == Some(review) {
+            self.code_review.chat_starting = None;
+        }
+        let slot = self
+            .code_review
+            .latest
+            .iter()
+            .find(|(_, run)| run.id == review)
+            .map(|(slot, _)| *slot)
+            .or_else(|| {
+                self.code_review
+                    .reports
+                    .iter()
+                    .find(|(_, report)| report.run == review)
+                    .map(|(slot, _)| *slot)
+            });
+        if let Some(slot) = slot {
+            self.code_review.chats.insert(
+                slot,
+                ReviewChat {
+                    session,
+                    run: review,
+                },
+            );
+        }
+        true
+    }
+
+    /// Queues the shown run's delta into a chat that still talks about an earlier run.
+    pub fn tell_review_chat(&mut self) {
+        let Some(workspace) = self.code_review.workspace else {
+            return;
+        };
+        let (Some(run), Some(report)) = (
+            self.code_review.shown_run(workspace),
+            self.code_review.shown_report(workspace),
+        ) else {
+            return;
+        };
+        let slot = (workspace, lane(&run.target));
+        let Some(chat) = self.live_chat(slot).filter(|chat| chat.run != run.id) else {
+            return;
+        };
+        let update = model::chat_update(run, &report.findings, &report.resolved);
+        let review = run.id;
+        let result = match &self.connection {
+            Some(connection) => connection.send_session_prompt(chat.session, update, 0),
+            None => Err("The client worker is still starting.".to_string()),
+        };
+        match result {
+            Ok(()) => {
+                if let Some(chat) = self.code_review.chats.get_mut(&slot) {
+                    chat.run = review;
+                }
+            }
+            Err(error) => {
+                self.code_review.errors.insert(workspace, error);
+            }
+        }
+    }
+
+    /// Points the next question at one finding and moves the keyboard there.
+    pub fn ask_about_finding(&mut self, finding: u32) {
+        self.code_review.question_about = Some(finding);
+        self.code_review.chosen = Some(finding);
+    }
+
     /// The Review tab set up for one listed pull request, in the checkout
     /// `review_workspace` picks; nothing starts until the person presses it.
     ///
@@ -1801,7 +2163,7 @@ fn note(k: &Kit, message: impl Into<String>) -> El {
         .wrap()
 }
 
-fn setup(s: &AppState, k: &Kit) -> El {
+fn full_form(s: &AppState, k: &Kit) -> El {
     let Some(workspace) = s.code_review.workspace else {
         return col();
     };
@@ -1916,26 +2278,22 @@ fn setup(s: &AppState, k: &Kit) -> El {
             .key("review-instructions")
             .h(80.0),
     );
-    let custom = s.code_review.preset.as_deref() == Some(CUSTOM_PRESET);
-    let busy = s.code_review.busy(workspace);
-    let ready = config.is_some()
-        && !offered.is_empty()
-        && !busy
-        && (!custom || !s.code_review.instructions.text.trim().is_empty())
-        && (pinned.is_some()
-            || s.code_review.subject == Subject::Changes
-            || !s.code_review.pull_request.text.trim().is_empty());
-    let mut actions = row()
+    body = body.children(start_notices(s, k, workspace));
+    let ready = ready_to_start(s, workspace, false);
+    let actions = row()
         .w_full()
         .gap(crate::ds::SPACE_4)
         .items_center()
-        .child(el().grow(1.0));
-    // A review runs for minutes: the vsync `Loader` would repaint the window all along.
-    if busy && s.reduce_motion() {
-        actions = actions.child(crate::ui::busy(s, k));
-    } else if busy {
-        actions = actions.child(crate::ds::working(14.0, k.c.icon_muted).key("review-busy"));
-    }
+        .child(
+            Button::new("Fewer options")
+                .variant(ButtonVariant::GhostMuted)
+                .control_size(ControlSize::Small)
+                .on_press(|s: &mut AppState| s.code_review.customizing = false)
+                .build(k)
+                .key("review-fewer"),
+        )
+        .child(el().grow(1.0))
+        .children(busy_mark(s, k, workspace));
     body = body.child(
         actions.child(
             Button::new(start_label(&s.code_review, workspace))
@@ -1947,6 +2305,473 @@ fn setup(s: &AppState, k: &Kit) -> El {
         ),
     );
     body
+}
+
+/// Whether the start button can send: `rerun` starts the shown run's target
+/// again, so the what-to-review choice does not apply.
+fn ready_to_start(s: &AppState, workspace: WorkspaceId, rerun: bool) -> bool {
+    let review = &s.code_review;
+    let custom = review.preset.as_deref() == Some(CUSTOM_PRESET);
+    let busy = if rerun {
+        review.starting
+            || review.follow.is_some()
+            || review.shown_run(workspace).is_some_and(running)
+    } else {
+        review.busy(workspace)
+    };
+    review.configs.contains_key(&workspace)
+        && !review.offered.is_empty()
+        && !busy
+        && (!custom || !review.instructions.text.trim().is_empty())
+        && (rerun
+            || review.pinned_to(workspace).is_some()
+            || review.subject == Subject::Changes
+            || !review.pull_request.text.trim().is_empty())
+}
+
+/// A review runs for minutes: the vsync `Loader` would repaint the window all along.
+fn busy_mark(s: &AppState, k: &Kit, workspace: WorkspaceId) -> Option<El> {
+    if !s.code_review.busy(workspace) {
+        return None;
+    }
+    Some(if s.reduce_motion() {
+        crate::ui::busy(s, k)
+    } else {
+        crate::ds::working(14.0, k.c.icon_muted).key("review-busy")
+    })
+}
+
+/// The preset the start sends: the one chosen, else the repository's default.
+fn chosen_preset<'a>(
+    review: &CodeReview,
+    config: &'a ReviewSettings,
+) -> Option<&'a domain::ReviewPreset> {
+    let id = review
+        .preset
+        .as_deref()
+        .unwrap_or(config.default_preset.as_str());
+    config.presets.iter().find(|preset| preset.id == id)
+}
+
+fn depth_word(tier: Option<Tier>) -> &'static str {
+    match tier {
+        None => "default",
+        Some(Tier::Quick) => "quick",
+        Some(Tier::Standard) => "standard",
+        Some(Tier::Deep) => "deep",
+    }
+}
+
+const DEPTHS: [&str; 4] = ["default", "quick", "standard", "deep"];
+
+/// The setup as one sentence, each choice a listbox. `rerun` is the shown run:
+/// its target is fixed and the button starts it again.
+fn sentence(
+    s: &AppState,
+    k: &Kit,
+    layer: &mut Vec<El>,
+    workspace: WorkspaceId,
+    rerun: Option<&ReviewRun>,
+) -> El {
+    let review = &s.code_review;
+    let Some(config) = review.configs.get(&workspace) else {
+        return note(k, "Reading review settings…");
+    };
+    let word = |value: &str| {
+        text(value.to_owned())
+            .font(k.ty.small)
+            .color(k.c.text_muted)
+    };
+    let mut line = row()
+        .key("review-sentence")
+        .role("group")
+        .label("New review")
+        .w_full()
+        .flex_wrap()
+        .gap(crate::ds::SPACE_3)
+        .items_center();
+    match (rerun, review.pinned_to(workspace)) {
+        (Some(run), _) => {
+            line = line.child(word("Run")).child(
+                text(target_label(&run.target))
+                    .font(k.ty.small_medium)
+                    .color(k.c.text_base),
+            );
+        }
+        (None, Some(pin)) => {
+            line = line.child(word("Review")).child(
+                text(format!("PR #{} · {}", pin.number, pin.title))
+                    .key("review-pinned")
+                    .font(k.ty.small_medium)
+                    .color(k.c.text_base)
+                    .truncate()
+                    .max_w(360.0),
+            );
+        }
+        (None, None) => {
+            let subjects = ["my changes", "a pull request"];
+            let current = match review.subject {
+                Subject::Changes => subjects[0],
+                Subject::PullRequest => subjects[1],
+            };
+            line = line.child(word("Review")).child(
+                Select::new("review-word-subject", &subjects)
+                    .label("What to review")
+                    .current(Some(current))
+                    .details(&[
+                        Some("The working tree against its base branch, uncommitted changes included."),
+                        Some("Its head against its base, fetched without moving this checkout."),
+                    ])
+                    .width(150.0)
+                    .open(review.picker == Some(Picker::Subject))
+                    .on_toggle(|s: &mut AppState| toggle_picker(s, Picker::Subject))
+                    .on_close(|s: &mut AppState| s.code_review.picker = None)
+                    .on_choose(|s: &mut AppState, choice, _| {
+                        s.code_review.picker = None;
+                        s.code_review.subject = if choice == "a pull request" {
+                            Subject::PullRequest
+                        } else {
+                            Subject::Changes
+                        };
+                    })
+                    .build(k, layer),
+            );
+            if review.subject == Subject::PullRequest {
+                line = line.child(
+                    TextInput::new(&review.pull_request)
+                        .label("Pull request")
+                        .placeholder("96, #96 or a link")
+                        .width(Some(200.0))
+                        .on_edit(|s: &mut AppState| &mut s.code_review.pull_request)
+                        .on_submit(|s: &mut AppState, _| s.start_code_review())
+                        .build(k)
+                        .key("review-pull-request"),
+                );
+            }
+        }
+    }
+    let preset = chosen_preset(review, config);
+    let names: Vec<String> = config
+        .presets
+        .iter()
+        .map(|preset| preset.name.clone())
+        .collect();
+    let details: Vec<Option<String>> = config
+        .presets
+        .iter()
+        .map(|preset| {
+            let detail = if preset.id == CUSTOM_PRESET && preset.detail.is_empty() {
+                "Your own words, written below."
+            } else {
+                preset.detail.as_str()
+            };
+            (!detail.is_empty()).then(|| detail.to_owned())
+        })
+        .collect();
+    let ids: Vec<(String, String)> = config
+        .presets
+        .iter()
+        .map(|preset| (preset.name.clone(), preset.id.clone()))
+        .collect();
+    line = line.child(word("for")).child(
+        Select::new("review-word-focus", &names)
+            .label("Focus")
+            .current(preset.map(|preset| preset.name.as_str()))
+            .details(&details)
+            .width(180.0)
+            .open(review.picker == Some(Picker::Focus))
+            .on_toggle(|s: &mut AppState| toggle_picker(s, Picker::Focus))
+            .on_close(|s: &mut AppState| s.code_review.picker = None)
+            .on_choose(move |s: &mut AppState, name, _| {
+                s.code_review.picker = None;
+                if let Some((_, id)) = ids.iter().find(|(known, _)| known == name) {
+                    s.code_review.preset = Some(id.clone());
+                }
+            })
+            .build(k, layer),
+    );
+    let forced = preset.and_then(|preset| preset.tier);
+    let depth = Select::new("review-word-depth", &DEPTHS)
+        .label("Depth")
+        .current(Some(depth_word(forced.or(review.tier))))
+        .details(&[
+            Some("The repository's default tier, else Forge's."),
+            None,
+            None,
+            None,
+        ])
+        .width(110.0)
+        .disabled(forced.is_some())
+        .open(review.picker == Some(Picker::Depth) && forced.is_none())
+        .on_toggle(|s: &mut AppState| toggle_picker(s, Picker::Depth))
+        .on_close(|s: &mut AppState| s.code_review.picker = None)
+        .on_choose(|s: &mut AppState, choice, _| {
+            s.code_review.picker = None;
+            s.code_review.tier = match choice {
+                "quick" => Some(Tier::Quick),
+                "standard" => Some(Tier::Standard),
+                "deep" => Some(Tier::Deep),
+                _ => None,
+            };
+        })
+        .build(k, layer);
+    line = line.child(word("at")).child(depth).child(word("depth"));
+    let agents: Vec<String> = review
+        .offered
+        .iter()
+        .map(|(_, name)| name.clone())
+        .collect();
+    let current_agent = review
+        .offered
+        .iter()
+        .find(|(id, _)| review.provider.as_deref() == Some(id.as_str()))
+        .or_else(|| review.offered.first())
+        .map(|(_, name)| name.as_str());
+    if !agents.is_empty() {
+        let offered = review.offered.clone();
+        line = line.child(word("with")).child(
+            Select::new("review-word-agent", &agents)
+                .label("Agent")
+                .current(current_agent)
+                .width(150.0)
+                .open(review.picker == Some(Picker::Agent))
+                .on_toggle(|s: &mut AppState| toggle_picker(s, Picker::Agent))
+                .on_close(|s: &mut AppState| s.code_review.picker = None)
+                .on_choose(move |s: &mut AppState, name, _| {
+                    s.code_review.picker = None;
+                    if let Some((id, _)) = offered.iter().find(|(_, known)| known == name) {
+                        s.code_review.provider = Some(id.to_string());
+                    }
+                })
+                .build(k, layer),
+        );
+    }
+    let mut body = col()
+        .key(if rerun.is_some() {
+            "review-rerun"
+        } else {
+            "review-setup"
+        })
+        .w_full()
+        .gap(crate::ds::SPACE_3)
+        .child(line);
+    if let Some(preset) = preset.filter(|preset| !preset.detail.is_empty()) {
+        body = body.child(
+            note(k, format!("{}: {}", preset.name, preset.detail)).key("review-focus-detail"),
+        );
+    }
+    if review.offered.is_empty() {
+        body = body.child(note(k, "No installed agent can run a Forge Review."));
+    }
+    if let (Some(preset), Some(tier)) = (preset, forced) {
+        body = body.child(note(
+            k,
+            format!(
+                "{} always runs at {} depth.",
+                preset.name,
+                depth_word(Some(tier))
+            ),
+        ));
+    }
+    let custom = preset.is_some_and(|preset| preset.id == CUSTOM_PRESET);
+    if rerun.is_none() || custom {
+        body = body.child(
+            TextArea::new(&review.instructions)
+                .label(if custom {
+                    "What should the reviewer look for?"
+                } else {
+                    "Anything to look at in particular? (optional)"
+                })
+                .placeholder("e.g. the liveness probe and Redis failure modes")
+                .on_edit(|s: &mut AppState| &mut s.code_review.instructions)
+                .on_change(|s: &mut AppState, _| s.review_instructions_edited())
+                .build(k)
+                .key("review-instructions")
+                .h(56.0),
+        );
+    }
+    body = body.children(start_notices(s, k, workspace));
+    let mut actions = row().w_full().gap(crate::ds::SPACE_4).items_center().child(
+        Button::new("Customize…")
+            .variant(ButtonVariant::GhostMuted)
+            .control_size(ControlSize::Small)
+            .on_press(|s: &mut AppState| {
+                s.code_review.customizing = true;
+                s.code_review.picker = None;
+            })
+            .build(k)
+            .key("review-customize"),
+    );
+    if !config.rules.is_empty() {
+        let enabled = config.rules.iter().filter(|rule| rule.enabled).count();
+        actions = actions.child(note(
+            k,
+            format!(
+                "{} repository rules apply · {enabled} enabled",
+                config.rules.len()
+            ),
+        ));
+    }
+    for error in &config.errors {
+        actions = actions.child(
+            text(error.clone())
+                .font(k.ty.text_xsmall)
+                .color(k.c.warning.fg)
+                .truncate()
+                .min_w(0.0),
+        );
+    }
+    actions = actions
+        .child(el().grow(1.0))
+        .children(busy_mark(s, k, workspace));
+    let start = match rerun {
+        Some(_) => Button::new(if review.starting {
+            "Starting…"
+        } else {
+            "Run again"
+        })
+        .variant(ButtonVariant::Outline)
+        .control_size(ControlSize::Small)
+        .disabled(!ready_to_start(s, workspace, true))
+        .on_press(|s: &mut AppState| s.rerun_code_review())
+        .build(k)
+        .key("review-run-again"),
+        None => Button::new(start_label(review, workspace))
+            .variant(ButtonVariant::Contrast)
+            .disabled(!ready_to_start(s, workspace, false))
+            .on_press(|s: &mut AppState| s.start_code_review())
+            .build(k)
+            .key("review-start"),
+    };
+    body.child(actions.child(start))
+}
+
+fn toggle_picker(s: &mut AppState, picker: Picker) {
+    s.code_review.picker = (s.code_review.picker != Some(picker)).then_some(picker);
+}
+
+/// What the daemon would decide about a start, said before it is pressed.
+fn start_notices(s: &AppState, k: &Kit, workspace: WorkspaceId) -> Vec<El> {
+    let review = &s.code_review;
+    let mut notices = Vec::new();
+    let custom = review.preset.as_deref() == Some(CUSTOM_PRESET);
+    if custom && review.instructions.text.trim().is_empty() {
+        notices.push(
+            text("Custom needs your words: write what the reviewer should look for, or pick another focus.")
+                .key("review-custom-needs-words")
+                .role("alert")
+                .font(k.ty.text_xsmall)
+                .color(k.c.danger.fg)
+                .wrap(),
+        );
+    }
+    let now = Timestamp::now().as_offset().unix_timestamp();
+    let target = review.target_lane(workspace);
+    let shown = review.shown_lane(workspace);
+    if let Some(lane) = target.filter(|lane| *lane != shown)
+        && let Some(run) = review
+            .latest
+            .get(&(workspace, lane))
+            .filter(|run| running(run))
+    {
+        let (id, session) = (run.id, run.session_id);
+        let mut line = row()
+            .key("review-running-notice")
+            .role("status")
+            .w_full()
+            .gap(crate::ds::SPACE_3)
+            .items_center()
+            .child(
+                text(format!(
+                    "A review of {} is running · {} · {}. Start is off until it ends; \
+                     cancel it to start one with other settings.",
+                    lane_label(lane),
+                    stage_label(run.stage),
+                    duration(run.created_at, None, now)
+                ))
+                .font(k.ty.text_xsmall)
+                .color(k.c.warning.fg)
+                .wrap()
+                .min_w(0.0)
+                .grow(1.0),
+            );
+        if let Some(session) = session {
+            line = line.child(
+                Button::new("Show the reviewer")
+                    .variant(ButtonVariant::GhostMuted)
+                    .control_size(ControlSize::Small)
+                    .on_press(move |s: &mut AppState| s.focus_session(session))
+                    .build(k)
+                    .key("review-running-show"),
+            );
+        }
+        notices.push(
+            line.child(
+                Button::new("Cancel it")
+                    .variant(ButtonVariant::Outline)
+                    .control_size(ControlSize::Small)
+                    .on_press(move |s: &mut AppState| s.cancel_review_run(workspace, id))
+                    .build(k)
+                    .key("review-running-cancel"),
+            ),
+        );
+    }
+    let mut others: Vec<(&Slot, &ReviewRun)> = review
+        .latest
+        .iter()
+        .filter(|(slot, run)| {
+            running(run)
+                && **slot != (workspace, shown)
+                && Some(**slot) != target.map(|lane| (workspace, lane))
+        })
+        .collect();
+    if !others.is_empty() {
+        others.sort_by_key(|(_, run)| run.created_at);
+        let mut list = col()
+            .key("review-others-running")
+            .w_full()
+            .gap(crate::ds::SPACE_1)
+            .child(note(
+                k,
+                "Also running; Forge runs a bounded number of reviews at once:",
+            ));
+        for ((other, lane), run) in others {
+            let place = s
+                .store
+                .as_ref()
+                .and_then(|store| store.workspaces.iter().find(|w| w.id == *other))
+                .map_or_else(String::new, |w| w.label());
+            let (other, id) = (*other, run.id);
+            list = list.child(
+                row()
+                    .w_full()
+                    .gap(crate::ds::SPACE_3)
+                    .items_center()
+                    .child(
+                        text(format!(
+                            "{place} · {} · {}",
+                            lane_label(*lane),
+                            duration(run.created_at, None, now)
+                        ))
+                        .font(k.ty.text_xsmall)
+                        .color(k.c.text_muted)
+                        .truncate()
+                        .min_w(0.0)
+                        .grow(1.0),
+                    )
+                    .child(
+                        Button::new("Cancel")
+                            .variant(ButtonVariant::GhostMuted)
+                            .control_size(ControlSize::Small)
+                            .on_press(move |s: &mut AppState| s.cancel_review_run(other, id))
+                            .build(k)
+                            .key(format!("review-other-cancel-{id}")),
+                    ),
+            );
+        }
+        notices.push(list);
+    }
+    notices
 }
 
 fn start_label(review: &CodeReview, workspace: WorkspaceId) -> String {
@@ -2068,82 +2893,128 @@ fn tier_index(tier: Option<Tier>) -> Option<usize> {
     }
 }
 
-fn run_header(k: &Kit, run: &ReviewRun, head: Option<&str>) -> El {
-    let mut head_row = row()
+/// The run's facts, each under its own name, so none has to be guessed.
+fn run_header(s: &AppState, k: &Kit, run: &ReviewRun, head: Option<&str>) -> El {
+    let fact = |label: &str, value: El| {
+        row()
+            .gap(crate::ds::SPACE_2)
+            .items_center()
+            .child(
+                text(label.to_owned())
+                    .font(k.ty.text_xsmall)
+                    .color(k.c.text_muted),
+            )
+            .child(value)
+    };
+    let value = |value: String| text(value).font(k.ty.text_xsmall).color(k.c.text_base);
+    let focus = s
+        .code_review
+        .configs
+        .get(&run.workspace_id)
+        .and_then(|config| config.presets.iter().find(|preset| preset.id == run.preset))
+        .map_or_else(|| run.preset.clone(), |preset| preset.name.clone());
+    let took = duration(
+        run.created_at,
+        run.finished_at,
+        Timestamp::now().as_offset().unix_timestamp(),
+    );
+    let mut facts = row()
         .key("review-run-head")
         .w_full()
-        .gap(10.0)
-        .items_center();
-    match run.verdict {
-        Some(verdict) => {
-            head_row = head_row.child(
-                text(verdict_label(verdict))
-                    .font(k.ty.small_medium)
-                    .color(verdict_ink(k, verdict)),
-            );
-        }
-        None => {
-            head_row = head_row.child(
-                text(status_label(run.status))
-                    .font(k.ty.small_medium)
-                    .color(if running(run) {
-                        k.c.warning.fg
-                    } else {
-                        k.c.text_muted
-                    }),
-            );
-        }
-    }
-    head_row = head_row
-        .child(
-            text(target_label(&run.target))
-                .key("review-target")
-                .font(k.ty.text_xsmall)
-                .color(k.c.text_muted),
-        )
-        .child(
-            text(score_label(run.score))
-                .font(k.ty.small)
-                .color(k.c.text_base),
-        )
-        .child(
-            text(run.tier.name())
-                .font(k.ty.text_xsmall)
-                .color(k.c.text_faint),
-        )
-        .child(
-            text(run.preset.clone())
-                .font(k.ty.text_xsmall)
-                .color(k.c.text_faint),
-        )
-        .child(
+        .flex_wrap()
+        .gap(crate::ds::SPACE_5)
+        .items_center()
+        .child(fact(
+            "Reviewed",
+            value(target_label(&run.target)).key("review-target"),
+        ))
+        .child(fact("Focus", value(focus)))
+        .child(fact("Depth", value(run.tier.name().to_owned())))
+        .child(fact("Agent", value(run.provider.clone())))
+        .child(fact(
+            "Head",
             text(run.head_oid.chars().take(7).collect::<String>())
                 .font(k.ty.mono)
-                .color(k.c.text_faint),
-        )
-        .child(
-            text(run.provider.clone())
+                .color(k.c.text_base),
+        ))
+        .child(fact(
+            if running(run) { "Running for" } else { "Took" },
+            value(took),
+        ));
+    if run.verdict.is_none() {
+        facts = facts.child(fact(
+            "Status",
+            text(status_label(run.status))
                 .font(k.ty.text_xsmall)
-                .color(k.c.text_faint),
-        );
+                .color(if running(run) {
+                    k.c.warning.fg
+                } else {
+                    k.c.text_base
+                }),
+        ));
+    }
     if is_stale(run, head) {
-        head_row = head_row.child(
-            text("stale")
+        facts = facts.child(
+            text("stale: the checkout moved since")
                 .key("review-stale")
                 .font(k.ty.text_xsmall)
                 .color(k.c.warning.fg),
         );
     }
-    head_row = head_row.child(el().grow(1.0)).child(
-        text(duration(
-            run.created_at,
-            run.finished_at,
-            Timestamp::now().as_offset().unix_timestamp(),
-        ))
-        .font(k.ty.text_xsmall)
-        .color(k.c.text_faint),
-    );
-    head_row
+    facts
+}
+
+/// The verdict once, in words and colour, with what blocks the merge under it.
+fn verdict_banner(k: &Kit, run: &ReviewRun, report: Option<&Report>) -> Option<El> {
+    if run.verdict.is_none() && report.is_none() {
+        return None;
+    }
+    let approvable = if run.auto_approvable {
+        "auto-approvable"
+    } else {
+        "needs a person"
+    };
+    let mut banner = col()
+        .key("review-banner")
+        .role("status")
+        .w_full()
+        .gap(crate::ds::SPACE_2)
+        .padding(10.0)
+        .radius(k.radius.md)
+        .fill(k.c.surface_hover);
+    if let Some(verdict) = run.verdict {
+        banner = banner.child(
+            row()
+                .w_full()
+                .gap(crate::ds::SPACE_4)
+                .items_center()
+                .child(
+                    text(verdict_label(verdict))
+                        .key("review-verdict")
+                        .font(k.ty.small_medium)
+                        .color(verdict_ink(k, verdict)),
+                )
+                .child(
+                    crate::ds::chip(
+                        k,
+                        &crate::theme::roles(k),
+                        format!("Score {}", score_label(run.score)),
+                        verdict_tone(verdict),
+                    )
+                    .key("review-score-badge")
+                    .label(format!(
+                        "Score {} · {} · {approvable}",
+                        score_label(run.score),
+                        verdict_label(verdict)
+                    )),
+                )
+                .child(note(k, approvable)),
+        );
+    }
+    if let Some(report) = report {
+        banner = banner.child(headline(k, report));
+    }
+    Some(banner)
 }
 
 fn reaction_button(
@@ -2189,7 +3060,7 @@ fn lineage_badge(k: &Kit, finding: &Finding) -> El {
 
 fn dismissed_row(k: &Kit, finding: &Finding) -> El {
     row()
-        .key(format!("review-finding-row-{}", finding.id))
+        .key(format!("review-finding-detail-{}", finding.id))
         .w_full()
         .gap(crate::ds::SPACE_4)
         .items_center()
@@ -2221,34 +3092,32 @@ fn finding_row(
     if finding.reaction == Some(FindingReaction::Dismiss) {
         return dismissed_row(k, finding);
     }
-    let line = finding.line;
-    let path = finding.path.clone();
-    let workspace = run.workspace_id;
-    let pull_request = is_pull_request(run);
-    let open = Button::new(match line {
-        Some(line) => format!("{path}:{line}"),
-        None => path.clone(),
-    })
-    .variant(ButtonVariant::GhostMuted)
-    .control_size(ControlSize::Small)
-    .on_press(move |s: &mut AppState| {
-        if pull_request {
-            s.code_review.view = ReviewView::Diff;
-            s.code_review.reveal = Some((path.clone(), line.unwrap_or(1)));
-            return;
-        }
-        if let Some(connection) = &s.connection {
-            let _ = connection.open_editor_at(workspace, path.clone(), line.unwrap_or(1));
-        }
-        s.workbench.show(CenterMode::Session);
-    })
-    .build(k)
-    .key(format!("review-finding-{}", finding.id));
     let id = finding.id;
-    let mut actions = row()
+    let open = Button::new(place_label(finding))
+        .variant(ButtonVariant::GhostMuted)
+        .control_size(ControlSize::Small)
+        .help(if is_pull_request(run) {
+            "Show in the reviewed diff (o)"
+        } else {
+            "Open in the editor (o)"
+        })
+        .on_press(move |s: &mut AppState| s.open_finding(id))
+        .build(k)
+        .key(format!("review-finding-{}", finding.id));
+    let actions = row()
         .w_full()
+        .flex_wrap()
         .gap(crate::ds::SPACE_3)
         .items_center()
+        .child(
+            Button::new("Ask in chat")
+                .variant(ButtonVariant::Outline)
+                .control_size(ControlSize::Small)
+                .help("Point the review chat's next question at this finding (a)")
+                .on_press(move |s: &mut AppState| s.ask_about_finding(id))
+                .build(k)
+                .key(format!("review-ask-{id}")),
+        )
         .child(reaction_button(
             k,
             finding,
@@ -2275,14 +3144,21 @@ fn finding_row(
             Button::new("Send to agent")
                 .variant(ButtonVariant::GhostMuted)
                 .control_size(ControlSize::Small)
+                .help(send.unwrap_or("Queue this finding for the checkout's agent"))
                 .disabled(send.is_some())
                 .on_press(move |s: &mut AppState| s.send_findings(Some(id)))
                 .build(k)
                 .key(format!("review-send-{id}")),
+        )
+        .child(
+            Button::new("Next")
+                .variant(ButtonVariant::GhostMuted)
+                .control_size(ControlSize::Small)
+                .help("The next finding in the list (j)")
+                .on_press(|s: &mut AppState| s.step_finding(true))
+                .build(k)
+                .key("review-next"),
         );
-    if let Some(reason) = send {
-        actions = actions.child(note(k, reason));
-    }
     let mut head = row().w_full().gap(crate::ds::SPACE_4).items_center().child(
         text(format!("{:?}", finding.severity))
             .font(k.ty.small_medium)
@@ -2306,7 +3182,7 @@ fn finding_row(
         .child(
             text(finding.category.clone())
                 .font(k.ty.text_xsmall)
-                .color(k.c.text_faint),
+                .color(k.c.text_muted),
         )
         .children(
             finding
@@ -2315,27 +3191,28 @@ fn finding_row(
                 .map(|rule| note(k, format!("rule: {rule}"))),
         )
         .child(
-            text(format!("{:.0}%", finding.confidence * 100.0))
+            text(format!("{:.0}% sure", finding.confidence * 100.0))
                 .font(k.ty.text_xsmall)
-                .color(k.c.text_faint),
+                .color(k.c.text_muted),
         )
-        .child(
-            text(finding.title.clone())
-                .font(k.ty.small_medium)
-                .color(k.c.text_base)
-                .truncate()
-                .min_w(0.0)
-                .grow(1.0),
-        )
+        .child(el().grow(1.0))
         .child(open);
     let mut item = col()
-        .key(format!("review-finding-row-{}", finding.id))
+        .key(format!("review-finding-detail-{}", finding.id))
+        .role("region")
+        .label(format!("Finding {}", finding.id))
         .w_full()
         .gap(crate::ds::SPACE_2)
         .padding(8.0)
         .radius(k.radius.sm)
         .fill(k.c.surface_hover)
         .child(head)
+        .child(
+            text(finding.title.trim().to_owned())
+                .font(k.ty.small_medium)
+                .color(k.c.text_base)
+                .wrap(),
+        )
         .child(
             text(finding.body.clone())
                 .font(k.ty.small)
@@ -2489,56 +3366,482 @@ fn acknowledged_scope(k: &Kit, run: &ReviewRun) -> Option<El> {
     )
 }
 
+fn place_label(finding: &Finding) -> String {
+    match finding.line {
+        Some(line) => format!("{}:{line}", finding.path),
+        None => finding.path.clone(),
+    }
+}
+
+/// The shown report's ids in the list's order, under the chosen filter.
+fn finding_order(review: &CodeReview, workspace: WorkspaceId) -> Vec<u32> {
+    review
+        .shown_report(workspace)
+        .map_or_else(Vec::new, |report| {
+            listed(&report.findings, &report.groups, review.filter)
+        })
+}
+
+impl AppState {
+    /// A workspace finding opens in the editor; a pull request's, whose head
+    /// is not this checkout, in the reviewed diff.
+    pub fn open_finding(&mut self, id: u32) {
+        let Some(workspace) = self.code_review.workspace else {
+            return;
+        };
+        let (Some(run), Some(report)) = (
+            self.code_review.shown_run(workspace),
+            self.code_review.shown_report(workspace),
+        ) else {
+            return;
+        };
+        let Some(finding) = report.findings.iter().find(|finding| finding.id == id) else {
+            return;
+        };
+        let (path, line) = (finding.path.clone(), finding.line.unwrap_or(1));
+        if is_pull_request(run) {
+            self.code_review.view = ReviewView::Diff;
+            self.code_review.reveal = Some((path, line));
+            return;
+        }
+        if let Some(connection) = &self.connection {
+            let _ = connection.open_editor_at(workspace, path, line);
+        }
+        self.workbench.show(CenterMode::Session);
+    }
+
+    pub fn step_finding(&mut self, forward: bool) {
+        let Some(workspace) = self.code_review.workspace else {
+            return;
+        };
+        let order = finding_order(&self.code_review, workspace);
+        let current = shown_finding(&order, self.code_review.chosen);
+        self.code_review.chosen = model::step(&order, current, forward);
+    }
+}
+
+/// The list's keys while it holds focus: `j`/`k` move, `o` opens, `a` asks
+/// the chat about the finding, `d` dismisses or brings it back.
+fn findings_key(s: &mut AppState, ev: &rune::KeyEvent, _tx: &mut rune::Tx) -> bool {
+    let m = ev.mods;
+    if m.cmd || m.ctrl || m.alt || m.logo || m.shift {
+        return false;
+    }
+    let Some(workspace) = s.code_review.workspace else {
+        return false;
+    };
+    let letter = match &ev.key {
+        rune::Key::Text(typed) => typed.as_str(),
+        _ => "",
+    };
+    let current = shown_finding(
+        &finding_order(&s.code_review, workspace),
+        s.code_review.chosen,
+    );
+    match (&ev.key, letter) {
+        (rune::Key::Down, _) | (_, "j") => s.step_finding(true),
+        (rune::Key::Up, _) | (_, "k") => s.step_finding(false),
+        (rune::Key::Enter, _) | (_, "o") => {
+            if let Some(id) = current {
+                s.open_finding(id);
+            }
+        }
+        (_, "a") => {
+            if let Some(id) = current {
+                s.ask_about_finding(id);
+            }
+        }
+        (_, "d") => {
+            if let Some(id) = current {
+                s.react_to_finding(id, FindingReaction::Dismiss);
+            }
+        }
+        _ => return false,
+    }
+    true
+}
+
+/// One line of the findings list: severity, title, where.
+fn finding_item(k: &Kit, finding: &Finding, chosen: bool, lineage: bool) -> El {
+    let id = finding.id;
+    let mut item = row()
+        .key(format!("review-finding-row-{id}"))
+        .role("option")
+        .label(format!(
+            "{:?} {}, {}",
+            finding.severity,
+            finding.title.trim(),
+            place_label(finding)
+        ))
+        .w_full()
+        .gap(crate::ds::SPACE_4)
+        .items_center()
+        .px(8.0)
+        .py(6.0)
+        .radius(k.radius.sm)
+        .hover(k.c.hover)
+        .on_press(move |s: &mut AppState| s.code_review.chosen = Some(id))
+        .child(
+            text(format!("{:?}", finding.severity))
+                .font(k.ty.text_xsmall_medium)
+                .color(severity_ink(k, finding.severity)),
+        )
+        .child(
+            col()
+                .min_w(0.0)
+                .grow(1.0)
+                .child(
+                    text(finding.title.trim().to_owned())
+                        .font(k.ty.small)
+                        .color(k.c.text_base)
+                        .truncate(),
+                )
+                .child(
+                    text(place_label(finding))
+                        .font(k.ty.text_xsmall)
+                        .color(k.c.text_muted)
+                        .truncate(),
+                ),
+        );
+    if lineage {
+        item = item.child(lineage_badge(k, finding));
+    }
+    if chosen {
+        item = item
+            .fill(k.c.surface_hover)
+            .border_sides([0.0, 0.0, 0.0, 2.0], severity_ink(k, finding.severity));
+    }
+    item
+}
+
+fn filter_label(filter: FindingFilter, count: usize) -> String {
+    let name = match filter {
+        FindingFilter::Open => "Open",
+        FindingFilter::New => "New",
+        FindingFilter::Dismissed => "Dismissed",
+    };
+    format!("{name} {count}")
+}
+
+/// The findings as a list beside one finding at a time, with the chat under it.
 fn findings(s: &AppState, k: &Kit, run: &ReviewRun) -> El {
     let Some(report) = run_report(s, run) else {
         return col();
     };
+    let review = &s.code_review;
     let lineage = report.previous.is_some();
     let send = s.send_destination(run).err();
-    let mut body = col()
+    let filters = [
+        FindingFilter::Open,
+        FindingFilter::New,
+        FindingFilter::Dismissed,
+    ];
+    let labels: Vec<String> = filters
+        .iter()
+        .map(|filter| {
+            let count = report.findings.iter().filter(|f| filter.keeps(f)).count();
+            filter_label(*filter, count)
+        })
+        .collect();
+    let header = row()
+        .w_full()
+        .gap(crate::ds::SPACE_4)
+        .items_center()
+        .child(
+            SegmentedControl::new(
+                &labels,
+                filters.iter().position(|filter| *filter == review.filter),
+            )
+            .label("Show findings")
+            .fit()
+            .on_pick(move |s: &mut AppState, index: usize, _| {
+                if let Some(filter) = filters.get(index) {
+                    s.code_review.filter = *filter;
+                }
+            })
+            .build(k)
+            .key("review-filter"),
+        )
+        .child(el().grow(1.0))
+        .child(
+            Button::new(match review.grouping {
+                Grouping::Severity => "By severity",
+                Grouping::File => "By file",
+            })
+            .variant(ButtonVariant::GhostMuted)
+            .control_size(ControlSize::Small)
+            .on_press(|s: &mut AppState| {
+                s.code_review.set_grouping(match s.code_review.grouping {
+                    Grouping::Severity => Grouping::File,
+                    Grouping::File => Grouping::Severity,
+                });
+            })
+            .build(k)
+            .key("review-grouping"),
+        );
+    let order = listed(&report.findings, &report.groups, review.filter);
+    let shown = shown_finding(&order, review.chosen);
+    let mut list = col()
+        .key("review-finding-list")
+        .role("listbox")
+        .label("Findings: j and k move, o opens, a asks the chat, d dismisses")
+        .w(320.0)
+        .gap(crate::ds::SPACE_1)
+        .focusable(true)
+        .on_key(findings_key);
+    for (key, group) in &report.groups {
+        let kept: Vec<&Finding> = group
+            .iter()
+            .map(|at| &report.findings[*at])
+            .filter(|finding| review.filter.keeps(finding))
+            .collect();
+        if kept.is_empty() {
+            continue;
+        }
+        list = list.child(section(k, group_title(review.grouping, key)));
+        for finding in kept {
+            list = list.child(finding_item(k, finding, shown == Some(finding.id), lineage));
+        }
+    }
+    if order.is_empty() {
+        list = list.child(note(
+            k,
+            match review.filter {
+                FindingFilter::Open if report.findings.is_empty() => "The review found nothing.",
+                FindingFilter::Open => "Every finding is dismissed.",
+                FindingFilter::New => "Nothing new since the last run.",
+                FindingFilter::Dismissed => "Nothing dismissed.",
+            },
+        ));
+    }
+    if !report.resolved.is_empty() {
+        list = list.child(resolved_group(s, k, report));
+    }
+    let mut detail = col()
+        .key("review-detail")
+        .min_w(0.0)
+        .grow(1.0)
+        .gap(crate::ds::SPACE_5);
+    if let Some(finding) = shown.and_then(|id| report.findings.iter().find(|f| f.id == id)) {
+        detail = detail.child(finding_row(k, run, finding, lineage, send));
+    }
+    detail = detail.child(chat_panel(s, k, run, report));
+    col()
         .key("review-findings")
         .w_full()
         .gap(crate::ds::SPACE_4)
+        .child(header)
         .child(
             row()
                 .w_full()
-                .items_center()
-                .child(section(
-                    k,
-                    format!(
-                        "{} finding{}",
-                        report.findings.len(),
-                        if report.findings.len() == 1 { "" } else { "s" }
+                .gap(crate::ds::SPACE_6)
+                .items_start()
+                .child(list)
+                .child(detail),
+        )
+}
+
+/// The lane's read-only chat: start it with the report, ask it, and keep it
+/// told when the review runs again.
+fn chat_panel(s: &AppState, k: &Kit, run: &ReviewRun, report: &Report) -> El {
+    let review = &s.code_review;
+    let slot = (run.workspace_id, lane(&run.target));
+    let chat = review.chats.get(&slot).copied();
+    let live = s.live_chat(slot);
+    let starting = review.chat_starting.is_some();
+    let mut panel = col()
+        .key("review-chat")
+        .role("region")
+        .label("Review chat")
+        .w_full()
+        .gap(crate::ds::SPACE_3)
+        .padding(10.0)
+        .radius(k.radius.md)
+        .border(1.0, k.c.border_weak)
+        .child(section(k, "Review chat"));
+    let status = |message: String| {
+        text(message)
+            .key("review-chat-status")
+            .role("status")
+            .font(k.ty.small)
+            .color(k.c.text_base)
+            .wrap()
+    };
+    if starting {
+        panel = panel.child(status(
+            "Starting the chat with this run's report…".to_owned(),
+        ));
+    } else if let Some(live) = live {
+        let row_status = s
+            .rows
+            .iter()
+            .find(|row| row.id == live.session)
+            .and_then(|row| row.status);
+        panel = panel.child(status(
+            match row_status {
+                Some(crate::app::SessionStatus::Busy) => "Working on your question…",
+                Some(crate::app::SessionStatus::Attention) => "Waiting on you in the chat",
+                None => "Ready for a question",
+            }
+            .to_owned(),
+        ));
+        if live.run != run.id && run.status == ReviewStatus::Completed {
+            panel = panel.child(
+                col()
+                    .key("review-chat-stale")
+                    .w_full()
+                    .gap(crate::ds::SPACE_2)
+                    .child(note(
+                        k,
+                        format!(
+                            "This run finished after the chat started ({}). The chat still \
+                             talks about the earlier one.",
+                            run.verdict.map_or("no verdict", verdict_label)
+                        ),
+                    ))
+                    .child(
+                        row()
+                            .gap(crate::ds::SPACE_3)
+                            .child(
+                                Button::new("Tell the chat what changed")
+                                    .variant(ButtonVariant::Outline)
+                                    .control_size(ControlSize::Small)
+                                    .on_press(|s: &mut AppState| s.tell_review_chat())
+                                    .build(k)
+                                    .key("review-chat-tell"),
+                            )
+                            .child(
+                                Button::new("New chat")
+                                    .variant(ButtonVariant::GhostMuted)
+                                    .control_size(ControlSize::Small)
+                                    .on_press(|s: &mut AppState| s.start_review_chat(None))
+                                    .build(k)
+                                    .key("review-chat-new"),
+                            ),
                     ),
-                ))
-                .child(el().grow(1.0))
-                .child(
-                    Button::new(match s.code_review.grouping {
-                        Grouping::Severity => "By severity",
-                        Grouping::File => "By file",
-                    })
+            );
+        }
+    } else if let Some(chat) = chat {
+        let listed = s.rows.iter().any(|row| row.id == chat.session);
+        let mut actions = row().gap(crate::ds::SPACE_3);
+        if listed {
+            let session = chat.session;
+            actions = actions.child(
+                Button::new("Open the old chat")
                     .variant(ButtonVariant::GhostMuted)
                     .control_size(ControlSize::Small)
-                    .on_press(|s: &mut AppState| {
-                        s.code_review.set_grouping(match s.code_review.grouping {
-                            Grouping::Severity => Grouping::File,
-                            Grouping::File => Grouping::Severity,
-                        });
-                    })
+                    .on_press(move |s: &mut AppState| s.focus_session(session))
                     .build(k)
-                    .key("review-grouping"),
+                    .key("review-chat-old"),
+            );
+        }
+        panel = panel
+            .child(status("This chat ended.".to_owned()))
+            .child(note(
+                k,
+                "Ask again to start a new one from this run: restarting the old session \
+                 would not send it the report again.",
+            ))
+            .child(actions);
+    } else {
+        let agent = s.prompt_agent().ok().map_or_else(
+            || "an agent".to_owned(),
+            |(provider, _)| provider.to_string(),
+        );
+        panel = panel.child(note(
+            k,
+            format!(
+                "Ask about this review. It starts {agent} with this run's summary and \
+                 {} standing finding(s). It reads the code and the pull request; its prompt \
+                 forbids edits, pushes and anything posted.",
+                report
+                    .findings
+                    .iter()
+                    .filter(|finding| finding.reaction != Some(FindingReaction::Dismiss))
+                    .count()
+            ),
+        ));
+    }
+    if let Some(finding) = review
+        .question_about
+        .and_then(|id| report.findings.iter().find(|finding| finding.id == id))
+    {
+        panel = panel.child(
+            row()
+                .key("review-question-about")
+                .gap(crate::ds::SPACE_3)
+                .items_center()
+                .child(crate::ds::chip(
+                    k,
+                    &crate::theme::roles(k),
+                    format!("About {:?} · {}", finding.severity, finding.title.trim()),
+                    crate::ds::Tone::Info,
+                ))
+                .child(
+                    Button::new("Clear")
+                        .variant(ButtonVariant::GhostMuted)
+                        .control_size(ControlSize::Small)
+                        .on_press(|s: &mut AppState| s.code_review.question_about = None)
+                        .build(k)
+                        .key("review-question-clear"),
                 ),
         );
-    for (key, group) in &report.groups {
-        body = body.child(section(k, key.clone()));
-        for at in group {
-            body = body.child(finding_row(k, run, &report.findings[*at], lineage, send));
-        }
     }
-    if !report.resolved.is_empty() {
-        body = body.child(resolved_group(s, k, report));
+    let ask_label = if live.is_some() { "Ask" } else { "Start chat" };
+    let mut ask = row()
+        .w_full()
+        .gap(crate::ds::SPACE_3)
+        .items_center()
+        .child(
+            el().min_w(0.0).grow(1.0).child(
+                TextInput::new(&review.question)
+                    .label("Question for the review chat")
+                    .placeholder(if review.question_about.is_some() {
+                        "What do you want to know about this finding?"
+                    } else {
+                        "e.g. Is the P1 still a blocker if /health is only the deploy check?"
+                    })
+                    .width(None)
+                    .disabled(starting)
+                    .on_edit(|s: &mut AppState| &mut s.code_review.question)
+                    .on_submit(|s: &mut AppState, _| s.ask_review_chat())
+                    .build(k)
+                    .key("review-question"),
+            ),
+        )
+        .child(
+            Button::new(ask_label)
+                .variant(ButtonVariant::Contrast)
+                .control_size(ControlSize::Small)
+                .disabled(
+                    starting
+                        || (live.is_some() && review.question.text.trim().is_empty())
+                        || run.status != ReviewStatus::Completed,
+                )
+                .on_press(|s: &mut AppState| s.ask_review_chat())
+                .build(k)
+                .key("review-chat-ask"),
+        );
+    if let Some(live) = live {
+        let session = live.session;
+        ask = ask.child(
+            Button::new("Open chat")
+                .variant(ButtonVariant::Outline)
+                .control_size(ControlSize::Small)
+                .on_press(move |s: &mut AppState| s.focus_session(session))
+                .build(k)
+                .key("review-chat-open"),
+        );
     }
-    body
+    panel = panel.child(ask);
+    if live.is_some() {
+        panel = panel.child(note(
+            k,
+            "A question waits while the agent works; a second one is refused until it is sent. \
+             Answers appear in the chat's session.",
+        ));
+    }
+    panel
 }
 
 /// A finding under its diff line, in the Review tab's Diff and in Changes alike.
@@ -2779,39 +4082,6 @@ fn verdict_tone(verdict: Verdict) -> crate::ds::Tone {
         Verdict::Review => crate::ds::Tone::Warning,
         Verdict::Ok => crate::ds::Tone::Success,
     }
-}
-
-fn score_badge(k: &Kit, run: &ReviewRun) -> Option<El> {
-    let verdict = run.verdict?;
-    let approvable = if run.auto_approvable {
-        "auto-approvable"
-    } else {
-        "needs a person"
-    };
-    let label = format!(
-        "Score {} · {} · {approvable}",
-        score_label(run.score),
-        verdict_label(verdict)
-    );
-    Some(
-        row()
-            .key("review-score-badge")
-            .gap(crate::ds::SPACE_3)
-            .items_center()
-            .child(
-                crate::ds::chip(
-                    k,
-                    &crate::theme::roles(k),
-                    score_label(run.score),
-                    verdict_tone(verdict),
-                )
-                .label(label),
-            )
-            .child(note(
-                k,
-                format!("{} · {approvable}", verdict_label(verdict)),
-            )),
-    )
 }
 
 fn palette(k: &Kit) -> crate::diagram_svg::Palette {
@@ -3153,7 +4423,7 @@ pub fn fix_loop_dialog(s: &AppState, k: &Kit, layer: &mut Vec<El>) {
         .build(s, k, layer);
 }
 
-pub fn view(s: &AppState, k: &Kit) -> El {
+pub fn view(s: &AppState, k: &Kit, layer: &mut Vec<El>) -> El {
     let Some(workspace) = s.code_review.workspace else {
         return col()
             .key("review")
@@ -3232,10 +4502,18 @@ pub fn view(s: &AppState, k: &Kit) -> El {
                 .wrap(),
         );
     }
-    body = body.child(setup(s, k));
+    if s.code_review.customizing {
+        body = body.child(full_form(s, k));
+    } else if run.is_none() {
+        body = body.child(sentence(s, k, layer, workspace, None));
+    }
     match run {
         Some(run) => {
-            body = body.child(run_header(k, run, head));
+            let completed = run.status == ReviewStatus::Completed;
+            let report = run_report(s, run);
+            body = body
+                .children(verdict_banner(k, run, report.filter(|_| completed)))
+                .child(run_header(s, k, run, head));
             if running(run) {
                 let mut progress = col()
                     .key("review-progress")
@@ -3277,31 +4555,31 @@ pub fn view(s: &AppState, k: &Kit) -> El {
                         .wrap(),
                 );
             }
-            let completed = run.status == ReviewStatus::Completed;
-            let report = run_report(s, run);
-            if let Some(report) = report.filter(|_| completed) {
-                body = body.child(headline(k, report));
-            }
-            if let Some(badge) = score_badge(k, run) {
-                body = body.child(badge);
-            }
-            if !run.summary.trim().is_empty() {
-                body = body.child(section(k, "Summary")).child(
-                    Markdown::new(run.summary.clone())
-                        .build(k)
-                        .key("review-summary"),
-                );
+            if !s.code_review.customizing {
+                body = body.child(sentence(s, k, layer, workspace, Some(run)));
             }
             body = body.children(acknowledged_scope(k, run));
             if completed {
                 body = body.child(report_actions(s, k, run));
             }
+            let summary = (!run.summary.trim().is_empty()).then(|| {
+                col()
+                    .w_full()
+                    .gap(crate::ds::SPACE_2)
+                    .child(section(k, "Summary"))
+                    .child(
+                        Markdown::new(run.summary.clone())
+                            .build(k)
+                            .key("review-summary"),
+                    )
+            });
             body = match s.code_review.view {
                 ReviewView::Diff if completed => body.child(reviewed_diff(s, k)),
                 ReviewView::Diagrams if completed => body.child(diagrams(s, k, run)),
                 ReviewView::Graph if completed => body.child(graph(s, k)),
                 _ => body
                     .child(findings(s, k, run))
+                    .children(summary)
                     .children(report.and_then(|report| explored(k, run, report)))
                     .children(kb_section(s, k, run))
                     .children(sandbox_panel(s, k, run)),
@@ -3430,7 +4708,7 @@ mod tests {
             duration(start, None, start.as_offset().unix_timestamp() + 42),
             "42s"
         );
-        assert_eq!(verdict_label(Verdict::Block), "Bloquea");
+        assert_eq!(verdict_label(Verdict::Block), "Blocks merge");
     }
 
     #[test]
@@ -3463,9 +4741,21 @@ mod tests {
         rt.frame(0.0);
         rt.frame(1.0 / 60.0);
         let keys: Vec<String> = rt.elements().into_iter().filter_map(|e| e.key).collect();
-        assert!(keys.iter().any(|key| key == "review-presets"), "{keys:?}");
-        assert!(keys.iter().any(|key| key == "review-start"));
-        assert!(keys.iter().any(|key| key == "review-empty"));
+        for key in [
+            "review-sentence",
+            "review-word-subject-trigger",
+            "review-word-focus-trigger",
+            "review-word-depth-trigger",
+            "review-customize",
+            "review-start",
+            "review-empty",
+        ] {
+            assert!(keys.iter().any(|known| known == key), "{key}: {keys:?}");
+        }
+        assert!(
+            !keys.iter().any(|key| key == "review-presets"),
+            "the four-question form waits behind Customize"
+        );
     }
 
     #[test]
@@ -3650,7 +4940,13 @@ mod tests {
         dismissed.reaction = Some(FindingReaction::Dismiss);
         let mut liked = finding(1, "a.rs", Some(2), Severity::P1);
         liked.reaction = Some(FindingReaction::Up);
-        with_report(&mut state, &run, vec![liked, dismissed], Vec::new(), None);
+        with_report(
+            &mut state,
+            &run,
+            vec![liked.clone(), dismissed.clone()],
+            Vec::new(),
+            None,
+        );
         if let Some(config) = state.code_review.configs.get_mut(&workspace) {
             config.suppressions = vec![ReviewSuppression {
                 kind: domain::SuppressionKind::Rule,
@@ -3660,6 +4956,10 @@ mod tests {
             }];
         }
         let shown = keys(state);
+        assert!(
+            !has(&shown, "review-finding-row-2"),
+            "the open list leaves a dismissed finding out"
+        );
         for key in [
             "review-up-1",
             "review-down-1",
@@ -3668,16 +4968,23 @@ mod tests {
         ] {
             assert!(has(&shown, key), "{key}: {shown:?}");
         }
-        assert!(has(&shown, "review-undo-2"));
-        assert!(
-            !has(&shown, "review-up-2"),
-            "a dismissed finding is collapsed"
-        );
         assert!(has(&shown, "review-suppressed"));
         assert!(has(&shown, "review-suppression-undo-0"));
         assert!(has(&shown, "review-view"));
         assert!(has(&shown, "review-send-all"));
         assert!(has(&shown, "review-fix"));
+
+        let (mut state, workspace) = fixture_state();
+        let run = completed(workspace, workspace_target(workspace));
+        with_report(&mut state, &run, vec![liked, dismissed], Vec::new(), None);
+        state.code_review.filter = FindingFilter::Dismissed;
+        let shown = keys(state);
+        assert!(has(&shown, "review-finding-row-2"), "{shown:?}");
+        assert!(has(&shown, "review-undo-2"));
+        assert!(
+            !has(&shown, "review-up-2"),
+            "a dismissed finding is collapsed"
+        );
     }
 
     #[test]
@@ -4383,6 +5690,171 @@ mod tests {
         assert_eq!(state.code_review.pull_request.text, "#96");
     }
 
+    fn live_row(state: &mut AppState, workspace: WorkspaceId) -> SessionId {
+        let row = state
+            .rows
+            .iter_mut()
+            .find(|row| row.workspace_id == workspace)
+            .expect("the fixture checkout has a session");
+        row.running = true;
+        row.id
+    }
+
+    #[test]
+    fn a_question_starts_a_read_only_chat_that_the_tree_hangs_under_its_review() {
+        use crate::connection::Command;
+        let (mut state, workspace) = fixture_state();
+        let rx = connected(&mut state);
+        let run = completed(
+            workspace,
+            ReviewTarget::PullRequest {
+                workspace_id: workspace,
+                number: 7,
+                base: None,
+            },
+        );
+        with_report(
+            &mut state,
+            &run,
+            vec![finding(1, "a.rs", Some(2), Severity::P1)],
+            Vec::new(),
+            None,
+        );
+        state.ask_about_finding(1);
+        state.code_review.question = TextEdit::new("is it real?");
+        state.ask_review_chat();
+        let (prompt, review) = match rx.try_recv() {
+            Ok(Command::CreateReviewChat {
+                initial_prompt,
+                review_id,
+                ..
+            }) => (initial_prompt, review_id),
+            other => panic!("expected CreateReviewChat, got {other:?}"),
+        };
+        assert_eq!(review, run.id);
+        assert!(prompt.contains("About finding 1 (P1, a.rs:2"), "{prompt}");
+        assert!(
+            prompt.contains("gh pr diff 7"),
+            "a PR head is not checked out"
+        );
+        assert!(prompt.ends_with(domain::pr_review::READ_ONLY_RULES));
+        assert!(state.code_review.question.text.is_empty());
+        state.ask_review_chat();
+        assert!(rx.try_recv().is_err(), "one chat starts at a time");
+
+        let session = live_row(&mut state, workspace);
+        assert!(state.review_chat_opened(run.id, session));
+        assert_eq!(state.code_review.chat_starting, None);
+        let tree = state.code_review.tree(workspace, &state.rows);
+        assert_eq!(tree.len(), 1);
+        assert_eq!(tree[0].lane, Lane::PullRequest(7));
+        assert_eq!(tree[0].chat, Some(session));
+        assert!(state.code_review.is_chat(session));
+
+        state.code_review.question = TextEdit::new("and the 503?");
+        state.ask_review_chat();
+        match rx.try_recv() {
+            Ok(Command::SendSessionPrompt {
+                session_id, text, ..
+            }) => {
+                assert_eq!(session_id, session);
+                assert_eq!(text, "and the 503?");
+            }
+            other => panic!("expected SendSessionPrompt, got {other:?}"),
+        }
+
+        let shown = keys(state);
+        assert!(
+            has(&shown, &format!("review-row-{workspace}-pr7")),
+            "{shown:?}"
+        );
+        assert!(has(&shown, "review-chat-open"));
+    }
+
+    #[test]
+    fn a_chat_told_about_a_newer_run_answers_from_it() {
+        use crate::connection::Command;
+        let (mut state, workspace) = fixture_state();
+        let rx = connected(&mut state);
+        let first = completed(workspace, workspace_target(workspace));
+        with_report(&mut state, &first, Vec::new(), Vec::new(), None);
+        let session = live_row(&mut state, workspace);
+        state.review_chat_opened(first.id, session);
+
+        let mut second = completed(workspace, workspace_target(workspace));
+        second.verdict = Some(Verdict::Ok);
+        with_report(
+            &mut state,
+            &second,
+            vec![finding(2, "b.rs", None, Severity::P2)],
+            vec![finding(1, "a.rs", Some(2), Severity::P1)],
+            Some(first.id),
+        );
+        state.tell_review_chat();
+        match rx.try_recv() {
+            Ok(Command::SendSessionPrompt { text, .. }) => {
+                assert!(text.contains("Resolved: [P1] a.rs:2"), "{text}");
+                assert!(text.contains("Finding 2 [P2] b.rs"));
+            }
+            other => panic!("expected SendSessionPrompt, got {other:?}"),
+        }
+        assert_eq!(
+            state.code_review.chats[&(workspace, Lane::Workspace)].run,
+            second.id
+        );
+        state.tell_review_chat();
+        assert!(
+            rx.try_recv().is_err(),
+            "an up-to-date chat is not told twice"
+        );
+    }
+
+    #[test]
+    fn the_findings_list_moves_by_key_and_a_dismissed_choice_falls_back() {
+        let (mut state, workspace) = fixture_state();
+        let run = completed(workspace, workspace_target(workspace));
+        with_report(
+            &mut state,
+            &run,
+            vec![
+                finding(1, "a.rs", Some(2), Severity::P1),
+                finding(2, "a.rs", Some(9), Severity::P2),
+            ],
+            Vec::new(),
+            None,
+        );
+        state.step_finding(true);
+        assert_eq!(state.code_review.chosen, Some(2));
+        state.react_to_finding(2, FindingReaction::Dismiss);
+        let order = finding_order(&state.code_review, workspace);
+        assert_eq!(shown_finding(&order, state.code_review.chosen), Some(1));
+        let shown = keys(state);
+        assert!(has(&shown, "review-finding-detail-1"), "{shown:?}");
+        assert!(has(&shown, "review-finding-list"));
+    }
+
+    #[test]
+    fn tree_rows_say_how_each_lane_ended() {
+        let workspace = WorkspaceId::new();
+        let mut done = completed(workspace, workspace_target(workspace));
+        done.verdict = Some(Verdict::Block);
+        assert_eq!(
+            tree_status(&done),
+            ("Blocks merge".to_owned(), crate::ds::Tone::Danger)
+        );
+        let live = run(ReviewId::new(), Some(ReviewStage::Model), false);
+        assert_eq!(tree_status(&live).0, "Reviewing");
+        assert_eq!(
+            parse_lane_key(&lane_key(Lane::PullRequest(12))),
+            Some(Lane::PullRequest(12))
+        );
+        assert_eq!(
+            parse_lane_key(&lane_key(Lane::Workspace)),
+            Some(Lane::Workspace)
+        );
+        assert_eq!(parse_lane_key("prx"), None);
+    }
+
     #[test]
     fn a_pinned_review_drops_the_choice_of_what_to_review() {
         let (mut state, workspace) = fixture_state();
@@ -4392,8 +5864,8 @@ mod tests {
             .expect("a checkout of acme/forge is open");
         let keys = keys(state);
         assert!(has(&keys, "review-pinned"), "{keys:?}");
-        assert!(!has(&keys, "review-subject-kind"));
-        assert!(has(&keys, "review-presets"));
+        assert!(!has(&keys, "review-word-subject-trigger"));
+        assert!(has(&keys, "review-sentence"));
     }
 
     #[test]

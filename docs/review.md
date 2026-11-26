@@ -605,19 +605,44 @@ capability is refused, never downgraded to one that can write —
   (`domain::review::headline`), then the acknowledged scope under the summary,
   each finding's reachability (its kind and trigger) under its mechanism, and the
   hypotheses explored after the findings, with what each found.
-- The Review mode shows a score badge above the summary, a **Diagrams** tab
+- The Review mode leads with one verdict banner (the verdict in words, the
+  score, the headline), then the run's facts each under its name (reviewed,
+  focus, depth, agent, head, took), then the findings, then the summary. It
+  shows a **Diagrams** tab
   (each diagram drawn as SVG from theme colours), a **Graph** tab (each
   reviewed file's imports and external calls), a hypothesis chip on a
   reviewer's findings, a collapsible knowledge-base section with the cited entries, the
   sandbox checks of a `deep` run (with **Approve checks.toml** when the file
   did not run for want of approval), and **Fix Loop** beside Fix with a new agent.
-- The GUI's **Review** mode starts a run, shows stage and progress, groups
-  findings by severity or file, marks lineage and lists what was resolved, takes
+- The GUI's **Review** mode starts a run from one sentence ("Review my changes
+  for <preset> at <depth> depth with <agent>", each word a listbox; a preset with
+  its own tier locks the depth), with the four-question form behind
+  **Customize…**; once a run is shown the same sentence runs its target again.
+  Before a start it says what the daemon would decide: a running review of the
+  target with **Cancel it**, the other running reviews with **Cancel** (the
+  `max_parallel_reviews` bound), and that Custom needs its words. It shows stage
+  and progress, lists findings beside one finding at a time (filtered Open, New
+  or Dismissed; grouped "Blocks merge" for P0/P1 and "Worth fixing" for P2, or
+  by file; `j`/`k` move, `o` opens, `a` asks the chat, `d` dismisses), marks lineage and lists what was resolved, takes
   feedback, lists suppressions with Undo, sends findings to an agent, and
   cancels. A pull request's detail view starts a **Forge Review** of it. A
   checkout's workspace review and each pull request's keep their own lane in
   the tab; one landing never replaces another, and a pull-request finding's
   location opens the reviewed diff, not the checkout's file.
+- The project tree lists each lane's latest run under its checkout, with its
+  verdict or stage; pressing it opens that lane. The checkouts' runs are read
+  once per connection for it.
+- **Review chat**: one per lane, started from the report. It is the ordinary
+  `CreateAgentSession`, unfocused, with an initial prompt of the run's summary,
+  its standing findings and the first question within 8 KiB, closed by
+  `domain::pr_review::READ_ONLY_RULES`, so it is guarded by its prompt like a
+  pull-request review. Later questions are `SendSessionPrompt` with
+  `when: Queue`; one about a finding names it. When the lane runs again,
+  **Tell the chat what changed** queues the new verdict, what resolved and what
+  is new. An ended chat is replaced, never restarted, because a restart does not
+  re-send the initial prompt. The lane-to-session link is the GUI's alone and
+  runtime-only, like `Session::action`: the tree hangs the chat under its review
+  instead of among the checkout's sessions.
 - Wire requests and the `ReviewUpdated` event:
   [protocol.md](./protocol.md). The stored run/findings rows:
   [persistence.md](./persistence.md).

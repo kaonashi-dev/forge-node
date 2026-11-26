@@ -175,6 +175,14 @@ pub enum Command {
         /// The provider's own id of a conversation to re-enter.
         resume: Option<String>,
     },
+    /// A Forge Review chat: an ordinary writable agent, guarded by its prompt.
+    CreateReviewChat {
+        workspace_id: WorkspaceId,
+        provider_id: domain::AgentProviderId,
+        profile_id: Option<domain::AgentProfileId>,
+        initial_prompt: String,
+        review_id: domain::ReviewId,
+    },
     /// A child agent under a parent, in the checkout or a managed worktree.
     CreateChild {
         parent_session_id: SessionId,
@@ -454,6 +462,12 @@ pub enum UiEvent {
     },
     SessionOpened {
         generation: u64,
+        session_id: SessionId,
+    },
+    /// The session a review chat started as, unfocused: the person stays on the report.
+    ReviewChatOpened {
+        generation: u64,
+        review_id: domain::ReviewId,
         session_id: SessionId,
     },
     Diff {
@@ -847,6 +861,23 @@ impl ConnectionHandle {
             initial_prompt,
             read_only,
             resume: None,
+        })
+    }
+
+    pub fn create_review_chat(
+        &self,
+        workspace_id: WorkspaceId,
+        provider_id: domain::AgentProviderId,
+        profile_id: Option<domain::AgentProfileId>,
+        initial_prompt: String,
+        review_id: domain::ReviewId,
+    ) -> Result<(), String> {
+        self.send(Command::CreateReviewChat {
+            workspace_id,
+            provider_id,
+            profile_id,
+            initial_prompt,
+            review_id,
         })
     }
 
@@ -2103,6 +2134,38 @@ fn handle_fixture_command(
             fixture_result(
                 generation,
                 "CreateAgentSession",
+                result,
+                sink,
+                metrics,
+                started,
+            );
+        }
+        Command::CreateReviewChat {
+            workspace_id,
+            provider_id,
+            profile_id,
+            initial_prompt,
+            review_id,
+        } => {
+            let result = fixture_create_agent(
+                &mut link.store,
+                workspace_id,
+                provider_id,
+                profile_id,
+                None,
+                SessionRole::Generic,
+                Some(initial_prompt),
+            );
+            if let Ok((_, Some(DaemonEvent::SessionCreated(session)))) = &result {
+                sink(vec![UiEvent::ReviewChatOpened {
+                    generation,
+                    review_id,
+                    session_id: session.id,
+                }]);
+            }
+            fixture_result(
+                generation,
+                "CreateReviewChat",
                 result,
                 sink,
                 metrics,
@@ -3567,6 +3630,43 @@ fn handle_live_command(
                 started,
             );
         }
+        Command::CreateReviewChat {
+            workspace_id,
+            provider_id,
+            profile_id,
+            initial_prompt,
+            review_id,
+        } => {
+            metrics.note_socket_op();
+            let result = client
+                .create_agent_session_with_role(
+                    workspace_id,
+                    provider_id.clone(),
+                    profile_id,
+                    None,
+                    SessionRole::Generic,
+                    None,
+                    Some(initial_prompt),
+                    false,
+                )
+                .map(|(session_id, _)| {
+                    sink(vec![UiEvent::ReviewChatOpened {
+                        generation,
+                        review_id,
+                        session_id,
+                    }]);
+                    format!("started a review chat in {}", short_id(&session_id))
+                })
+                .map_err(|error| error.to_string());
+            live_result(
+                generation,
+                "CreateReviewChat",
+                result,
+                sink,
+                metrics,
+                started,
+            );
+        }
         Command::CreateChild {
             parent_session_id,
             provider_id,
@@ -4946,6 +5046,7 @@ fn command_label(command: &Command) -> &'static str {
         Command::DraftCommit { .. } => "DraftWithJuva",
         Command::Commit { .. } => "CreateCommit",
         Command::CreateAgent { .. } => "CreateAgentSession",
+        Command::CreateReviewChat { .. } => "CreateReviewChat",
         Command::CreateChild { .. } => "CreateChildSession",
         Command::SessionTranscript { .. } => "GetSessionTranscript",
         Command::SessionChanges { .. } => "GetSessionChanges",
