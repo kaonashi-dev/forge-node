@@ -70,7 +70,8 @@ pub use ids::{
     TerminalId, Timestamp, WorkspaceId,
 };
 pub use pr_review::{
-    builtin_recipes, compose_review_prompt, recipe_or_default, ReviewRecipe, CUSTOM_RECIPE,
+    builtin_recipes, compose_review_prompt, explainer_path, recipe_or_default, ReviewRecipe,
+    CUSTOM_RECIPE, SHOW_ME_RECIPE,
 };
 pub use pr_task::{
     agent_prompt, branch_step, effective_system_prompt, BranchFacts, BranchStep, CommitPlan,

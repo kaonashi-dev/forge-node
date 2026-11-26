@@ -354,6 +354,7 @@ pub fn dialog(s: &AppState, k: &Kit, layer: &mut Vec<El>) {
         return;
     };
     let agents = s.store.as_ref().map(review_agents).unwrap_or_default();
+    let explainer = domain::pr_review::recipe_or_default(Some(&review.recipe)).explainer;
     let mut recipes = col()
         .key("review-recipes")
         .gap(crate::ds::SPACE_1)
@@ -420,6 +421,9 @@ pub fn dialog(s: &AppState, k: &Kit, layer: &mut Vec<El>) {
         error.clone()
     } else if agents.is_empty() {
         "No installed agent has a read-only review mode.".to_string()
+    } else if explainer {
+        "Read-only except for the one page it writes outside the checkout; nothing is posted."
+            .to_string()
     } else {
         "The agent runs read-only and is told not to edit, commit or post.".to_string()
     };
@@ -436,7 +440,7 @@ pub fn dialog(s: &AppState, k: &Kit, layer: &mut Vec<El>) {
                     .grow(1.0),
             )
             .child(
-                Button::new("Start review")
+                Button::new(if explainer { "Show me" } else { "Start review" })
                     .variant(ButtonVariant::Contrast)
                     .disabled(agents.is_empty())
                     .on_press(|s: &mut AppState| s.start_review())
@@ -446,7 +450,12 @@ pub fn dialog(s: &AppState, k: &Kit, layer: &mut Vec<El>) {
     );
     crate::modal::Modal::new(
         "review",
-        format!("Review #{} in {}", review.number, review.repository),
+        format!(
+            "{} #{} in {}",
+            if explainer { "Show me" } else { "Review" },
+            review.number,
+            review.repository
+        ),
     )
     .width(crate::modal::WIDTH_STANDARD)
     .on_close(|s: &mut AppState| s.review = None)

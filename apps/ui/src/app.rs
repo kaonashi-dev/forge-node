@@ -1428,14 +1428,18 @@ impl AppState {
             .find(|pr| pr.repository == repository && pr.number == number)
     }
 
-    pub fn open_review(&mut self, repository: &str, number: u32) {
+    pub fn open_review(&mut self, repository: &str, number: u32, recipe: Option<&str>) {
         let agents = self
             .store
             .as_ref()
             .map(crate::pr_review::review_agents)
             .unwrap_or_default();
         if let Some(pr) = self.pull_request(repository, number) {
-            self.review = Some(crate::pr_review::ReviewDialog::new(pr, &agents));
+            let mut dialog = crate::pr_review::ReviewDialog::new(pr, &agents);
+            if let Some(recipe) = recipe {
+                dialog.recipe = domain::pr_review::recipe_or_default(Some(recipe)).id;
+            }
+            self.review = Some(dialog);
         }
     }
 
