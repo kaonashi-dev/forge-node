@@ -605,19 +605,24 @@ capability is refused, never downgraded to one that can write —
   (`domain::review::headline`), then the acknowledged scope under the summary,
   each finding's reachability (its kind and trigger) under its mechanism, and the
   hypotheses explored after the findings, with what each found.
-- The Review mode leads with one verdict banner (the verdict in words, the
-  score, the headline), then the run's facts each under its name (reviewed,
-  focus, depth, agent, head, took), then the findings, then the summary. It
-  shows a **Diagrams** tab
-  (each diagram drawn as SVG from theme colours), a **Graph** tab (each
-  reviewed file's imports and external calls), a hypothesis chip on a
-  reviewer's findings, a collapsible knowledge-base section with the cited entries, the
-  sandbox checks of a `deep` run (with **Approve checks.toml** when the file
-  did not run for want of approval), and **Fix Loop** beside Fix with a new agent.
+- The Review mode leads with one verdict line (the verdict in words, the
+  score, the headline, then head, agent and duration), then the sentence that
+  runs it again, then tabs: **Findings** (the list, one finding at a time, and
+  the review chat beside them when the window is wide enough, under them when
+  it is not), **Summary** (the prose, the hypotheses explored, the acknowledged
+  scope, a collapsible knowledge-base section with the cited entries, the
+  sandbox checks of a `deep` run with **Approve checks.toml** when the file did
+  not run for want of approval, and coverage), **Diff**, **Diagrams** (each
+  diagram drawn as SVG from theme colours) and **Graph** (each reviewed file's
+  imports and external calls). A run without a verdict shows its facts each
+  under its name instead. Send all, Fix with a new agent and **Fix Loop** sit
+  beside the tabs for a workspace review only: a pull request's head is not
+  this checkout.
 - The GUI's **Review** mode starts a run from one sentence ("Review my changes
   for <preset> at <depth> depth with <agent>", each word a listbox; a preset with
   its own tier locks the depth), with the four-question form behind
-  **Customize…**; once a run is shown the same sentence runs its target again.
+  **Customize…**; once a run is shown the same sentence ("Reviewed for …")
+  runs its target again, and Customize opens the form on that target.
   Before a start it says what the daemon would decide: a running review of the
   target with **Cancel it**, the other running reviews with **Cancel** (the
   `max_parallel_reviews` bound), and that Custom needs its words. It shows stage
@@ -637,9 +642,10 @@ capability is refused, never downgraded to one that can write —
   its standing findings and the first question within 8 KiB, closed by
   `domain::pr_review::READ_ONLY_RULES`, so it is guarded by its prompt like a
   pull-request review. Later questions are `SendSessionPrompt` with
-  `when: Queue`; one about a finding names it. When the lane runs again,
+  `when: Queue`; one about a finding names it, and a refused one (a question
+  already waits) comes back to its box. When the lane runs again,
   **Tell the chat what changed** queues the new verdict, what resolved and what
-  is new. An ended chat is replaced, never restarted, because a restart does not
+  is new; the chat counts as told only once the daemon accepts it. An ended chat is replaced, never restarted, because a restart does not
   re-send the initial prompt. The lane-to-session link is the GUI's alone and
   runtime-only, like `Session::action`: the tree hangs the chat under its review
   instead of among the checkout's sessions.
