@@ -10,7 +10,7 @@ use domain::{
     ReviewStage, ReviewStatus, ReviewSuppression, ReviewTarget, Session, SessionId, SessionKind,
     Severity, Tier, Timestamp, Verdict, WorkspaceId,
 };
-use rune::{El, ScrollSpec, TextEdit, col, el, row, text};
+use rune::{El, ScrollSpec, TextEdit, TextStyle, col, el, row, text};
 use rune_kit::diff::{Annotation, DiffState, DiffView, LineRef, Side};
 use rune_kit::{
     Button, ButtonVariant, ControlSize, Kit, Markdown, Progress, RadioGroup, RadioItem,
@@ -43,6 +43,7 @@ pub enum Grouping {
 pub enum ReviewView {
     #[default]
     Findings,
+    Summary,
     Diff,
     Diagrams,
     Graph,
@@ -305,9 +306,29 @@ pub struct CodeReview {
     pub chats: HashMap<Slot, ReviewChat>,
     /// The run whose chat is being started, until its session id is back.
     pub chat_starting: Option<ReviewId>,
+    /// The chat session the daemon opened, until its row is listed.
+    pub chat_opening: Option<SessionId>,
     pub question: TextEdit,
-    /// The finding the next question is about.
-    pub question_about: Option<u32>,
+    /// The finding the next question is about, in the run it was chosen in.
+    pub question_about: Option<(ReviewId, u32)>,
+    /// Prompts handed to the worker, oldest first; each `SendSessionPrompt`
+    /// result settles the front one, since the worker answers in send order.
+    pub prompt_sends: std::collections::VecDeque<PromptSend>,
+}
+
+/// What a sent prompt does once the daemon takes it, or undoes when it refuses.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum PromptSend {
+    Findings,
+    Question {
+        typed: String,
+        about: Option<(ReviewId, u32)>,
+    },
+    Tell {
+        slot: Slot,
+        session: SessionId,
+        run: ReviewId,
+    },
 }
 
 impl Default for CodeReview {
@@ -359,8 +380,10 @@ impl Default for CodeReview {
             chosen: None,
             chats: HashMap::new(),
             chat_starting: None,
+            chat_opening: None,
             question: TextEdit::new(""),
             question_about: None,
+            prompt_sends: std::collections::VecDeque::new(),
         }
     }
 }
@@ -719,6 +742,8 @@ pub fn refresh(s: &mut AppState) {
 pub fn reconnected(s: &mut AppState) {
     s.code_review.starting = false;
     s.code_review.chat_starting = None;
+    s.code_review.chat_opening = None;
+    s.code_review.prompt_sends.clear();
     s.code_review.asked_config.clear();
     s.code_review.asked_list.clear();
     s.code_review.report_asked.clear();
@@ -783,9 +808,53 @@ pub fn graph_indexed(s: &mut AppState, error: Option<&str>) {
     }
 }
 
+/// The finding a pending question is about, only while its run is shown:
+/// ids are positions within a run, so another run's same id is another finding.
+fn about_finding<'a>(
+    about: Option<(ReviewId, u32)>,
+    run: &ReviewRun,
+    report: &'a Report,
+) -> Option<&'a Finding> {
+    let (_, id) = about.filter(|(review, _)| *review == run.id)?;
+    report.findings.iter().find(|finding| finding.id == id)
+}
+
+impl CodeReview {
+    /// The full form opened from a run starts on what that run reviewed, not
+    /// on whatever the setup last held.
+    pub fn customize_for(&mut self, target: &ReviewTarget) {
+        match target {
+            ReviewTarget::Workspace { .. } => self.subject = Subject::Changes,
+            ReviewTarget::PullRequest { number, .. } => {
+                self.subject = Subject::PullRequest;
+                self.pull_request = TextEdit::new(format!("#{number}"));
+            }
+            _ => {}
+        }
+    }
+
+    /// Whether an update to `slot`'s chat is on its way.
+    #[must_use]
+    pub fn telling(&self, slot: Slot) -> bool {
+        self.prompt_sends
+            .iter()
+            .any(|sent| matches!(sent, PromptSend::Tell { slot: at, .. } if *at == slot))
+    }
+}
+
+/// Ends a chat start once its session's row is listed.
+pub fn settle_chat_start(s: &mut AppState) {
+    if let Some(session) = s.code_review.chat_opening
+        && s.rows.iter().any(|row| row.id == session)
+    {
+        s.code_review.chat_opening = None;
+    }
+}
+
 /// The project tree shows every checkout's reviews, so each checkout's runs
 /// are read once per connection, when the store arrives or changes.
 pub fn list_every_checkout(s: &mut AppState) {
+    settle_chat_start(s);
     let (Some(store), Some(connection)) = (&s.store, &s.connection) else {
         return;
     };
@@ -1481,15 +1550,18 @@ impl AppState {
     }
 
     pub fn review_command_result(&mut self, label: &str, ok: bool, message: &str) {
-        if label == "CreateReviewChat" && !ok && self.code_review.chat_starting.take().is_some() {
-            self.toasts
-                .danger("The review chat did not start", message.to_string());
+        // The app's generic "… failed" toast already says why a start failed.
+        if label == "CreateReviewChat" && !ok {
+            self.code_review.chat_starting = None;
         }
         if matches!(label, "SetFindingFeedback" | "ClearReviewSuppression") {
             self.review_feedback_settled(ok);
         }
-        if label == "SendSessionPrompt" && ok {
-            self.toasts.success(message.to_string(), None);
+        if label == "SendSessionPrompt" {
+            self.prompt_settled(ok);
+            if ok {
+                self.toasts.success(message.to_string(), None);
+            }
         }
         if label == "ApproveSandboxChecks" {
             let sent = self.code_review.sandbox_approving.take();
@@ -1878,8 +1950,14 @@ impl AppState {
             Some(connection) => connection.send_session_prompt(target, text, left_out),
             None => Err("The client worker is still starting.".to_string()),
         };
-        if let Err(error) = result {
-            self.code_review.errors.insert(workspace, error);
+        match result {
+            Ok(()) => self
+                .code_review
+                .prompt_sends
+                .push_back(PromptSend::Findings),
+            Err(error) => {
+                self.code_review.errors.insert(workspace, error);
+            }
         }
     }
 
@@ -1953,11 +2031,8 @@ impl AppState {
         };
         let slot = (workspace, lane(&run.target));
         let typed = self.code_review.question.text.trim().to_owned();
-        let question = match self
-            .code_review
-            .question_about
-            .and_then(|id| report.findings.iter().find(|finding| finding.id == id))
-        {
+        let about = self.code_review.question_about;
+        let question = match about_finding(about, run, report) {
             Some(finding) if !typed.is_empty() => model::about(finding, &typed),
             _ => model::head(&typed, model::QUESTION_BYTES).to_owned(),
         };
@@ -1976,9 +2051,37 @@ impl AppState {
             Ok(()) => {
                 self.code_review.question = TextEdit::new("");
                 self.code_review.question_about = None;
+                self.code_review
+                    .prompt_sends
+                    .push_back(PromptSend::Question { typed, about });
             }
             Err(error) => {
                 self.code_review.errors.insert(workspace, error);
+            }
+        }
+    }
+
+    /// Settles the oldest prompt sent: a refused question comes back into an
+    /// empty box, and a refused update leaves the chat marked as behind.
+    fn prompt_settled(&mut self, ok: bool) {
+        let Some(sent) = self.code_review.prompt_sends.pop_front() else {
+            return;
+        };
+        match sent {
+            PromptSend::Findings => {}
+            PromptSend::Question { typed, about } => {
+                if !ok && self.code_review.question.text.trim().is_empty() {
+                    self.code_review.question = TextEdit::new(&typed);
+                    self.code_review.question_about = about;
+                }
+            }
+            PromptSend::Tell { slot, session, run } => {
+                if let Some(chat) = self.code_review.chats.get_mut(&slot)
+                    && chat.session == session
+                    && ok
+                {
+                    chat.run = run;
+                }
             }
         }
     }
@@ -2032,10 +2135,14 @@ impl AppState {
         }
     }
 
-    /// The daemon's id for the chat `review` asked for.
+    /// The daemon's id for the chat `review` asked for. The start stays busy
+    /// until the session's row is listed: in between the chat would read as
+    /// ended and a second press would open another one.
     pub fn review_chat_opened(&mut self, review: ReviewId, session: SessionId) -> bool {
         if self.code_review.chat_starting == Some(review) {
+            self.code_review.chat_opening = Some(session);
             self.code_review.chat_starting = None;
+            settle_chat_start(self);
         }
         let slot = self
             .code_review
@@ -2077,6 +2184,9 @@ impl AppState {
         let Some(chat) = self.live_chat(slot).filter(|chat| chat.run != run.id) else {
             return;
         };
+        if self.code_review.telling(slot) {
+            return;
+        }
         let update = model::chat_update(run, &report.findings, &report.resolved);
         let review = run.id;
         let result = match &self.connection {
@@ -2084,20 +2194,28 @@ impl AppState {
             None => Err("The client worker is still starting.".to_string()),
         };
         match result {
-            Ok(()) => {
-                if let Some(chat) = self.code_review.chats.get_mut(&slot) {
-                    chat.run = review;
-                }
-            }
+            Ok(()) => self.code_review.prompt_sends.push_back(PromptSend::Tell {
+                slot,
+                session: chat.session,
+                run: review,
+            }),
             Err(error) => {
                 self.code_review.errors.insert(workspace, error);
             }
         }
     }
 
-    /// Points the next question at one finding and moves the keyboard there.
+    /// Points the next question at one finding of the shown run and moves the
+    /// keyboard there.
     pub fn ask_about_finding(&mut self, finding: u32) {
-        self.code_review.question_about = Some(finding);
+        let Some(run) = self
+            .code_review
+            .workspace
+            .and_then(|workspace| self.code_review.shown_run(workspace))
+        else {
+            return;
+        };
+        self.code_review.question_about = Some((run.id, finding));
         self.code_review.chosen = Some(finding);
     }
 
@@ -2391,12 +2509,8 @@ fn sentence(
         .gap(crate::ds::SPACE_3)
         .items_center();
     match (rerun, review.pinned_to(workspace)) {
-        (Some(run), _) => {
-            line = line.child(word("Run")).child(
-                text(target_label(&run.target))
-                    .font(k.ty.small_medium)
-                    .color(k.c.text_base),
-            );
+        (Some(_), _) => {
+            line = line.child(word("Reviewed"));
         }
         (None, Some(pin)) => {
             line = line.child(word("Review")).child(
@@ -2546,6 +2660,52 @@ fn sentence(
                 .build(k, layer),
         );
     }
+    let customize_target = rerun.map(|run| run.target.clone());
+    let customize = Button::new("Customize…")
+        .variant(ButtonVariant::GhostMuted)
+        .control_size(ControlSize::Small)
+        .on_press(move |s: &mut AppState| {
+            if let Some(target) = &customize_target {
+                s.code_review.customize_for(target);
+            }
+            s.code_review.customizing = true;
+            s.code_review.picker = None;
+        })
+        .build(k)
+        .key("review-customize");
+    let start = match rerun {
+        Some(_) => Button::new(if review.starting {
+            "Starting…"
+        } else {
+            "Run again"
+        })
+        .variant(ButtonVariant::Contrast)
+        .control_size(ControlSize::Small)
+        .disabled(!ready_to_start(s, workspace, true))
+        .on_press(|s: &mut AppState| s.rerun_code_review())
+        .build(k)
+        .key("review-run-again"),
+        None => Button::new(start_label(review, workspace))
+            .variant(ButtonVariant::Contrast)
+            .disabled(!ready_to_start(s, workspace, false))
+            .on_press(|s: &mut AppState| s.start_code_review())
+            .build(k)
+            .key("review-start"),
+    };
+    // After a run the sentence is one line with its two buttons at the end;
+    // the focus is explained only once a different one is picked.
+    let changed_focus =
+        rerun.is_some_and(|run| preset.is_some_and(|preset| preset.id != run.preset));
+    let mut buttons = Some((customize, start));
+    if let Some(run) = rerun
+        && let Some((customize, start)) = buttons.take()
+    {
+        line = line
+            .child(el().grow(1.0))
+            .children(busy_mark(s, k, run.workspace_id))
+            .child(customize)
+            .child(start);
+    }
     let mut body = col()
         .key(if rerun.is_some() {
             "review-rerun"
@@ -2555,7 +2715,9 @@ fn sentence(
         .w_full()
         .gap(crate::ds::SPACE_3)
         .child(line);
-    if let Some(preset) = preset.filter(|preset| !preset.detail.is_empty()) {
+    if let Some(preset) = preset.filter(|preset| !preset.detail.is_empty())
+        && (rerun.is_none() || changed_focus)
+    {
         body = body.child(
             note(k, format!("{}: {}", preset.name, preset.detail)).key("review-focus-detail"),
         );
@@ -2591,59 +2753,42 @@ fn sentence(
         );
     }
     body = body.children(start_notices(s, k, workspace));
-    let mut actions = row().w_full().gap(crate::ds::SPACE_4).items_center().child(
-        Button::new("Customize…")
-            .variant(ButtonVariant::GhostMuted)
-            .control_size(ControlSize::Small)
-            .on_press(|s: &mut AppState| {
-                s.code_review.customizing = true;
-                s.code_review.picker = None;
-            })
-            .build(k)
-            .key("review-customize"),
-    );
-    if !config.rules.is_empty() {
+    let mut extras = row().w_full().gap(crate::ds::SPACE_4).items_center();
+    let mut any_extra = false;
+    if rerun.is_none() && !config.rules.is_empty() {
         let enabled = config.rules.iter().filter(|rule| rule.enabled).count();
-        actions = actions.child(note(
+        extras = extras.child(note(
             k,
             format!(
                 "{} repository rules apply · {enabled} enabled",
                 config.rules.len()
             ),
         ));
+        any_extra = true;
     }
     for error in &config.errors {
-        actions = actions.child(
+        extras = extras.child(
             text(error.clone())
                 .font(k.ty.text_xsmall)
                 .color(k.c.warning.fg)
                 .truncate()
                 .min_w(0.0),
         );
+        any_extra = true;
     }
-    actions = actions
-        .child(el().grow(1.0))
-        .children(busy_mark(s, k, workspace));
-    let start = match rerun {
-        Some(_) => Button::new(if review.starting {
-            "Starting…"
-        } else {
-            "Run again"
-        })
-        .variant(ButtonVariant::Outline)
-        .control_size(ControlSize::Small)
-        .disabled(!ready_to_start(s, workspace, true))
-        .on_press(|s: &mut AppState| s.rerun_code_review())
-        .build(k)
-        .key("review-run-again"),
-        None => Button::new(start_label(review, workspace))
-            .variant(ButtonVariant::Contrast)
-            .disabled(!ready_to_start(s, workspace, false))
-            .on_press(|s: &mut AppState| s.start_code_review())
-            .build(k)
-            .key("review-start"),
-    };
-    body.child(actions.child(start))
+    if let Some((customize, start)) = buttons {
+        return body.child(
+            extras
+                .child(customize)
+                .child(el().grow(1.0))
+                .children(busy_mark(s, k, workspace))
+                .child(start),
+        );
+    }
+    if any_extra {
+        body = body.child(extras);
+    }
+    body
 }
 
 fn toggle_picker(s: &mut AppState, picker: Picker) {
@@ -2964,8 +3109,14 @@ fn run_header(s: &AppState, k: &Kit, run: &ReviewRun, head: Option<&str>) -> El 
     facts
 }
 
-/// The verdict once, in words and colour, with what blocks the merge under it.
-fn verdict_banner(k: &Kit, run: &ReviewRun, report: Option<&Report>) -> Option<El> {
+/// The verdict once, in words and colour, with what blocks the merge beside it
+/// and the run's own facts at the end: one line, so the findings start high.
+fn verdict_banner(
+    k: &Kit,
+    run: &ReviewRun,
+    report: Option<&Report>,
+    head: Option<&str>,
+) -> Option<El> {
     if run.verdict.is_none() && report.is_none() {
         return None;
     }
@@ -2974,45 +3125,67 @@ fn verdict_banner(k: &Kit, run: &ReviewRun, report: Option<&Report>) -> Option<E
     } else {
         "needs a person"
     };
-    let mut banner = col()
+    let tone = run.verdict.map_or(crate::ds::Tone::Neutral, verdict_tone);
+    let ink = tone.ink(k, &crate::theme::roles(k));
+    let mut banner = row()
         .key("review-banner")
         .role("status")
         .w_full()
-        .gap(crate::ds::SPACE_2)
-        .padding(10.0)
+        .flex_wrap()
+        .gap(crate::ds::SPACE_4)
+        .items_center()
+        .px(12.0)
+        .py(8.0)
         .radius(k.radius.md)
-        .fill(k.c.surface_hover);
+        .fill(ink.soft);
     if let Some(verdict) = run.verdict {
-        banner = banner.child(
-            row()
-                .w_full()
-                .gap(crate::ds::SPACE_4)
-                .items_center()
-                .child(
-                    text(verdict_label(verdict))
-                        .key("review-verdict")
-                        .font(k.ty.small_medium)
-                        .color(verdict_ink(k, verdict)),
+        banner = banner
+            .child(
+                text(verdict_label(verdict))
+                    .key("review-verdict")
+                    .font(k.ty.ui_medium)
+                    .color(verdict_ink(k, verdict)),
+            )
+            .child(
+                crate::ds::chip(
+                    k,
+                    &crate::theme::roles(k),
+                    format!("Score {}", score_label(run.score)),
+                    tone,
                 )
-                .child(
-                    crate::ds::chip(
-                        k,
-                        &crate::theme::roles(k),
-                        format!("Score {}", score_label(run.score)),
-                        verdict_tone(verdict),
-                    )
-                    .key("review-score-badge")
-                    .label(format!(
-                        "Score {} · {} · {approvable}",
-                        score_label(run.score),
-                        verdict_label(verdict)
-                    )),
-                )
-                .child(note(k, approvable)),
-        );
+                .key("review-score-badge")
+                .label(format!(
+                    "Score {} · {} · {approvable}",
+                    score_label(run.score),
+                    verdict_label(verdict)
+                )),
+            )
+            .child(note(k, approvable));
     }
     if let Some(report) = report {
-        banner = banner.child(headline(k, report));
+        banner = banner.child(headline(k, report).min_w(0.0).grow(1.0));
+    } else {
+        banner = banner.child(el().grow(1.0));
+    }
+    let took = duration(
+        run.created_at,
+        run.finished_at,
+        Timestamp::now().as_offset().unix_timestamp(),
+    );
+    let short: String = run.head_oid.chars().take(7).collect();
+    banner = banner.child(
+        text(format!("{short} · {} · {took}", run.provider))
+            .key("review-banner-facts")
+            .font(k.ty.small)
+            .color(k.c.text_muted),
+    );
+    if is_stale(run, head) {
+        banner = banner.child(
+            text("stale: the checkout moved since")
+                .key("review-stale")
+                .font(k.ty.small)
+                .color(k.c.warning.fg),
+        );
     }
     Some(banner)
 }
@@ -3088,15 +3261,17 @@ fn finding_row(
     finding: &Finding,
     lineage: bool,
     send: Option<&'static str>,
+    place: Option<(usize, usize)>,
 ) -> El {
     if finding.reaction == Some(FindingReaction::Dismiss) {
         return dismissed_row(k, finding);
     }
     let id = finding.id;
-    let open = Button::new(place_label(finding))
+    let pull_request = is_pull_request(run);
+    let open = Button::new(format!("{} ↗", place_label(finding)))
         .variant(ButtonVariant::GhostMuted)
         .control_size(ControlSize::Small)
-        .help(if is_pull_request(run) {
+        .help(if pull_request {
             "Show in the reviewed diff (o)"
         } else {
             "Open in the editor (o)"
@@ -3104,14 +3279,155 @@ fn finding_row(
         .on_press(move |s: &mut AppState| s.open_finding(id))
         .build(k)
         .key(format!("review-finding-{}", finding.id));
-    let actions = row()
+    let roles = crate::theme::roles(k);
+    let blocks = matches!(finding.severity, Severity::P0 | Severity::P1);
+    let mut head = row()
+        .w_full()
+        .flex_wrap()
+        .gap(crate::ds::SPACE_4)
+        .items_center()
+        .child(crate::ds::chip(
+            k,
+            &roles,
+            format!(
+                "{:?} · {}",
+                finding.severity,
+                if blocks {
+                    "blocks merge"
+                } else {
+                    "worth fixing"
+                }
+            ),
+            if blocks {
+                crate::ds::Tone::Danger
+            } else {
+                crate::ds::Tone::Warning
+            },
+        ));
+    if lineage {
+        head = head.child(lineage_badge(k, finding));
+    }
+    if let Some(hypothesis) = finding.hypothesis {
+        head = head.child(
+            crate::ds::chip(k, &roles, hypothesis.name(), crate::ds::Tone::Info)
+                .key(format!("review-hypothesis-{}", finding.id)),
+        );
+    }
+    head = head
+        .child(note(k, finding.category.clone()))
+        .children(
+            finding
+                .rule_id
+                .as_ref()
+                .map(|rule| note(k, format!("rule: {rule}"))),
+        )
+        .child(note(k, format!("{:.0}% sure", finding.confidence * 100.0)))
+        .child(el().grow(1.0))
+        .children(place.map(|(at, of)| {
+            text(format!("{at} of {of}"))
+                .key("review-finding-place")
+                .font(k.ty.small)
+                .color(k.c.text_faint)
+        }));
+    let label = |name: &str| {
+        text(name.to_owned())
+            .font(k.ty.ui)
+            .color(k.c.text_muted)
+            .w(72.0)
+    };
+    let fact = |name: &str, value: El| {
+        row()
+            .w_full()
+            .gap(crate::ds::SPACE_5)
+            .items_start()
+            .child(label(name))
+            .child(value.min_w(0.0).grow(1.0))
+    };
+    let mut item = col()
+        .key(format!("review-finding-detail-{}", finding.id))
+        .role("region")
+        .label(format!("Finding {}", finding.id))
+        .w_full()
+        .gap(crate::ds::SPACE_5)
+        .child(head)
+        .child(
+            text(finding.title.trim().to_owned())
+                .role("heading")
+                .font(TextStyle {
+                    size: 17.0,
+                    line_height: 24.0,
+                    ..k.ty.ui_medium
+                })
+                .color(k.c.text_base)
+                .wrap(),
+        )
+        .child(
+            text(finding.body.trim().to_owned())
+                .font(k.ty.ui)
+                .color(k.c.text_muted)
+                .wrap(),
+        );
+    if let Some(reach) = &finding.reachability {
+        item = item.child(
+            fact(
+                "Trigger",
+                row()
+                    .gap(crate::ds::SPACE_3)
+                    .items_start()
+                    .child(crate::ds::chip(
+                        k,
+                        &roles,
+                        reach.kind.name(),
+                        crate::ds::Tone::Neutral,
+                    ))
+                    .child(
+                        text(reach.trigger.clone())
+                            .font(k.ty.ui)
+                            .color(k.c.text_base)
+                            .wrap()
+                            .min_w(0.0)
+                            .grow(1.0),
+                    ),
+            )
+            .key(format!("review-reachability-{}", finding.id)),
+        );
+    }
+    if let Some(suggestion) = &finding.suggestion {
+        item = item.child(fact(
+            "Fix",
+            text(suggestion.trim().to_owned())
+                .font(k.ty.ui)
+                .color(k.c.text_base)
+                .wrap(),
+        ));
+    }
+    item = item.child(fact("Where", row().child(open)));
+    if !finding.evidence.trim().is_empty() {
+        item = item.child(
+            col()
+                .key(format!("review-evidence-{}", finding.id))
+                .w_full()
+                .padding(10.0)
+                .radius(k.radius.sm)
+                .fill(k.c.bg_deep)
+                .border(1.0, k.c.border_weak)
+                .child(
+                    text(finding.evidence.trim().to_owned())
+                        .font(k.ty.mono)
+                        .color(k.c.text_base)
+                        .wrap(),
+                ),
+        );
+    }
+    let mut actions = row()
         .w_full()
         .flex_wrap()
         .gap(crate::ds::SPACE_3)
         .items_center()
+        .pt(crate::ds::SPACE_4)
         .child(
-            Button::new("Ask in chat")
-                .variant(ButtonVariant::Outline)
+            Button::new("Ask in review chat")
+                .variant(ButtonVariant::Contrast)
                 .control_size(ControlSize::Small)
                 .help("Point the review chat's next question at this finding (a)")
                 .on_press(move |s: &mut AppState| s.ask_about_finding(id))
@@ -3132,15 +3448,9 @@ fn finding_row(
             "👎",
             "review-down",
         ))
-        .child(reaction_button(
-            k,
-            finding,
-            FindingReaction::Dismiss,
-            "Dismiss",
-            "review-dismiss",
-        ))
-        .child(el().grow(1.0))
-        .child(
+        .child(el().grow(1.0));
+    if !pull_request {
+        actions = actions.child(
             Button::new("Send to agent")
                 .variant(ButtonVariant::GhostMuted)
                 .control_size(ControlSize::Small)
@@ -3149,114 +3459,25 @@ fn finding_row(
                 .on_press(move |s: &mut AppState| s.send_findings(Some(id)))
                 .build(k)
                 .key(format!("review-send-{id}")),
-        )
+        );
+    }
+    actions = actions
+        .child(reaction_button(
+            k,
+            finding,
+            FindingReaction::Dismiss,
+            "Dismiss",
+            "review-dismiss",
+        ))
         .child(
-            Button::new("Next")
-                .variant(ButtonVariant::GhostMuted)
+            Button::new("Next ›")
+                .variant(ButtonVariant::Outline)
                 .control_size(ControlSize::Small)
                 .help("The next finding in the list (j)")
                 .on_press(|s: &mut AppState| s.step_finding(true))
                 .build(k)
                 .key("review-next"),
         );
-    let mut head = row().w_full().gap(crate::ds::SPACE_4).items_center().child(
-        text(format!("{:?}", finding.severity))
-            .font(k.ty.small_medium)
-            .color(severity_ink(k, finding.severity)),
-    );
-    if lineage {
-        head = head.child(lineage_badge(k, finding));
-    }
-    if let Some(hypothesis) = finding.hypothesis {
-        head = head.child(
-            crate::ds::chip(
-                k,
-                &crate::theme::roles(k),
-                hypothesis.name(),
-                crate::ds::Tone::Info,
-            )
-            .key(format!("review-hypothesis-{}", finding.id)),
-        );
-    }
-    head = head
-        .child(
-            text(finding.category.clone())
-                .font(k.ty.text_xsmall)
-                .color(k.c.text_muted),
-        )
-        .children(
-            finding
-                .rule_id
-                .as_ref()
-                .map(|rule| note(k, format!("rule: {rule}"))),
-        )
-        .child(
-            text(format!("{:.0}% sure", finding.confidence * 100.0))
-                .font(k.ty.text_xsmall)
-                .color(k.c.text_muted),
-        )
-        .child(el().grow(1.0))
-        .child(open);
-    let mut item = col()
-        .key(format!("review-finding-detail-{}", finding.id))
-        .role("region")
-        .label(format!("Finding {}", finding.id))
-        .w_full()
-        .gap(crate::ds::SPACE_2)
-        .padding(8.0)
-        .radius(k.radius.sm)
-        .fill(k.c.surface_hover)
-        .child(head)
-        .child(
-            text(finding.title.trim().to_owned())
-                .font(k.ty.small_medium)
-                .color(k.c.text_base)
-                .wrap(),
-        )
-        .child(
-            text(finding.body.clone())
-                .font(k.ty.small)
-                .color(k.c.text_muted)
-                .wrap(),
-        );
-    if let Some(reach) = &finding.reachability {
-        item = item.child(
-            row()
-                .key(format!("review-reachability-{}", finding.id))
-                .w_full()
-                .gap(crate::ds::SPACE_3)
-                .items_center()
-                .child(crate::ds::chip(
-                    k,
-                    &crate::theme::roles(k),
-                    reach.kind.name(),
-                    crate::ds::Tone::Neutral,
-                ))
-                .child(
-                    text(reach.trigger.clone())
-                        .font(k.ty.small)
-                        .color(k.c.text_muted)
-                        .wrap()
-                        .min_w(0.0)
-                        .grow(1.0),
-                ),
-        );
-    }
-    if let Some(suggestion) = &finding.suggestion {
-        item = item.child(
-            col()
-                .w_full()
-                .padding(8.0)
-                .radius(k.radius.sm)
-                .fill(k.c.bg_deep)
-                .child(
-                    text(suggestion.clone())
-                        .font(k.ty.mono)
-                        .color(k.c.text_base)
-                        .wrap(),
-                ),
-        );
-    }
     item.child(actions)
 }
 
@@ -3312,9 +3533,9 @@ fn headline(k: &Kit, report: &Report) -> El {
     text(domain::review::headline(&report.findings))
         .key("review-headline")
         .role("status")
-        .font(k.ty.small_medium)
+        .font(k.ty.ui)
         .color(ink)
-        .wrap()
+        .truncate()
 }
 
 fn explored(k: &Kit, run: &ReviewRun, report: &Report) -> Option<El> {
@@ -3543,49 +3764,41 @@ fn findings(s: &AppState, k: &Kit, run: &ReviewRun) -> El {
             filter_label(*filter, count)
         })
         .collect();
-    let header = row()
-        .w_full()
-        .gap(crate::ds::SPACE_4)
-        .items_center()
-        .child(
-            SegmentedControl::new(
-                &labels,
-                filters.iter().position(|filter| *filter == review.filter),
-            )
-            .label("Show findings")
-            .fit()
-            .on_pick(move |s: &mut AppState, index: usize, _| {
-                if let Some(filter) = filters.get(index) {
-                    s.code_review.filter = *filter;
-                }
-            })
-            .build(k)
-            .key("review-filter"),
-        )
-        .child(el().grow(1.0))
-        .child(
-            Button::new(match review.grouping {
-                Grouping::Severity => "By severity",
-                Grouping::File => "By file",
-            })
-            .variant(ButtonVariant::GhostMuted)
-            .control_size(ControlSize::Small)
-            .on_press(|s: &mut AppState| {
-                s.code_review.set_grouping(match s.code_review.grouping {
-                    Grouping::Severity => Grouping::File,
-                    Grouping::File => Grouping::Severity,
-                });
-            })
-            .build(k)
-            .key("review-grouping"),
-        );
+    let filter = SegmentedControl::new(
+        &labels,
+        filters.iter().position(|filter| *filter == review.filter),
+    )
+    .label("Show findings")
+    .fit()
+    .on_pick(move |s: &mut AppState, index: usize, _| {
+        if let Some(filter) = filters.get(index) {
+            s.code_review.filter = *filter;
+        }
+    })
+    .build(k)
+    .key("review-filter");
+    let grouping = Button::new(match review.grouping {
+        Grouping::Severity => "By severity",
+        Grouping::File => "By file",
+    })
+    .variant(ButtonVariant::GhostMuted)
+    .control_size(ControlSize::Small)
+    .help("Group the list by severity or by file")
+    .on_press(|s: &mut AppState| {
+        s.code_review.set_grouping(match s.code_review.grouping {
+            Grouping::Severity => Grouping::File,
+            Grouping::File => Grouping::Severity,
+        });
+    })
+    .build(k)
+    .key("review-grouping");
     let order = listed(&report.findings, &report.groups, review.filter);
     let shown = shown_finding(&order, review.chosen);
     let mut list = col()
         .key("review-finding-list")
         .role("listbox")
         .label("Findings: j and k move, o opens, a asks the chat, d dismisses")
-        .w(320.0)
+        .w_full()
         .gap(crate::ds::SPACE_1)
         .focusable(true)
         .on_key(findings_key);
@@ -3598,7 +3811,7 @@ fn findings(s: &AppState, k: &Kit, run: &ReviewRun) -> El {
         if kept.is_empty() {
             continue;
         }
-        list = list.child(section(k, group_title(review.grouping, key)));
+        list = list.child(group_header(k, review.grouping, key, kept.len()));
         for finding in kept {
             list = list.child(finding_item(k, finding, shown == Some(finding.id), lineage));
         }
@@ -3617,28 +3830,74 @@ fn findings(s: &AppState, k: &Kit, run: &ReviewRun) -> El {
     if !report.resolved.is_empty() {
         list = list.child(resolved_group(s, k, report));
     }
+    let hints = text("j / k move · o open · a ask · d dismiss")
+        .key("review-keys")
+        .font(k.ty.small)
+        .color(k.c.text_faint)
+        .a11y_hidden();
+    let column = col()
+        .key("review-list-column")
+        .w(FINDINGS_LIST_W)
+        .gap(crate::ds::SPACE_4)
+        .child(filter)
+        .child(row().w_full().child(el().grow(1.0)).child(grouping))
+        .child(list)
+        .child(hints);
+    let position = shown.and_then(|id| order.iter().position(|at| *at == id));
     let mut detail = col()
         .key("review-detail")
         .min_w(0.0)
         .grow(1.0)
-        .gap(crate::ds::SPACE_5);
+        .gap(crate::ds::SPACE_6);
     if let Some(finding) = shown.and_then(|id| report.findings.iter().find(|f| f.id == id)) {
-        detail = detail.child(finding_row(k, run, finding, lineage, send));
+        let place = position.map(|at| (at + 1, order.len()));
+        detail = detail.child(finding_row(k, run, finding, lineage, send, place));
     }
-    detail = detail.child(chat_panel(s, k, run, report));
-    col()
-        .key("review-findings")
+    let chat = chat_panel(s, k, run, report);
+    let mut columns = row()
         .w_full()
-        .gap(crate::ds::SPACE_4)
-        .child(header)
-        .child(
-            row()
-                .w_full()
-                .gap(crate::ds::SPACE_6)
-                .items_start()
-                .child(list)
-                .child(detail),
-        )
+        .gap(crate::ds::SPACE_7)
+        .items_start()
+        .child(column);
+    if room_for_chat_column(s) {
+        columns = columns
+            .child(detail)
+            .child(col().w(CHAT_COLUMN_W).child(chat));
+    } else {
+        columns = columns.child(detail.child(chat));
+    }
+    col().key("review-findings").w_full().child(columns)
+}
+
+const FINDINGS_LIST_W: f32 = 300.0;
+const CHAT_COLUMN_W: f32 = 340.0;
+/// Below this the detail would be squeezed under ~420 points, so the chat
+/// drops under it instead of sitting beside it.
+const THREE_COLUMNS_MIN_W: f32 = 1140.0;
+
+fn room_for_chat_column(s: &AppState) -> bool {
+    let sidebar = if s.sidebar.is_open() {
+        s.sidebar.width()
+    } else {
+        0.0
+    };
+    s.window.get()[0] - sidebar >= THREE_COLUMNS_MIN_W
+}
+
+/// A group's title in the colour of what it means for the merge.
+fn group_header(k: &Kit, grouping: Grouping, key: &str, count: usize) -> El {
+    let ink = match (grouping, key) {
+        (Grouping::Severity, "P0" | "P1") => k.c.danger.fg,
+        (Grouping::Severity, "P2") => k.c.warning.fg,
+        _ => k.c.text_faint,
+    };
+    text(format!("{} ({count})", group_title(grouping, key)))
+        .role("heading")
+        .font(k.ty.small_medium)
+        .color(ink)
+        .pt(crate::ds::SPACE_4)
+        .pb(crate::ds::SPACE_2)
+        .px(crate::ds::SPACE_2)
 }
 
 /// The lane's read-only chat: start it with the report, ask it, and keep it
@@ -3648,17 +3907,40 @@ fn chat_panel(s: &AppState, k: &Kit, run: &ReviewRun, report: &Report) -> El {
     let slot = (run.workspace_id, lane(&run.target));
     let chat = review.chats.get(&slot).copied();
     let live = s.live_chat(slot);
-    let starting = review.chat_starting.is_some();
+    let starting = review.chat_starting.is_some() || review.chat_opening.is_some();
+    let agent = s.prompt_agent().ok().map_or_else(
+        || "an agent".to_owned(),
+        |(provider, _)| provider.to_string(),
+    );
     let mut panel = col()
         .key("review-chat")
         .role("region")
         .label("Review chat")
         .w_full()
-        .gap(crate::ds::SPACE_3)
-        .padding(10.0)
+        .gap(crate::ds::SPACE_4)
+        .padding(12.0)
         .radius(k.radius.md)
         .border(1.0, k.c.border_weak)
-        .child(section(k, "Review chat"));
+        .child(
+            row()
+                .w_full()
+                .gap(crate::ds::SPACE_4)
+                .items_center()
+                .child(
+                    text("Review chat")
+                        .role("heading")
+                        .font(k.ty.ui_medium)
+                        .color(k.c.text_base),
+                )
+                .child(note(k, agent.clone()))
+                .child(el().grow(1.0))
+                .child(crate::ds::chip(
+                    k,
+                    &crate::theme::roles(k),
+                    "read-only",
+                    crate::ds::Tone::Neutral,
+                )),
+        );
     let status = |message: String| {
         text(message)
             .key("review-chat-status")
@@ -3706,6 +3988,7 @@ fn chat_panel(s: &AppState, k: &Kit, run: &ReviewRun, report: &Report) -> El {
                                 Button::new("Tell the chat what changed")
                                     .variant(ButtonVariant::Outline)
                                     .control_size(ControlSize::Small)
+                                    .disabled(review.telling(slot))
                                     .on_press(|s: &mut AppState| s.tell_review_chat())
                                     .build(k)
                                     .key("review-chat-tell"),
@@ -3744,28 +4027,37 @@ fn chat_panel(s: &AppState, k: &Kit, run: &ReviewRun, report: &Report) -> El {
             ))
             .child(actions);
     } else {
-        let agent = s.prompt_agent().ok().map_or_else(
-            || "an agent".to_owned(),
-            |(provider, _)| provider.to_string(),
+        let standing = report
+            .findings
+            .iter()
+            .filter(|finding| finding.reaction != Some(FindingReaction::Dismiss))
+            .count();
+        panel = panel.child(
+            col()
+                .key("review-chat-empty")
+                .w_full()
+                .gap(crate::ds::SPACE_3)
+                .py(crate::ds::SPACE_6)
+                .items_center()
+                .child(
+                    text("Ask about this review")
+                        .font(k.ty.ui_medium)
+                        .color(k.c.text_base),
+                )
+                .child(
+                    text(format!(
+                        "Starts {agent} already knowing the summary and the {standing} \
+                         standing finding(s). It can read the code and the pull request; it \
+                         cannot edit, push or post.",
+                    ))
+                    .font(k.ty.small)
+                    .color(k.c.text_muted)
+                    .align(rune::Align::Center)
+                    .wrap(),
+                ),
         );
-        panel = panel.child(note(
-            k,
-            format!(
-                "Ask about this review. It starts {agent} with this run's summary and \
-                 {} standing finding(s). It reads the code and the pull request; its prompt \
-                 forbids edits, pushes and anything posted.",
-                report
-                    .findings
-                    .iter()
-                    .filter(|finding| finding.reaction != Some(FindingReaction::Dismiss))
-                    .count()
-            ),
-        ));
     }
-    if let Some(finding) = review
-        .question_about
-        .and_then(|id| report.findings.iter().find(|finding| finding.id == id))
-    {
+    if let Some(finding) = about_finding(review.question_about, run, report) {
         panel = panel.child(
             row()
                 .key("review-question-about")
@@ -3969,47 +4261,68 @@ fn suppressions(s: &AppState, k: &Kit, workspace: WorkspaceId) -> El {
     body
 }
 
-fn report_actions(s: &AppState, k: &Kit, run: &ReviewRun) -> El {
-    let send = s.send_destination(run).err();
-    let fix_blocked = is_pull_request(run);
-    let standing = s
-        .code_review
-        .shown_report(run.workspace_id)
-        .is_some_and(|report| {
-            report
-                .findings
-                .iter()
-                .any(|finding| finding.reaction != Some(FindingReaction::Dismiss))
-        });
-    let mut actions = row()
+const REVIEW_VIEWS: [ReviewView; 5] = [
+    ReviewView::Findings,
+    ReviewView::Summary,
+    ReviewView::Diff,
+    ReviewView::Diagrams,
+    ReviewView::Graph,
+];
+
+/// The report's tabs, and the workspace run's hand-offs beside them. A pull
+/// request's head is not this checkout, so it gets no fix buttons at all
+/// rather than three disabled ones.
+fn review_tabs(s: &AppState, k: &Kit, run: &ReviewRun, report: Option<&Report>) -> El {
+    let standing_count = report.map_or(0, |report| {
+        report
+            .findings
+            .iter()
+            .filter(|finding| finding.reaction != Some(FindingReaction::Dismiss))
+            .count()
+    });
+    let labels: Vec<String> = REVIEW_VIEWS
+        .iter()
+        .map(|view| match view {
+            ReviewView::Findings => format!("Findings {standing_count}"),
+            ReviewView::Summary => "Summary".into(),
+            ReviewView::Diff => "Diff".into(),
+            ReviewView::Diagrams => "Diagrams".into(),
+            ReviewView::Graph => "Graph".into(),
+        })
+        .collect();
+    let actions = row()
         .key("review-actions")
         .w_full()
+        .flex_wrap()
         .gap(crate::ds::SPACE_3)
         .items_center()
         .child(
             SegmentedControl::new(
-                &["Findings", "Diff", "Diagrams", "Graph"],
-                Some(match s.code_review.view {
-                    ReviewView::Findings => 0,
-                    ReviewView::Diff => 1,
-                    ReviewView::Diagrams => 2,
-                    ReviewView::Graph => 3,
-                }),
+                &labels,
+                REVIEW_VIEWS
+                    .iter()
+                    .position(|view| *view == s.code_review.view),
             )
             .label("Show")
             .fit()
             .on_pick(|s: &mut AppState, index: usize, _| {
-                s.code_review.view = match index {
-                    1 => ReviewView::Diff,
-                    2 => ReviewView::Diagrams,
-                    3 => ReviewView::Graph,
-                    _ => ReviewView::Findings,
-                };
+                if let Some(view) = REVIEW_VIEWS.get(index) {
+                    s.code_review.view = *view;
+                }
             })
             .build(k)
             .key("review-view"),
         )
-        .child(el().grow(1.0))
+        .child(el().grow(1.0));
+    if is_pull_request(run) {
+        return actions;
+    }
+    fix_actions(s, k, run, actions, standing_count > 0)
+}
+
+fn fix_actions(s: &AppState, k: &Kit, run: &ReviewRun, actions: El, standing: bool) -> El {
+    let send = s.send_destination(run).err();
+    let mut actions = actions
         .child(
             Button::new("Send all")
                 .variant(ButtonVariant::Outline)
@@ -4023,7 +4336,7 @@ fn report_actions(s: &AppState, k: &Kit, run: &ReviewRun) -> El {
             Button::new("Fix with a new agent")
                 .variant(ButtonVariant::Outline)
                 .control_size(ControlSize::Small)
-                .disabled(fix_blocked || !standing)
+                .disabled(!standing)
                 .on_press(|s: &mut AppState| s.fix_with_agent())
                 .build(k)
                 .key("review-fix"),
@@ -4042,7 +4355,7 @@ fn report_actions(s: &AppState, k: &Kit, run: &ReviewRun) -> El {
             })
             .variant(ButtonVariant::Outline)
             .control_size(ControlSize::Small)
-            .disabled(fix_blocked || !standing || looping)
+            .disabled(!standing || looping)
             .on_press(move |s: &mut AppState| s.code_review.fix_loop_confirm = Some(review_id))
             .build(k)
             .key("review-fix-loop")
@@ -4051,6 +4364,33 @@ fn report_actions(s: &AppState, k: &Kit, run: &ReviewRun) -> El {
         actions = actions.child(note(k, reason));
     }
     actions
+}
+
+/// The run's prose and its bookkeeping, off the findings' page: the summary
+/// repeats per hypothesis and would otherwise push the list's detail away.
+fn summary_tab(s: &AppState, k: &Kit, run: &ReviewRun, report: Option<&Report>) -> El {
+    let summary = (!run.summary.trim().is_empty()).then(|| {
+        col()
+            .w_full()
+            .gap(crate::ds::SPACE_2)
+            .child(section(k, "Summary"))
+            .child(
+                Markdown::new(run.summary.clone())
+                    .build(k)
+                    .key("review-summary"),
+            )
+    });
+    col()
+        .key("review-summary-tab")
+        .w_full()
+        .max_w(920.0)
+        .gap(crate::ds::SPACE_6)
+        .children(summary)
+        .children(report.and_then(|report| explored(k, run, report)))
+        .children(acknowledged_scope(k, run))
+        .children(kb_section(s, k, run))
+        .children(sandbox_panel(s, k, run))
+        .child(coverage(k, run))
 }
 
 fn coverage(k: &Kit, run: &ReviewRun) -> El {
@@ -4447,13 +4787,21 @@ pub fn view(s: &AppState, k: &Kit, layer: &mut Vec<El>) -> El {
     let head = workspace_row.and_then(|row| row.status.head.as_deref());
     let run = s.code_review.shown_run(workspace);
     let error = s.code_review.errors.get(&workspace);
+    // The view rises into the title row when the sidebar is closed, so its
+    // header starts past the traffic lights like a terminal pane's.
     let mut top = row()
         .key("review-head")
         .w_full()
-        .h(38.0)
-        .px(12.0)
+        .h(crate::ui::TITLE_H + crate::ds::SPACE_4)
+        .pl(if s.sidebar.is_open() {
+            12.0
+        } else {
+            s.title_clear.get()
+        })
+        .pr(12.0)
         .gap(10.0)
         .items_center()
+        .window_drag()
         .child(text("Review").font(k.ty.small_medium).color(k.c.text_base));
     if let Some(workspace_row) = workspace_row {
         top = top.child(
@@ -4511,9 +4859,12 @@ pub fn view(s: &AppState, k: &Kit, layer: &mut Vec<El>) -> El {
         Some(run) => {
             let completed = run.status == ReviewStatus::Completed;
             let report = run_report(s, run);
-            body = body
-                .children(verdict_banner(k, run, report.filter(|_| completed)))
-                .child(run_header(s, k, run, head));
+            let banner = verdict_banner(k, run, report.filter(|_| completed), head);
+            let led = banner.is_some();
+            body = body.children(banner);
+            if !led {
+                body = body.child(run_header(s, k, run, head));
+            }
             if running(run) {
                 let mut progress = col()
                     .key("review-progress")
@@ -4558,33 +4909,20 @@ pub fn view(s: &AppState, k: &Kit, layer: &mut Vec<El>) -> El {
             if !s.code_review.customizing {
                 body = body.child(sentence(s, k, layer, workspace, Some(run)));
             }
-            body = body.children(acknowledged_scope(k, run));
-            if completed {
-                body = body.child(report_actions(s, k, run));
-            }
-            let summary = (!run.summary.trim().is_empty()).then(|| {
-                col()
-                    .w_full()
-                    .gap(crate::ds::SPACE_2)
-                    .child(section(k, "Summary"))
-                    .child(
-                        Markdown::new(run.summary.clone())
-                            .build(k)
-                            .key("review-summary"),
-                    )
-            });
-            body = match s.code_review.view {
-                ReviewView::Diff if completed => body.child(reviewed_diff(s, k)),
-                ReviewView::Diagrams if completed => body.child(diagrams(s, k, run)),
-                ReviewView::Graph if completed => body.child(graph(s, k)),
-                _ => body
+            if !completed {
+                body = body
                     .child(findings(s, k, run))
-                    .children(summary)
-                    .children(report.and_then(|report| explored(k, run, report)))
-                    .children(kb_section(s, k, run))
-                    .children(sandbox_panel(s, k, run)),
-            };
-            body = body.child(coverage(k, run));
+                    .child(summary_tab(s, k, run, report));
+            } else {
+                body = body.child(review_tabs(s, k, run, report));
+                body = match s.code_review.view {
+                    ReviewView::Summary => body.child(summary_tab(s, k, run, report)),
+                    ReviewView::Diff => body.child(reviewed_diff(s, k)),
+                    ReviewView::Diagrams => body.child(diagrams(s, k, run)),
+                    ReviewView::Graph => body.child(graph(s, k)),
+                    ReviewView::Findings => body.child(findings(s, k, run)),
+                };
+            }
         }
         None => {
             let empty = match pinned {
@@ -5088,7 +5426,7 @@ mod tests {
     }
 
     #[test]
-    fn send_and_fix_are_disabled_for_a_pull_request_run() {
+    fn a_pull_request_run_offers_no_send_or_fix() {
         let (mut state, workspace) = fixture_state();
         let run = completed(
             workspace,
@@ -5110,7 +5448,15 @@ mod tests {
             Err("Send works on a workspace review, not a pull request's.")
         );
         let shown = keys(state);
-        assert!(has(&shown, "review-target"));
+        assert!(has(&shown, "review-banner"));
+        for gone in [
+            "review-send-all",
+            "review-fix",
+            "review-fix-loop",
+            "review-send-1",
+        ] {
+            assert!(!has(&shown, gone), "{gone} is offered for a pull request");
+        }
     }
 
     fn agent(workspace: WorkspaceId, at: &str) -> Session {
@@ -5798,6 +6144,20 @@ mod tests {
             }
             other => panic!("expected SendSessionPrompt, got {other:?}"),
         }
+        state.tell_review_chat();
+        assert!(rx.try_recv().is_err(), "one update in flight at a time");
+        // One prompt waits per session, so a refused update must stay undone.
+        state.review_command_result("SendSessionPrompt", false, "Conflict");
+        assert_eq!(
+            state.code_review.chats[&(workspace, Lane::Workspace)].run,
+            first.id
+        );
+        state.tell_review_chat();
+        assert!(matches!(
+            rx.try_recv(),
+            Ok(Command::SendSessionPrompt { .. })
+        ));
+        state.review_command_result("SendSessionPrompt", true, "queued");
         assert_eq!(
             state.code_review.chats[&(workspace, Lane::Workspace)].run,
             second.id
@@ -5807,6 +6167,30 @@ mod tests {
             rx.try_recv().is_err(),
             "an up-to-date chat is not told twice"
         );
+    }
+
+    #[test]
+    fn a_refused_question_comes_back_to_its_box() {
+        let (mut state, workspace) = fixture_state();
+        let rx = connected(&mut state);
+        let run = completed(workspace, workspace_target(workspace));
+        with_report(
+            &mut state,
+            &run,
+            vec![finding(1, "a.rs", Some(2), Severity::P1)],
+            Vec::new(),
+            None,
+        );
+        let session = live_row(&mut state, workspace);
+        state.review_chat_opened(run.id, session);
+        state.ask_about_finding(1);
+        state.code_review.question = TextEdit::new("still real?");
+        state.ask_review_chat();
+        assert!(rx.try_recv().is_ok());
+        assert!(state.code_review.question.text.is_empty());
+        state.review_command_result("SendSessionPrompt", false, "Conflict");
+        assert_eq!(state.code_review.question.text, "still real?");
+        assert_eq!(state.code_review.question_about, Some((run.id, 1)));
     }
 
     #[test]
@@ -6005,8 +6389,22 @@ mod tests {
         );
         assert_eq!(
             text_under("review-reachability-1"),
-            ["sequence", "two saves in a row"]
+            ["Trigger", "sequence", "two saves in a row"]
         );
+        rt.state.code_review.view = ReviewView::Summary;
+        rt.invalidate();
+        rt.frame(2.0 / 60.0);
+        let elements = rt.elements();
+        let text_under = |key: &str| -> Vec<String> {
+            let Some(at) = elements.iter().find(|e| e.key.as_deref() == Some(key)) else {
+                return Vec::new();
+            };
+            elements
+                .iter()
+                .filter(|e| e.path.starts_with(&at.path))
+                .filter_map(|e| e.text.clone())
+                .collect()
+        };
         assert_eq!(
             text_under("review-explored-RaceCondition"),
             ["RaceCondition · 1 finding · diff: lock ×2"]
@@ -6162,6 +6560,7 @@ mod tests {
     #[test]
     fn a_cited_knowledge_base_and_a_sandbox_run_have_their_sections() {
         let (mut state, workspace) = fixture_state();
+        state.code_review.view = ReviewView::Summary;
         let mut run = completed(workspace, workspace_target(workspace));
         run.sandbox_run_id = Some("s1".into());
         let mut cited = finding(1, "a.rs", Some(2), Severity::P1);
@@ -6209,6 +6608,7 @@ mod tests {
     #[test]
     fn an_unapproved_sandbox_file_offers_its_approval() {
         let (mut state, workspace) = fixture_state();
+        state.code_review.view = ReviewView::Summary;
         let mut run = completed(workspace, workspace_target(workspace));
         run.sandbox_run_id = Some("s1".into());
         with_report(&mut state, &run, vec![], vec![], None);

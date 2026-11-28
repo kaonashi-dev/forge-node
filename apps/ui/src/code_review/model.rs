@@ -12,6 +12,11 @@ use super::{Grouping, PROMPT_BUDGET};
 const CHAT_SUMMARY_BYTES: usize = 2048;
 /// Bytes of a typed question that travel, so a pasted log cannot crowd out the findings.
 pub const QUESTION_BYTES: usize = 2048;
+/// Room for [`about`]'s prefix: its title and place are cut to fit it.
+const ABOUT_BYTES: usize = 512;
+const ABOUT_PART_BYTES: usize = 200;
+/// "New findings:", a left-out count and the closing line of [`chat_update`].
+const UPDATE_TAIL_BYTES: usize = 128;
 
 /// Which findings the Review tab's list shows.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -109,8 +114,8 @@ pub fn about(finding: &Finding, question: &str) -> String {
         "About finding {} ({:?}, {}, \"{}\"): {}",
         finding.id,
         finding.severity,
-        place(finding),
-        finding.title.trim(),
+        head(&place(finding), ABOUT_PART_BYTES),
+        head(finding.title.trim(), ABOUT_PART_BYTES),
         head(question.trim(), QUESTION_BYTES)
     )
 }
@@ -180,7 +185,7 @@ pub fn chat_prompt(
         .map(|question| {
             format!(
                 "## First question\n\n{}\n\n",
-                head(question, QUESTION_BYTES)
+                head(question, QUESTION_BYTES + ABOUT_BYTES)
             )
         })
         .unwrap_or_default();
@@ -235,7 +240,10 @@ pub fn chat_update(run: &ReviewRun, findings: &[Finding], resolved: &[Finding]) 
         .filter(|finding| finding.lineage == Lineage::New)
         .cloned()
         .collect();
-    let (list, left_out) = finding_list(&fresh, PROMPT_BUDGET.saturating_sub(update.len() + 64));
+    let (list, left_out) = finding_list(
+        &fresh,
+        PROMPT_BUDGET.saturating_sub(update.len() + UPDATE_TAIL_BYTES),
+    );
     if !list.is_empty() {
         update.push_str("New findings:\n");
         update.push_str(&list);
@@ -600,6 +608,35 @@ mod tests {
             "About finding 4 (P2, a.rs, \"finding 4\"): why?"
         );
         assert_eq!(head("aé", 2), "a");
+    }
+
+    #[test]
+    fn a_chat_update_stays_in_budget_however_close_its_list_lands() {
+        let review = run(ReviewId::new(), None, true);
+        // Sweeping body sizes lands the list within bytes of its share at
+        // some size, where the closing lines used to tip it over.
+        for body in 0..300 {
+            let fresh: Vec<Finding> = (0..60)
+                .map(|id| {
+                    let mut f = finding(id, "c.rs", Some(id), Severity::P2);
+                    f.body = "y".repeat(body);
+                    f
+                })
+                .collect();
+            let update = chat_update(&review, &fresh, &[]);
+            assert!(update.len() <= PROMPT_BUDGET, "{body}: {}", update.len());
+        }
+    }
+
+    #[test]
+    fn a_long_question_about_a_finding_keeps_its_end() {
+        let review = run(ReviewId::new(), None, true);
+        let mut long = finding(3, &"dir/".repeat(200), Some(1), Severity::P1);
+        long.title = "t".repeat(1000);
+        let question = about(&long, &format!("{}END", "q".repeat(2000)));
+        let prompt = chat_prompt("PR #7", &review, &[long], Some(&question));
+        assert!(prompt.contains("END"), "the person's own words are not cut");
+        assert!(prompt.len() <= PROMPT_BUDGET);
     }
 }
 
