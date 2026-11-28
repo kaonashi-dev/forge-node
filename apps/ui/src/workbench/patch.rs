@@ -8,6 +8,8 @@
 /// `ui.diff.split`: the layout both the working-tree diff and the
 /// branch compare read, so one choice holds across the two.
 pub const DIFF_SPLIT_KEY: &str = "ui.diff.split";
+/// Unified diffs wrap long lines instead of scrolling sideways; split always wraps.
+pub const DIFF_WRAP_KEY: &str = "ui.diff.wrap";
 
 /// One row of a unified patch.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

@@ -2,7 +2,7 @@
 //! provider's own registry rather than guessed from transcript mtimes.
 
 use std::collections::HashSet;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use domain::{AgentProfile, AgentProfileId, ExternalAgentSession};
 use nix::errno::Errno;
@@ -90,6 +90,37 @@ impl Liveness {
                 .contains(&(session.profile_id, session.session_id.clone())),
         )
     }
+}
+
+/// The transcript the agent process `pid` is writing, found through Claude's
+/// own registry entry for that pid rather than a scan. `config_dir` is as
+/// [`super::minted_transcript`] takes it. `None` for every provider but Claude,
+/// and until both the entry and the transcript exist.
+#[must_use]
+pub fn running_transcript(
+    provider: &str,
+    config_dir: Option<&Path>,
+    cwd: &Path,
+    pid: u32,
+) -> Option<PathBuf> {
+    if provider != CLAUDE_PROVIDER || pid == 0 {
+        return None;
+    }
+    let store = match config_dir {
+        Some(dir) => dir.to_path_buf(),
+        None => home_dir()?.join(".claude"),
+    };
+    let path = store.join("sessions").join(format!("{pid}.json"));
+    // The registry is agent-writable: a FIFO in its place would block the open.
+    if !path.is_file() {
+        return None;
+    }
+    let bytes = crate::capped::read(&path, ENTRY_BYTES).ok()?;
+    let entry: ClaudeEntry = serde_json::from_slice(&bytes).ok()?;
+    if u32::try_from(entry.pid).ok()? != pid {
+        return None;
+    }
+    super::minted_transcript(provider, Some(&store), cwd, &entry.session_id)
 }
 
 fn live_claude_entry(path: &Path) -> Option<String> {
@@ -180,6 +211,34 @@ mod tests {
         assert_eq!(
             liveness.of(&session("x", Some(AgentProfileId::new()), "claude")),
             None
+        );
+    }
+
+    #[test]
+    fn a_running_transcript_is_found_through_the_pid_registry_entry() {
+        let store = tempfile::tempdir().unwrap();
+        let cwd = tempfile::tempdir().unwrap();
+        let slug = super::super::claude_slug(cwd.path());
+        let transcript = store.path().join("projects").join(slug).join("abc-1.jsonl");
+        std::fs::create_dir_all(transcript.parent().unwrap()).unwrap();
+        register(store.path(), 4242, "abc-1");
+        let find =
+            |provider, pid| running_transcript(provider, Some(store.path()), cwd.path(), pid);
+
+        assert_eq!(find("claude", 4242), None, "no transcript is written yet");
+        std::fs::write(&transcript, b"").unwrap();
+        assert_eq!(find("claude", 4242), Some(transcript));
+        assert_eq!(find("opencode", 4242), None);
+        assert_eq!(find("claude", 4243), None);
+        std::fs::write(
+            store.path().join("sessions/4243.json"),
+            br#"{"pid":1,"sessionId":"abc-1"}"#,
+        )
+        .unwrap();
+        assert_eq!(
+            find("claude", 4243),
+            None,
+            "an entry naming another pid is not this one"
         );
     }
 

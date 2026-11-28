@@ -5,8 +5,8 @@ use super::metrics::{AVATAR, CHIP_H, CONTROL, DOT, SPACE_2, SPACE_3};
 use super::tone::Tone;
 use crate::theme::roles::Roles;
 
-/// rune-kit's `IconButton` at Forge's two sizes; `label` is what a screen
-/// reader says, so every one needs it.
+/// rune-kit's `IconButton` at Forge's two sizes. `label` is its tooltip and,
+/// because no separate label is set, also what a screen reader says once.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum IconButtonSize {
     /// 28 with a 16 glyph: a bar's action.
@@ -27,7 +27,7 @@ pub fn icon_button(
             IconButtonSize::Regular => ControlSize::Large,
             IconButtonSize::Mini => ControlSize::Small,
         })
-        .label(label)
+        .help(label)
 }
 
 /// A short status in a tone: caption type on the tone's wash.

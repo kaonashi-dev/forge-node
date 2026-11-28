@@ -98,23 +98,23 @@ fn stepper(s: &AppState, k: &Kit, spec: &Stepper) -> El {
             .build(k)
             .key(format!("{key}-{suffix}"))
     };
-    row()
+    let control = row()
         .key(key)
         .role("group")
         .label(format!("{label} {}", format(value)))
         .gap(crate::ds::SPACE_4)
         .items_center()
-        .child(text(label).font(k.ty.small).color(k.c.text_muted).w(90.0))
         .child(button("−", false, "down"))
         .child(
             text(format(value))
                 .role("status")
-                .font(k.ty.small_medium)
+                .font(k.ty.ui_medium)
                 .color(k.c.text_base)
                 .w(48.0)
                 .align(rune::Align::Center),
         )
-        .child(button("+", true, "up"))
+        .child(button("+", true, "up"));
+    setting_row(k, label, None, control)
 }
 
 pub fn section(s: &AppState, k: &Kit) -> El {
@@ -134,7 +134,7 @@ pub fn section(s: &AppState, k: &Kit) -> El {
         .active_theme(k.dark)
         .is_some_and(|theme| theme.mode == "light");
     let glass_on = prefs::read_flag(s.pref(prefs::GLASS_KEY), false);
-    let layout = group(k, "appearance-layout", "Layout", None)
+    let layout = group("appearance-layout", "Layout", None)
         .child(setting_row(k, "Density", Some(density.note()), densities))
         .child(setting_row(
             k,
@@ -181,12 +181,12 @@ pub fn section(s: &AppState, k: &Kit) -> El {
                 false,
                 prefs::TRIM_KEY,
             ),
-        ));
+        ))
+        .build(k);
 
-    let mut type_size = group(k, "appearance-type", "Type size", None);
-    for spec in &STEPPERS {
-        type_size = type_size.child(stepper(s, k, spec));
-    }
+    let type_size = group("appearance-type", "Type size", None)
+        .children(STEPPERS.iter().map(|spec| stepper(s, k, spec)))
+        .build(k);
 
     let line_height = prefs::read_scale(
         s.pref(prefs::EDITOR_LINE_HEIGHT_KEY),
@@ -203,7 +203,7 @@ pub fn section(s: &AppState, k: &Kit) -> El {
         })
         .build(k)
         .key("appearance-line-spacing");
-    let editor = group(k, "appearance-editor", "Editor", None)
+    let editor = group("appearance-editor", "Editor", None)
         .child(setting_row(
             k,
             "Autosave",
@@ -219,30 +219,17 @@ pub fn section(s: &AppState, k: &Kit) -> El {
                 prefs::AUTOSAVE_KEY,
             ),
         ))
-        .child(setting_row(k, "Line spacing", None, spacing));
+        .child(setting_row(k, "Line spacing", None, spacing))
+        .build(k);
 
     let preview = crate::theme::preview::preview(k, &crate::theme::roles(k));
-    let main = col()
-        .key("appearance-main")
-        .grow(1.0)
-        .min_w(0.0)
-        .gap(crate::ds::SPACE_7)
-        .child(crate::appearance::section(s, k))
-        .child(layout);
-    let side = col()
-        .key("appearance-side")
-        .w(APPEARANCE_SIDE_WIDTH)
-        .gap(crate::ds::SPACE_7)
-        .child(preview)
-        .child(type_size)
-        .child(editor);
-    row()
+    col()
         .key("appearance-page")
         .w_full()
-        .gap(crate::ds::SPACE_7)
-        .items_start()
-        .child(main)
-        .child(side)
+        .gap(crate::ds::SPACE_8)
+        .child(crate::appearance::section(s, k))
+        .child(preview)
+        .child(layout)
+        .child(type_size)
+        .child(editor)
 }
-
-const APPEARANCE_SIDE_WIDTH: f32 = 400.0;

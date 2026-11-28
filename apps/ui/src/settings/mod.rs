@@ -11,7 +11,7 @@ pub mod prefs;
 use std::collections::HashMap;
 use std::time::{Duration, Instant};
 
-use rune::{El, Icon, ScrollSpec, TextEdit, col, row, text};
+use rune::{El, Icon, TextEdit, col, text};
 use rune_kit::Kit;
 use rune_kit::shell::SidebarRow;
 
@@ -37,13 +37,20 @@ pub enum Section {
 impl Section {
     pub const ALL: [Section; 8] = [
         Section::General,
-        Section::Agents,
+        Section::Appearance,
         Section::Keyboard,
+        Section::Agents,
         Section::SharedFiles,
         Section::Storage,
         Section::Stats,
-        Section::Appearance,
         Section::Config,
+    ];
+
+    /// The sidebar's clusters: the app, what it launches, what it keeps.
+    const NAV_GROUPS: [&'static [Section]; 3] = [
+        &[Section::General, Section::Appearance, Section::Keyboard],
+        &[Section::Agents, Section::SharedFiles],
+        &[Section::Storage, Section::Stats, Section::Config],
     ];
 
     #[must_use]
@@ -187,6 +194,7 @@ impl Settings {
     #[must_use]
     pub fn field_focused(&self) -> bool {
         self.commands.values().any(|edit| edit.focused)
+            || self.keyboard.filter.focused
             || self.profile.as_ref().is_some_and(ProfileForm::focused)
     }
 }
@@ -364,79 +372,29 @@ pub fn nav(s: &AppState, k: &Kit) -> El {
         .role("navigation")
         .label("Settings sections")
         .w_full()
-        .gap(crate::ds::SPACE_1)
-        .child(back)
-        .child(
-            text("Settings")
-                .font(k.ty.text_xsmall_medium)
-                .color(k.c.text_faint)
-                .pt(12.0)
-                .pb(4.0)
-                .px(8.0),
-        );
-    for section in Section::ALL {
-        let current = s.settings.section == section;
-        list = list.child(
-            SidebarRow::new(section.label())
-                .icon(section.icon())
-                .height(s.chrome_metrics().row)
-                .selected(current)
-                .on_select(move |s: &mut AppState, _| s.show_section(section))
-                .build(k)
-                .key(format!("settings-nav-{}", section.key()))
-                .checked(current),
-        );
+        .gap(crate::ds::SPACE_6)
+        .child(back);
+    for sections in Section::NAV_GROUPS {
+        let mut cluster = col().w_full().gap(crate::ds::SPACE_1);
+        for &section in sections {
+            let current = s.settings.section == section;
+            cluster = cluster.child(
+                SidebarRow::new(section.label())
+                    .icon(section.icon())
+                    .height(s.chrome_metrics().row)
+                    .selected(current)
+                    .on_select(move |s: &mut AppState, _| s.show_section(section))
+                    .build(k)
+                    .key(format!("settings-nav-{}", section.key()))
+                    .checked(current),
+            );
+        }
+        list = list.child(cluster);
     }
     list
 }
 
-/// One labelled group of a page.
-pub(crate) fn group(k: &Kit, key: &str, title: &str, description: Option<&str>) -> El {
-    let mut head = col().gap(crate::ds::SPACE_1).child(
-        text(title.to_string())
-            .role("heading")
-            .font(k.ty.ui_medium)
-            .color(k.c.text_strong),
-    );
-    if let Some(description) = description {
-        head = head.child(
-            text(description.to_string())
-                .font(k.ty.text_xsmall)
-                .color(k.c.text_faint)
-                .wrap(),
-        );
-    }
-    col()
-        .key(key.to_string())
-        .role("group")
-        .label(title.to_string())
-        .w_full()
-        .gap(crate::ds::SPACE_4)
-        .child(head)
-}
-
-/// A label and its explanation on the left, the control on the right.
-pub(crate) fn setting_row(k: &Kit, label: &str, description: Option<&str>, control: El) -> El {
-    let mut words = col()
-        .gap(crate::ds::SPACE_1)
-        .grow(1.0)
-        .min_w(0.0)
-        .child(text(label.to_string()).font(k.ty.ui).color(k.c.text_base));
-    if let Some(description) = description {
-        words = words.child(
-            text(description.to_string())
-                .font(k.ty.text_xsmall)
-                .color(k.c.text_faint)
-                .wrap(),
-        );
-    }
-    row()
-        .w_full()
-        .gap(crate::ds::SPACE_5)
-        .items_center()
-        .child(words)
-        .child(control)
-}
+pub(crate) use crate::ds::{group, setting_row};
 
 pub(crate) fn notice(s: &AppState, k: &Kit) -> Option<El> {
     let (ok, message) = s.settings.notice.as_ref()?;
@@ -451,10 +409,6 @@ pub(crate) fn notice(s: &AppState, k: &Kit) -> Option<El> {
 }
 
 /// The centre while Settings is open: the chosen section under its header.
-/// A settings page reads as a column of text; past this a label and its
-/// control drift apart across a wide window.
-const PAGE_MAX_W: f32 = 760.0;
-
 pub fn page(s: &AppState, k: &Kit) -> El {
     let section = s.settings.section;
     let body = match section {
@@ -467,40 +421,12 @@ pub fn page(s: &AppState, k: &Kit) -> El {
         Section::Appearance => look::section(s, k),
         Section::Config => config::section(s, k),
     };
-    let head = col()
-        .key("settings-page-head")
-        .gap(crate::ds::SPACE_2)
-        .child(
-            text(section.label())
-                .role("heading")
-                .font(k.ty.body_medium)
-                .color(k.c.text_strong),
-        )
-        .child(
-            text(section.summary())
-                .font(k.ty.text_xsmall)
-                .color(k.c.text_faint)
-                .wrap(),
-        );
-    col().key("settings").w_full().h_full().min_h(0.0).child(
-        col()
-            .key(format!("settings-{}", section.key()))
-            .w_full()
-            .grow(1.0)
-            .min_h(0.0)
-            .padding(crate::ds::SPACE_7)
-            .scroll(ScrollSpec {
-                stick_bottom: false,
-            })
-            .child(
-                col()
-                    .key("settings-column")
-                    .w_full()
-                    .max_w(PAGE_MAX_W)
-                    .gap(crate::ds::SPACE_7)
-                    .child(head)
-                    .child(body),
-            ),
+    crate::ds::settings_page(
+        k,
+        &format!("settings-{}", section.key()),
+        section.label(),
+        section.summary(),
+        body,
     )
 }
 
@@ -660,18 +586,27 @@ mod tests {
     }
 
     #[test]
+    fn the_nav_clusters_hold_every_section_once_in_order() {
+        let flat: Vec<Section> = Section::NAV_GROUPS
+            .iter()
+            .flat_map(|g| g.iter().copied())
+            .collect();
+        assert_eq!(flat, Section::ALL);
+    }
+
+    #[test]
     fn the_sections_follow_their_nav_order() {
         let labels: Vec<&str> = Section::ALL.iter().map(|s| s.label()).collect();
         assert_eq!(
             labels,
             [
                 "General",
-                "Agents",
+                "Appearance",
                 "Keyboard",
+                "Agents",
                 "Shared files",
                 "Storage",
                 "Stats & usage",
-                "Appearance",
                 "Configuration"
             ]
         );

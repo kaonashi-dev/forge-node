@@ -649,6 +649,13 @@ capability is refused, never downgraded to one that can write —
   re-send the initial prompt. The lane-to-session link is the GUI's alone and
   runtime-only, like `Session::action`: the tree hangs the chat under its review
   instead of among the checkout's sessions.
+  The panel draws the conversation itself: `GetSessionConversation` is a
+  bounded synchronous read of the agent's own transcript, re-read only when
+  the session's activity stamp or status moves (the daemon throttles those), so
+  a busy chat costs at most one read a second and an idle one none.
+  `code_review::chat::items` shows the opening report and a "ran again" update
+  as one-line notes and keeps the first question's own words; a provider whose
+  transcript Forge cannot read keeps the status line and **Open chat**.
 - Wire requests and the `ReviewUpdated` event:
   [protocol.md](./protocol.md). The stored run/findings rows:
   [persistence.md](./persistence.md).

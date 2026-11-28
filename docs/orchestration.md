@@ -282,8 +282,9 @@ never limited. `forgectl` names its caller in the connection handshake
 (`Hello.caller_session_id`, or a request's own `caller_session_id`) and the
 daemon checks these requests against it, and no others:
 
-- **Read:** `GetSessionTranscript`, `GetSessionChanges`, `GetExternalTranscript`,
-  and `SendContext`'s source when `include_transcript` is set.
+- **Read:** `GetSessionTranscript`, `GetSessionConversation`, `GetSessionChanges`,
+  `GetExternalTranscript`, and `SendContext`'s source when `include_transcript`
+  is set.
 - **Control:** `SendSessionPrompt`, `SendShellCommand`, `SendSignal`,
   `KillSession`, `RestartSession`, `CloseSession`, `RenameSession`,
   `SetSessionRole`, `CreateChildSession` (its parent), `SendContext` (its

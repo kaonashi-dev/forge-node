@@ -423,6 +423,7 @@ fn request_name(request: &Request) -> &'static str {
         Request::GetWorkspaceDiff { .. } => "GetWorkspaceDiff",
         Request::GetSessionChanges { .. } => "GetSessionChanges",
         Request::GetBranchCompare { .. } => "GetBranchCompare",
+        Request::GetSessionConversation { .. } => "GetSessionConversation",
         Request::ListFiles { .. } => "ListFiles",
         Request::ListDirectory { .. } => "ListDirectory",
         Request::WatchFiles { .. } => "WatchFiles",

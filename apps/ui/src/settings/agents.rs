@@ -392,12 +392,12 @@ fn default_choices(s: &AppState, k: &Kit) -> El {
         );
     }
     group(
-        k,
         "agents-default",
         "Default agent",
         Some("Starts with ⌘⇧A. Ask opens the launch palette each time."),
     )
     .child(list)
+    .build(k)
 }
 
 fn provider_card(s: &AppState, info: &ProviderInfo, k: &Kit) -> El {
@@ -426,12 +426,12 @@ fn provider_card(s: &AppState, info: &ProviderInfo, k: &Kit) -> El {
         col()
             .grow(1.0)
             .min_w(0.0)
-            .gap(crate::ds::SPACE_1)
+            .gap(crate::ds::SPACE_2)
             .child(title)
             .child(
                 text(format!("{key} · {}", detection_label(info)))
-                    .font(k.ty.text_xsmall)
-                    .color(k.c.text_faint)
+                    .font(k.ty.ui)
+                    .color(k.c.text_muted)
                     .truncate(),
             ),
     );
@@ -493,14 +493,9 @@ fn provider_card(s: &AppState, info: &ProviderInfo, k: &Kit) -> El {
     .on_press(move |s: &mut AppState| s.pin_provider_command(&pin_id))
     .build(k)
     .key(format!("provider-pin-{key}"));
-    let mut card = col()
-        .key(format!("provider-{key}"))
+    let command = col()
         .w_full()
         .gap(crate::ds::SPACE_4)
-        .padding(crate::ds::SPACE_5)
-        .radius(k.radius.lg)
-        .border(1.0, k.c.border_weak)
-        .child(head)
         .child(setting_row(
             k,
             "Command",
@@ -519,8 +514,9 @@ fn provider_card(s: &AppState, info: &ProviderInfo, k: &Kit) -> El {
                 .child(field)
                 .child(pin),
         );
+    let mut rows = vec![head, command];
     if !info.descriptor.default_args.is_empty() {
-        card = card.child(setting_row(
+        rows.push(setting_row(
             k,
             "Default arguments",
             Some("What the daemon passes at launch. Change them per profile, below."),
@@ -529,7 +525,7 @@ fn provider_card(s: &AppState, info: &ProviderInfo, k: &Kit) -> El {
                 .color(k.c.text_muted),
         ));
     }
-    card
+    crate::ds::card(k, &format!("provider-{key}"), rows)
 }
 
 fn providers(s: &AppState, k: &Kit) -> El {
@@ -544,14 +540,25 @@ fn providers(s: &AppState, k: &Kit) -> El {
         .build(k)
         .key("agents-rescan");
     let description = format!("{found} detected. Off hides a provider from every agent picker.");
-    let mut view = group(k, "agents-providers", "Providers", Some(&description))
-        .child(row().w_full().child(el().grow(1.0)).child(rescan));
-    if list.is_empty() {
-        view = view.child(
-            text("No providers in this snapshot.")
-                .font(k.ty.small)
-                .color(k.c.text_faint),
+    let mut view = col()
+        .key("agents-providers-list")
+        .w_full()
+        .gap(crate::ds::SPACE_5)
+        .child(
+            group("agents-providers", "Providers", Some(&description))
+                .action(rescan)
+                .build(k),
         );
+    if list.is_empty() {
+        view = view.child(crate::ds::card(
+            k,
+            "agents-providers-empty",
+            vec![
+                text("No providers in this snapshot.")
+                    .font(k.ty.ui)
+                    .color(k.c.text_muted),
+            ],
+        ));
     }
     for info in list {
         view = view.child(provider_card(s, info, k));
@@ -571,18 +578,13 @@ fn profile_rows(s: &AppState, k: &Kit) -> El {
         .build(k)
         .key(crate::menus::ButtonMenu::NewProfile.trigger());
     let mut view = group(
-        k,
         "agents-profiles",
         "Launch profiles",
         Some("A custom executable, account or arguments. Profiles appear in the + menu."),
     )
-    .child(row().w_full().child(el().grow(1.0)).child(new));
+    .action(new);
     if store.agent_profiles.is_empty() {
-        view = view.child(
-            text("No profiles yet.")
-                .font(k.ty.small)
-                .color(k.c.text_faint),
-        );
+        view = view.child(text("No profiles yet.").font(k.ty.ui).color(k.c.text_muted));
     }
     for profile in &store.agent_profiles {
         let id = profile.id;
@@ -607,18 +609,17 @@ fn profile_rows(s: &AppState, k: &Kit) -> El {
             row()
                 .key(format!("profile-{id}"))
                 .w_full()
-                .h(34.0)
                 .gap(crate::ds::SPACE_4)
                 .items_center()
                 .child(
                     text(profile.name.clone())
-                        .font(k.ty.small_medium)
+                        .font(k.ty.ui_medium)
                         .color(k.c.text_base),
                 )
                 .child(
                     text(meta.join(" · "))
-                        .font(k.ty.text_xsmall)
-                        .color(k.c.text_faint)
+                        .font(k.ty.ui)
+                        .color(k.c.text_muted)
                         .grow(1.0)
                         .min_w(0.0)
                         .truncate(),
@@ -653,7 +654,7 @@ fn profile_rows(s: &AppState, k: &Kit) -> El {
     if let Some(form) = &s.settings.profile {
         view = view.child(profile_form(s, form, k));
     }
-    view
+    view.build(k)
 }
 
 macro_rules! form_field {
@@ -696,10 +697,7 @@ fn profile_form(s: &AppState, form: &ProfileForm, k: &Kit) -> El {
         .label(title.clone())
         .w_full()
         .gap(crate::ds::SPACE_4)
-        .padding(12.0)
-        .radius(k.radius.lg)
-        .border(1.0, k.c.border_weak)
-        .child(text(title).font(k.ty.small_medium).color(k.c.text_base));
+        .child(text(title).font(k.ty.ui_medium).color(k.c.text_strong));
     if form.is_new && !providers.is_empty() {
         let names: Vec<String> = providers
             .iter()
@@ -823,7 +821,7 @@ pub fn section(s: &AppState, k: &Kit) -> El {
     col()
         .key("agents")
         .w_full()
-        .gap(crate::ds::SPACE_7)
+        .gap(crate::ds::SPACE_8)
         .child(default_choices(s, k))
         .children(notice(s, k))
         .child(providers(s, k))

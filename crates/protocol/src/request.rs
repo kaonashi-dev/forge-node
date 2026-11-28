@@ -362,6 +362,21 @@ pub enum Request {
         /// Hard cap on the returned text. `None` takes the service default.
         max_bytes: Option<u32>,
     },
+    /// An agent session's conversation as chat turns →
+    /// [`crate::response::Response::SessionConversation`].
+    ///
+    /// Local and synchronous like [`Request::GetSessionTranscript`], and meant
+    /// to be polled: it parses the provider's own transcript on disk and never
+    /// broadcasts. A session whose provider keeps no transcript Forge reads
+    /// answers with `available: false` rather than an error. Both caps are
+    /// clamped before the read, and older turns go first.
+    GetSessionConversation {
+        session_id: SessionId,
+        /// Turns to read back from the newest. `None` takes the service default.
+        max_turns: Option<u32>,
+        /// Hard cap on the returned text. `None` takes the service default.
+        max_bytes: Option<u32>,
+    },
     /// A discovered agent run's conversation as plain text →
     /// [`crate::response::Response::ExternalTranscript`].
     ///
@@ -1675,6 +1690,18 @@ mod tests {
         let bytes = rmp_serde::to_vec_named(&r).unwrap();
         let back: Request = rmp_serde::from_slice(&bytes).unwrap();
         assert_eq!(r, back);
+    }
+
+    #[test]
+    fn get_session_conversation_round_trips_through_messagepack() {
+        let request = Request::GetSessionConversation {
+            session_id: SessionId::new(),
+            max_turns: Some(20),
+            max_bytes: None,
+        };
+        let bytes = rmp_serde::to_vec_named(&request).unwrap();
+        let back: Request = rmp_serde::from_slice(&bytes).unwrap();
+        assert_eq!(request, back);
     }
 
     #[test]

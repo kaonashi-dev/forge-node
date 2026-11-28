@@ -196,6 +196,8 @@ pub struct Daemon {
     pull_requests: Mutex<crate::pull_requests::Cache>,
     /// Own lock: a month of JSONL must not sit in front of a keystroke.
     usage_stats: Mutex<crate::usage_stats::Cache>,
+    /// Own lock: where each agent session's conversation is recorded.
+    conversations: crate::conversation::Transcripts,
     /// Own lock: `git ls-files` must not sit on the core lock or re-walk every
     /// palette keystroke. Invalidated on `FileChanged` and path mutations.
     file_index: crate::file_index::Cache,
@@ -481,6 +483,7 @@ impl Daemon {
             external_agents_stale: AtomicBool::new(false),
             pull_requests: Mutex::new(crate::pull_requests::Cache::default()),
             usage_stats: Mutex::new(crate::usage_stats::Cache::default()),
+            conversations: crate::conversation::Transcripts::default(),
             file_index: crate::file_index::Cache::default(),
             definitions,
             lsp,
@@ -1096,6 +1099,11 @@ impl Daemon {
                 max_lines,
                 max_bytes,
             } => self.get_session_transcript(session_id, max_lines, max_bytes),
+            Request::GetSessionConversation {
+                session_id,
+                max_turns,
+                max_bytes,
+            } => self.get_session_conversation(session_id, max_turns, max_bytes),
             Request::GetExternalTranscript {
                 session_id,
                 provider,
@@ -2778,6 +2786,77 @@ impl Daemon {
             lines: u32::try_from(kept).unwrap_or(u32::MAX),
             truncated,
         }))
+    }
+
+    /// An agent session's conversation as chat turns, off its provider's own
+    /// transcript. The core lock is held only to clone the session's launch
+    /// facts; the registry read and the parse run after it is released.
+    fn get_session_conversation(
+        &self,
+        session_id: SessionId,
+        max_turns: Option<u32>,
+        max_bytes: Option<u32>,
+    ) -> Result<Response, ProtocolError> {
+        let turns = max_turns
+            .unwrap_or(crate::external_agents::DEFAULT_CONVERSATION_TURNS)
+            .min(crate::external_agents::MAX_CONVERSATION_TURNS);
+        let budget = max_bytes
+            .unwrap_or(crate::external_agents::DEFAULT_CONVERSATION_BYTES)
+            .min(crate::external_agents::MAX_CONVERSATION_BYTES);
+        let unavailable = || {
+            Ok(Response::SessionConversation(
+                domain::SessionConversation::unavailable(session_id),
+            ))
+        };
+
+        let launch = {
+            let mut inner = self.lock();
+            let session = inner
+                .sessions
+                .get(&session_id)
+                .ok_or_else(|| ProtocolError::not_found("session"))?;
+            let agent = match (session.kind, session.agent_provider_id.clone()) {
+                (SessionKind::Agent, Some(provider)) => Some((
+                    provider,
+                    session.agent_profile_id,
+                    session.workspace_id,
+                    session.terminal_id,
+                )),
+                _ => None,
+            };
+            agent.and_then(|(provider, profile_id, workspace_id, terminal_id)| {
+                let cwd = inner.workspaces.get(&workspace_id)?.path.clone();
+                let pid = terminal_id
+                    .and_then(|id| inner.terminals.get(&id))
+                    .map(|rt| rt.child_pid);
+                let config_dir = session_config_dir(&mut inner, &provider, profile_id);
+                Some((provider, cwd, pid, config_dir))
+            })
+        };
+        let Some((provider, cwd, pid, config_dir)) = launch else {
+            return unavailable();
+        };
+
+        let transcript = self.conversations.resolve(session_id, pid, |pid| {
+            crate::external_agents::running_transcript(
+                provider.as_str(),
+                config_dir.as_deref(),
+                &cwd,
+                pid,
+            )
+        });
+        let Some(transcript) = transcript else {
+            return unavailable();
+        };
+        Ok(Response::SessionConversation(
+            crate::external_agents::read_conversation(
+                session_id,
+                provider.as_str(),
+                &transcript,
+                turns,
+                budget,
+            ),
+        ))
     }
 
     /// A discovered run's conversation, read off disk.
@@ -8380,6 +8459,35 @@ struct UsageSource {
     accounts: Vec<(Option<domain::AgentProfileId>, Option<PathBuf>)>,
 }
 
+/// The provider's config directory as a session's launch got it: its
+/// profile's, else the descriptor's variable in the login-shell environment.
+/// `None` before that environment is resolved, rather than capturing it here.
+fn session_config_dir(
+    inner: &mut Inner,
+    provider: &AgentProviderId,
+    profile_id: Option<domain::AgentProfileId>,
+) -> Option<PathBuf> {
+    if !inner.env.is_resolved() {
+        return None;
+    }
+    let env = inner.env.get();
+    let profile = profile_id.and_then(|id| inner.profiles.iter().find(|p| p.id == id));
+    if let Some(dir) = profile.and_then(|profile| profile_config_dir(profile, env)) {
+        return Some(dir);
+    }
+    let var = inner
+        .agents
+        .descriptor(provider)?
+        .config_dir
+        .as_ref()?
+        .vars
+        .first()?;
+    env.vars
+        .iter()
+        .find(|(key, value)| key == var && !value.is_empty())
+        .map(|(_, value)| PathBuf::from(value))
+}
+
 /// A profile's config directory as an absolute path, or `None` when it
 /// shares the provider's default account.
 ///
@@ -10952,6 +11060,122 @@ pub(crate) mod tests {
         // The tail is what matters: the newest line has to survive the cut.
         assert!(transcript.text.contains("line 39"));
         assert!(!transcript.text.contains("line 0\n"));
+        backend.set_exited(terminal_core::ExitStatus::default());
+    }
+
+    #[test]
+    fn an_agent_conversation_is_found_by_its_pid_and_outlives_the_registry_entry() {
+        let (daemon, tmp, backend) = test_daemon_with_pty(FakePtyBackend::empty());
+        let store = tmp.path().join("claude-store");
+        daemon.lock().env.set_for_test(
+            PathBuf::from("/bin/sh"),
+            vec![
+                ("HOME".to_owned(), tmp.path().to_string_lossy().into_owned()),
+                ("PATH".to_owned(), "/usr/bin:/bin".to_owned()),
+                (
+                    "CLAUDE_CONFIG_DIR".to_owned(),
+                    store.to_string_lossy().into_owned(),
+                ),
+            ],
+        );
+        let session = dispatch_agent(&daemon, tmp.path(), false);
+        let read = |id| {
+            let Response::SessionConversation(conversation) = daemon
+                .get_session_conversation(id, None, None)
+                .expect("conversation")
+            else {
+                panic!("expected SessionConversation");
+            };
+            conversation
+        };
+        assert!(!read(session.id).available, "nothing is registered yet");
+
+        let slug: String = tmp
+            .path()
+            .to_string_lossy()
+            .chars()
+            .map(|c| if c.is_ascii_alphanumeric() { c } else { '-' })
+            .collect();
+        let transcript = store.join("projects").join(slug).join("run-1.jsonl");
+        std::fs::create_dir_all(transcript.parent().unwrap()).unwrap();
+        std::fs::write(
+            &transcript,
+            concat!(
+                r#"{"type":"user","uuid":"u1","message":{"role":"user","content":"hello"}}"#,
+                "\n",
+                r#"{"type":"assistant","message":{"id":"m1","content":[{"type":"text","text":"Hi."}]}}"#,
+                "\n",
+            ),
+        )
+        .unwrap();
+        let registry = store
+            .join("sessions")
+            .join(format!("{}.json", test_support::DEFAULT_FAKE_PID));
+        std::fs::create_dir_all(registry.parent().unwrap()).unwrap();
+        std::fs::write(
+            &registry,
+            format!(
+                r#"{{"pid":{},"sessionId":"run-1"}}"#,
+                test_support::DEFAULT_FAKE_PID
+            ),
+        )
+        .unwrap();
+
+        let conversation = read(session.id);
+        assert!(conversation.available);
+        assert_eq!(
+            conversation
+                .turns
+                .iter()
+                .map(|turn| (turn.role, turn.text.as_str()))
+                .collect::<Vec<_>>(),
+            [
+                (domain::TurnRole::User, "hello"),
+                (domain::TurnRole::Agent, "Hi.")
+            ]
+        );
+
+        // Claude removes its entry when the process exits.
+        std::fs::remove_file(&registry).unwrap();
+        assert_eq!(read(session.id).turns.len(), 2);
+        backend.set_exited(terminal_core::ExitStatus::default());
+    }
+
+    #[test]
+    fn a_shell_has_no_conversation_and_an_unknown_session_is_not_found() {
+        let (daemon, tmp, backend) = test_daemon_with_pty(FakePtyBackend::empty());
+        let workspace = seeded_workspace(&daemon, tmp.path());
+        daemon
+            .create_session(
+                workspace,
+                SessionKind::Shell,
+                None,
+                None,
+                None,
+                SessionRole::Generic,
+                None,
+                None,
+                false,
+            )
+            .expect("create session");
+        let session = only_session(&daemon);
+        let Response::SessionConversation(conversation) = daemon
+            .get_session_conversation(session.id, None, None)
+            .expect("conversation")
+        else {
+            panic!("expected SessionConversation");
+        };
+        assert_eq!(
+            conversation,
+            domain::SessionConversation::unavailable(session.id)
+        );
+        assert_eq!(
+            daemon
+                .get_session_conversation(SessionId::new(), None, None)
+                .unwrap_err()
+                .code,
+            ErrorCode::NotFound
+        );
         backend.set_exited(terminal_core::ExitStatus::default());
     }
 

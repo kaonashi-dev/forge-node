@@ -411,6 +411,48 @@ pub struct SessionTranscript {
     pub truncated: bool,
 }
 
+/// An agent session's conversation as chat turns, read off the provider's own
+/// transcript.
+///
+/// Runtime-only, like [`SessionTranscript`]: parsed on demand and never stored.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SessionConversation {
+    pub session_id: SessionId,
+    /// False when Forge cannot read this session's conversation (its provider keeps no transcript Forge reads, or none is written yet).
+    pub available: bool,
+    /// Oldest first.
+    pub turns: Vec<ConversationTurn>,
+    /// Whether older turns, part of a turn, or unreadable records were left out.
+    pub truncated: bool,
+}
+
+impl SessionConversation {
+    #[must_use]
+    pub fn unavailable(session_id: SessionId) -> Self {
+        Self {
+            session_id,
+            available: false,
+            turns: Vec::new(),
+            truncated: false,
+        }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ConversationTurn {
+    pub role: TurnRole,
+    pub text: String,
+    /// One short line per tool call the agent made in this turn, oldest first (e.g. "Read src/lib.rs", "Bash: cargo test").
+    pub tools: Vec<String>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum TurnRole {
+    User,
+    Agent,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -219,6 +219,21 @@ can be stale until expiry or invalidation; see
 | `profile_id` | the account whose config directory the transcript was read from; `None` is the provider's default account, and a resume must launch with it |
 | `store` | `File` or `SharedDatabase` (opencode ≥ 1.17): whether `transcript_path` belongs to this run alone, which is what makes deleting one run safe |
 
+### `SessionConversation` (`session.rs`)
+
+A Forge agent session's conversation as chat turns, read off the provider's own
+transcript by `GetSessionConversation`. **Runtime-only** like `WorkspaceDiff`:
+no column, no migration, no `Store` field, never broadcast. Only the transcript
+*path* is remembered, in `daemon::conversation`, so a run whose process has
+exited stays readable. `available: false` means Forge cannot read this
+provider's conversation, or none is written yet, which is not the same as an
+empty conversation.
+
+| Field | Meaning |
+|-------|---------|
+| `turns` | oldest first; a `User` turn is a typed prompt, an `Agent` turn every assistant record until the next one, with one `tools` line per tool call |
+| `truncated` | older turns, part of the newest turn, a turn's older tool lines, or unreadable records were left out |
+
 ### `PullRequest` (`pull_request.rs`)
 
 An open pull request read from a forge host. Like `ExternalAgentSession` it is

@@ -2,17 +2,15 @@
 //! changes included, against the branch a pull request would target.
 //!
 //! Every read is a daemon request on the worker (`GetBranchCompare`,
-//! `ListBranches`); this side keeps the answer, splits its patches into rows
-//! once, and never runs git again for a layout change.
-
-use std::borrow::Cow;
+//! `ListBranches`); this side parses the answer into one `DiffState` once,
+//! and never runs git again for a layout change.
 
 use domain::{BranchCompare, DiffStatus};
-use rune::{El, GrowthSpec, ScrollSpec, col, el, icon, row, text};
+use rune::{El, ScrollSpec, Tx, col, el, icon, row, text};
+use rune_kit::diff::{DiffMode, DiffState, DiffView};
 use rune_kit::{Button, ButtonVariant, ControlSize, Kit, SegmentedControl, Select};
 
 use super::Scope;
-use super::patch::{self, Pair, Row};
 use crate::app::AppState;
 use crate::file_icons::FileIcon;
 
@@ -66,24 +64,8 @@ pub struct CompareFile {
     pub additions: u32,
     pub deletions: u32,
     pub icon: FileIcon,
-    rows: Vec<Row>,
-    pairs: Vec<Pair>,
-}
-
-#[derive(Clone, Copy)]
-pub enum DisplayRow {
-    Commit(usize),
-    More(u32),
-    File(usize),
-    Line {
-        file: usize,
-        row: usize,
-    },
-    Split {
-        file: usize,
-        left: Option<usize>,
-        right: Option<usize>,
-    },
+    /// Its first entry in `Compare::state`, when its patch parsed to any.
+    first_diff: Option<usize>,
 }
 
 #[derive(Default)]
@@ -96,14 +78,14 @@ pub struct Compare {
     needs: Option<Option<String>>,
     /// The request the answer must carry to be the current one.
     asking: Option<Option<String>>,
+    /// The rail's file: the one last picked, or the one scrolled to the top.
     pub selected: Option<String>,
-    pub split: bool,
     pub show_commits: bool,
     pub picker_open: bool,
     files: Vec<CompareFile>,
-    display: Vec<DisplayRow>,
-    keys: Vec<String>,
-    rev: u64,
+    pub state: DiffState,
+    /// The `files` index of each `state` file, in order.
+    owners: Vec<usize>,
 }
 
 impl Compare {
@@ -157,21 +139,42 @@ impl Compare {
     }
 
     pub fn set_split(&mut self, split: bool) {
-        if self.split == split {
-            return;
-        }
-        self.split = split;
-        self.rebuild();
+        self.state.set_mode(if split {
+            DiffMode::Split
+        } else {
+            DiffMode::Unified
+        });
     }
 
-    pub fn select(&mut self, path: Option<String>) {
+    /// Scrolls the diff to `path`'s patch, or to the top for `None`.
+    pub fn select(&mut self, path: Option<String>, tx: &mut Tx) {
+        let target = match &path {
+            Some(path) => self
+                .files
+                .iter()
+                .find(|file| &file.path == path)
+                .and_then(|file| file.first_diff),
+            None => Some(0),
+        };
+        if let Some(index) = target {
+            self.state.scroll_to_file(index, tx);
+        }
         self.selected = path;
-        self.rebuild();
+    }
+
+    /// The diff scrolled a new file to its top.
+    pub fn follow(&mut self, diff_index: usize) {
+        if let Some(file) = self
+            .owners
+            .get(diff_index)
+            .and_then(|at| self.files.get(*at))
+        {
+            self.selected = Some(file.path.clone());
+        }
     }
 
     pub fn toggle_commits(&mut self) {
         self.show_commits = !self.show_commits;
-        self.rebuild();
     }
 
     /// The base the header names: the chosen one while it is still loading,
@@ -189,24 +192,29 @@ impl Compare {
     }
 
     fn build(&mut self, data: &BranchCompare) {
+        let mut parsed = Vec::new();
+        self.owners.clear();
         self.files = data
             .diff
             .files
             .iter()
-            .map(|file| {
-                let rows = patch::rows(&file.patch);
-                let pairs = patch::pairs(&rows);
+            .enumerate()
+            .map(|(at, file)| {
+                let diffs = rune_kit::diff::parse(&file.patch);
+                let first_diff = (!diffs.is_empty()).then_some(parsed.len());
+                self.owners.extend(std::iter::repeat_n(at, diffs.len()));
+                parsed.extend(diffs);
                 CompareFile {
                     path: file.path.clone(),
                     status: file.status,
                     additions: file.additions,
                     deletions: file.deletions,
                     icon: crate::file_icons::for_path(&file.path),
-                    rows,
-                    pairs,
+                    first_diff,
                 }
             })
             .collect();
+        self.state.set_files(parsed);
         let stale = self
             .selected
             .as_ref()
@@ -214,71 +222,6 @@ impl Compare {
         if stale {
             self.selected = None;
         }
-        self.rebuild();
-    }
-
-    fn rebuild(&mut self) {
-        self.rev += 1;
-        self.display.clear();
-        self.keys.clear();
-        if self.show_commits
-            && let Some(data) = &self.data
-        {
-            for (index, commit) in data.commits.iter().enumerate() {
-                self.display.push(DisplayRow::Commit(index));
-                self.keys
-                    .push(format!("compare-commit-{}", commit.short_id));
-            }
-            let shown = data.commits.len() as u32;
-            if data.commit_count > shown {
-                self.display
-                    .push(DisplayRow::More(data.commit_count - shown));
-                self.keys.push("compare-commits-more".into());
-            }
-        }
-        let stale = self
-            .selected
-            .as_ref()
-            .is_some_and(|selected| !self.files.iter().any(|file| &file.path == selected));
-        if stale {
-            self.selected = None;
-        }
-        for (index, file) in self.files.iter().enumerate() {
-            if self
-                .selected
-                .as_ref()
-                .is_some_and(|selected| selected != &file.path)
-            {
-                continue;
-            }
-            self.display.push(DisplayRow::File(index));
-            self.keys.push(format!("compare-file-head-{}", file.path));
-            if self.split {
-                for (at, pair) in file.pairs.iter().enumerate() {
-                    self.display.push(DisplayRow::Split {
-                        file: index,
-                        left: pair.left,
-                        right: pair.right,
-                    });
-                    self.keys.push(format!("compare-split-{index}-{at}"));
-                }
-            } else {
-                for at in 0..file.rows.len() {
-                    self.display.push(DisplayRow::Line {
-                        file: index,
-                        row: at,
-                    });
-                    self.keys.push(format!("compare-line-{index}-{at}"));
-                }
-            }
-        }
-    }
-
-    #[cfg(test)]
-    pub fn visible_files(&self) -> impl Iterator<Item = &CompareFile> {
-        self.files
-            .iter()
-            .filter(|file| self.selected.as_ref().is_none_or(|pick| pick == &file.path))
     }
 }
 
@@ -293,291 +236,6 @@ fn status_color(k: &Kit, status: DiffStatus) -> rune::Color {
         DiffStatus::Deleted => git.deleted,
         DiffStatus::Conflicted => git.conflict,
         _ => git.modified,
-    }
-}
-
-#[derive(Clone, Copy)]
-struct Look {
-    mono: rune::TextStyle,
-    small: rune::TextStyle,
-    xsmall: rune::TextStyle,
-    text: rune::Color,
-    muted: rune::Color,
-    faint: rune::Color,
-    added: rune::Color,
-    deleted: rune::Color,
-    hunk: rune::Color,
-    added_bg: rune::Color,
-    removed_bg: rune::Color,
-    surface: rune::Color,
-    conflict: rune::Color,
-    dark: bool,
-}
-
-impl Look {
-    fn new(k: &Kit) -> Look {
-        let roles = crate::theme::roles(k);
-        Look {
-            mono: k.ty.mono,
-            small: k.ty.small,
-            xsmall: k.ty.text_xsmall,
-            text: k.c.text_base,
-            muted: k.c.text_muted,
-            faint: k.c.text_faint,
-            added: roles.git.added,
-            deleted: roles.git.deleted,
-            hunk: k.c.text_faint,
-            added_bg: roles.diff_added_bg,
-            removed_bg: roles.diff_removed_bg,
-            surface: k.c.surface_weak,
-            conflict: roles.git.conflict,
-            dark: k.dark,
-        }
-    }
-}
-
-const ROW_H: f32 = 20.0;
-const GUTTER_W: f32 = 44.0;
-
-fn file_head(s: &AppState, look: &Look, index: usize) -> El {
-    let file = &s.workbench.compare.files[index];
-    let path = file.path.clone();
-    let line = row()
-        .role("button")
-        .label(format!(
-            "Open {} at line 1, {}",
-            file.path,
-            status_letter(file.status)
-        ))
-        .w_full()
-        .h(ROW_H)
-        .px(6.0)
-        .gap(crate::ds::SPACE_3)
-        .items_center()
-        .fill(look.surface)
-        .hover(look.surface)
-        .on_press(move |s: &mut AppState| s.open_file(&path, Some(1)))
-        .child(icon(file.icon.icon(!look.dark), 13.0))
-        .child(
-            text(status_letter(file.status))
-                .font(look.mono)
-                .color(status_color_of(look, file.status))
-                .w(12.0),
-        )
-        .child(
-            text(file.path.clone())
-                .font(look.small)
-                .color(look.text)
-                .grow(1.0)
-                .min_w(0.0)
-                .truncate(),
-        )
-        .child(
-            text(format!("+{}", file.additions))
-                .font(look.xsmall)
-                .color(look.added),
-        )
-        .child(
-            text(format!("−{}", file.deletions))
-                .font(look.xsmall)
-                .color(look.deleted),
-        );
-    line.key(format!("compare-file-{}", file.path))
-}
-
-fn status_color_of(look: &Look, status: DiffStatus) -> rune::Color {
-    match status {
-        DiffStatus::Added => look.added,
-        DiffStatus::Deleted => look.deleted,
-        DiffStatus::Conflicted => look.conflict,
-        _ => look.muted,
-    }
-}
-
-fn cell(look: &Look, number: Option<u32>, patch_row: Option<&Row>, key: String) -> El {
-    let (fill, ink) = match patch_row.map(|row| row.kind) {
-        Some(patch::Kind::Added) => (look.added_bg, look.added),
-        Some(patch::Kind::Removed) => (look.removed_bg, look.deleted),
-        Some(patch::Kind::Hunk) => (look.surface, look.hunk),
-        Some(patch::Kind::Meta) => (rune::Color::TRANSPARENT, look.faint),
-        _ => (rune::Color::TRANSPARENT, look.text),
-    };
-    row()
-        .key(key)
-        .w(0.0)
-        .grow(1.0)
-        .min_w(0.0)
-        .h(ROW_H)
-        .gap(crate::ds::SPACE_2)
-        .items_center()
-        .fill(fill)
-        .child(
-            text(number.map_or_else(String::new, |number| number.to_string()))
-                .font(look.mono)
-                .color(look.faint)
-                .w(GUTTER_W)
-                .pr(4.0)
-                .align(rune::Align::End),
-        )
-        .child(
-            text(patch_row.map_or_else(String::new, |row| row.text.clone()))
-                .font(look.mono)
-                .color(ink)
-                .truncate()
-                .min_w(0.0),
-        )
-}
-
-fn unified_row(s: &AppState, look: &Look, file: usize, at: usize) -> El {
-    let source = &s.workbench.compare.files[file];
-    let patch_row = &source.rows[at];
-    let path = source.path.clone();
-    let after = patch_row.after;
-    let (fill, ink) = match patch_row.kind {
-        patch::Kind::Added => (look.added_bg, look.added),
-        patch::Kind::Removed => (look.removed_bg, look.deleted),
-        patch::Kind::Hunk => (look.surface, look.hunk),
-        patch::Kind::Meta => (rune::Color::TRANSPARENT, look.faint),
-        _ => (rune::Color::TRANSPARENT, look.text),
-    };
-    let mut line = row()
-        .key(format!("compare-unified-{file}-{at}"))
-        .w_full()
-        .h(ROW_H)
-        .gap(crate::ds::SPACE_2)
-        .items_center()
-        .fill(fill);
-    if let Some(after) = after {
-        line = line.on_double_press(move |s: &mut AppState| {
-            s.open_file(&path, Some(after));
-        });
-    }
-    line.child(
-        text(
-            patch_row
-                .before
-                .map_or_else(String::new, |number| number.to_string()),
-        )
-        .font(look.mono)
-        .color(look.faint)
-        .w(GUTTER_W)
-        .pr(4.0)
-        .align(rune::Align::End),
-    )
-    .child(
-        text(
-            patch_row
-                .after
-                .map_or_else(String::new, |number| number.to_string()),
-        )
-        .font(look.mono)
-        .color(look.faint)
-        .w(GUTTER_W)
-        .pr(4.0)
-        .align(rune::Align::End),
-    )
-    .child(
-        text(match patch_row.kind {
-            patch::Kind::Added => "+",
-            patch::Kind::Removed => "−",
-            _ => "",
-        })
-        .font(look.mono)
-        .color(ink)
-        .w(10.0),
-    )
-    .child(
-        text(patch_row.text.clone())
-            .font(look.mono)
-            .color(ink)
-            .grow(1.0)
-            .min_w(0.0)
-            .truncate(),
-    )
-}
-
-fn split_row(
-    s: &AppState,
-    look: &Look,
-    file: usize,
-    left: Option<usize>,
-    right: Option<usize>,
-) -> El {
-    let source = &s.workbench.compare.files[file];
-    let path = source.path.clone();
-    let left_row = left.map(|at| &source.rows[at]);
-    let right_row = right.map(|at| &source.rows[at]);
-    let left_after = left_row.and_then(|row| row.after);
-    let right_after = right_row.and_then(|row| row.after);
-    let mut left_cell = cell(
-        look,
-        left_row.and_then(|row| row.before),
-        left_row,
-        format!("compare-cell-{file}-{left:?}-{right:?}-left"),
-    );
-    if let Some(after) = left_after {
-        let path = path.clone();
-        left_cell = left_cell.on_double_press(move |s: &mut AppState| {
-            s.open_file(&path, Some(after));
-        });
-    }
-    let mut right_cell = cell(
-        look,
-        right_row.and_then(|row| row.after),
-        right_row,
-        format!("compare-cell-{file}-{left:?}-{right:?}-right"),
-    );
-    if let Some(after) = right_after {
-        right_cell = right_cell.on_double_press(move |s: &mut AppState| {
-            s.open_file(&path, Some(after));
-        });
-    }
-    row()
-        .key(format!("compare-split-row-{file}-{left:?}-{right:?}"))
-        .w_full()
-        .h(ROW_H)
-        .child(left_cell)
-        .child(right_cell)
-}
-
-fn display_row(s: &AppState, look: &Look, index: usize) -> El {
-    let compare = &s.workbench.compare;
-    match compare.display[index] {
-        DisplayRow::Commit(commit) => {
-            let Some(data) = &compare.data else {
-                return el();
-            };
-            let Some(commit) = data.commits.get(commit) else {
-                return el();
-            };
-            row()
-                .key(format!("compare-commit-{}", commit.short_id))
-                .h(18.0)
-                .px(8.0)
-                .gap(crate::ds::SPACE_4)
-                .items_center()
-                .child(
-                    text(commit.short_id.clone())
-                        .font(look.mono)
-                        .color(look.faint),
-                )
-                .child(
-                    text(commit.subject.clone())
-                        .font(look.small)
-                        .color(look.text)
-                        .truncate()
-                        .min_w(0.0),
-                )
-        }
-        DisplayRow::More(count) => text(format!("…and {count} more."))
-            .key("compare-commits-more")
-            .h(18.0)
-            .px(8.0)
-            .font(look.xsmall)
-            .color(look.faint),
-        DisplayRow::File(file) => file_head(s, look, file),
-        DisplayRow::Line { file, row } => unified_row(s, look, file, row),
-        DisplayRow::Split { file, left, right } => split_row(s, look, file, left, right),
     }
 }
 
@@ -676,14 +334,17 @@ fn head(s: &AppState, k: &Kit, layer: &mut Vec<El>) -> El {
     .label("Patch layout")
     .width(Some(150.0))
     .on_pick(|s: &mut AppState, index, _| s.set_diff_split(index == 1));
-    bar.child(el().grow(1.0)).child(layout.build(k)).child(
-        Button::new("Reload")
-            .variant(ButtonVariant::GhostMuted)
-            .control_size(ControlSize::Small)
-            .on_press(|s: &mut AppState| s.workbench.compare.reload())
-            .build(k)
-            .key("compare-reload"),
-    )
+    bar.child(el().grow(1.0))
+        .children((!s.diff_split).then(|| super::view::diff_wrap_switch(s, k)))
+        .child(layout.build(k))
+        .child(
+            Button::new("Reload")
+                .variant(ButtonVariant::GhostMuted)
+                .control_size(ControlSize::Small)
+                .on_press(|s: &mut AppState| s.workbench.compare.reload())
+                .build(k)
+                .key("compare-reload"),
+        )
 }
 
 fn body(s: &AppState, k: &Kit) -> El {
@@ -705,7 +366,6 @@ fn body(s: &AppState, k: &Kit) -> El {
     if data.diff.files.is_empty() {
         return notice(k, "compare-clean", "No changes against this base.");
     }
-    let look = Look::new(k);
     let mut rail = col()
         .key("compare-rail")
         .w(230.0)
@@ -732,7 +392,7 @@ fn body(s: &AppState, k: &Kit) -> El {
                 rune::Color::TRANSPARENT
             })
             .hover(k.c.hover)
-            .on_press(|s: &mut AppState| s.workbench.compare.select(None))
+            .on_press_tx(|s: &mut AppState, tx| s.workbench.compare.select(None, tx))
             .child(text("All files").font(k.ty.small).color(k.c.text_base)),
     );
     for file in &compare.files {
@@ -755,8 +415,8 @@ fn body(s: &AppState, k: &Kit) -> El {
                     rune::Color::TRANSPARENT
                 })
                 .hover(k.c.hover)
-                .on_press(move |s: &mut AppState| {
-                    s.workbench.compare.select(Some(path.clone()));
+                .on_press_tx(move |s: &mut AppState, tx| {
+                    s.workbench.compare.select(Some(path.clone()), tx);
                 })
                 .child(icon(file.icon.icon(!k.dark), 13.0))
                 .child(
@@ -812,29 +472,60 @@ fn body(s: &AppState, k: &Kit) -> El {
                 .child(text(label).font(k.ty.text_xsmall).color(k.c.text_muted)),
         );
     }
-    let count = compare.display.len();
-    let list = col()
-        .key("compare-rows")
-        .w_full()
-        .growth(GrowthSpec::default())
-        .virtual_rows(
-            count,
-            ROW_H,
-            |s: &AppState, index| Cow::Borrowed(s.workbench.compare.keys[index].as_str()),
-            move |s: &AppState, index| display_row(s, &look, index),
-        )
-        .virtual_rows_version(compare.rev);
-    let mut scroller = col()
-        .key("compare-scroll")
-        .w_full()
-        .grow(1.0)
-        .min_h(0.0)
-        .scroll(ScrollSpec {
-            stick_bottom: false,
-        })
-        .child(list);
+    if compare.show_commits {
+        let mut commits = col()
+            .key("compare-commits")
+            .w_full()
+            .max_h(COMMITS_MAX_H)
+            .px(8.0)
+            .pb(crate::ds::SPACE_4)
+            .gap(crate::ds::SPACE_1)
+            .scroll(ScrollSpec {
+                stick_bottom: false,
+            });
+        for commit in &data.commits {
+            commits = commits.child(
+                row()
+                    .key(format!("compare-commit-{}", commit.short_id))
+                    .w_full()
+                    .gap(crate::ds::SPACE_4)
+                    .child(
+                        text(commit.short_id.clone())
+                            .font(k.ty.mono)
+                            .color(k.c.text_faint),
+                    )
+                    .child(
+                        text(commit.subject.clone())
+                            .font(k.ty.small)
+                            .color(k.c.text_base)
+                            .grow(1.0)
+                            .min_w(0.0)
+                            .truncate(),
+                    ),
+            );
+        }
+        let shown = data.commits.len() as u32;
+        if data.commit_count > shown {
+            commits = commits.child(
+                text(format!("{} more", data.commit_count - shown))
+                    .key("compare-commits-more")
+                    .font(k.ty.text_xsmall)
+                    .color(k.c.text_faint),
+            );
+        }
+        diff = diff.child(commits);
+    }
+    let mut scroller = DiffView::new(
+        |s: &AppState| &s.workbench.compare.state,
+        |s: &mut AppState| &mut s.workbench.compare.state,
+    )
+    .on_visible_file(|s: &mut AppState, index| s.workbench.compare.follow(index))
+    .key("compare-scroll")
+    .build(s, k)
+    .grow(1.0)
+    .min_h(0.0);
     if data.diff.truncated {
-        scroller = scroller.child(
+        scroller = col().w_full().grow(1.0).min_h(0.0).child(scroller).child(
             text("Some files were over budget and are not listed.")
                 .key("compare-truncated")
                 .font(k.ty.text_xsmall)
@@ -851,6 +542,8 @@ fn body(s: &AppState, k: &Kit) -> El {
         .child(rail)
         .child(diff)
 }
+
+const COMMITS_MAX_H: f32 = 180.0;
 
 pub fn view(s: &AppState, k: &Kit, layer: &mut Vec<El>) -> El {
     if s.workbench.workspace.is_none() {
@@ -951,13 +644,13 @@ mod tests {
         );
     }
 
-    fn file(path: &str, patch: &str) -> DiffFile {
+    fn file(path: &str, hunks: &str) -> DiffFile {
         DiffFile {
             path: path.into(),
             status: DiffStatus::Modified,
             additions: 1,
             deletions: 1,
-            patch: patch.into(),
+            patch: format!("diff --git a/{path} b/{path}\n--- a/{path}\n+++ b/{path}\n{hunks}"),
             binary: false,
             truncated: false,
         }
@@ -1011,22 +704,22 @@ mod tests {
     }
 
     #[test]
-    fn a_switched_layout_pairs_rows_without_reading_git_again() {
+    fn a_switched_layout_is_a_redraw_without_reading_git_again() {
         let mut compare = Compare::default();
         let data = compare_data(vec![file("a.rs", "@@ -1,1 +1,2 @@\n-a\n+b\n+c\n")]);
         compare.request(None);
         let _ = compare.take_request();
         compare.apply(scope(data.workspace_id), None, Ok(data));
-        assert!(matches!(compare.display[1], DisplayRow::Line { .. }));
-        assert_eq!(compare.data.as_ref().unwrap().diff.files.len(), 1);
+        assert_eq!(compare.state.files().len(), 1);
+        assert_eq!(compare.state.mode(), DiffMode::Unified);
         compare.set_split(true);
-        assert!(matches!(compare.display[1], DisplayRow::Split { .. }));
+        assert_eq!(compare.state.mode(), DiffMode::Split);
         assert_eq!(compare.base_label(), Some("origin/main"));
         assert_eq!(compare.take_request(), None, "a layout is not a read");
     }
 
     #[test]
-    fn selecting_a_file_keeps_only_its_rows_and_a_missing_one_clears() {
+    fn the_rail_follows_the_diff_and_a_vanished_pick_clears() {
         let mut compare = Compare::default();
         let data = compare_data(vec![
             file("a.rs", "@@ -1 +1 @@\n-a\n+b\n"),
@@ -1035,20 +728,15 @@ mod tests {
         compare.request(None);
         let _ = compare.take_request();
         compare.apply(scope(data.workspace_id), None, Ok(data));
-        compare.select(Some("b.rs".into()));
-        let files: Vec<&str> = compare
-            .visible_files()
-            .map(|file| file.path.as_str())
-            .collect();
-        assert_eq!(files, ["b.rs"]);
-        assert!(
-            compare
-                .display
-                .iter()
-                .all(|row| !matches!(row, DisplayRow::File(0)))
-        );
-        compare.select(Some("gone.rs".into()));
-        assert_eq!(compare.visible_files().count(), 2, "a stale pick shows all");
+        assert_eq!(compare.state.files().len(), 2, "every file in one diff");
+        compare.follow(1);
+        assert_eq!(compare.selected.as_deref(), Some("b.rs"));
+
+        let replaced = compare_data(vec![file("a.rs", "@@ -1 +1 @@\n-a\n+b\n")]);
+        compare.request(None);
+        let _ = compare.take_request();
+        compare.apply(scope(replaced.workspace_id), None, Ok(replaced));
+        assert_eq!(compare.selected, None, "b.rs is no longer in the compare");
     }
 
     #[test]

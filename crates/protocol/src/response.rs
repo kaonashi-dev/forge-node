@@ -14,9 +14,9 @@ use domain::{
     ExternalSessionEntry, ExternalTranscript, FileContents, FileTree, ImageContents, JuvaDraft,
     Project, ProjectAction, ProjectGroup, ProjectId, ProviderUsage, PullRequestState, RebaseState,
     Remote, RepoActionsFile, RunId, ScrollbackRows, SearchResults, Session, SessionChanges,
-    SessionId, SessionTranscript, ShareAction, ShareCandidate, ShareRule, ShareStatusEntry, TaskId,
-    TerminalId, TerminalSnapshot, UsageAnalytics, Workspace, WorkspaceDiff, WorkspaceId,
-    WorktreeIgnore,
+    SessionConversation, SessionId, SessionTranscript, ShareAction, ShareCandidate, ShareRule,
+    ShareStatusEntry, TaskId, TerminalId, TerminalSnapshot, UsageAnalytics, Workspace,
+    WorkspaceDiff, WorkspaceId, WorktreeIgnore,
 };
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
@@ -304,6 +304,9 @@ pub enum Response {
     /// Plain text off a session's terminal, answering
     /// `GetSessionTranscript`.
     SessionTranscript(SessionTranscript),
+    /// An agent session's conversation as chat turns, answering
+    /// `GetSessionConversation`.
+    SessionConversation(SessionConversation),
     /// Context envelopes for one session, answering `ListContextEnvelopes`.
     ContextEnvelopes(Vec<ContextEnvelope>),
     /// A discovered run's conversation, answering `GetExternalTranscript`.
@@ -424,6 +427,30 @@ mod tests {
     #[test]
     fn ack_round_trips_through_messagepack() {
         let r = Response::Ack;
+        let bytes = rmp_serde::to_vec_named(&r).unwrap();
+        let back: Response = rmp_serde::from_slice(&bytes).unwrap();
+        assert_eq!(r, back);
+    }
+
+    #[test]
+    fn session_conversation_round_trips_through_messagepack() {
+        let r = Response::SessionConversation(SessionConversation {
+            session_id: domain::SessionId::new(),
+            available: true,
+            turns: vec![
+                domain::ConversationTurn {
+                    role: domain::TurnRole::User,
+                    text: "fix the test".into(),
+                    tools: Vec::new(),
+                },
+                domain::ConversationTurn {
+                    role: domain::TurnRole::Agent,
+                    text: "Done.".into(),
+                    tools: vec!["Bash: cargo test".into()],
+                },
+            ],
+            truncated: false,
+        });
         let bytes = rmp_serde::to_vec_named(&r).unwrap();
         let back: Response = rmp_serde::from_slice(&bytes).unwrap();
         assert_eq!(r, back);

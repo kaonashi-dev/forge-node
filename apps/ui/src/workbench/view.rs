@@ -385,16 +385,18 @@ pub fn changes(s: &AppState, k: &Kit) -> El {
         ),
     };
     let mut view = col().key("changes").w_full().h_full().min_h(0.0).child(
-        bar(k, title, detail).child(
-            SegmentedControl::new(
-                &["Unified", "Split"],
-                Some(if s.diff_split { 1 } else { 0 }),
-            )
-            .label("Patch layout")
-            .width(Some(150.0))
-            .on_pick(|s: &mut AppState, index, _| s.set_diff_split(index == 1))
-            .build(k),
-        ),
+        bar(k, title, detail)
+            .children((!s.diff_split).then(|| diff_wrap_switch(s, k)))
+            .child(
+                SegmentedControl::new(
+                    &["Unified", "Split"],
+                    Some(if s.diff_split { 1 } else { 0 }),
+                )
+                .label("Patch layout")
+                .width(Some(150.0))
+                .on_pick(|s: &mut AppState, index, _| s.set_diff_split(index == 1))
+                .build(k),
+            ),
     );
     if let Some(state) = &changes.rebase {
         view = view.child(stopped(state, changes.rebase_error.as_deref(), k));
@@ -403,6 +405,15 @@ pub fn changes(s: &AppState, k: &Kit) -> El {
         }
     }
     view.child(patch)
+}
+
+/// Unified only: split always wraps, each side half the width.
+pub fn diff_wrap_switch(s: &AppState, k: &Kit) -> El {
+    rune_kit::Switch::new(s.diff_wrap)
+        .label("Wrap")
+        .on_toggle(|s: &mut AppState| s.set_diff_wrap(!s.diff_wrap))
+        .build(k)
+        .key("diff-wrap")
 }
 
 /// The sidebar's Files panel: the checkout's tree. A Markdown file opens
@@ -761,7 +772,9 @@ fn csv_view(k: &Kit, table: &super::csv::CsvTable) -> El {
                         }
                         line
                     },
-                ),
+                )
+                // Keys are the row index alone; a count change is detected without a bump.
+                .virtual_rows_version(0u8),
         );
     if table.truncated {
         view = view.child(
@@ -773,6 +786,30 @@ fn csv_view(k: &Kit, table: &super::csv::CsvTable) -> El {
         );
     }
     view
+}
+
+/// What a rendering built from the kit reads, for a memo's version: a theme,
+/// glass or type-size change moves at least one of these.
+pub(crate) fn kit_fingerprint(k: &Kit) -> (bool, [u32; 4], [rune::Color; 8]) {
+    (
+        k.dark,
+        [
+            k.ty.body.size.to_bits(),
+            k.ty.ui.size.to_bits(),
+            k.ty.mono.size.to_bits(),
+            k.radius.md.to_bits(),
+        ],
+        [
+            k.c.text_base,
+            k.c.text_strong,
+            k.c.text_muted,
+            k.c.bg_base,
+            k.c.layer_01,
+            k.c.layer_02,
+            k.c.border_base,
+            k.c.icon_accent,
+        ],
+    )
 }
 
 fn preview_view(preview: &Preview, find: Option<&PreviewFind>, k: &Kit) -> El {
@@ -809,21 +846,29 @@ fn preview_view(preview: &Preview, find: Option<&PreviewFind>, k: &Kit) -> El {
             stick_bottom: false,
         });
     if preview.shown() == Shown::Rendered {
-        let mut markdown = Markdown::new(preview.text.to_string());
-        if let Some((find, Hits::Rendered(hits))) = find.map(|find| (find, &find.hits)) {
-            markdown = markdown.highlights(hits.iter().enumerate().map(|(at, ranges)| {
-                let paint = if at == find.current {
-                    Highlight::current()
-                        .bg(current_bg)
-                        .ring(ring, 1.0)
-                        .key(CURRENT_KEY)
-                } else {
-                    Highlight::new().bg(hit_bg)
-                };
-                (ranges.clone(), paint)
-            }));
-        }
-        return scroller.child(col().padding(20.0).child(markdown.build(k)));
+        let hits = find.and_then(|find| match &find.hits {
+            Hits::Rendered(hits) => Some((find.current, hits)),
+            _ => None,
+        });
+        let version = (preview.revision, hits, kit_fingerprint(k));
+        let rendered = rune::memo("preview-markdown", version, || {
+            let mut markdown = Markdown::new(preview.text.to_string());
+            if let Some((current, hits)) = hits {
+                markdown = markdown.highlights(hits.iter().enumerate().map(|(at, ranges)| {
+                    let paint = if at == current {
+                        Highlight::current()
+                            .bg(current_bg)
+                            .ring(ring, 1.0)
+                            .key(CURRENT_KEY)
+                    } else {
+                        Highlight::new().bg(hit_bg)
+                    };
+                    (ranges.clone(), paint)
+                }));
+            }
+            col().padding(20.0).child(markdown.build(k))
+        });
+        return scroller.child(rendered);
     }
     let count = preview.lines.len() + usize::from(preview.cut);
     let theme = SyntaxTheme::from_kit(k);
@@ -875,7 +920,9 @@ fn preview_view(preview: &Preview, find: Option<&PreviewFind>, k: &Kit) -> El {
                                 .text_highlights(marks),
                         )
                 },
-            ),
+            )
+            // Keys are the row index alone; a count change is detected without a bump.
+            .virtual_rows_version(0u8),
     )
 }
 

@@ -8,6 +8,7 @@ pub const SPACE_4: f32 = 8.0;
 pub const SPACE_5: f32 = 12.0;
 pub const SPACE_6: f32 = 16.0;
 pub const SPACE_7: f32 = 24.0;
+pub const SPACE_8: f32 = 32.0;
 
 // Anything shorter is rune-kit's `ControlSize` (`Regular` is 24, `Small` 20).
 
