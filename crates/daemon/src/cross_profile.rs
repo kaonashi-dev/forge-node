@@ -133,6 +133,7 @@ fn targets(daemon: &Daemon, request: &Request) -> Vec<(Option<Account>, Access)>
             ..
         } => vec![session(session_id, Access::Control)],
         Request::GetSessionTranscript { session_id, .. }
+        | Request::GetSessionConversation { session_id, .. }
         | Request::GetSessionChanges { session_id } => vec![session(session_id, Access::Read)],
         Request::SendContext {
             source_session_id,

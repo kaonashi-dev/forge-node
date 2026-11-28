@@ -25,11 +25,16 @@ use time::OffsetDateTime;
 use crate::jsonl::{self, Object, Text};
 
 mod bounded;
+mod conversation;
 mod cursor;
 mod live;
 mod opencode_db;
 
-pub use live::Liveness;
+pub use conversation::{
+    read_conversation, DEFAULT_CONVERSATION_BYTES, DEFAULT_CONVERSATION_TURNS,
+    MAX_CONVERSATION_BYTES, MAX_CONVERSATION_TURNS,
+};
+pub use live::{running_transcript, Liveness};
 
 #[cfg(test)]
 mod provider_tests;

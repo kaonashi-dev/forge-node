@@ -199,6 +199,11 @@ pub enum Command {
         max_lines: Option<u32>,
         max_bytes: Option<u32>,
     },
+    /// An agent session's conversation, as turns.
+    SessionConversation {
+        generation: u64,
+        session_id: SessionId,
+    },
     /// One session's changes since its own baseline.
     SessionChanges {
         generation: u64,
@@ -592,6 +597,11 @@ pub enum UiEvent {
         session_id: SessionId,
         result: Result<domain::SessionTranscript, String>,
     },
+    SessionConversation {
+        generation: u64,
+        session_id: SessionId,
+        result: Result<domain::SessionConversation, String>,
+    },
     SessionChanges {
         generation: u64,
         session_id: SessionId,
@@ -933,6 +943,17 @@ impl ConnectionHandle {
             session_id,
             max_lines,
             max_bytes,
+        })
+    }
+
+    pub fn session_conversation(
+        &self,
+        generation: u64,
+        session_id: SessionId,
+    ) -> Result<(), String> {
+        self.send(Command::SessionConversation {
+            generation,
+            session_id,
         })
     }
 
@@ -2235,6 +2256,24 @@ fn handle_fixture_command(
                 generation,
                 session_id,
                 result,
+            }]);
+        }
+        Command::SessionConversation {
+            generation: command_generation,
+            session_id,
+        } => {
+            if command_generation != generation {
+                return;
+            }
+            sink(vec![UiEvent::SessionConversation {
+                generation,
+                session_id,
+                result: Ok(domain::SessionConversation {
+                    session_id,
+                    available: false,
+                    turns: Vec::new(),
+                    truncated: false,
+                }),
             }]);
         }
         Command::SessionChanges {
@@ -3722,6 +3761,23 @@ fn handle_live_command(
                 result,
             }]);
         }
+        Command::SessionConversation {
+            generation: command_generation,
+            session_id,
+        } => {
+            if command_generation != generation {
+                return;
+            }
+            metrics.note_socket_op();
+            let result = client
+                .get_session_conversation(session_id, None, None)
+                .map_err(|error| error.to_string());
+            sink(vec![UiEvent::SessionConversation {
+                generation,
+                session_id,
+                result,
+            }]);
+        }
         Command::SessionChanges {
             generation: command_generation,
             session_id,
@@ -5049,6 +5105,7 @@ fn command_label(command: &Command) -> &'static str {
         Command::CreateReviewChat { .. } => "CreateReviewChat",
         Command::CreateChild { .. } => "CreateChildSession",
         Command::SessionTranscript { .. } => "GetSessionTranscript",
+        Command::SessionConversation { .. } => "GetSessionConversation",
         Command::SessionChanges { .. } => "GetSessionChanges",
         Command::SendContext { .. } => "SendContext",
         Command::StartReview { .. } => "StartReview",

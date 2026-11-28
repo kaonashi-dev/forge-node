@@ -2568,6 +2568,16 @@ impl AppState {
                 }
                 crate::agent_ops::apply_transcript(self, session_id, result)
             }
+            UiEvent::SessionConversation {
+                generation,
+                session_id,
+                result,
+            } => {
+                if !self.accept_generation(generation) {
+                    return false;
+                }
+                self.apply_session_conversation(session_id, result)
+            }
             UiEvent::SessionChanges {
                 generation,
                 session_id,
@@ -2883,6 +2893,7 @@ impl AppState {
             self.mirror_at = clock;
         }
         self.poll_status_refresh();
+        self.poll_review_chat();
         let mut floor = self.next_wake(Instant::now());
         let mut fetched = false;
         for idx in 0..self.pane_count() {

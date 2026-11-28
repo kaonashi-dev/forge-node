@@ -22,6 +22,7 @@ use crate::pr_url::PullRequestLink;
 use crate::review_subject::{Resolution, Subject};
 use crate::workbench::CenterMode;
 
+mod chat;
 mod model;
 
 pub use client::CUSTOM_PRESET;
@@ -314,6 +315,33 @@ pub struct CodeReview {
     /// Prompts handed to the worker, oldest first; each `SendSessionPrompt`
     /// result settles the front one, since the worker answers in send order.
     pub prompt_sends: std::collections::VecDeque<PromptSend>,
+    /// Each chat's conversation as last read; runtime-only, re-read when the
+    /// session's activity moves.
+    pub logs: HashMap<SessionId, ChatLog>,
+    /// The transcript is scrolled far enough from its end to offer a jump back.
+    pub chat_far: bool,
+}
+
+/// A chat's conversation, read through `GetSessionConversation`.
+#[derive(Clone, Debug, Default)]
+pub struct ChatLog {
+    pub items: Vec<chat::ChatItem>,
+    /// False while the daemon has no transcript it can read for the session.
+    pub available: bool,
+    pub truncated: bool,
+    pub error: Option<String>,
+    /// The session's activity the last read answered for.
+    pub read_for: Option<ChatStamp>,
+    /// The activity a read in flight was asked for.
+    pub asking: Option<ChatStamp>,
+}
+
+/// What moves when a chat's conversation may have grown.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ChatStamp {
+    pub activity: domain::Timestamp,
+    pub status: Option<crate::app::SessionStatus>,
+    pub running: bool,
 }
 
 /// What a sent prompt does once the daemon takes it, or undoes when it refuses.
@@ -384,6 +412,8 @@ impl Default for CodeReview {
             question: TextEdit::new(""),
             question_about: None,
             prompt_sends: std::collections::VecDeque::new(),
+            logs: HashMap::new(),
+            chat_far: false,
         }
     }
 }
@@ -744,6 +774,10 @@ pub fn reconnected(s: &mut AppState) {
     s.code_review.chat_starting = None;
     s.code_review.chat_opening = None;
     s.code_review.prompt_sends.clear();
+    for log in s.code_review.logs.values_mut() {
+        log.asking = None;
+        log.read_for = None;
+    }
     s.code_review.asked_config.clear();
     s.code_review.asked_list.clear();
     s.code_review.report_asked.clear();
@@ -2166,6 +2200,88 @@ impl AppState {
                     run: review,
                 },
             );
+        }
+        true
+    }
+
+    /// The chat the Review's findings page shows, while its session is listed.
+    fn shown_chat_session(&self) -> Option<SessionId> {
+        if self.workbench.mode != crate::workbench::CenterMode::Review
+            || self.code_review.view != ReviewView::Findings
+        {
+            return None;
+        }
+        let workspace = self.code_review.workspace?;
+        let run = self.code_review.shown_run(workspace)?;
+        let chat = self
+            .code_review
+            .chats
+            .get(&(workspace, lane(&run.target)))?;
+        self.rows
+            .iter()
+            .any(|row| row.id == chat.session)
+            .then_some(chat.session)
+    }
+
+    fn chat_stamp(&self, session: SessionId) -> Option<ChatStamp> {
+        let row = self.rows.iter().find(|row| row.id == session)?;
+        let activity = self
+            .store
+            .as_ref()?
+            .sessions
+            .iter()
+            .find(|known| known.id == session)?
+            .last_activity_at;
+        Some(ChatStamp {
+            activity,
+            status: row.status,
+            running: row.running,
+        })
+    }
+
+    /// Re-reads the shown chat's conversation once per activity bump, which
+    /// the daemon throttles; a read in flight is never doubled.
+    pub fn poll_review_chat(&mut self) {
+        let Some(session) = self.shown_chat_session() else {
+            return;
+        };
+        let Some(stamp) = self.chat_stamp(session) else {
+            return;
+        };
+        let log = self.code_review.logs.entry(session).or_default();
+        if log.asking.is_some() || log.read_for == Some(stamp) {
+            return;
+        }
+        let sent = self.connection.as_ref().is_some_and(|connection| {
+            connection
+                .session_conversation(self.generation, session)
+                .is_ok()
+        });
+        if sent {
+            log.asking = Some(stamp);
+        }
+    }
+
+    pub fn apply_session_conversation(
+        &mut self,
+        session: SessionId,
+        result: Result<domain::SessionConversation, String>,
+    ) -> bool {
+        let Some(log) = self.code_review.logs.get_mut(&session) else {
+            return false;
+        };
+        let Some(asked) = log.asking.take() else {
+            return false;
+        };
+        log.read_for = Some(asked);
+        match result {
+            Ok(conversation) => {
+                log.items = chat::items(&conversation.turns);
+                log.available = conversation.available;
+                log.truncated = conversation.truncated;
+                log.error = None;
+            }
+            Err(error) => log.error = Some(error),
         }
         true
     }
@@ -3960,14 +4076,20 @@ fn chat_panel(s: &AppState, k: &Kit, run: &ReviewRun, report: &Report) -> El {
             .iter()
             .find(|row| row.id == live.session)
             .and_then(|row| row.status);
-        panel = panel.child(status(
-            match row_status {
-                Some(crate::app::SessionStatus::Busy) => "Working on your question…",
-                Some(crate::app::SessionStatus::Attention) => "Waiting on you in the chat",
-                None => "Ready for a question",
+        let busy = row_status == Some(crate::app::SessionStatus::Busy);
+        match transcript(s, k, live.session, busy) {
+            Some(log) => panel = panel.child(log),
+            None => {
+                panel = panel.child(status(
+                    match row_status {
+                        Some(crate::app::SessionStatus::Busy) => "Working on your question…",
+                        Some(crate::app::SessionStatus::Attention) => "Waiting on you in the chat",
+                        None => "Ready for a question",
+                    }
+                    .to_owned(),
+                ));
             }
-            .to_owned(),
-        ));
+        }
         if live.run != run.id && run.status == ReviewStatus::Completed {
             panel = panel.child(
                 col()
@@ -4020,6 +4142,7 @@ fn chat_panel(s: &AppState, k: &Kit, run: &ReviewRun, report: &Report) -> El {
             );
         }
         panel = panel
+            .children(transcript(s, k, chat.session, false))
             .child(status("This chat ended.".to_owned()))
             .child(note(
                 k,
@@ -4055,7 +4178,8 @@ fn chat_panel(s: &AppState, k: &Kit, run: &ReviewRun, report: &Report) -> El {
                     .color(k.c.text_muted)
                     .align(rune::Align::Center)
                     .wrap(),
-                ),
+                )
+                .child(suggestions(k, standing > 0)),
         );
     }
     if let Some(finding) = about_finding(review.question_about, run, report) {
@@ -4084,20 +4208,28 @@ fn chat_panel(s: &AppState, k: &Kit, run: &ReviewRun, report: &Report) -> El {
     let mut ask = row()
         .w_full()
         .gap(crate::ds::SPACE_3)
-        .items_center()
+        .items_end()
         .child(
             el().min_w(0.0).grow(1.0).child(
-                TextInput::new(&review.question)
+                TextArea::new(&review.question)
                     .label("Question for the review chat")
                     .placeholder(if review.question_about.is_some() {
                         "What do you want to know about this finding?"
                     } else {
-                        "e.g. Is the P1 still a blocker if /health is only the deploy check?"
+                        "Ask about this review. Shift+Enter for a new line."
                     })
                     .width(None)
+                    .auto_grow(1, COMPOSER_MAX_ROWS)
                     .disabled(starting)
                     .on_edit(|s: &mut AppState| &mut s.code_review.question)
-                    .on_submit(|s: &mut AppState, _| s.ask_review_chat())
+                    .on_key(|s: &mut AppState, ev, _| {
+                        if ev.key == rune::Key::Enter && !ev.mods.shift && !ev.mods.alt {
+                            s.ask_review_chat();
+                            true
+                        } else {
+                            false
+                        }
+                    })
                     .build(k)
                     .key("review-question"),
             ),
@@ -4130,11 +4262,185 @@ fn chat_panel(s: &AppState, k: &Kit, run: &ReviewRun, report: &Report) -> El {
     if live.is_some() {
         panel = panel.child(note(
             k,
-            "A question waits while the agent works; a second one is refused until it is sent. \
-             Answers appear in the chat's session.",
+            "A question waits while the agent works; a second one is refused until it is sent.",
         ));
     }
     panel
+}
+
+const COMPOSER_MAX_ROWS: usize = 6;
+const BUBBLE_MAX_W: f32 = 300.0;
+const CHAT_LOG_KEY: &str = "review-chat-log";
+/// How far above its end the transcript offers a jump back.
+const CHAT_FAR: f32 = 240.0;
+
+fn chat_log_height(s: &AppState) -> f32 {
+    (s.window.get()[1] - 380.0).clamp(220.0, 560.0)
+}
+
+const SUGGESTIONS: [&str; 3] = [
+    "Which finding should I fix first, and why?",
+    "Is anything here a real blocker for merging?",
+    "Explain the riskiest finding with the code it points at.",
+];
+
+fn suggestions(k: &Kit, any_standing: bool) -> El {
+    let mut list = col()
+        .key("review-chat-suggestions")
+        .w_full()
+        .gap(crate::ds::SPACE_2)
+        .pt(crate::ds::SPACE_3)
+        .items_center();
+    let offered = if any_standing {
+        &SUGGESTIONS[..]
+    } else {
+        &SUGGESTIONS[2..]
+    };
+    for (at, words) in offered.iter().enumerate() {
+        list = list.child(
+            Button::new(*words)
+                .variant(ButtonVariant::GhostMuted)
+                .control_size(ControlSize::Small)
+                .on_press(move |s: &mut AppState| {
+                    s.code_review.question = TextEdit::new(*words);
+                })
+                .build(k)
+                .key(format!("review-chat-suggestion-{at}")),
+        );
+    }
+    list
+}
+
+/// The chat's conversation, newest at the bottom, or `None` while the daemon
+/// has nothing it can read for the session (the status line stands in).
+fn transcript(s: &AppState, k: &Kit, session: SessionId, busy: bool) -> Option<El> {
+    let log = s.code_review.logs.get(&session)?;
+    if !log.available || log.items.is_empty() {
+        return None;
+    }
+    let mut list = col()
+        .key("review-chat-turns")
+        .w_full()
+        .gap(crate::ds::SPACE_6)
+        .py(crate::ds::SPACE_4);
+    if log.truncated {
+        list = list.child(chat_note(k, "Earlier turns are not shown."));
+    }
+    for (at, item) in log.items.iter().enumerate() {
+        list = list.child(chat_item(k, session, at, item));
+    }
+    if busy {
+        list = list.child(
+            row()
+                .key("review-chat-working")
+                .role("status")
+                .label("The chat is working")
+                .gap(crate::ds::SPACE_3)
+                .items_center()
+                .child(crate::ds::working(14.0, k.c.text_muted))
+                .child(text("Working…").font(k.ty.small).color(k.c.text_muted)),
+        );
+    }
+    if let Some(error) = &log.error {
+        list = list.child(chat_note(k, format!("Could not read the chat: {error}")));
+    }
+    let scroller = col()
+        .key(CHAT_LOG_KEY)
+        .role("log")
+        .label("Review chat conversation")
+        .w_full()
+        .h(chat_log_height(s))
+        .scroll(ScrollSpec { stick_bottom: true })
+        .scroll_edge_fade(16.0)
+        .on_far_from_bottom_if(CHAT_FAR, None, |s: &mut AppState, far| {
+            let changed = s.code_review.chat_far != far;
+            s.code_review.chat_far = far;
+            changed
+        })
+        .child(list);
+    let mut frame = col().key("review-chat-frame").w_full().child(scroller);
+    if s.code_review.chat_far {
+        frame = frame.child(
+            row()
+                .w_full()
+                .justify_center()
+                .pt(crate::ds::SPACE_2)
+                .child(
+                    Button::new("Jump to latest")
+                        .variant(ButtonVariant::Outline)
+                        .control_size(ControlSize::Small)
+                        .on_press_tx(|_s: &mut AppState, tx| tx.scroll_to_bottom(CHAT_LOG_KEY))
+                        .build(k)
+                        .key("review-chat-jump"),
+                ),
+        );
+    }
+    Some(frame)
+}
+
+fn chat_note(k: &Kit, words: impl Into<String>) -> El {
+    text(words.into())
+        .font(k.ty.text_xsmall)
+        .color(k.c.text_faint)
+        .align(rune::Align::Center)
+        .w_full()
+        .wrap()
+}
+
+fn chat_item(k: &Kit, session: SessionId, at: usize, item: &chat::ChatItem) -> El {
+    match item {
+        chat::ChatItem::Briefing => chat_note(k, "Started with this run's report"),
+        chat::ChatItem::Update => chat_note(k, "Told the chat the review ran again"),
+        chat::ChatItem::Question(words) => row()
+            .key(format!("review-chat-question-{at}"))
+            .w_full()
+            .justify_end()
+            .child(
+                col()
+                    .max_w(BUBBLE_MAX_W)
+                    .px(crate::ds::SPACE_5)
+                    .py(crate::ds::SPACE_4)
+                    .radius(k.radius.xl)
+                    .fill(k.c.layer_02)
+                    .child(
+                        text(words.clone())
+                            .font(k.ty.ui)
+                            .color(k.c.text_base)
+                            .wrap(),
+                    ),
+            ),
+        chat::ChatItem::Answer { text: words, tools } => rune::memo(
+            format!("review-chat-answer-{session}-{at}"),
+            (words, tools, crate::workbench::view::kit_fingerprint(k)),
+            || {
+                let mut answer = col().w_full().gap(crate::ds::SPACE_3);
+                if !words.trim().is_empty() {
+                    answer = answer.child(Markdown::new(words.clone()).build(k));
+                }
+                let (shown, more) = chat::shown_tools(tools);
+                if !shown.is_empty() {
+                    let mut ran = col().w_full().gap(crate::ds::SPACE_1);
+                    for tool in shown {
+                        ran = ran.child(
+                            text(tool.clone())
+                                .font(k.ty.text_xsmall)
+                                .color(k.c.text_faint)
+                                .truncate(),
+                        );
+                    }
+                    if more > 0 {
+                        ran = ran.child(
+                            text(format!("and {more} more"))
+                                .font(k.ty.text_xsmall)
+                                .color(k.c.text_faint),
+                        );
+                    }
+                    answer = answer.child(ran);
+                }
+                answer
+            },
+        ),
+    }
 }
 
 /// A finding under its diff line, in the Review tab's Diff and in Changes alike.
@@ -6150,6 +6456,66 @@ mod tests {
             "{shown:?}"
         );
         assert!(has(&shown, "review-chat-open"));
+    }
+
+    #[test]
+    fn the_chat_reads_its_conversation_once_per_activity_and_draws_it() {
+        use crate::connection::Command;
+        use domain::{ConversationTurn, SessionConversation, TurnRole};
+        let (mut state, workspace) = fixture_state();
+        let rx = connected(&mut state);
+        let run = completed(workspace, workspace_target(workspace));
+        with_report(&mut state, &run, Vec::new(), Vec::new(), None);
+        let session = live_row(&mut state, workspace);
+        assert!(state.review_chat_opened(run.id, session));
+        while rx.try_recv().is_ok() {}
+        state.workbench.mode = CenterMode::Review;
+
+        state.poll_review_chat();
+        match rx.try_recv() {
+            Ok(Command::SessionConversation { session_id, .. }) => assert_eq!(session_id, session),
+            other => panic!("expected SessionConversation, got {other:?}"),
+        }
+        state.poll_review_chat();
+        assert!(rx.try_recv().is_err(), "one read in flight");
+
+        let opening = format!(
+            "{} of x.\n\n{}Is it safe?\n\n## Rules for this session\n\nRules.",
+            model::CHAT_OPENING,
+            model::FIRST_QUESTION
+        );
+        let turns = vec![
+            ConversationTurn {
+                role: TurnRole::User,
+                text: opening,
+                tools: Vec::new(),
+            },
+            ConversationTurn {
+                role: TurnRole::Agent,
+                text: "It is.".into(),
+                tools: vec!["Read a.rs".into()],
+            },
+        ];
+        assert!(state.apply_session_conversation(
+            session,
+            Ok(SessionConversation {
+                session_id: session,
+                available: true,
+                turns,
+                truncated: false,
+            })
+        ));
+        state.poll_review_chat();
+        assert!(
+            rx.try_recv().is_err(),
+            "the same activity is not read twice"
+        );
+        let shown = keys(state);
+        assert!(has(&shown, "review-chat-question-1"), "{shown:?}");
+        assert!(
+            has(&shown, &format!("review-chat-answer-{session}-2")),
+            "{shown:?}"
+        );
     }
 
     #[test]

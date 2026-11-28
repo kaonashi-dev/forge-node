@@ -96,9 +96,10 @@ pub use review::{
     Severity, SuppressionKind, Tier, TierLatency, Verdict, CUSTOM_PRESET,
 };
 pub use session::{
-    ActivityEvidence, ActivityState, AgentActivity, EditorFind, EditorFindCommand, EditorState,
-    Session, SessionKind, SessionRole, SessionState, SessionTitle, SessionTranscript,
-    MAX_EDITOR_FIND_PATTERN_BYTES, MAX_GRAPH_DEPTH,
+    ActivityEvidence, ActivityState, AgentActivity, ConversationTurn, EditorFind,
+    EditorFindCommand, EditorState, Session, SessionConversation, SessionKind, SessionRole,
+    SessionState, SessionTitle, SessionTranscript, TurnRole, MAX_EDITOR_FIND_PATTERN_BYTES,
+    MAX_GRAPH_DEPTH,
 };
 pub use share::{
     ShareAction, ShareCandidate, ShareClass, ShareCleanup, ShareRule, ShareState, ShareStatusEntry,

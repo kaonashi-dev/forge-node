@@ -519,9 +519,11 @@ One cost on this side is deliberate and documented rather than fixed:
 
 ### The Rune client's view
 
-Rune rebuilds the whole view on every commit, and a terminal that is printing
-commits up to 8 times a second (its accessibility mirror refreshes every
-125 ms), so the cost of a panel is paid per rebuild, not per user action.
+Rune rebuilds the whole view on every commit, and while a screen reader is
+attached a terminal that is printing commits up to 8 times a second (its
+accessibility mirror refreshes every 125 ms, gated on
+`Tx::assistive_technology`), so the cost of a panel is paid per rebuild, not
+per user action.
 
 - A list that can hold hundreds of entries is `virtual_rows`, with
   `virtual_rows_version` when its keys only change with its count. History
@@ -577,8 +579,8 @@ Carry these forward; they are real, verified, and not yet fixed.
 | Git work before PR cache lookup | `Daemon::refresh_pull_requests` | Remote resolution still spawns Git per project before consulting the cache. |
 | Trailing blank cells on the wire | `domain::Row` | ~70% of a typical full delta is default blanks. Eliding them is a decode-side amplification risk (a 6-byte row can claim 1 000 cells) unless the decoder is budgeted per frame. |
 | Transcript text under the lock | `Daemon` session transcript read | Builds up to 4 096 rows of cells under the core lock to keep a 36–96 KB text tail. |
+| Whole-transcript conversation read | `Daemon::get_session_conversation` | Each read streams the agent's whole JSONL to keep its last turns. The review chat asks at most once per activity bump (≤1/s while busy), but a long chat pays its full length each time; an offset-resumed read would make it incremental. |
 | Filesystem work in `build_spawn_spec` | `core.rs` | `inject_attention` (which reads and may write `~/.cursor/hooks.json`) and executable resolution run under the core lock. |
-| Accessibility mirror without a reader | `AppState::poll` (`refresh_mirror`) | A grid change rebuilds the whole view up to 8 times a second even when no assistive client is connected; an agent TUI's spinner keeps it doing so. Rune exposes no public "a11y active" flag to gate it on. |
 | Unthrottled title broadcasts | `core.rs` OSC title → `SessionUpdated` | Every title change of an attached terminal is a broadcast and a full row rebuild in each client; a provider that animates its title would pay that per frame. Unmeasured. |
 | `CreateAgentSession` on the command worker | `apps/ui/src/connection.rs` | Right after startup the daemon can wait on the login-shell capture and an inline version probe (seconds), and typing in other terminals waits with it. |
 | `GetSnapshot` on the command worker | `Command::RefreshSnapshot` in `apps/ui/src/connection.rs` | A blocking snapshot read holds the worker that also carries terminal input; whether a slow one can overflow the 64-slot event queue in the Rune client is unmeasured. |

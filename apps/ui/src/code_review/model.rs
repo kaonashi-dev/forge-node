@@ -160,7 +160,7 @@ pub fn chat_prompt(
     question: Option<&str>,
 ) -> String {
     let mut opening = format!(
-        "You are the chat for a finished Forge Review of {subject} in this checkout \
+        "{CHAT_OPENING} of {subject} in this checkout \
          (head {}). The person reading the report will ask about it. Explain a \
          finding, read the code it points at, and say plainly whether it holds. \
          Never fix anything yourself: a fix goes to another agent.\n\n",
@@ -184,7 +184,7 @@ pub fn chat_prompt(
         .filter(|question| !question.is_empty())
         .map(|question| {
             format!(
-                "## First question\n\n{}\n\n",
+                "{FIRST_QUESTION}{}\n\n",
                 head(question, QUESTION_BYTES + ABOUT_BYTES)
             )
         })
@@ -207,12 +207,18 @@ pub fn chat_prompt(
     prompt
 }
 
+/// How a chat's first prompt starts, so its transcript can show the question
+/// it carried instead of the whole report.
+pub const CHAT_OPENING: &str = "You are the chat for a finished Forge Review";
+pub const FIRST_QUESTION: &str = "## First question\n\n";
+pub const UPDATE_OPENING: &str = "The review ran again at head ";
+
 /// What a chat is told when its review ran again: the new verdict, what
 /// resolved and what is new, within [`PROMPT_BUDGET`].
 #[must_use]
 pub fn chat_update(run: &ReviewRun, findings: &[Finding], resolved: &[Finding]) -> String {
     let mut update = format!(
-        "The review ran again at head {}.",
+        "{UPDATE_OPENING}{}.",
         run.head_oid.chars().take(7).collect::<String>()
     );
     if let Some(verdict) = run.verdict {

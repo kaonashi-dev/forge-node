@@ -7,6 +7,7 @@
 pub mod actions;
 pub mod config;
 mod context_xfer;
+mod conversation;
 pub mod core;
 pub mod cross_profile;
 mod definitions;

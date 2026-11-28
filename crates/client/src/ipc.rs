@@ -984,6 +984,28 @@ impl Client {
         }
     }
 
+    /// An agent session's conversation as chat turns, polled like a diff read.
+    ///
+    /// # Errors
+    /// [`ClientError`] on a transport failure or a refusal from the daemon.
+    pub fn get_session_conversation(
+        &self,
+        session_id: domain::SessionId,
+        max_turns: Option<u32>,
+        max_bytes: Option<u32>,
+    ) -> Result<domain::SessionConversation, ClientError> {
+        match self.request(Request::GetSessionConversation {
+            session_id,
+            max_turns,
+            max_bytes,
+        })? {
+            Response::SessionConversation(conversation) => Ok(conversation),
+            _ => Err(ClientError::UnexpectedResponse {
+                expected: "SessionConversation",
+            }),
+        }
+    }
+
     /// A discovered agent run's conversation as plain text, for a handoff.
     ///
     /// The on-disk counterpart of [`Client::session_transcript`]: the run has
