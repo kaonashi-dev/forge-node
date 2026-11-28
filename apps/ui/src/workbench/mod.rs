@@ -8,6 +8,7 @@ pub mod compare;
 pub mod conflict;
 pub mod csv;
 pub mod decorations;
+pub mod diff_keys;
 pub mod hooks;
 pub mod patch;
 pub mod preview_find;
@@ -527,6 +528,13 @@ pub struct Preview {
     /// The daemon refused to send it whole; nothing is shown.
     pub too_large: bool,
     pub highlights: Rc<[Highlight]>,
+    /// Distinct per read, so a rendering keyed on it rebuilds only for new text.
+    pub revision: u64,
+}
+
+fn next_preview_revision() -> u64 {
+    static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+    NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
 }
 
 impl Workbench {
@@ -1451,6 +1459,7 @@ impl Preview {
             binary: file.binary,
             too_large: file.too_large,
             highlights,
+            revision: next_preview_revision(),
         }
     }
 
@@ -1470,6 +1479,7 @@ impl Preview {
             binary: false,
             too_large: false,
             highlights: Rc::from(Vec::new()),
+            revision: next_preview_revision(),
         }
     }
 

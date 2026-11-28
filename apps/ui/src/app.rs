@@ -170,6 +170,7 @@ pub struct AppState {
     pub pr_query: rune::TextEdit,
     /// `ui.diff.split` as this window last read or wrote it.
     pub diff_split: bool,
+    pub diff_wrap: bool,
     pub usage: crate::usage::Usage,
     pub storage: crate::storage::Storage,
     pub history: crate::history::History,
@@ -289,6 +290,7 @@ impl AppState {
             pr_auto_read: None,
             pr_query: rune::TextEdit::new(""),
             diff_split: false,
+            diff_wrap: false,
             usage: crate::usage::Usage::default(),
             storage: crate::storage::Storage::default(),
             history: crate::history::History::default(),
@@ -483,9 +485,11 @@ impl AppState {
             crate::processes::group(&store.sessions, &store.workspaces, &store.projects);
         self.diff_split =
             store.app_state_value(crate::workbench::patch::DIFF_SPLIT_KEY) == Some("true");
+        self.diff_wrap =
+            store.app_state_value(crate::workbench::patch::DIFF_WRAP_KEY) == Some("true");
         self.hues = crate::menus::parse_hues(store.app_state_value(crate::menus::PROJECT_HUES_KEY));
         self.store = Some(store);
-        self.workbench.set_split(self.diff_split);
+        self.apply_diff_layout();
         if self.terminal.is_fixture() {
             self.terminal.set_fixture_titles(
                 self.fixture_titles
@@ -591,6 +595,24 @@ impl AppState {
         // Sent now rather than on the next poll: a key waits for no frame.
         self.flush_editor();
         true
+    }
+
+    /// The diff's keys while the centre shows one: Changes, or the Review's
+    /// Diff tab.
+    pub fn diff_key(&mut self, ev: &KeyEvent, tx: &mut Tx) -> bool {
+        use crate::workbench::diff_keys;
+        let field_focused = tx
+            .focused()
+            .is_some_and(|key| key != crate::ui::FOCUS_PROXY_KEY);
+        let state = match self.workbench.mode {
+            CenterMode::Changes => &mut self.workbench.changes.state,
+            CenterMode::Review if self.code_review.view == crate::code_review::ReviewView::Diff => {
+                &mut self.code_review.diff_state
+            }
+            _ => return false,
+        };
+        diff_keys::diff_key(ev, field_focused, state.selection().is_some())
+            .is_some_and(|key| diff_keys::apply(state, key, tx))
     }
 
     /// Keys, pastes and compositions go to the session only while it is what
@@ -1480,7 +1502,7 @@ impl AppState {
         self.workbench.mode = CenterMode::Compare;
     }
 
-    /// One preference for both diffs; changing it is a redraw, never a read.
+    /// One preference for every diff; changing it is a redraw, never a read.
     pub fn set_diff_split(&mut self, split: bool) {
         if self.diff_split == split {
             return;
@@ -1490,7 +1512,32 @@ impl AppState {
             crate::workbench::patch::DIFF_SPLIT_KEY,
             if split { "true" } else { "false" },
         );
-        self.workbench.set_split(split);
+        self.apply_diff_layout();
+    }
+
+    pub fn set_diff_wrap(&mut self, wrap: bool) {
+        if self.diff_wrap == wrap {
+            return;
+        }
+        self.diff_wrap = wrap;
+        self.write_pref(
+            crate::workbench::patch::DIFF_WRAP_KEY,
+            if wrap { "true" } else { "false" },
+        );
+        self.apply_diff_layout();
+    }
+
+    pub fn apply_diff_layout(&mut self) {
+        let mode = if self.diff_split {
+            rune_kit::diff::DiffMode::Split
+        } else {
+            rune_kit::diff::DiffMode::Unified
+        };
+        self.workbench.set_split(self.diff_split);
+        self.workbench.changes.state.set_wrap(self.diff_wrap);
+        self.workbench.compare.state.set_wrap(self.diff_wrap);
+        self.code_review.diff_state.set_mode(mode);
+        self.code_review.diff_state.set_wrap(self.diff_wrap);
     }
 
     pub fn open_pr_detail(&mut self, key: String) {
@@ -2808,7 +2855,9 @@ impl AppState {
         changed |= self.workbench.settle_change_reveal(tx);
         changed |= self.settle_review_reveal(tx);
         crate::native_menus::refresh(self);
-        if clock - self.mirror_at >= 0.125 {
+        // The mirror is a screen reader's only view of the grid; refreshing it
+        // rebuilds the whole view, so nobody pays for it without one.
+        if tx.assistive_technology() && clock - self.mirror_at >= 0.125 {
             for idx in 0..self.pane_count() {
                 let pane = self.pane_mut(idx);
                 let version = pane.shared.grid_epoch();
@@ -2984,7 +3033,7 @@ impl AppState {
         if self.modal_open() {
             return false;
         }
-        if self.preview_find_chord(ev, tx) {
+        if self.preview_find_chord(ev, tx) || self.diff_key(ev, tx) {
             return true;
         }
         // The focus proxy outlives the surface: a tab or sidebar press focuses

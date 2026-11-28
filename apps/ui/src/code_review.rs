@@ -1632,6 +1632,7 @@ impl AppState {
                 } else {
                     rune_kit::diff::DiffMode::Unified
                 });
+                self.code_review.diff_state.set_wrap(self.diff_wrap);
                 diff.annotated = None;
             }
             Err(error) => diff.error = Some(error),
@@ -4192,7 +4193,7 @@ fn reviewed_diff(s: &AppState, k: &Kit) -> El {
         return note(k, "Reading the reviewed diff…");
     }
     let kit = k.clone();
-    DiffView::new(
+    let diff = DiffView::new(
         |s: &AppState| &s.code_review.diff_state,
         |s: &mut AppState| &mut s.code_review.diff_state,
     )
@@ -4205,7 +4206,29 @@ fn reviewed_diff(s: &AppState, k: &Kit) -> El {
     })
     .key("review-diff")
     .build(s, k)
-    .h(560.0)
+    .grow(1.0)
+    .min_h(0.0);
+    let layout = row()
+        .key("review-diff-layout")
+        .w_full()
+        .gap(crate::ds::SPACE_5)
+        .items_center()
+        .justify_end()
+        .children((!s.diff_split).then(|| crate::workbench::view::diff_wrap_switch(s, k)))
+        .child(
+            rune_kit::SegmentedControl::new(&["Unified", "Split"], Some(usize::from(s.diff_split)))
+                .label("Patch layout")
+                .width(Some(150.0))
+                .on_pick(|s: &mut AppState, index, _| s.set_diff_split(index == 1))
+                .build(k),
+        );
+    col()
+        .w_full()
+        .grow(1.0)
+        .min_h(0.0)
+        .gap(crate::ds::SPACE_4)
+        .child(layout)
+        .child(diff)
 }
 
 fn suppressions(s: &AppState, k: &Kit, workspace: WorkspaceId) -> El {
@@ -4839,7 +4862,15 @@ pub fn view(s: &AppState, k: &Kit, layer: &mut Vec<El>) -> El {
             .build(k)
             .key("review-refresh"),
     );
+    // The Diff tab scrolls itself, so its sticky headers and virtual rows see
+    // the real viewport rather than a fixed box inside the page's scroll.
+    let diff_fills = !s.code_review.customizing
+        && s.code_review.view == ReviewView::Diff
+        && run.is_some_and(|run| run.status == ReviewStatus::Completed);
     let mut body = col().key("review-body").w_full().gap(10.0);
+    if diff_fills {
+        body = body.grow(1.0).min_h(0.0);
+    }
     if let Some(error) = error {
         body = body.child(
             text(error.clone())
@@ -4944,19 +4975,23 @@ pub fn view(s: &AppState, k: &Kit, layer: &mut Vec<El>) -> El {
         .h_full()
         .min_h(0.0)
         .child(top)
-        .child(
-            col()
+        .child({
+            let page = col()
                 .key("review-scroll")
                 .w_full()
                 .grow(1.0)
                 .min_h(0.0)
                 .px(12.0)
-                .py(6.0)
-                .scroll(ScrollSpec {
+                .py(6.0);
+            if diff_fills {
+                page.child(body)
+            } else {
+                page.scroll(ScrollSpec {
                     stick_bottom: false,
                 })
-                .child(body),
-        )
+                .child(body)
+            }
+        })
 }
 
 #[cfg(test)]
