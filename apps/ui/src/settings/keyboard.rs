@@ -13,6 +13,7 @@ pub struct Keyboard {
     /// The action whose chord cell is listening for a keystroke.
     pub capturing: Option<Action>,
     pub error: Option<String>,
+    pub filter: rune::TextEdit,
 }
 
 impl AppState {
@@ -46,186 +47,193 @@ pub fn section(s: &AppState, k: &Kit) -> El {
     let mut page = col()
         .key("keyboard-keymap")
         .w_full()
-        .gap(crate::ds::SPACE_6);
+        .gap(crate::ds::SPACE_8);
 
     let conflicts = s.keymap.conflicts();
     if !conflicts.is_empty() {
-        let mut list = col().key("keymap-conflicts").gap(crate::ds::SPACE_3);
-        for conflict in conflicts {
-            list = list.child(
-                row()
-                    .key(format!("keymap-conflict-{}", conflict.label()))
-                    .gap(crate::ds::SPACE_4)
-                    .child(
-                        text(conflict.label())
-                            .font(k.ty.mono)
-                            .color(k.c.warning.fg)
-                            .w(110.0),
-                    )
-                    .child(
-                        text(conflict.context)
-                            .font(k.ty.small)
-                            .color(k.c.text_faint)
-                            .w(90.0),
-                    )
-                    .child(
-                        text(conflict.action_labels())
-                            .font(k.ty.small)
-                            .color(k.c.text_muted)
-                            .grow(1.0)
-                            .truncate(),
-                    ),
-            );
-        }
+        let rows = conflicts.into_iter().map(|conflict| {
+            row()
+                .key(format!("keymap-conflict-{}", conflict.label()))
+                .w_full()
+                .gap(crate::ds::SPACE_5)
+                .items_center()
+                .child(
+                    text(conflict.label())
+                        .font(k.ty.mono)
+                        .color(k.c.warning.fg)
+                        .w(110.0),
+                )
+                .child(
+                    text(conflict.context)
+                        .font(k.ty.ui)
+                        .color(k.c.text_muted)
+                        .w(90.0),
+                )
+                .child(
+                    text(conflict.action_labels())
+                        .font(k.ty.ui)
+                        .color(k.c.text_base)
+                        .grow(1.0)
+                        .truncate(),
+                )
+        });
         page = page.child(
             super::group(
-                k,
                 "keymap-conflict-group",
                 "Conflicts",
                 Some("Two actions answer to the same chord in one context. The first one fires; the other is unreachable until one of them moves."),
             )
-            .child(list),
+            .children(rows)
+            .build(k),
         );
     }
 
-    page = page.child(
-        super::group(
-            k,
-            "keymap-table-group",
-            "Shortcuts",
-            Some("Click a chord and press the next one. Escape cancels; Reset puts the shipped chord back."),
-        )
-        .child(table(s, k)),
-    );
-
+    let filter = rune_kit::TextInput::new(&s.settings.keyboard.filter)
+        .placeholder("Filter shortcuts…")
+        .label("Filter shortcuts")
+        .leading_icon(k.glyph.search)
+        .clear_button()
+        .width(None)
+        .on_edit(|s: &mut AppState| &mut s.settings.keyboard.filter)
+        .build(k)
+        .key("keymap-filter");
+    let mut top = col().w_full().gap(crate::ds::SPACE_4).child(filter);
     if let Some(error) = &s.settings.keyboard.error {
-        page = page.child(
+        top = top.child(
             text(error.clone())
                 .key("keymap-error")
                 .role("status")
-                .font(k.ty.small)
+                .font(k.ty.ui)
                 .color(k.c.danger.fg),
         );
     }
+    page = page.child(top);
 
+    let query = s.settings.keyboard.filter.text.trim().to_lowercase();
+    let mut shown = 0;
+    for (context, bindings) in by_context(&query, s) {
+        shown += bindings.len();
+        let rows = bindings
+            .into_iter()
+            .map(|(index, binding)| binding_row(s, k, index, binding));
+        page = page.child(
+            super::group(&format!("keymap-{}", context.to_lowercase()), context, None)
+                .children(rows)
+                .build(k),
+        );
+    }
+    if shown == 0 {
+        page = page.child(
+            col()
+                .key("keymap-no-results")
+                .w_full()
+                .py(crate::ds::SPACE_8)
+                .items_center()
+                .gap(crate::ds::SPACE_2)
+                .child(
+                    text("No shortcuts match")
+                        .font(k.ty.ui)
+                        .color(k.c.text_muted),
+                )
+                .child(
+                    text(format!("“{}”", s.settings.keyboard.filter.text.trim()))
+                        .font(k.ty.ui_medium)
+                        .color(k.c.text_base)
+                        .truncate(),
+                ),
+        );
+    }
     page
 }
 
-fn table(s: &AppState, k: &Kit) -> El {
-    let header = row()
-        .role("row")
-        .w_full()
-        .h(26.0)
-        .px(8.0)
-        .items_center()
-        .child(
-            text("Action")
-                .role("columnheader")
-                .font(k.ty.text_xsmall_medium)
-                .color(k.c.text_faint)
-                .grow(1.0),
-        )
-        .child(
-            text("Context")
-                .role("columnheader")
-                .font(k.ty.text_xsmall_medium)
-                .color(k.c.text_faint)
-                .w(96.0),
-        )
-        .child(
-            text("Chord")
-                .role("columnheader")
-                .font(k.ty.text_xsmall_medium)
-                .color(k.c.text_faint)
-                .w(190.0),
-        )
-        .child(
-            text("Reset")
-                .role("columnheader")
-                .font(k.ty.text_xsmall_medium)
-                .color(k.c.text_faint)
-                .w(58.0),
-        );
-    let mut table = col()
-        .key("keyboard-table")
-        .role("table")
-        .label("Keyboard shortcuts")
-        .w_full()
-        .gap(1.0)
-        .child(header);
+/// The bindings that match `query`, under their contexts in first-seen
+/// order; each keeps its index in `binding_rows`, which its keys carry.
+fn by_context<'a>(
+    query: &str,
+    s: &AppState,
+) -> Vec<(&'static str, Vec<(usize, &'a keymap::Binding)>)> {
+    let mut groups: Vec<(&'static str, Vec<(usize, &keymap::Binding)>)> = Vec::new();
     for (index, binding) in keymap::binding_rows().into_iter().enumerate() {
-        let action = binding.action;
-        let listening = s.settings.keyboard.capturing == Some(action);
-        let chord = s
-            .keymap
-            .chord_label(action)
-            .unwrap_or_else(|| "Not bound".to_string());
-        let overridden = s.keymap.is_overridden(action);
-        let mut chord_button = Button::new(if listening {
-            "Press a key…".to_string()
+        let context = binding.action.context();
+        if !query.is_empty() {
+            let chord = s.keymap.chord_label(binding.action).unwrap_or_default();
+            let hit = [binding.label, context, chord.as_str()]
+                .iter()
+                .any(|field| field.to_lowercase().contains(query));
+            if !hit {
+                continue;
+            }
+        }
+        match groups.iter_mut().find(|(name, _)| *name == context) {
+            Some((_, list)) => list.push((index, binding)),
+            None => groups.push((context, vec![(index, binding)])),
+        }
+    }
+    groups
+}
+
+fn binding_row(s: &AppState, k: &Kit, index: usize, binding: &keymap::Binding) -> El {
+    let action = binding.action;
+    let listening = s.settings.keyboard.capturing == Some(action);
+    let chord = s.keymap.chord_label(action);
+    let overridden = s.keymap.is_overridden(action);
+    let shown = if listening {
+        "Press a key…".to_string()
+    } else {
+        chord.clone().unwrap_or_else(|| "Not bound".to_string())
+    };
+    let mut chord_button = Button::new(shown)
+        .variant(if chord.is_some() || listening {
+            ButtonVariant::Ghost
         } else {
-            chord.clone()
+            ButtonVariant::GhostMuted
         })
-        .variant(ButtonVariant::Ghost)
         .control_size(ControlSize::Small)
         .on_press(move |s: &mut AppState| s.begin_key_capture(action))
         .build(k)
         .key(format!("chord-{index}"))
         .on_key(move |s: &mut AppState, ev, _| s.capture_key(action, ev));
-        if listening {
-            chord_button = chord_button.outline(1.0, 0.0, k.c.border_focus);
-        }
-        if overridden {
-            chord_button = chord_button.help(format!("Shipped: {}", binding.display()));
-        }
-        let mut row = row()
-            .key(format!("binding-{index}"))
-            .role("row")
-            .label(format!("{}: {}", binding.label, chord))
-            .w_full()
-            .h(30.0)
-            .px(8.0)
-            .radius(k.radius.sm)
-            .items_center()
-            .fill(if index % 2 == 0 {
-                k.c.surface_hover
-            } else {
-                rune::Color::TRANSPARENT
-            })
-            .child(
-                text(binding.label)
-                    .role("cell")
-                    .font(k.ty.small)
-                    .color(k.c.text_base)
-                    .grow(1.0),
-            )
-            .child(
-                text(action.context())
-                    .role("cell")
-                    .font(k.ty.small)
-                    .color(k.c.text_faint)
-                    .w(96.0),
-            )
-            .child(
-                row()
-                    .role("cell")
-                    .w(190.0)
-                    .items_center()
-                    .child(chord_button),
-            );
-        row = row.child(if overridden {
+    if listening {
+        chord_button = chord_button
+            .fill(k.c.pressed)
+            .outline(1.0, 0.0, k.c.border_focus);
+    }
+    if overridden {
+        chord_button = chord_button.help(format!("Shipped: {}", binding.display()));
+    }
+    let controls = row()
+        .gap(crate::ds::SPACE_3)
+        .items_center()
+        .children(overridden.then(|| {
             Button::new("Reset")
-                .variant(ButtonVariant::Ghost)
+                .variant(ButtonVariant::GhostMuted)
                 .control_size(ControlSize::Small)
                 .on_press(move |s: &mut AppState| s.reset_key(action))
                 .build(k)
                 .key(format!("reset-{index}"))
-        } else {
-            rune::row().w(58.0)
-        });
-        table = table.child(row);
-    }
-    table
+        }))
+        .child(chord_button);
+    row()
+        .key(format!("binding-{index}"))
+        .role("row")
+        .label(format!(
+            "{}: {}",
+            binding.label,
+            chord.as_deref().unwrap_or("Not bound")
+        ))
+        .w_full()
+        .gap(crate::ds::SPACE_6)
+        .items_center()
+        .child(
+            text(binding.label)
+                .role("cell")
+                .font(k.ty.ui)
+                .color(k.c.text_base)
+                .grow(1.0)
+                .min_w(0.0)
+                .truncate(),
+        )
+        .child(controls.role("cell"))
 }
 
 #[cfg(test)]

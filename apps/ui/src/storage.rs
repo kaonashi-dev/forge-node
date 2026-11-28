@@ -193,29 +193,35 @@ pub fn reveal(path: &Path) {
 }
 
 fn path_row(k: &Kit, name: &str, note: Option<&str>, value: Option<&Path>) -> El {
-    let mut label = col().w(180.0).child(
+    let mut label = col().w(180.0).gap(crate::ds::SPACE_2).child(
         text(name.to_string())
-            .font(k.ty.small_medium)
+            .font(k.ty.ui_medium)
             .color(k.c.text_base),
     );
     if let Some(note) = note {
         label = label.child(
             text(note.to_string())
-                .font(k.ty.text_xsmall)
-                .color(k.c.text_faint),
+                .font(k.ty.ui)
+                .color(k.c.text_muted)
+                .wrap(),
         );
     }
-    row().gap(crate::ds::SPACE_5).w_full().child(label).child(
-        text(value.map_or_else(
-            || "unavailable".to_string(),
-            |path| path.display().to_string(),
-        ))
-        .font(k.ty.small)
-        .color(k.c.text_muted)
-        .grow(1.0)
-        .min_w(0.0)
-        .truncate(),
-    )
+    row()
+        .gap(crate::ds::SPACE_6)
+        .w_full()
+        .items_center()
+        .child(label)
+        .child(
+            text(value.map_or_else(
+                || "unavailable".to_string(),
+                |path| path.display().to_string(),
+            ))
+            .font(k.ty.mono)
+            .color(k.c.text_muted)
+            .grow(1.0)
+            .min_w(0.0)
+            .truncate(),
+        )
 }
 
 fn reveal_button(k: &Kit, label: String, key: &str, path: &Path) -> El {
@@ -228,24 +234,12 @@ fn reveal_button(k: &Kit, label: String, key: &str, path: &Path) -> El {
         .key(key.to_string())
 }
 
-fn group(k: &Kit, key: &str, title: &str, description: &str) -> El {
-    col()
-        .key(key.to_string())
-        .gap(crate::ds::SPACE_3)
-        .child(
-            text(title.to_string())
-                .font(k.ty.small_medium)
-                .color(k.c.text_base),
-        )
-        .child(
-            text(description.to_string())
-                .font(k.ty.text_xsmall)
-                .color(k.c.text_faint),
-        )
+fn group(key: &str, title: &str, description: &str) -> crate::ds::Group {
+    crate::ds::group(key, title, Some(description))
 }
 
 pub fn section(s: &AppState, k: &Kit) -> El {
-    let mut view = col().key("storage").gap(14.0);
+    let mut view = col().key("storage").w_full().gap(crate::ds::SPACE_8);
     let Some((paths, worktrees_root)) = &s.storage.paths else {
         let note = s.storage.error.clone().unwrap_or_else(|| {
             if s.connection.is_some() {
@@ -262,7 +256,6 @@ pub fn section(s: &AppState, k: &Kit) -> El {
     );
     view = view.child(
         group(
-            k,
             "storage-data",
             "Forge data",
             "Hidden. Config, database and logs; not a folder to open in an editor.",
@@ -282,12 +275,12 @@ pub fn section(s: &AppState, k: &Kit) -> El {
             format!("Show {home_name} in Finder"),
             "storage-reveal-home",
             &paths.home,
-        ))),
+        )))
+        .build(k),
     );
     let custom_root = worktrees_root != &paths.default_worktrees_root;
     view = view.child(
         group(
-            k,
             "storage-worktrees",
             "Worktrees",
             "Visible to you and to your editor.",
@@ -303,7 +296,8 @@ pub fn section(s: &AppState, k: &Kit) -> El {
             "Show worktrees in Finder".into(),
             "storage-reveal-worktrees",
             worktrees_root,
-        ))),
+        )))
+        .build(k),
     );
     let workspaces = s
         .store
@@ -385,7 +379,6 @@ fn migration_group(s: &AppState, k: &Kit, paths: &ForgePaths, left: usize) -> Op
         return None;
     }
     let mut view = group(
-        k,
         "storage-migration",
         "Upgrade",
         "Move Forge's own data out of the old hidden folder. Repositories and branches are never touched.",
@@ -470,7 +463,7 @@ fn migration_group(s: &AppState, k: &Kit, paths: &ForgePaths, left: usize) -> Op
         "storage-migration-preview",
         MigrationAction::Preview,
     ));
-    Some(view.child(actions))
+    Some(view.child(actions).build(k))
 }
 
 impl AppState {

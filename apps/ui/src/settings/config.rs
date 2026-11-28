@@ -35,7 +35,6 @@ pub fn section(s: &AppState, k: &Kit) -> El {
     };
     let path = view.path.clone();
     let file = super::group(
-        k,
         "config-file",
         "File",
         Some("Edit it in any editor, then restart the daemon: it reads the file only at startup."),
@@ -60,9 +59,9 @@ pub fn section(s: &AppState, k: &Kit) -> El {
                     .build(k)
                     .key("config-open"),
             ),
-    );
+    )
+    .build(k);
     let prompt = super::group(
-        k,
         "config-pr-prompt",
         "Pull request prompt",
         Some(
@@ -71,34 +70,29 @@ pub fn section(s: &AppState, k: &Kit) -> El {
              always appended.",
         ),
     )
-    .child(block(k, "config-pr-prompt-text", &view.pull_request_prompt));
+    .child(block(k, "config-pr-prompt-text", &view.pull_request_prompt))
+    .build(k);
     let effective = super::group(
-        k,
         "config-effective",
         "Effective configuration",
         Some("Every key with the value in force, defaults included."),
     )
-    .child(block(k, "config-toml", &view.toml));
+    .child(block(k, "config-toml", &view.toml))
+    .build(k);
     col()
         .key("config-page")
         .w_full()
-        .gap(crate::ds::SPACE_7)
+        .gap(crate::ds::SPACE_8)
         .child(file)
         .child(prompt)
         .child(effective)
 }
 
 fn block(k: &Kit, key: &str, body: &str) -> El {
-    col()
-        .key(key.to_string())
-        .w_full()
-        .padding(crate::ds::SPACE_5)
-        .radius(k.radius.md)
-        .fill(k.c.surface_weak)
-        .child(
-            text(body.to_string())
-                .font(k.ty.mono)
-                .color(k.c.text_muted)
-                .wrap(),
-        )
+    col().key(key.to_string()).w_full().child(
+        text(body.to_string())
+            .font(k.ty.mono)
+            .color(k.c.text_muted)
+            .wrap(),
+    )
 }

@@ -466,12 +466,11 @@ pub fn page(
         .map_or_else(|| "this project".to_string(), |p| p.name.clone());
     let rules = project_rules(s, project);
     let checkouts = checkouts(s, project);
-    let mut page = col().key("shared-files").w_full().gap(20.0);
+    let mut page = col().key("shared-files").w_full().gap(crate::ds::SPACE_8);
 
     if let Some(target) = workspace {
         let applying = shares.applying.contains(&target);
         let mut here = crate::settings::group(
-            k,
             "shares-here",
             "This worktree",
             Some(
@@ -479,7 +478,7 @@ pub fn page(
                  edits across checkouts.",
             ),
         )
-        .child(
+        .action(
             Button::new("Apply missing files here")
                 .variant(ButtonVariant::Outline)
                 .control_size(ControlSize::Small)
@@ -513,11 +512,14 @@ pub fn page(
                     .key(format!("shares-reapply-{id}")),
             ));
         }
-        page = page.child(here.child(caption(
-            k,
-            "Re-applying backs up and replaces existing files. Editing or removing project rules \
-             below affects all worktrees.",
-        )));
+        page = page.child(
+            here.child(caption(
+                k,
+                "Re-applying backs up and replaces existing files. Editing or removing project \
+                 rules below affects all worktrees.",
+            ))
+            .build(k),
+        );
     }
 
     if let Some(error) = &shares.error {
@@ -540,12 +542,11 @@ pub fn page(
         format!("They apply to every checkout of {name}, the main one included.")
     };
     let mut group = crate::settings::group(
-        k,
         "shares-rules",
         &format!("Project rules · {name}"),
         Some(&description),
     )
-    .child(
+    .action(
         Button::new("Apply to all checkouts")
             .variant(ButtonVariant::Outline)
             .control_size(ControlSize::Small)
@@ -618,13 +619,13 @@ pub fn page(
                 Some("Anything in the repository, whether or not the scan proposed it."),
                 el(),
             ))
-            .child(adder),
+            .child(adder)
+            .build(k),
     );
 
     page = page.child(candidates(s, k, project));
 
-    let mut facts =
-        crate::settings::group(k, "shares-strategies", "What each strategy means", None);
+    let mut facts = crate::settings::group("shares-strategies", "What each strategy means", None);
     for (label, help) in STRATEGIES {
         facts = facts.child(
             col()
@@ -666,7 +667,7 @@ pub fn page(
             facts = facts.child(plan);
         }
     }
-    page.child(facts)
+    page.child(facts.build(k))
 }
 
 fn rule_row(
@@ -786,12 +787,11 @@ fn candidates(s: &AppState, k: &Kit, project: ProjectId) -> El {
         .map(|(list, _)| list.iter().filter(|c| !c.already_ruled).collect())
         .unwrap_or_default();
     let mut group = crate::settings::group(
-        k,
         "shares-candidates",
         "Detected, not shared yet",
         Some("What this repository ignores, with what Forge Node would do about it."),
     )
-    .child(small(
+    .action(small(
         k,
         "Scan again",
         "shares-scan".into(),
@@ -851,7 +851,7 @@ fn candidates(s: &AppState, k: &Kit, project: ProjectId) -> El {
             "The scan stopped at its budget, so this list is a floor, not the whole tree.",
         ));
     }
-    group
+    group.build(k)
 }
 
 /// The dialog a project or checkout menu opens, and the removal it may ask.

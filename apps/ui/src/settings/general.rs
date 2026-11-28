@@ -24,33 +24,25 @@ pub fn reset_description(projects: usize, live: usize, worktrees: usize) -> Stri
     )
 }
 
-const FACT_LABEL_W: f32 = 120.0;
-
 fn fact(k: &Kit, name: &str, value: String) -> El {
-    row()
-        .gap(crate::ds::SPACE_5)
-        .child(
-            text(name.to_string())
-                .font(k.ty.ui)
-                .color(k.c.text_muted)
-                .w(FACT_LABEL_W),
-        )
-        .child(text(value).font(k.ty.ui).color(k.c.text_base))
+    setting_row(k, name, None, crate::ds::setting_value(k, value))
 }
 
-fn path_line(k: &Kit, name: &str, note: &str, value: Option<String>) -> El {
-    col()
-        .gap(crate::ds::SPACE_1)
+fn path_line(k: &Kit, name: &str, note: &str, value: Option<String>, reveal: Option<El>) -> El {
+    let words = col()
+        .gap(crate::ds::SPACE_2)
+        .grow(1.0)
+        .min_w(0.0)
         .child(
             row()
                 .gap(crate::ds::SPACE_4)
                 .items_center()
-                .child(text(name.to_string()).font(k.ty.ui).color(k.c.text_base))
                 .child(
-                    text(note.to_string())
-                        .font(k.ty.text_xsmall)
-                        .color(k.c.text_faint),
-                ),
+                    text(name.to_string())
+                        .font(k.ty.ui_medium)
+                        .color(k.c.text_base),
+                )
+                .child(text(note.to_string()).font(k.ty.ui).color(k.c.text_muted)),
         )
         .child(
             text(value.unwrap_or_else(|| "unavailable until the daemon answers".into()))
@@ -58,7 +50,13 @@ fn path_line(k: &Kit, name: &str, note: &str, value: Option<String>) -> El {
                 .color(k.c.text_muted)
                 .truncate()
                 .min_w(0.0),
-        )
+        );
+    row()
+        .w_full()
+        .gap(crate::ds::SPACE_6)
+        .items_center()
+        .child(words)
+        .children(reveal)
 }
 
 fn button(
@@ -89,7 +87,7 @@ pub fn section(s: &AppState, k: &Kit) -> El {
             store.workspaces.len(),
         )
     });
-    let overview = group(k, "general-overview", "Overview", None)
+    let overview = group("general-overview", "Overview", None)
         .child(fact(k, "Version", format!("forge-ui v{APP_VERSION}")))
         .child(fact(k, "Sessions", format!("{live} live of {total}")))
         .child(fact(
@@ -110,37 +108,37 @@ pub fn section(s: &AppState, k: &Kit) -> El {
                 ),
                 None => "not measured yet".to_string(),
             },
-        ));
+        ))
+        .build(k);
 
     let paths = s.storage.paths.as_ref().map(|(paths, _)| paths);
     let config_dir =
         paths.and_then(|paths| paths.config_file.parent().map(|dir| dir.to_path_buf()));
     let logs = paths.map(|paths| paths.logs.clone());
-    let mut reveal = row().gap(crate::ds::SPACE_3);
-    if let Some(dir) = config_dir {
-        reveal = reveal.child(button(
+    let reveal_config = config_dir.map(|dir| {
+        button(
             k,
-            "Reveal config folder",
+            "Reveal",
             "general-reveal-config",
             ButtonVariant::Outline,
             move |_s| crate::storage::reveal(&dir),
-        ));
-    }
-    if let Some(dir) = logs.clone() {
-        reveal = reveal.child(button(
+        )
+    });
+    let reveal_logs = logs.clone().map(|dir| {
+        button(
             k,
-            "Reveal logs",
+            "Reveal",
             "general-reveal-logs",
             ButtonVariant::Outline,
             move |_s| crate::storage::reveal(&dir),
-        ));
-    }
+        )
+    });
     let swipe = crate::pages::SidebarSwipe::read(s.pref(crate::pages::SIDEBAR_SWIPE_KEY));
     let labels: Vec<&str> = crate::pages::SidebarSwipe::ALL
         .iter()
         .map(|choice| choice.label())
         .collect();
-    let gestures = group(k, "general-gestures", "Trackpad", None).child(setting_row(
+    let gestures = group("general-gestures", "Trackpad", None).child(setting_row(
         k,
         "Sidebar swipe",
         Some("Two fingers sideways over a terminal or an editor show or hide the sidebar."),
@@ -161,7 +159,6 @@ pub fn section(s: &AppState, k: &Kit) -> El {
         .key("general-sidebar-swipe"),
     ));
     let config = group(
-        k,
         "general-config",
         "Configuration & logs",
         Some("Edit config.toml in your editor, then restart Forge Node to apply changes."),
@@ -171,60 +168,63 @@ pub fn section(s: &AppState, k: &Kit) -> El {
         "config.toml",
         "terminal, sessions, worktrees, daemon",
         paths.map(|paths| paths.config_file.display().to_string()),
+        reveal_config,
     ))
     .child(path_line(
         k,
         "logs",
         "daemon.<date>.log, last 5 days",
         logs.map(|dir| dir.display().to_string()),
+        reveal_logs,
     ))
-    .child(reveal);
+    .build(k);
 
     let (dot, title) = match s.status {
         LinkStatus::Connected => (k.c.success.icon, "Connected"),
         LinkStatus::Connecting => (k.c.icon_faint, "Connecting…"),
         LinkStatus::Reconnecting => (k.c.danger.icon, "Disconnected"),
     };
+    let status = row()
+        .key("daemon-status")
+        .role("status")
+        .label(format!("{title}: {}", s.status_detail))
+        .w_full()
+        .gap(crate::ds::SPACE_4)
+        .items_center()
+        .child(el().size(8.0, 8.0).radius(k.radius.sm).fill(dot))
+        .child(
+            col()
+                .grow(1.0)
+                .min_w(0.0)
+                .gap(crate::ds::SPACE_2)
+                .child(text(title).font(k.ty.ui_medium).color(k.c.text_base))
+                .child(
+                    text(s.status_detail.clone())
+                        .font(k.ty.ui)
+                        .color(k.c.text_muted)
+                        .truncate(),
+                ),
+        );
     let daemon = group(
-        k,
         "general-daemon",
         "Daemon",
         Some("The daemon owns every PTY, so stopping it takes all running sessions with it."),
     )
-    .child(
-        row()
-            .key("daemon-status")
-            .role("status")
-            .label(format!("{title}: {}", s.status_detail))
-            .gap(crate::ds::SPACE_4)
-            .items_center()
-            .child(el().size(8.0, 8.0).radius(k.radius.sm).fill(dot))
-            .child(
-                col()
-                    .min_w(0.0)
-                    .child(text(title).font(k.ty.small_medium).color(k.c.text_base))
-                    .child(
-                        text(s.status_detail.clone())
-                            .font(k.ty.text_xsmall)
-                            .color(k.c.text_faint)
-                            .truncate(),
-                    ),
-            ),
-    )
+    .child(status)
     .children((s.status == LinkStatus::Reconnecting).then(|| {
         text(
             "Forge Node cannot reach the daemon. If reconnecting does not help, restart it: \
              every running session ends.",
         )
         .key("daemon-unreachable")
-        .font(k.ty.small)
+        .font(k.ty.ui)
         .color(k.c.text_muted)
         .wrap()
     }))
-    .child(daemon_actions(s, k));
+    .child(daemon_actions(s, k))
+    .build(k);
 
     let danger = group(
-        k,
         "general-danger",
         "Danger zone",
         Some(
@@ -247,14 +247,15 @@ pub fn section(s: &AppState, k: &Kit) -> El {
             ButtonVariant::Danger,
             |s| s.settings.confirm_reset = true,
         ),
-    ));
+    ))
+    .build(k);
 
     col()
         .key("general")
         .w_full()
-        .gap(crate::ds::SPACE_7)
+        .gap(crate::ds::SPACE_8)
         .child(overview)
-        .child(gestures)
+        .child(gestures.build(k))
         .child(updates(s, k))
         .child(config)
         .child(daemon)
@@ -381,11 +382,11 @@ fn updates(s: &AppState, k: &Kit) -> El {
             AppState::install_update,
         ));
     }
-    let mut words = col().gap(crate::ds::SPACE_1).grow(1.0).min_w(0.0).child(
+    let mut words = col().gap(crate::ds::SPACE_2).grow(1.0).min_w(0.0).child(
         text(line)
             .key("general-update-state")
             .role("status")
-            .font(k.ty.small)
+            .font(k.ty.ui_medium)
             .color(if matches!(state, UpdateState::Failed { .. }) {
                 k.c.warning.fg
             } else {
@@ -394,15 +395,9 @@ fn updates(s: &AppState, k: &Kit) -> El {
             .wrap(),
     );
     if !detail.is_empty() {
-        words = words.child(
-            text(detail)
-                .font(k.ty.text_xsmall)
-                .color(k.c.text_faint)
-                .wrap(),
-        );
+        words = words.child(text(detail).font(k.ty.ui).color(k.c.text_muted).wrap());
     }
     group(
-        k,
         "general-updates",
         "Updates",
         Some(
@@ -413,11 +408,12 @@ fn updates(s: &AppState, k: &Kit) -> El {
         row()
             .key("general-update-row")
             .w_full()
-            .gap(crate::ds::SPACE_5)
+            .gap(crate::ds::SPACE_6)
             .items_center()
             .child(words)
             .child(actions),
     )
+    .build(k)
 }
 
 impl AppState {
